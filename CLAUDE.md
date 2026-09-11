@@ -224,16 +224,21 @@ The build system ensures that:
 The world scripts under `projects/*/shared-lib/` and `MatterEngine3/shared-lib/`
 have Node test files (`projects/world_demo/tests/*.mjs`). There is no Makefile
 target and no `package.json` anywhere in the repo, so the `.js` modules those
-tests import default to CommonJS and a plain `node file.mjs` dies with
-"is a CommonJS module". Run them from the repo root with:
+tests import have no declared module type; Node >= 22.7 detects their ES module
+syntax by default. Run them from the repo root with plain `node`:
 
 ```bash
-node --experimental-default-type=module projects/world_demo/tests/alpine_ecology_tests.mjs
+node projects/world_demo/tests/alpine_ecology_tests.mjs
 ```
 
-(`--experimental-detect-module` works too on Node >= 20.10.) Do not "fix" this
-by adding a `package.json` — the same `.js` files are loaded by the engine's
-QuickJS host, which has its own module resolution and would not see it.
+On Node 20.10–22.6, add `--experimental-detect-module`; without it the import
+dies with "is a CommonJS module". Do **not** use
+`--experimental-default-type=module`: Node 24 rejects it (`bad option`, exit 9).
+When looping over suites, capture `$?` immediately after `node` — an
+`echo "$(basename f) exit=$?"` resets it and reports 0 for a run that never
+started. Do not "fix" the module type by adding a `package.json` — the same
+`.js` files are loaded by the engine's QuickJS host, which has its own module
+resolution and would not see it.
 
 ## QA quick reference
 

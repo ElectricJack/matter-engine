@@ -32,14 +32,14 @@ function sealUnusedDoors(site){
  }
  return site;
 }
-function courtDoor(site,wingId,roomId,from,to) {
+function courtDoor(site,wingId,roomId,from,to,width=2) {
  const wing=site.wings.find(w=>w.id===wingId),level=wing.plan.levels[0],id='court-entry';
  const vertical=from[0]===to[0],axis=vertical?1:0;
  const lo=Math.min(from[axis],to[axis]),hi=Math.max(from[axis],to[axis]),fixed=from[1-axis];
  // A court door replaces an existing window bay when their finite runs overlap.
  level.edgeOverrides=level.edgeOverrides.filter(e=>!(e.from[1-axis]===fixed&&e.to[1-axis]===fixed&&
   Math.max(e.from[axis],e.to[axis])>lo&&Math.min(e.from[axis],e.to[axis])<hi));
- const width=2,length=hi-lo,side=vertical?(fixed===0?'west':'east'):(fixed===0?'south':'north');
+ const length=hi-lo,side=vertical?(fixed===0?'west':'east'):(fixed===0?'south':'north');
  level.edgeOverrides.push({id,from,to,kind:'arch',connects:[roomId,'outside'],
   opening:{offset:(length-width)/2,width,bottom:0,height:2.8}});
  wing.plan.wingProgram.sockets.push({sourceId:id,levelId:'ground',roomId,side,from,to,
@@ -51,15 +51,22 @@ function addCourtyards(site) {
  const court=(id,clearPolygon,sockets)=>({id,level:'ground',baseY:0,clearPolygon,sockets,floor:'stone'});
  if(site.id==='clustered-court') {
   const door=courtDoor(site,'keep','ground-north',[12,9],[12,11]);
-  site.courtyards=[court('inner-court',[[12,6],[18.8,5.5],[23,8],[20,16],[15.5,17],[12,12]],[door])];
+  // Courts stop short of the inner face of every connector wall standing on them.
+  site.courtyards=[court('inner-court',[[12,6],[18.8,5.5],[23,8],[19.8,15.5],[15.5,17],[12,12]],[door])];
  } else if(site.id==='angled-bailey') {
-  site.courtyards=[court('bailey',[[0,6],[10,6],[22,10],[22,17],[-3,14],[-5,10]],[socket('gate','north')])];
+  site.courtyards=[court('bailey',[[0,6],[9.2,6],[22,10],[22,17],[-3,14],[-5,10]],[socket('gate','north')])];
  } else {
   const lower=courtDoor(site,'keep','ground-north',[0,9],[0,11]);
-  const upper=courtDoor(site,'hall','ground-hall',[0,5],[0,8]);
-  site.courtyards=[court('lower-court',[[0,8],[0,18],[-6,18],[-4,12]],[lower]),
-   court('upper-court',[[2.542111807598,23.413502104845],[3.240923229375,26.021501835825],
-    [4,30],[1,33],[-4,34],[-3.6,28]],[upper])];
+  // hall-kitchen's north wall solid covers the hall face to local z=5.6; a
+  // 1.6m arch centred on z 5..8 (mouth 5.7..7.3) leaves the court a corner
+  // between that wall face and the arch.
+  const upper=courtDoor(site,'hall','ground-hall',[0,5],[0,8],1.6);
+  // The upper court's west edge stays ~5cm east of the outer face of the
+  // upper-court passage's east wall; courts may not overlap connector floors.
+  // Its hall-side corner (local z=5.65) sits between that wall and the arch.
+  site.courtyards=[court('lower-court',[[0,8],[0,18],[-6,18],[-3.8,12]],[lower]),
+   court('upper-court',[[2.632698473384,23.751576144046],[3.240923229375,26.021501835825],
+    [4,30],[1,33],[-4,34],[-4.4,31.2],[-3.6,27.15]],[upper])];
  }
  return site;
 }

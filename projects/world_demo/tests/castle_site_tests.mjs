@@ -383,6 +383,18 @@ raisedCourtWallOverlap.courtyards = [{
 expectInvalid(raisedCourtWallOverlap,
   /courtyards\.raised-court.*floor overlaps wall solid.*connector vestibule/);
 
+// A connector wall standing on a same-level court meets its slab only at
+// baseY, yet still occupies the clear polygon. A flush shared edge is valid.
+const wallCourtOverlap = clone(connectorCourtOverlap);
+wallCourtOverlap.courtyards[0].id = 'wall-court';
+wallCourtOverlap.courtyards[0].clearPolygon = [[11.7, 7.5], [18, 7.5], [18, 11.1], [11.7, 11.1]];
+expectInvalid(wallCourtOverlap,
+  /courtyards\.wall-court.*floor overlaps wall solid connector:vestibule:wall:1 from connector vestibule/);
+const flushWallCourt = clone(wallCourtOverlap);
+flushWallCourt.courtyards[0].clearPolygon = [[11.7, 7.8], [18, 7.8], [18, 11.1], [11.7, 11.1]];
+assert.ok(compileSite(flushWallCourt).courtyards.some(court => court.id === 'wall-court'),
+  'a court flush against a connector wall face compiles');
+
 // Tuple components are escaped before global namespacing, so authored colons
 // cannot alias the reserved courtyard node namespace.
 const collisionSafe = clone(courtyardSite);

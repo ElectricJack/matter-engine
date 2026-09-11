@@ -766,6 +766,12 @@ function validateSiteSurfaceOverlap(connectors, courtyards) {
   const courtFloorVolume = court => ({
     minY: court.baseY - court.floor.thickness, maxY: court.baseY,
   });
+  // A wall standing on the walking surface meets the slab only at baseY yet
+  // still occupies the clear polygon, so walls are tested against the slab
+  // plus that surface, as validateCourtyardIntrusion does for wing rooms.
+  const courtWalkingVolume = court => ({
+    minY: court.baseY - court.floor.thickness, maxY: court.baseY + EPSILON * 2,
+  });
   for (let leftIndex = 0; leftIndex < courtyards.length; ++leftIndex) {
     const left = courtyards[leftIndex];
     for (let rightIndex = leftIndex + 1; rightIndex < courtyards.length; ++rightIndex) {
@@ -782,7 +788,7 @@ function validateSiteSurfaceOverlap(connectors, courtyards) {
           positivePolygonArea(convexIntersection(left.clearPolygon, connector.clearPolygon)) >
             COLLISION_AREA_EPSILON)
         fail(`courtyards.${left.id}`, `positive-area floor overlap with connector ${connector.id}`);
-      if (!yRangesOverlap(courtFloorVolume(left), {
+      if (!yRangesOverlap(courtWalkingVolume(left), {
         minY: connector.baseY, maxY: connector.baseY + connector.height,
       })) continue;
       for (const span of connector.wallSpans) {

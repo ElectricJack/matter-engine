@@ -108,6 +108,14 @@ not merge the court with `outside`. This lets an enclosed outdoor court remain
 reachable while the selected `entry` stays the site's only outside edge. Court
 socket arrays are sorted by their semantic wing/level/portal tuple, and a court
 floor that cuts through a wing beyond its host wall interface is rejected.
+At overlapping elevations, positive-area court/court, court/connector-floor
+and court/connector-wall intersections are also rejected; shared edges remain
+valid. Elevation tests use the complete floor slab interval
+`[baseY - floor.thickness, baseY]`, not only the walking surface, so a raised
+court cannot descend into the top of a connector wall. Connector walls are
+also tested against the walking surface itself: a wall standing on the court's
+level may share an edge with its clear polygon but never occupy it. Solids
+that only meet the slab's underside are permitted.
 
 ## Compiled site
 
@@ -200,6 +208,12 @@ positive area in the actual room interior or another wing is rejected. This
 lets asymmetric connector stones own the miter without widening the declared
 portal opening or allowing a long connector to cut through another room.
 
+Participant wings are not exempt from intrusion checks. Only the finite prism
+through the host wall and the bounded, owned jamb join may meet the host wing;
+positive area in the actual room interior or another wing is rejected. This
+lets asymmetric connector stones own the miter without widening the declared
+portal opening or allowing a long connector to cut through another room.
+
 The authored vestibule `height` may exceed a door aperture: a 3.6m enclosure
 meeting a 2.8m arch is ordinary architecture. `height` drives side walls and
 the roof base; `clearHeight` is `min(height, both portal clear heights)` and
@@ -212,6 +226,11 @@ rafters sit below its timber soffit. `connectorRoofClearance(record)` exports
 per-rafter oriented faces, clipped minimum Y and the clearance reserve for
 inspection. This validation preserves the declared passage instead of silently
 reducing headroom on low-rise or long connectors.
+
+The compiler validates its emitted route waypoints against every finite wall
+span using the same radius-0.4 plus 0.2m side-clearance gate as the connector
+kit. A site record accepted by `compileSite` therefore does not fail later at
+the mandatory connector-record boundary.
 
 The frozen executable fixture is
 `projects/world_demo/tests/fixtures/castle_site_angled_study.js`. It contains a
