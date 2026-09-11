@@ -69,8 +69,14 @@ rounded to the global grid.
     id:'vestibule',
     a:{wing:'core', level:'ground', portal:'east-hall'},
     b:{wing:'hall', level:'ground', portal:'west-entry'},
-    floor:'stone', height:3.2,
+    floor:'stone', height:3.6,
     roof:{kind:'low-hip', rise:0.8},
+  }],
+  courtyards: [{
+    id:'inner-court', level:'ground',
+    clearPolygon:[[4,11.7],[8,11.7],[8,18],[4,18]],
+    floor:{material:'stone',thickness:0.3},
+    sockets:[{wing:'core',level:'ground',portal:'north-court'}],
   }],
 }
 ```
@@ -88,6 +94,13 @@ sourceId`. Only an exterior `door` or `arch` with one real room and physical
 from portal geometry because `roomThresholds.outside` intentionally does not
 exist. The entry socket is reserved; each connection socket can be consumed
 only once.
+
+`courtyards` is optional. Each record declares a counter-clockwise convex
+world-space supported floor polygon and one or more exterior wing sockets.
+Those sockets are consumed just like connector mouths. Compilation emits a
+walkable `site:courtyard:<id>` node plus one threshold edge per socket; it does
+not merge the court with `outside`. This lets an enclosed outdoor court remain
+reachable while the selected `entry` stays the site's only outside edge.
 
 ## Compiled site
 
@@ -117,7 +130,11 @@ and swept-volume identity with the wing ID. Local manifests retain their own
 outside edges, but the global graph suppresses all of them except the selected
 site entry. A consumed socket is represented only by its compound connector
 edge. Global `walkRoutes` are ordered world-space polylines and preserve every
-compiled stair waypoint, including intermediate landing turns.
+compiled stair waypoint, including intermediate landing turns. Between graph
+edges the site compiler calls `routeManifestRoomSegment` from
+`castle_plan.js`, so the same floor-hole, stair, beam and fixture-clearance
+solver produces each namespaced `roomSegments` record. Rotated world swept
+rectangles are published as OBBs rather than misleading global AABBs.
 
 ## Connector handoff
 
@@ -141,7 +158,8 @@ compiled stair waypoint, including intermediate landing turns.
     trimPlanes:[{normal:[x,z],offset,keepSign}, …],
   }],
   floor:{thickness,material,owner},
-  clearHeight,
+  height,                            // full wall/eave enclosure height
+  clearHeight,                       // effective passage headroom
   roof:{kind,rise,material,overhang},
   routeWaypoints:[[x,y,z], ...],
 }
@@ -155,6 +173,11 @@ plus 0.2m clearance on both sides. Narrow joins, non-facing/intruding mouths,
 positive-area wing overlap, connector intrusion into an unrelated wing,
 incompatible elevations, duplicate sockets, invalid polygons and globally
 disconnected required rooms are rejected.
+
+The authored vestibule `height` may exceed a door aperture: a 3.6m enclosure
+meeting a 2.8m arch is ordinary architecture. `height` drives side walls and
+the roof base; `clearHeight` is `min(height, both portal clear heights)` and
+drives walk/capsule clearance.
 
 The frozen executable fixture is
 `projects/world_demo/tests/fixtures/castle_site_angled_study.js`. It contains a

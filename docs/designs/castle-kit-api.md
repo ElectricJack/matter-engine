@@ -21,6 +21,7 @@ planToJSON(manifest, space = 2)
 planToSVG(manifest, { levelId, scale = 32, padding = 24 })
 emitManifest(manifest, emitters)
 manifestPartRecipes(manifest, moduleNames = {})
+routeManifestRoomSegment(manifest, roomId, from, to, width = 1.2)
 ```
 
 `canonicalEdge` accepts one axis-aligned, one-metre integer-grid edge and
@@ -34,6 +35,14 @@ are sorted from level IDs, room IDs, coordinates, endpoints, or explicit
 record IDs, so reordering levels, rooms, overrides, beams, and other unordered
 record families does not change `planToJSON(compilePlan(plan))`. Flight order
 and the order of intermediate landings are semantic stair sequence.
+
+`routeManifestRoomSegment` reuses the compiler's exact flat-room clearance
+solver on an already compiled manifest. It returns an owned
+`{roomId,from,to,width,waypoints,segments,sweptBounds}` record without mutating
+the manifest. Floor holes, lower-room stair flights/carried landings, beams and
+fixture clearances receive the same routing and post-route validation as the
+compiler's own walk routes. Site composition uses this API when stitching a
+wing's world-space connectors instead of drawing unsafe straight chords.
 
 ## Authored plan
 

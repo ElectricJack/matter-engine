@@ -160,6 +160,25 @@ assert.ok(upperRoute.edgeIds.some(id => id.includes('stair')));
 assert.equal(upperRoute.waypoints[0][1], 0);
 assert.equal(upperRoute.waypoints.at(-1)[1], 4);
 
+// Global stitching must call the plan compiler's obstacle-aware room transit,
+// not draw a straight entry-to-connector chord through central furniture.
+const obstructedTransitSite = clone(CASTLE_SITE_ANGLED_STUDY);
+obstructedTransitSite.wings.find(wing => wing.id === 'core').plan.fixtures.push({
+  id: 'central-table', levelId: 'ground',
+  clearance: { minX: 4, maxX: 8, minY: 0, maxY: 2.2, minZ: 5.2, maxZ: 6.8 },
+});
+const obstructedHallRoute = compileSite(obstructedTransitSite).walkRoutes
+  .find(route => route.roomId === 'hall:hall-ground');
+assert.equal(obstructedHallRoute.roomSegments.length, 1);
+assert.equal(obstructedHallRoute.roomSegments[0].roomId, 'core:core-ground');
+assert.ok(obstructedHallRoute.roomSegments[0].waypoints.length >= 4,
+  'global route detours around the central furnishing clearance');
+assert.ok(obstructedHallRoute.roomSegments[0].waypoints.some(point =>
+  point[2] <= 4.6 + EPSILON || point[2] >= 7.4 - EPSILON));
+assert.ok(obstructedHallRoute.roomSegments[0].segments.every(segment =>
+  !('bounds' in segment) && segment.orientedBounds && segment.localBounds),
+  'rotated global swept bounds remain oriented instead of becoming world AABBs');
+
 // A consumed compound-link socket must no longer retain an independent outside
 // graph edge. The sole site exterior edge is the selected core entry.
 const outsideEdges = manifest.roomGraph.edges.filter(edge => edge.rooms.includes('outside'));
@@ -216,6 +235,31 @@ reordered.wings.reverse();
 reordered.connections.reverse();
 assert.deepEqual(compileSite(reordered), compileSite(ordered),
   'wing and connection input order does not affect the manifest');
+
+// Outdoor courts are explicit walkable site nodes, not aliases for the one
+// global outside node. Their stone polygon supports each consumed socket.
+const courtyardSite = clone(CASTLE_SITE_ANGLED_STUDY);
+courtyardSite.wings.find(wing => wing.id === 'core').plan.levels[0].edgeOverrides.push({
+  id: 'north-court', from: [0, 12], to: [12, 12], kind: 'arch',
+  connects: ['outside', 'core-ground'],
+  opening: { width: 2.4, height: 3.2, offset: 4.8 },
+});
+courtyardSite.courtyards = [{
+  id: 'inner-court', level: 'ground',
+  clearPolygon: [[4, 11.7], [8, 11.7], [8, 18], [4, 18]],
+  floor: { material: 'stone', thickness: 0.3 },
+  sockets: [{ wing: 'core', level: 'ground', portal: 'north-court' }],
+}];
+const courtyardManifest = compileSite(courtyardSite);
+assert.equal(courtyardManifest.courtyards[0].nodeId, 'site:courtyard:inner-court');
+assert.ok(courtyardManifest.roomGraph.reachableRoomIds.includes('site:courtyard:inner-court'));
+assert.equal(courtyardManifest.roomGraph.edges.filter(edge => edge.kind === 'courtyard').length, 1);
+assert.equal(courtyardManifest.roomGraph.edges.filter(edge => edge.rooms.includes('outside')).length, 1,
+  'courtyard access never creates a second global outside connection');
+const courtRoute = courtyardManifest.walkRoutes.find(route =>
+  route.roomId === 'site:courtyard:inner-court');
+assert.ok(courtRoute.waypoints.length >= 4);
+assert.match(courtRoute.traversals.at(-1).edgeId, /^route:courtyard:/);
 
 // Site summaries rotate record positions, AABBs and spot-light directions with
 // the solved wing frame rather than replacing them with axis-aligned bounds.
