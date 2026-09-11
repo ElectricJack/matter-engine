@@ -133,7 +133,7 @@ The global `roomGraph` namespaces every wing-local room, edge, portal, floor
 and swept-volume identity with the wing ID. Local manifests retain their own
 outside edges, but the global graph suppresses all of them except the selected
 site entry, matched by wing, level and portal. Namespace tuple components are
-percent-escaped (`%` is serialized as `~`) and compiled node/edge uniqueness is
+percent-escaped and compiled node/edge uniqueness is
 asserted, so authored colons cannot alias reserved site IDs. A consumed socket
 is represented only by its compound connector
 edge. Global `walkRoutes` are ordered world-space polylines and preserve every
@@ -182,7 +182,8 @@ the authored clear-width endpoints translated exactly onto both wall faces;
 polygon extends through each wall to the interior threshold
 and its minimum caliper width must fit a radius-0.4 capsule plus 0.2m clearance
 on both sides. Narrow joins, non-facing/intruding mouths,
-positive-area wing overlap, connector floor/wall-solid intrusion,
+positive-area wing overlap (including exact circle/circle and circle/polygon
+tests), connector/courtyard floor and connector wall-solid intrusion,
 incompatible elevations, duplicate sockets, invalid polygons and globally
 disconnected required rooms are rejected.
 
@@ -196,6 +197,11 @@ The authored vestibule `height` may exceed a door aperture: a 3.6m enclosure
 meeting a 2.8m arch is ordinary architecture. `height` drives side walls and
 the roof base; `clearHeight` is `min(height, both portal clear heights)` and
 drives walk/capsule clearance.
+
+The compiler validates its emitted route waypoints against every finite wall
+span using the same radius-0.4 plus 0.2m side-clearance gate as the connector
+kit. A site record accepted by `compileSite` therefore does not fail later at
+the mandatory connector-record boundary.
 
 The frozen executable fixture is
 `projects/world_demo/tests/fixtures/castle_site_angled_study.js`. It contains a

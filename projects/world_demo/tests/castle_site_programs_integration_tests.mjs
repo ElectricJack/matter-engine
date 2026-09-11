@@ -4,7 +4,7 @@ await import('./castle_shared_lib_hooks.mjs');
 const { compileSite, siteToJSON } = await import('../shared-lib/castle_site.js');
 const { castleSiteProgram, CASTLE_SITE_NAMES } =
   await import('../shared-lib/castle_site_catalog.js');
-const { validateConnectorGeometry, validateConnectorRecords } =
+const { connectorSolidVolumes, validateConnectorGeometry, validateConnectorRecords } =
   await import('../shared-lib/castle_connector_kit.js');
 
 const clone = value => structuredClone(value);
@@ -33,6 +33,9 @@ for (let variant = 0; variant < CASTLE_SITE_NAMES.length; ++variant) {
     assert.equal(connector.clearHeight, 2.8,
       'physical arch clearance remains distinct from the taller enclosure');
     assert.ok(connector.wallSpans.every(span => span.height === connector.height));
+    assert.ok(connectorSolidVolumes(connector).filter(volume => volume.kind === 'wall')
+      .every(volume => volume.topY === connector.baseY + connector.height),
+    'connector kit builds every wall solid to the authored enclosure height');
   }
 
   const reordered = clone(input);

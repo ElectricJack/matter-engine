@@ -340,8 +340,25 @@ collisionSafe.courtyards[0].sockets[0].wing = 'site';
 const collisionSafeManifest = compileSite(collisionSafe);
 assert.equal(new Set(collisionSafeManifest.roomGraph.nodes.map(node => node.id)).size,
   collisionSafeManifest.roomGraph.nodes.length);
-assert.ok(collisionSafeManifest.roomGraph.nodes.some(node => node.id === 'site:courtyard~3Acourt'));
+assert.ok(collisionSafeManifest.roomGraph.nodes.some(node => node.id === 'site:courtyard%3Acourt'));
 assert.ok(collisionSafeManifest.roomGraph.nodes.some(node => node.id === 'site:courtyard:court'));
+
+const tokenSafe = clone(collisionSafe);
+tokenSafe.courtyards = [];
+tokenSafe.wings[0].plan.entryRoomId = 'a:b';
+tokenSafe.wings[0].plan.levels[0].rooms = [
+  { id: 'a:b', use: 'hall', floorType: 'flags', rect: { x: 0, z: 0, width: 6, depth: 12 } },
+  { id: 'a~3Ab', use: 'solar', floorType: 'flags', rect: { x: 6, z: 0, width: 6, depth: 12 } },
+];
+tokenSafe.wings[0].plan.levels[0].edgeOverrides = [
+  { id: 'main-entry', from: [0, 0], to: [0, 12], kind: 'door',
+    connects: ['outside', 'a:b'], opening: { width: 2.4, height: 3.2, offset: 4.8 } },
+  { id: 'internal', from: [6, 0], to: [6, 12], kind: 'arch',
+    connects: ['a:b', 'a~3Ab'], opening: { width: 2.4, height: 3.2, offset: 4.8 } },
+];
+const tokenSafeManifest = compileSite(tokenSafe);
+assert.ok(tokenSafeManifest.roomGraph.nodes.some(node => node.id === 'site:a%3Ab'));
+assert.ok(tokenSafeManifest.roomGraph.nodes.some(node => node.id === 'site:a~3Ab'));
 
 // Site summaries rotate record positions, AABBs and spot-light directions with
 // the solved wing frame rather than replacing them with axis-aligned bounds.
@@ -461,12 +478,74 @@ const unsupportedRoof = clone(CASTLE_SITE_ANGLED_STUDY);
 unsupportedRoof.connections[0].roof.kind = 'flat';
 expectInvalid(unsupportedRoof, /roof\.kind.*only low-hip is supported/);
 
+const unsafeRoute = angledStudySite(15);
+unsafeRoute.wings[1].placement.outset = 2;
+unsafeRoute.wings[1].placement.lateral = 4;
+expectInvalid(unsafeRoute, /routeWaypoints\[2\].*lacks 0\.6m side clearance/);
+
 const overlapping = clone(CASTLE_SITE_ANGLED_STUDY);
 overlapping.wings.push({
   id: 'overlap', plan: clone(ANGLED_STUDY_HALL_PLAN),
   frame: { origin: [2, 0, 2], yawDeg: 0 },
 });
 expectInvalid(overlapping, /positive-area overlap/);
+
+// Circular occupied volumes use exact circle tests, not an inscribed polygon
+// that can miss a shallow lens between differently rotated wings.
+const circleWingPlan = {
+  schema: ANGLED_STUDY_CORE_PLAN.schema, id: 'circle-overlap-wing', seed: 9413,
+  entryRoomId: 'hall', style: clone(ANGLED_STUDY_CORE_PLAN.style),
+  levels: [{ id: 'ground', baseY: 0, height: 4, rooms: [
+    { id: 'hall', use: 'hall', floorType: 'flags', rect: { x: 0, z: 0, width: 9, depth: 6 } },
+    { id: 'tower', use: 'guardroom', floorType: 'flags',
+      boundary: { kind: 'circle', center: [13, 3], radius: 4 } },
+  ], edgeOverrides: [
+    { id: 'main-entry', from: [0, 0], to: [2, 0], kind: 'door',
+      connects: ['outside', 'hall'], opening: { width: 1.2, height: 2.8, offset: 0.4 } },
+    { id: 'hall-tower-door', from: [9, 2], to: [9, 4], kind: 'door',
+      connects: ['hall', 'outside'], opening: { width: 1.4, height: 2.8, offset: 0.3 } },
+  ] }],
+  curves: [{ id: 'tower-ring', levelId: 'ground', roomId: 'tower', kind: 'ring',
+    center: [13, 3], radius: 4, apertures: [{
+      id: 'tower-throat', kind: 'door', startAngle: 160, endAngle: 200,
+      bottom: 0, height: 2.8, connects: ['tower', 'hall'],
+      throat: { targetRoomId: 'hall', direction: 'W', width: 1.4, depth: 1.2 },
+    }] }],
+  stairs: [], beams: [], fixtures: [], roofs: [], localLights: [], verticalVoids: [],
+};
+const circleOverlap = {
+  schema: CASTLE_SITE_ANGLED_STUDY.schema, id: 'exact-circle-overlap', seed: 9413,
+  grid: 1, angleStep: 15,
+  entry: { wing: 'west', level: 'ground', portal: 'main-entry' },
+  wings: [
+    { id: 'west', plan: circleWingPlan, frame: { origin: [0, 0, 0], yawDeg: 0 } },
+    { id: 'east', plan: { ...clone(circleWingPlan),
+      levels: clone(circleWingPlan.levels).map(level => ({ ...level,
+        rooms: level.rooms.map(room => ({ ...room, required: false })) })) },
+    frame: { origin: [33.38, 0, 6], yawDeg: 180 } },
+  ], connections: [],
+};
+expectInvalid(circleOverlap, /positive-area overlap.*tower/);
+
+const circleCourtIntrusion = clone(courtyardSite);
+circleCourtIntrusion.courtyards[0].clearPolygon =
+  [[4, 11.7], [8, 11.7], [50, 30], [30, 50]];
+const edgeFrom = [8, 11.7], edgeTo = [50, 30];
+const edgeLength = Math.hypot(edgeTo[0] - edgeFrom[0], edgeTo[1] - edgeFrom[1]);
+const edgeMidpoint = midpoint(edgeFrom, edgeTo);
+const edgeOutward = [(edgeTo[1] - edgeFrom[1]) / edgeLength,
+  -(edgeTo[0] - edgeFrom[0]) / edgeLength];
+const circleTarget = [edgeMidpoint[0] + edgeOutward[0] * 3.695,
+  edgeMidpoint[1] + edgeOutward[1] * 3.695];
+const circleLocalWorld = transformPoint({ origin: [0, 0, 0], yawDeg: -135 }, [13, 0, 3]);
+const circleCourtPlan = clone(circleWingPlan);
+for (const room of circleCourtPlan.levels[0].rooms) room.required = false;
+circleCourtIntrusion.wings.push({
+  id: 'circle-probe', plan: circleCourtPlan,
+  frame: { origin: [circleTarget[0] - circleLocalWorld[0], 0,
+    circleTarget[1] - circleLocalWorld[2]], yawDeg: -135 },
+});
+expectInvalid(circleCourtIntrusion, /courtyards\.inner-court.*circle-probe:occupied:room:tower/);
 
 const elevated = clone(CASTLE_SITE_ANGLED_STUDY);
 elevated.wings[1] = {

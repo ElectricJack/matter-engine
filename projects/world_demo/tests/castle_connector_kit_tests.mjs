@@ -11,6 +11,7 @@ const connectorUrl = `data:text/javascript;base64,${Buffer.from(
   connectorSource + '\n//# sourceURL=castle_connector_kit.test.mjs').toString('base64')}`;
 const {
   connectorChildVariants,
+  connectorClearanceVolumes,
   connectorCollisionEntities,
   connectorRecipes,
   connectorSolidVolumes,
@@ -248,6 +249,21 @@ assert.ok(Math.abs(floorArea - polygonArea(canonical.clearPolygon)) < 1e-6,
   'floor collider prisms support exactly the clipped connector polygon');
 assert.ok(floorVolumes.every(volume => volume.polygon.every(point =>
   insideConvex(canonical.clearPolygon, point))), 'no floor piece grows outside the opening');
+
+const tallerEnclosure = clone(canonical);
+tallerEnclosure.id = 'taller-enclosure';
+tallerEnclosure.height = 4;
+tallerEnclosure.clearHeight = 3.2;
+const tallerVolumes = connectorSolidVolumes(tallerEnclosure, params);
+assert.ok(tallerVolumes.filter(volume => volume.kind === 'wall').every(volume =>
+  Math.abs(volume.topY - 4) < EPSILON), 'wall solids rise to optional enclosure height');
+assert.equal(connectorClearanceVolumes(tallerEnclosure)[0].topY, 3.2,
+  'walk clearance remains capped by physical portal headroom');
+const tallerPart = new RecordingPart();
+const tallerEmitted = emitConnector(tallerPart, tallerEnclosure, params);
+assert.ok(tallerEmitted.roofFacets.every(facet =>
+  Math.abs(facet[0][1] - 4) < EPSILON && Math.abs(facet[1][1] - 4) < EPSILON),
+  'roof eaves use enclosure height without overstating route headroom');
 
 const collision = connectorCollisionEntities(canonical, { prefix: 'fixture:' });
 assert.equal(collision.length, volumes.length, 'each declared solid has exactly one collider');
