@@ -33,8 +33,11 @@ shot $shots/${prefix}_interior-arch.png
 "@
 }
 
+# A cold cache bakes ~100 voxel stone variants: wait for bake.finished
+# BEFORE wait_idle (wait_idle only releases once the bake is done).
 $timeline = @"
-wait_idle 2 90
+wait_event bake.finished 900
+wait_idle 2 120
 set viewer.budget.pixel_budget 2
 render_path raster
 wait_frames 30
@@ -49,7 +52,7 @@ $timelineFile = Join-Path $OutputDir 'capture.timeline'
 & py -3 (Join-Path $root 'MatterEngine3\tools\drive.py') `
     --world CastleMasonry --timeline $timelineFile --out-dir (Join-Path $OutputDir 'run') `
     --editor (Join-Path $root 'MatterEditor\build\windows-msvc\editor.exe') `
-    --timeout 240 --hide-ui --env MATTER_IMPOSTOR=0 `
+    --timeout 1500 --hide-ui --env MATTER_IMPOSTOR=0 `
     --env MATTER_WINDOW_WIDTH=1400 --env MATTER_WINDOW_HEIGHT=1000
 if ($LASTEXITCODE -ne 0) { throw "Editor capture failed: $LASTEXITCODE" }
 $log = Get-Content (Join-Path $OutputDir 'run\log.txt') -Raw
