@@ -419,9 +419,45 @@ function yRangesOverlap(a, b) {
 
 function validateWingOverlap(wings) {
   const volumes = wings.flatMap(wingRoomVolumes);
-  for (let i = 0; i < volumes.length; ++i) for (let j = i + 1; j < volumes.length; ++j) {
+  // Reject disjoint whole wings before comparing their individual metre cells.
+  // Circles use their analytic extents: the display polygon is inscribed and
+  // must never shrink the broadphase around a rotated round room.
+  const groups = new Map();
+  volumes.forEach((volume, index) => {
+    let group = groups.get(volume.wing);
+    if (!group) {
+      group = { indices: [], minX: Infinity, maxX: -Infinity,
+        minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
+      groups.set(volume.wing, group);
+    }
+    group.indices.push(index);
+    const points = volume.shape === 'circle'
+      ? [[volume.center[0] - volume.radius, volume.center[1] - volume.radius],
+        [volume.center[0] + volume.radius, volume.center[1] + volume.radius]]
+      : volume.polygon;
+    for (const point of points) {
+      group.minX = Math.min(group.minX, point[0]); group.maxX = Math.max(group.maxX, point[0]);
+      group.minZ = Math.min(group.minZ, point[1]); group.maxZ = Math.max(group.maxZ, point[1]);
+    }
+    group.minY = Math.min(group.minY, volume.minY); group.maxY = Math.max(group.maxY, volume.maxY);
+  });
+  const candidates = new Map();
+  for (const [id, a] of groups) {
+    const indices = [];
+    for (const [otherId, b] of groups) {
+      if (id === otherId || !yRangesOverlap(a, b)) continue;
+      if (a.maxX < b.minX - EPSILON || b.maxX < a.minX - EPSILON ||
+          a.maxZ < b.minZ - EPSILON || b.maxZ < a.minZ - EPSILON) continue;
+      indices.push(...b.indices);
+    }
+    // Keep the old i/j visitation order so even multiple errors identify the
+    // same first conflicting pair. Narrowphase/tolerances remain unchanged.
+    candidates.set(id, indices.sort((a, b) => a - b));
+  }
+  for (let i = 0; i < volumes.length; ++i) for (const j of candidates.get(volumes[i].wing)) {
+    if (j <= i) continue;
     const a = volumes[i], b = volumes[j];
-    if (a.wing === b.wing || !yRangesOverlap(a, b)) continue;
+    if (!yRangesOverlap(a, b)) continue;
     if (roomVolumesOverlap(a, b))
       fail('wings', `positive-area overlap between ${a.id} and ${b.id}`);
   }
