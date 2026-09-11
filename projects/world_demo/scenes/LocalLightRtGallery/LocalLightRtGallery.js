@@ -4,6 +4,11 @@ import { defineCastleMaterials } from 'shared-lib/castle_materials';
 // hit lighting.  Every source has a finite range and requests traced visibility;
 // authored sun/sky are black so a capture cannot accidentally pass on ambient.
 const M = defineCastleMaterials('LocalLightRtGallery');
+const POM_LOCAL_GROUND = defineMaterial('LocalLightRtPomGround', {
+  albedo: [0.34, 0.32, 0.28],
+  roughness: 0.95,
+  detail: 'ForestFloor',
+});
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 const POINTS = Object.freeze([
@@ -67,6 +72,7 @@ export function localLightRtGalleryRoots(emissiveProxy = true) {
       iron: M.iron,
       gold: M.gold,
       clearGlass: M.clearGlass,
+      pomGround: POM_LOCAL_GROUND,
     },
     transform: [...IDENTITY],
   }];

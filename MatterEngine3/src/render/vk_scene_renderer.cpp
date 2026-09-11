@@ -2455,8 +2455,14 @@ bool VkSceneRenderer::wireframe_available() const noexcept {
 
 void VkSceneRenderer::set_ray_tracing_settings(
     const matter::VulkanRayTracingSettings& settings) {
-    if (ray_tracing_settings_.enabled != settings.enabled)
+    if (ray_tracing_settings_.enabled != settings.enabled) {
         gi_history_reset_pending_ = true;
+        // RT enablement also changes who owns primary local direct (raster or
+        // traced). Whole-frame temporal upscaling must not reuse the previous
+        // owner's lighting, even though the GI histories have their own reset.
+        dlss_history_reset_pending_ = true;
+        temporal_history_changed_ = true;
+    }
     ray_tracing_settings_ = settings;
     ray_tracing_settings_.samples =
         std::max(1u, std::min(settings.samples, 16u));
@@ -5334,6 +5340,33 @@ void VkSceneRenderer::probe_skin_raster_draws(
                 draw.local_vertex_base,
                 draw.local_vertex_base + draw.vertex_count);
     }
+}
+
+struct LocalDirectReadbackRecord {
+    matter::VkImageResource* image;
+    VkBuffer destination;
+    uint32_t x;
+    uint32_t y;
+};
+
+void record_local_direct_readback(VkCommandBuffer command_buffer,
+                                  void* user_data) {
+    const auto& record =
+        *static_cast<LocalDirectReadbackRecord*>(user_data);
+    transition_for_use(command_buffer, *record.image,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageOffset = {static_cast<int32_t>(record.x),
+                        static_cast<int32_t>(record.y), 0};
+    copy.imageExtent = {1, 1, 1};
+    vkCmdCopyImageToBuffer(command_buffer, record.image->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           record.destination, 1, &copy);
 }
 
 // Uploads this frame's skin arenas (source vertices, influences, both joint
@@ -14863,11 +14896,12 @@ bool VkSceneRenderer::emit_ray_instances(
 }
 
 // Writes the RT descriptor set from current renderer state and records up to
-// two traces plus the denoisers: the shadow raygen at the full trace extent,
-// then (when GI is enabled) the lighting raygen at raw_diffuse_extent_, then
-// record_gi_temporal + record_gi_atrous.
+// three traces plus the denoisers: the shadow raygen at the full trace extent,
+// the full-resolution local-direct lighting raygen when local lights exist,
+// then (when GI is enabled) the lighting raygen at raw_diffuse_extent_, followed
+// by record_gi_temporal + record_gi_atrous.
 //
-// The whole 21-write descriptor array is rebuilt every frame rather than
+// The whole 22-write descriptor array is rebuilt every frame rather than
 // patched, so a tileset slot load or a VT state change needs no separate "on
 // change" write for the RT set -- and bindings 15-19 are built from exactly
 // the same live/dummy state write_vt_descriptors_for_frame() uses, so a ray
@@ -15201,10 +15235,20 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         gi.water_animation_time_seconds = water_animation_time_seconds_;
         const uint32_t local_shadow_samples =
             atmosphere_replay_constants_.rt_shadow_samples & 0xffffu;
+        // The raygen needs both the dispatch kind and the actual scene GI
+        // state. In particular, primary local-direct is a separate full-rate
+        // dispatch even when GI is enabled, but glass weighting must match the
+        // transmission lane that composite will consume later in the frame.
+        constexpr uint32_t kGiDispatchBit = 0x80000000u;
+        constexpr uint32_t kLocalDirectDispatchBit = 0x40000000u;
+        constexpr uint32_t kSceneGiEnabledBit = 0x20000000u;
+        const uint32_t scene_gi_state =
+            gi_settings_.enabled ? kSceneGiEnabledBit : 0u;
         const VkStridedDeviceAddressRegionKHR gi_raygen{
             rt_sbt_lighting_raygen_address_, handle_stride, handle_stride};
         if (trace_local_direct) {
-            gi.shadow_samples = local_shadow_samples | 0x40000000u;
+            gi.shadow_samples = local_shadow_samples |
+                                kLocalDirectDispatchBit | scene_gi_state;
             vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi),
                                &gi);
@@ -15226,7 +15270,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         if (gi_settings_.enabled) {
             write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, false,
                                 rt_frame_slot);
-            gi.shadow_samples = local_shadow_samples | 0x80000000u;
+            gi.shadow_samples = local_shadow_samples |
+                                kGiDispatchBit | scene_gi_state;
             vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi),
                                &gi);
@@ -17554,6 +17599,49 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                 sizeof(transmission_aux_half));
     pixel.transmission_aux = {half_to_float(transmission_aux_half[0]),
                               half_to_float(transmission_aux_half[1]), 0.0f};
+    return true;
+}
+
+bool VkSceneRenderer::readback_local_direct_pixel(uint32_t x, uint32_t y,
+                                                  matter::Float4& value,
+                                                  std::string& error) {
+    error.clear();
+    value = {};
+    if (fail_if_poisoned(error)) return false;
+    if (!raster_attachments_ready_ || raw_local_direct_.image == VK_NULL_HANDLE) {
+        error = "local-direct readback is unavailable until a render completes";
+        return false;
+    }
+    if (x >= raster_extent_.width || y >= raster_extent_.height) {
+        error = "local-direct readback pixel is outside the rendered extent";
+        return false;
+    }
+    matter::VkBufferResource staging;
+    constexpr VkDeviceSize kReadbackSize = 8;
+    if (!matter::create_buffer(
+            *vulkan_, kReadbackSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            staging, error)) {
+        return false;
+    }
+    LocalDirectReadbackRecord record{&raw_local_direct_, staging.buffer, x, y};
+    std::vector<std::shared_ptr<void>> dependencies{
+        raw_local_direct_.lifetime, staging.lifetime};
+    if (!matter::submit_immediate(
+            *vulkan_, record_local_direct_readback, &record, error,
+            matter::ImmediateSubmitPhase::compute_dispatch,
+            std::move(dependencies))) {
+        return poison(error);
+    }
+    uint16_t half[4]{};
+    if (!matter::readback_buffer(*vulkan_, staging, half, sizeof(half), 0,
+                                 error)) {
+        return false;
+    }
+    value = {half_to_float(half[0]), half_to_float(half[1]),
+             half_to_float(half[2]), half_to_float(half[3])};
     return true;
 }
 
