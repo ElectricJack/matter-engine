@@ -6,6 +6,7 @@
 
 #include "version_vector.h"
 #include "part_asset_v2.h"   // fnv1a64, replace_file_atomic
+#include "matter/log.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -83,6 +84,9 @@
 //     mutex and are therefore safe from any bake thread. The reads take no lock
 //     and need none: a writer publishes by atomic rename, so a concurrent reader
 //     sees either the whole old file or the whole new one, never a torn one.
+//     On Windows a reader's open handle (or a virus scanner's) makes that rename
+//     fail for as long as it is held; replace_file_atomic retries those
+//     transient failures for ~0.5 s rather than failing the bake.
 //   * A write is READ-MERGE-WRITE of the WHOLE bundle — O(bundle bytes) per
 //     section written, several times per part per bake. That is the price of one
 //     file, and it is why the probe path exists.
@@ -329,9 +333,9 @@ inline bool write_atomic(const std::string& path, const std::vector<uint8_t>& by
     const std::string tmp = path + ".tmp";
     FILE* f = std::fopen(tmp.c_str(), "wb");
     if (!f) {
-        std::fprintf(stderr,
-                     "  part_bundle: fopen('%s','wb') failed: errno=%d (%s)\n",
-                     tmp.c_str(), errno, std::strerror(errno));
+        const int error = errno;
+        MATTER_LOGE("part_bundle", "fopen('%s','wb') failed: errno=%d (%s)",
+                    tmp.c_str(), error, std::strerror(error));
         return false;
     }
     bool ok = bytes.empty() ||
@@ -349,11 +353,24 @@ inline bool write_atomic(const std::string& path, const std::vector<uint8_t>& by
         std::remove(tmp.c_str());
         return false;
     }
-    if (!part_asset::replace_file_atomic(tmp, path)) {
-        std::fprintf(stderr,
-                     "  part_bundle: atomic replace('%s' -> '%s') failed\n",
-                     tmp.c_str(), path.c_str());
+    part_asset::FileReplaceDiagnostics replace;
+    const part_asset::FileReplaceOutcome outcome =
+        part_asset::replace_file_atomic_detailed(tmp, path, &replace);
+    if (outcome == part_asset::FileReplaceOutcome::NotReplaced) {
+        // os_error is GetLastError() on Windows, errno elsewhere.
+        MATTER_LOGE("part_bundle",
+                    "atomic replace('%s' -> '%s') failed after %u attempt(s): "
+                    "os_error=%u",
+                    tmp.c_str(), path.c_str(), replace.attempts,
+                    replace.os_error);
         std::remove(tmp.c_str());
+        return false;
+    }
+    if (outcome != part_asset::FileReplaceOutcome::ReplacedDurable) {
+        MATTER_LOGE("part_bundle",
+                    "atomic replace('%s' -> '%s') renamed but durability was "
+                    "not confirmed",
+                    tmp.c_str(), path.c_str());
         return false;
     }
     return true;

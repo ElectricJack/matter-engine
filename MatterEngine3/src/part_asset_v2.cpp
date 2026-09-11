@@ -196,6 +196,17 @@ namespace part_asset {
 
 namespace {
 bool g_test_fail_post_rename_once = false;
+ReplaceFileRetryHook g_test_retry_hook = nullptr;
+void* g_test_retry_hook_user = nullptr;
+
+#ifdef _WIN32
+// The errors a replace gets while another handle holds the target (or the
+// source) open without FILE_SHARE_DELETE. See part_asset_v2.h.
+bool is_transient_replace_error(DWORD error) {
+    return error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED ||
+           error == ERROR_LOCK_VIOLATION;
+}
+#endif
 }
 
 uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
@@ -1035,15 +1046,41 @@ void set_replace_file_atomic_test_post_rename_failure_once() {
     g_test_fail_post_rename_once = true;
 }
 
-FileReplaceOutcome replace_file_atomic_detailed(const std::string& source_path,
-                                                const std::string& target_path) {
+void set_replace_file_atomic_test_retry_hook(ReplaceFileRetryHook hook,
+                                             void* user) {
+    g_test_retry_hook = hook;
+    g_test_retry_hook_user = user;
+}
+
+FileReplaceOutcome replace_file_atomic_detailed(
+    const std::string& source_path, const std::string& target_path,
+    FileReplaceDiagnostics* diagnostics) {
+    FileReplaceDiagnostics local;
+    FileReplaceDiagnostics& d = diagnostics ? *diagnostics : local;
+    d = FileReplaceDiagnostics{};
 #ifdef _WIN32
-    if (MoveFileExA(source_path.c_str(), target_path.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0)
-        return FileReplaceOutcome::NotReplaced;
+    for (;;) {
+        ++d.attempts;
+        if (MoveFileExA(source_path.c_str(), target_path.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+            d.os_error = 0;
+            break;
+        }
+        const DWORD error = GetLastError();
+        d.os_error = static_cast<uint32_t>(error);
+        if (!is_transient_replace_error(error) ||
+            d.attempts >= kReplaceFileMaxAttempts)
+            return FileReplaceOutcome::NotReplaced;
+        if (g_test_retry_hook)
+            g_test_retry_hook(d.attempts - 1u, d.os_error, g_test_retry_hook_user);
+        Sleep(1u << (d.attempts - 1u));  // 1, 2, 4 ... 256 ms: ~0.5 s in all
+    }
 #else
-    if (std::rename(source_path.c_str(), target_path.c_str()) != 0)
+    d.attempts = 1;
+    if (std::rename(source_path.c_str(), target_path.c_str()) != 0) {
+        d.os_error = static_cast<uint32_t>(errno);
         return FileReplaceOutcome::NotReplaced;
+    }
     if (!fsync_parent_directory(target_path))
         return FileReplaceOutcome::ReplacedNotDurabilityConfirmed;
 #endif

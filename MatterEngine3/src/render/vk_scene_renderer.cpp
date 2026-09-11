@@ -2462,6 +2462,24 @@ void VkSceneRenderer::set_ray_tracing_settings(
         std::max(1u, std::min(settings.samples, 16u));
 }
 
+void VkSceneRenderer::set_gi_settings(
+    const matter::VulkanGiSettings& settings) {
+    matter::VulkanGiSettings normalized = settings;
+    normalized.max_bounces = 1u;
+    normalized.samples_per_pixel = 1u;
+    normalized.trace_scale = std::isfinite(settings.trace_scale)
+        ? std::clamp(settings.trace_scale, 0.125f, 1.0f) : 1.0f;
+    if (std::memcmp(&gi_settings_, &normalized, sizeof(normalized)) == 0)
+        return;
+    gi_settings_ = normalized;
+    gi_history_reset_pending_ = true;
+    gi_diffuse_history_reset_pending_ = true;
+    gi_reflection_history_reset_pending_ = true;
+    gi_filtered_valid_ = false;
+    dlss_history_reset_pending_ = true;
+    temporal_history_changed_ = true;
+}
+
 bool VkSceneRenderer::consume_dlss_history_reset() {
     const bool pending = dlss_history_reset_pending_;
     dlss_history_reset_pending_ = false;
@@ -2538,6 +2556,7 @@ void VkSceneRenderer::destroy_pipeline() {
     raw_specular_aux_.reset();
     raw_transmission_.reset();
     raw_transmission_aux_.reset();
+    raw_local_direct_.reset();
     vol_dummy_3d_.reset();
     for (auto& image : gi_atrous_) image.reset();
     for (auto& image : gi_spec_atrous_) image.reset();
@@ -3297,7 +3316,12 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
-                               VK_SHADER_STAGE_MISS_BIT_KHR)};
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        // Separate traced local-direct lane. It is written by the lighting
+        // raygen even when GI is disabled and sampled only when set-2 metadata
+        // publishes RayTraced ownership for this frame slot.
+        descriptor_binding(26, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
     bindings[15].descriptorCount =
         tileset::kMaxTilesetSlots * kTilesetChannelCount;
     bindings[17].descriptorCount = vt::kVtChannelCount;
@@ -3321,8 +3345,9 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     VkPipelineLayoutCreateInfo layout_info{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     const VkDescriptorSetLayout rt_sets[] = {rt_set_layout_,
-                                              environment_set_layout_};
-    layout_info.setLayoutCount = 2;
+                                              environment_set_layout_,
+                                              local_light_set_layout_};
+    layout_info.setLayoutCount = 3;
     layout_info.pSetLayouts = rt_sets;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push;
@@ -3872,7 +3897,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     vkDestroyShaderModule(device, raster_fragment, nullptr);
     vkDestroyShaderModule(device, raster_vertex, nullptr);
 
-    std::array<VkDescriptorSetLayoutBinding, 11> sampled_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 12> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
         sampled_bindings[i] = descriptor_binding(
             i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -3889,6 +3914,9 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         VK_SHADER_STAGE_FRAGMENT_BIT);
     sampled_bindings[10] = descriptor_binding(
         10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+    sampled_bindings[11] = descriptor_binding(
+        11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo sampled_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -4751,7 +4779,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 38},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
-             (132 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+              (133 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
               vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
@@ -5045,9 +5073,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
              frame_slot_count *
                  (5 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
                   vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
-            // 6 storage images: visibility, raw diffuse, raw specular +
-            // aux, raw transmission + aux (RT PBR Phase 1).
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 6},
+            // 7 storage images: visibility, raw diffuse, raw specular + aux,
+            // raw transmission + aux, and traced local direct.
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 7},
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 7},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
         VkDescriptorPoolCreateInfo rt_pool{
@@ -8279,19 +8307,18 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
                             && !test_force_rt_unavailable_
 #endif
                             ;
-    matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
-                                          &visibility_, diffuse, specular,
-                                          &material_instance_,
-                                          transmission,
-                                          vol_active ? (volumetrics_debug_view_ > 3.5f
-                                                ? &volumetrics_->cloud_density_or_dummy()
-                                                : &volumetrics_->vol_integrated())
-                                                     : &vol_dummy_3d_,
-                                          &depth_};
-    const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10};
-    VkDescriptorImageInfo image_infos[10]{};
-    VkWriteDescriptorSet writes[11]{};
-    for (uint32_t i = 0; i < 10; ++i) {
+    matter::VkImageResource* sampled[] = {
+        &albedo_, &normal_, &orm_, &visibility_, diffuse, specular,
+        &material_instance_, transmission,
+        vol_active ? (volumetrics_debug_view_ > 3.5f
+                          ? &volumetrics_->cloud_density_or_dummy()
+                          : &volumetrics_->vol_integrated())
+                   : &vol_dummy_3d_,
+        &depth_, &raw_local_direct_};
+    const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11};
+    VkDescriptorImageInfo image_infos[11]{};
+    VkWriteDescriptorSet writes[12]{};
+    for (uint32_t i = 0; i < 11; ++i) {
         image_infos[i].sampler = (i == 8) ? vol_linear_sampler_
                                           : composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
@@ -8314,13 +8341,13 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     }
     VkDescriptorBufferInfo material_info{frame.materials.buffer, 0,
                                          frame.materials.size};
-    writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[10].dstSet = frame.composite_descriptor_set;
-    writes[10].dstBinding = 7;
-    writes[10].descriptorCount = 1;
-    writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[10].pBufferInfo = &material_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
+    writes[11].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[11].dstSet = frame.composite_descriptor_set;
+    writes[11].dstBinding = 7;
+    writes[11].descriptorCount = 1;
+    writes[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[11].pBufferInfo = &material_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 12, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::update_local_light_descriptor(FrameResources& frame) {
@@ -8437,7 +8464,43 @@ bool VkSceneRenderer::upload_local_lights(FrameResources& frame,
     frame.local_light_oversized_indices = std::move(oversized);
     frame.local_light_meta = std::move(metadata);
     frame.local_light_generation = local_light_generation_;
+    frame.local_direct_owner = LocalDirectOwner::Raster;
+    frame.local_direct_lane_revision = 0;
     update_local_light_descriptor(frame);
+    return true;
+}
+
+bool VkSceneRenderer::publish_local_direct_owner(FrameResources& frame,
+                                                 LocalDirectOwner owner,
+                                                 uint64_t lane_revision,
+                                                 std::string& error) {
+    if (owner == LocalDirectOwner::RayTraced &&
+        lane_revision != local_light_revision_) {
+        error = "RT local-direct ownership requires the current light revision";
+        return false;
+    }
+    LocalLightGpuMeta meta{};
+    meta.light_count =
+        static_cast<uint32_t>(local_light_publication_.records.size());
+    meta.cell_bucket_count =
+        static_cast<uint32_t>(local_light_publication_.index.cells.size());
+    meta.oversized_light_count = static_cast<uint32_t>(
+        local_light_publication_.index.oversized_light_indices.size());
+    meta.direct_owner = static_cast<uint32_t>(owner);
+    meta.cell_size = local_light_publication_.index.cell_size;
+    meta.inverse_cell_size = meta.cell_size > 0.0f ? 1.0f / meta.cell_size : 0.0f;
+    meta.max_candidates_per_cell =
+        local_light_publication_.index.stats.max_candidates_per_cell;
+    if (!matter::upload_buffer(*vulkan_, frame.local_light_meta, &meta,
+                               sizeof(meta), 0, error)) {
+        return false;
+    }
+    frame.local_direct_owner = owner;
+    frame.local_direct_lane_revision = lane_revision;
+    if (owner == LocalDirectOwner::Raster) {
+        local_direct_owner_ = owner;
+        local_direct_lane_revision_ = lane_revision;
+    }
     return true;
 }
 
@@ -8478,6 +8541,8 @@ bool VkSceneRenderer::update_local_lights(
     }
 
     local_light_revision_ = publication.revision;
+    local_direct_owner_ = LocalDirectOwner::Raster;
+    local_direct_lane_revision_ = 0;
     ++local_light_generation_;
     if (local_light_generation_ == 0u) local_light_generation_ = 1u;
 
@@ -9994,9 +10059,10 @@ bool VkSceneRenderer::record_test_surface_ray(
     // (raw_transmission_image) as a GENERAL storage image. The post-trace
     // transitions leave that image in SHADER_READ_ONLY_OPTIMAL, so omitting it
     // here traced with a layout the descriptor contradicted. Same argument for
-    // raw_transmission_aux_ (binding 20, RT PBR Phase 1).
+    // raw_transmission_aux_ (binding 20, RT PBR Phase 1) and the local-direct
+    // output (binding 26).
     for (auto* image : {&raw_specular_, &raw_specular_aux_, &raw_transmission_,
-                        &raw_transmission_aux_})
+                        &raw_transmission_aux_, &raw_local_direct_})
         transition_for_use(frame.command_buffer, *image,
                            VK_IMAGE_LAYOUT_GENERAL,
                            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
@@ -11382,6 +11448,19 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
     // failure the frame was never submitted, so the structure's contents are
     // unknown and the slot must rebuild.
     for (FrameResources& slot : frames_) {
+        if (slot.local_direct_candidate_serial == frame_serial) {
+            if (succeeded) {
+                local_direct_owner_ = slot.local_direct_owner;
+                local_direct_lane_revision_ =
+                    slot.local_direct_lane_revision;
+            } else {
+                local_direct_owner_ = LocalDirectOwner::Raster;
+                local_direct_lane_revision_ = 0;
+                slot.local_direct_owner = LocalDirectOwner::Raster;
+                slot.local_direct_lane_revision = 0;
+            }
+            slot.local_direct_candidate_serial = 0;
+        }
         if (slot.rt_tlas_pending_serial != frame_serial) continue;
         slot.rt_tlas_pending_serial = 0;
         if (!succeeded) continue;
@@ -13567,6 +13646,12 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
     if (!upload_local_lights(selected, error)) return false;
+    // The acquired slot's previous submission has retired. Start its new use
+    // from raster ownership; only a successfully recorded direct trace for
+    // this frame may publish RayTraced again.
+    if (!publish_local_direct_owner(selected, LocalDirectOwner::Raster, 0,
+                                    error))
+        return false;
     if (!upload_water_forward_constants(selected, matrices, raster_extent_,
                                         error))
         return false;
@@ -13924,7 +14009,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
         for (auto* image : {&raw_diffuse_, &raw_specular_,
                             &raw_specular_aux_, &raw_transmission_,
-                            &raw_transmission_aux_}) {
+                            &raw_transmission_aux_, &raw_local_direct_}) {
             clear_color_image_for_use(
                 frame.command_buffer, *image, zero,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -13941,7 +14026,8 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     if (!native_trace_enabled || rt_instances_.empty()) {
         clear_visibility();
         clear_raw_diffuse();
-        return true;
+        return publish_local_direct_owner(
+            frames_[frame.frame_slot], LocalDirectOwner::Raster, 0, error);
     }
     const auto& rt_properties = vulkan_->ray_tracing_properties();
     const uint64_t dispatch_invocations =
@@ -14000,7 +14086,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     }
     if (instances_empty) {
         clear_visibility();
-        return true;
+        clear_raw_diffuse();
+        return publish_local_direct_owner(
+            frames_[frame.frame_slot], LocalDirectOwner::Raster, 0, error);
     }
     {
         PROFILE_SCOPE("rt.dispatch");
@@ -14801,6 +14889,10 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                               VK_IMAGE_LAYOUT_GENERAL,
                               VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    clear_color_image_for_use(frame.command_buffer, raw_local_direct_, gi_zero,
+                              VK_IMAGE_LAYOUT_GENERAL,
+                              VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     for (auto* specular_image : {&raw_specular_, &raw_specular_aux_,
                                  &raw_transmission_, &raw_transmission_aux_}) {
         clear_color_image_for_use(
@@ -14837,6 +14929,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                                 VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo raw_transmission_aux_info{
         VK_NULL_HANDLE, raw_transmission_aux_.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo raw_local_direct_info{
+        VK_NULL_HANDLE, raw_local_direct_.view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo part_info{selected.rt_parts.buffer, 0,
                                      selected.rt_parts.size};
     VkDescriptorBufferInfo material_info{selected.materials.buffer, 0,
@@ -14884,7 +14978,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     VkDescriptorBufferInfo vt_variants_info{
         vt_live ? vt_->variant_buffer() : vt_dummy_storage_.buffer, 0,
         vt_live ? vt_->variant_buffer_size() : VkDeviceSize{64}};
-    VkWriteDescriptorSet writes[21]{};
+    VkWriteDescriptorSet writes[22]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_write;
     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
@@ -14972,7 +15066,13 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[20].descriptorCount = 1;
     writes[20].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[20].pImageInfo = &raw_transmission_aux_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 21, writes, 0, nullptr);
+    writes[21].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[21].dstSet = rt_descriptor_sets_[frame.frame_slot];
+    writes[21].dstBinding = 26;
+    writes[21].descriptorCount = 1;
+    writes[21].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[21].pImageInfo = &raw_local_direct_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 22, writes, 0, nullptr);
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
         float to_sun_max_distance[4];
@@ -15017,11 +15117,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     vkCmdBindPipeline(frame.command_buffer,
                       VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
     const VkDescriptorSet rt_set = rt_descriptor_sets_[frame.frame_slot];
-    const VkDescriptorSet rt_sets[] = {rt_set,
-                                        frames_[frame.frame_slot].environment_descriptor_set};
+    const VkDescriptorSet rt_sets[] = {
+        rt_set, frames_[frame.frame_slot].environment_descriptor_set,
+        frames_[frame.frame_slot].local_light_descriptor_set};
     vkCmdBindDescriptorSets(frame.command_buffer,
                             VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                            rt_pipeline_layout_, 0, 2, rt_sets, 0, nullptr);
+                            rt_pipeline_layout_, 0, 3, rt_sets, 0, nullptr);
     vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                        VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(constants),
                        &constants);
@@ -15043,15 +15144,16 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
               trace_extent.width, trace_extent.height, 1);
     // End the primary/shadow zone here; the GI trace below is timed separately.
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, true, rt_frame_slot);
-    if (gi_settings_.enabled) {
-        write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, false,
-                            rt_frame_slot);
+    const bool trace_local_direct = !local_light_publication_.records.empty();
+    if (gi_settings_.enabled || trace_local_direct) {
         const VkClearColorValue dispatch_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-        clear_color_image_for_use(
-            frame.command_buffer, raw_diffuse_, dispatch_zero,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        if (gi_settings_.enabled) {
+            clear_color_image_for_use(
+                frame.command_buffer, raw_diffuse_, dispatch_zero,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        }
         struct alignas(16) GiConstants {
             GpuMat4 clip_to_world;
             float to_sun_intensity[4];
@@ -15097,16 +15199,43 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         gi.sun_size_scale =
             atmosphere_replay_constants_.rt_gi_sun_size_scale;
         gi.water_animation_time_seconds = water_animation_time_seconds_;
-        gi.shadow_samples = atmosphere_replay_constants_.rt_shadow_samples;
-        vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
-                           VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
+        const uint32_t local_shadow_samples =
+            atmosphere_replay_constants_.rt_shadow_samples & 0xffffu;
         const VkStridedDeviceAddressRegionKHR gi_raygen{
             rt_sbt_lighting_raygen_address_, handle_stride, handle_stride};
-        cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
-                  raw_diffuse_extent_.width, raw_diffuse_extent_.height, 1);
-        ++last_rt_trace_dispatches_;
-        write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, true,
-                            rt_frame_slot);
+        if (trace_local_direct) {
+            gi.shadow_samples = local_shadow_samples | 0x40000000u;
+            vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
+                               VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi),
+                               &gi);
+            cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
+                      raster_extent_.width, raster_extent_.height, 1);
+            ++last_rt_trace_dispatches_;
+            if (!publish_local_direct_owner(selected,
+                                            LocalDirectOwner::RayTraced,
+                                            local_light_revision_, error)) {
+                return false;
+            }
+            selected.local_direct_candidate_serial = frame.serial;
+        } else {
+            if (!publish_local_direct_owner(selected, LocalDirectOwner::Raster,
+                                            0, error)) {
+                return false;
+            }
+        }
+        if (gi_settings_.enabled) {
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, false,
+                                rt_frame_slot);
+            gi.shadow_samples = local_shadow_samples | 0x80000000u;
+            vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
+                               VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi),
+                               &gi);
+            cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
+                      raw_diffuse_extent_.width, raw_diffuse_extent_.height, 1);
+            ++last_rt_trace_dispatches_;
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, true,
+                                rt_frame_slot);
+        }
     }
     if (gi_settings_.enabled) {
         write_gpu_timestamp(frame.command_buffer, kGpuZoneDenoise, false,
@@ -15145,6 +15274,15 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                              : VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    matter::record_image_transition(
+        frame.command_buffer, raw_local_direct_,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        trace_local_direct ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR
+                           : VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        trace_local_direct ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                           : VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     matter::VkImageResource& composite_specular =
         gi_settings_.enabled && gi_filtered_valid_
             ? gi_spec_atrous_[gi_filtered_index_] : raw_specular_;
@@ -15171,7 +15309,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     std::vector<std::shared_ptr<void>> retained{visibility_.lifetime,
         raw_diffuse_.lifetime, raw_specular_.lifetime,
         raw_specular_aux_.lifetime, raw_transmission_.lifetime,
-        raw_transmission_aux_.lifetime,
+        raw_transmission_aux_.lifetime, raw_local_direct_.lifetime,
         composite_specular.lifetime, composite_transmission.lifetime,
         selected.rt_instances.lifetime, selected.rt_scratch.lifetime,
         selected.rt_tlas_scratch.lifetime,
@@ -15385,6 +15523,7 @@ bool VkSceneRenderer::record_cull_and_render(
         opaque_hdr_.lifetime, opaque_depth_.lifetime,
         selected.water_forward_constants.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
+        raw_local_direct_.lifetime,
         raw_specular_.lifetime, raw_specular_aux_.lifetime,
         raw_transmission_.lifetime, raw_transmission_aux_.lifetime,
         vol_dummy_3d_.lifetime,
@@ -15980,6 +16119,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         raw_specular_aux_.image != VK_NULL_HANDLE &&
         raw_transmission_.image != VK_NULL_HANDLE &&
         raw_transmission_aux_.image != VK_NULL_HANDLE &&
+        raw_local_direct_.image != VK_NULL_HANDLE &&
         gi_history_[0].radiance.image != VK_NULL_HANDLE &&
         gi_history_[1].radiance.image != VK_NULL_HANDLE &&
         gi_atrous_[0].image != VK_NULL_HANDLE &&
@@ -16013,6 +16153,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource raw_specular_aux;
     matter::VkImageResource raw_transmission;
     matter::VkImageResource raw_transmission_aux;
+    matter::VkImageResource raw_local_direct;
     GiHistorySet history[2];
     GiHistorySet spec_history[2];
     GiHistorySet trans_history[2];
@@ -16109,7 +16250,12 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16_SFLOAT, raw_extent,
             visibility_usage, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, raw_transmission_aux,
-            error)) {
+            error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D,
+            VK_FORMAT_R16G16B16A16_SFLOAT, extent, visibility_usage,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            raw_local_direct, error)) {
         return false;
     }
     if (!reuse_opaque_images &&
@@ -16192,6 +16338,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     raw_specular_aux_ = std::move(raw_specular_aux);
     raw_transmission_ = std::move(raw_transmission);
     raw_transmission_aux_ = std::move(raw_transmission_aux);
+    raw_local_direct_ = std::move(raw_local_direct);
     gi_history_[0] = std::move(history[0]);
     gi_history_[1] = std::move(history[1]);
     gi_spec_history_[0] = std::move(spec_history[0]);
@@ -17498,6 +17645,8 @@ void VkSceneRenderer::reset() {
     // on the next world is uploaded again rather than mistaken for a no-op.
     local_light_publication_ = {};
     local_light_revision_ = 0u;
+    local_direct_owner_ = LocalDirectOwner::Raster;
+    local_direct_lane_revision_ = 0;
     ++local_light_generation_;
     if (local_light_generation_ == 0u) local_light_generation_ = 1u;
     parts_.clear();

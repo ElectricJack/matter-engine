@@ -52,6 +52,14 @@ struct GpuPrefs {
     int dlss_mode = 0;
 };
 
+// Live session controls for separating primary local direct lighting from the
+// diffuse GI contribution. These deliberately are not persisted: they are
+// validation/tuning controls whose defaults restore the authored render.
+struct GiPrefs {
+    bool enabled = true;
+    float diffuse_multiplier = 1.0f;
+};
+
 // Index-compatible with matter::DlssMode. Capitalised because they are UI text;
 // the env/FIFO parsers match labels case-insensitively, so the long-standing
 // lower-case spellings (MATTER_DLSS_MODE=quality, `dlss quality`) still work.
@@ -212,6 +220,7 @@ public:
     // render.gpu — Scope::User. Drawn by draw_performance_panel through
     // draw_group with gpu_field_veto() attached.
     matter::props::Binding* gpu();
+    matter::props::Binding* gi();
     // The world's script-declared group, or null when the connected world
     // declares no `static props`.
     matter::props::Binding* world_props();
@@ -275,6 +284,7 @@ public:
     // RenderOptions — every frame, which is what makes both controls take
     // effect on the next frame with no reload.
     const GpuPrefs& gpu_prefs() const { return gpu_prefs_; }
+    const GiPrefs& gi_prefs() const { return gi_prefs_; }
 
     // Writes render.gpu.dlss_mode. THE single writer of the DLSS mode outside
     // the generic property paths (the panel widget and props::apply_env), so
@@ -326,8 +336,10 @@ private:
     matter::props::BindingId viewer_atmosphere_status_ =
         matter::props::kInvalidBinding;
     matter::props::BindingId gpu_ = matter::props::kInvalidBinding;
+    matter::props::BindingId gi_ = matter::props::kInvalidBinding;
     StreamingLodPrefs streaming_prefs_{};
     GpuPrefs gpu_prefs_{};
+    GiPrefs gi_prefs_{};
     GpuCapabilities gpu_caps_{};
     PropFieldVeto gpu_veto_;
     // Non-owning: the session owns it (WorldSession::world_props()).

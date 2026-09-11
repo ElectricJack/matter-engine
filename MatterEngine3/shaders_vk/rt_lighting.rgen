@@ -11,6 +11,7 @@
 #define WATER_RECORD_BINDING 25
 #include "water_surface.glsl"
 #include "environment_common.glsl"
+#include "local_lighting.glsl"
 // IMPOSTOR_IDENTITY_BIT + impostor_identity_material(). gbuffer.frag sets bit
 // 31 of the identity attachment's .x on billboard fragments, so every use of
 // it as a material index here has to mask first.
@@ -31,6 +32,10 @@ layout(set = 0, binding = 14, rgba16f) uniform image2D raw_transmission_image;
 // transmission like rough reflection (bindings 15-19 are the tileset/VT
 // mirrors declared by rt_surface_common.glsl).
 layout(set = 0, binding = 20, rg16f) uniform image2D raw_transmission_aux_image;
+// Primary local-direct radiance has its own lane so disabling diffuse GI never
+// disables point/spot lights and composite can select raster OR traced direct
+// without summing both. RGB is already BRDF/transmission weighted.
+layout(set = 0, binding = 26, rgba16f) uniform image2D raw_local_direct_image;
 layout(set = 0, binding = 6, std430) buffer LightingTestOutput {
     uint lighting_test_words[];
 };
@@ -274,13 +279,20 @@ float primary_pixel_spread(vec2 launch_uv) {
 }
 
 vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
-                  out float horizon_mean_occlusion) {
+                  out float horizon_mean_occlusion, out float roughness,
+                  out float metallic, out float transmission_weight) {
     base = vec3(0.0);
     shading_normal = surface.normal;
     horizon_mean_occlusion = 0.0;
+    roughness = 1.0;
+    metallic = 0.0;
+    transmission_weight = 0.0;
     if ((surface.flags & RT_SURFACE_VALID) == 0u) return vec3(0.0);
     if (surface.material_index >= rt_materials.length()) return vec3(0.0);
     RtMaterialGpu material = rt_materials[surface.material_index];
+    roughness = clamp(material.base_roughness.w, 0.02, 1.0);
+    metallic = clamp(material.metal_opacity_spec_coat.x, 0.0, 1.0);
+    transmission_weight = clamp(material.transmission.x, 0.0, 1.0);
     float tint_blend = clamp(surface.tint.a, 0.0, 1.0);
     base = mix(material.base_roughness.rgb, surface.tint.rgb, tint_blend);
     vec3 emission_color = mix(material.emission_strength.rgb,
@@ -293,6 +305,8 @@ vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
     if (vt_hit.applied) {
         base = vt_hit.albedo;
         shading_normal = vt_hit.normal;
+        roughness = clamp(vt_hit.roughness, 0.02, 1.0);
+        metallic = clamp(vt_hit.metallic, 0.0, 1.0);
         // VT pages carry no horizon data; tier-1 occlusion rides ORM.r and
         // WP-H's hemisphere enrichment is what will darken it.
         horizon_mean_occlusion = 0.0;
@@ -307,6 +321,8 @@ vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
     if (tileset_hit.applied) {
         base = tileset_hit.albedo;
         shading_normal = tileset_hit.normal;
+        roughness = clamp(tileset_hit.roughness, 0.02, 1.0);
+        metallic = clamp(tileset_hit.metallic, 0.0, 1.0);
         horizon_mean_occlusion = tileset_hit.mean_occlusion;
     }
     if ((material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
@@ -317,22 +333,134 @@ vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
                 constants.water_animation_time_seconds,
                 material.base_roughness.w, water_state)) {
             shading_normal = water_state.shading_normal;
+            roughness = clamp(water_state.roughness, 0.02, 1.0);
             float water_scatter = clamp(
                 water_state.optics.diffuse_scattering_weight +
                 0.35 * water_state.foam.coverage, 0.0, 1.0);
             base = mix(base * water_state.optics.transmittance,
                        water_state.optics.scattering_color, water_scatter);
+            float clear_coherent = max(
+                (1.0 - water_state.optics.reflection_weight) *
+                water_state.optics.bottom_visibility, 1.0e-5);
+            transmission_weight *= clamp(
+                water_state.optics.coherent_transmission_weight /
+                clear_coherent, 0.0, 1.0);
         }
     }
     return emission_color * max(material.emission_strength.w, 0.0) *
            constants.emission_multiplier;
 }
 
-vec3 hit_radiance(RtSurface surface, out vec3 base) {
+vec3 sample_local_light_position(LocalLightGpu light, vec3 receiver_position,
+                                 inout uint seed) {
+    float radius = max(light.color_source_radius.w, 0.0);
+    vec3 to_light = light.position_range.xyz - receiver_position;
+    if (radius <= 0.0 || dot(to_light, to_light) <= 1.0e-20)
+        return light.position_range.xyz;
+    vec3 axis = normalize(to_light);
+    vec3 tangent, bitangent;
+    basis(axis, tangent, bitangent);
+    float r = radius * sqrt(random_float(seed));
+    float phi = 6.28318530718 * random_float(seed);
+    return light.position_range.xyz +
+           r * (cos(phi) * tangent + sin(phi) * bitangent);
+}
+
+vec3 local_light_visibility(LocalLightGpu light, vec3 receiver_position,
+                            vec3 receiver_normal, inout uint seed) {
+    const uint LOCAL_LIGHT_CASTS_SHADOW = 1u << 0u;
+    if ((light.flags & LOCAL_LIGHT_CASTS_SHADOW) == 0u)
+        return vec3(1.0);
+    vec3 sampled_source = sample_local_light_position(
+        light, receiver_position, seed);
+    vec3 to_sample = sampled_source - receiver_position;
+    float distance_to_sample = length(to_sample);
+    if (!(distance_to_sample > constants.bias))
+        return vec3(1.0);
+    vec3 direction = to_sample / distance_to_sample;
+    float ray_max = max(constants.bias,
+                        distance_to_sample - constants.bias);
+    vec3 origin = receiver_position + receiver_normal * constants.bias;
+    to_sample = sampled_source - origin;
+    distance_to_sample = length(to_sample);
+    if (!(distance_to_sample > constants.bias))
+        return vec3(1.0);
+    direction = to_sample / distance_to_sample;
+    ray_max = max(constants.bias, distance_to_sample - constants.bias);
+    visibility_payload.visibility = vec3(1.0);
+    visibility_payload.layers = 0u;
+    traceRayEXT(scene,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                0x01, 0, 0, 0, origin, constants.bias, direction, ray_max, 0);
+    if (max(visibility_payload.visibility.r,
+            max(visibility_payload.visibility.g,
+                visibility_payload.visibility.b)) >= 0.01) {
+        traceRayEXT(scene, gl_RayFlagsNoneEXT, 0x02, 0, 0, 0,
+                    origin, constants.bias, direction, ray_max, 0);
+    }
+    return visibility_payload.visibility;
+}
+
+vec3 evaluate_rt_local_light(uint light_index, vec3 receiver_position,
+                             vec3 receiver_normal, vec3 geometric_normal,
+                             vec3 view_direction,
+                             vec3 albedo, float roughness, float metallic,
+                             float transmission_weight, inout uint seed) {
+    if (light_index >= local_light_counts.x)
+        return vec3(0.0);
+    LocalLightBrdf brdf = evaluate_local_light_brdf(
+        light_index, receiver_position, receiver_normal, view_direction,
+        albedo, roughness, metallic);
+    if (!any(greaterThan(brdf.diffuse + brdf.specular, vec3(0.0))))
+        return vec3(0.0);
+    LocalLightGpu light = local_lights[light_index];
+    uint visibility_samples = light.color_source_radius.w > 0.0 ? 4u : 1u;
+    vec3 visibility = vec3(0.0);
+    for (uint sample_index = 0u; sample_index < visibility_samples;
+         ++sample_index) {
+        visibility += local_light_visibility(
+            light, receiver_position, geometric_normal, seed);
+    }
+    visibility /= float(visibility_samples);
+    return (brdf.diffuse * (1.0 - clamp(transmission_weight, 0.0, 1.0)) +
+            brdf.specular) * visibility;
+}
+
+vec3 evaluate_rt_local_lighting(vec3 receiver_position, vec3 receiver_normal,
+                                vec3 geometric_normal, vec3 view_direction,
+                                vec3 albedo,
+                                float roughness, float metallic,
+                                float transmission_weight, inout uint seed) {
+    vec3 result = vec3(0.0);
+    uint offset = 0u;
+    uint count = 0u;
+    if (local_light_cell_span(receiver_position, offset, count)) {
+        for (uint candidate = 0u; candidate < count; ++candidate) {
+            result += evaluate_rt_local_light(
+                local_light_indices[offset + candidate], receiver_position,
+                receiver_normal, geometric_normal, view_direction, albedo,
+                roughness, metallic, transmission_weight, seed);
+        }
+    }
+    for (uint candidate = 0u; candidate < local_light_counts.z; ++candidate) {
+        result += evaluate_rt_local_light(
+            local_light_oversized_indices[candidate], receiver_position,
+            receiver_normal, geometric_normal, view_direction, albedo,
+            roughness, metallic, transmission_weight, seed);
+    }
+    return result;
+}
+
+vec3 hit_radiance(RtSurface surface, vec3 view_direction, inout uint seed,
+                  out vec3 base) {
     vec3 shading_normal;
     float mean_occlusion;
+    float roughness;
+    float metallic;
+    float transmission_weight;
     vec3 emission = hit_emission(surface, base, shading_normal,
-                                 mean_occlusion);
+                                 mean_occlusion, roughness, metallic,
+                                 transmission_weight);
     // Phase 2 (horizon-map lighting): hollow ground seen in reflections/GI
     // picks up hollow darkening -- baked horizon occlusion attenuates the
     // sky-irradiance term (not the sun/emission terms, which already have
@@ -348,12 +476,21 @@ vec3 hit_radiance(RtSurface surface, out vec3 base) {
     float sky_scale = 1.0 - clamp(tileset.pom_c.w, 0.0, 1.0) *
                                 mean_occlusion *
                                 clamp(tileset.pom_c.z, 0.0, 1.0);
-    return emission + rt_sky_irradiance(shading_normal) * base * sky_scale;
+    vec3 local = vec3(0.0);
+    if (surface.material_index < rt_materials.length()) {
+        local = evaluate_rt_local_lighting(
+            surface.position, shading_normal, surface.normal,
+            normalize(view_direction), base, roughness, metallic,
+            transmission_weight, seed);
+    }
+    return emission + rt_sky_irradiance(shading_normal) * base * sky_scale +
+           local;
 }
 
-vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun) {
+vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun,
+                         vec3 view_direction, inout uint seed) {
     vec3 base;
-    vec3 radiance = hit_radiance(surface, base);
+    vec3 radiance = hit_radiance(surface, view_direction, seed, base);
     vec3 sun_normal = surface.normal;
     if (surface.material_index < rt_materials.length()) {
         RtMaterialGpu sun_material = rt_materials[surface.material_index];
@@ -373,7 +510,7 @@ vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun) {
                                      ? cross(to_sun, vec3(0.0, 1.0, 0.0))
                                      : cross(to_sun, vec3(1.0, 0.0, 0.0)));
         vec3 bitangent = cross(to_sun, tangent);
-        uint sample_count = clamp(constants.shadow_samples, 1u, 16u);
+        uint sample_count = clamp(constants.shadow_samples & 0xffffu, 1u, 16u);
         vec3 visibility = vec3(0.0);
         for (uint sample_index = 0u; sample_index < sample_count;
              ++sample_index) {
@@ -458,6 +595,9 @@ void trace_walk_ray(vec3 origin, vec3 direction, float cone_width,
 
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    const bool gi_enabled = (constants.shadow_samples & 0x80000000u) != 0u;
+    const bool local_direct_enabled =
+        (constants.shadow_samples & 0x40000000u) != 0u;
     float depth;
     vec4 albedo;
     ivec2 source_extent = textureSize(depth_texture, 0);
@@ -482,11 +622,15 @@ void main() {
     const uint material_id = impostor_identity_material(identity.x);
     // Reversed-Z: far/cleared background is now 0.0 (was 1.0 under standard-Z).
     if (depth <= 0.0 || albedo.a <= 0.0 || normal_length_squared < 0.5) {
-        imageStore(raw_diffuse_image, pixel, vec4(0.0));
-        imageStore(raw_specular_image, pixel, vec4(0.0));
-        imageStore(raw_specular_aux_image, pixel, vec4(0.0));
-        imageStore(raw_transmission_image, pixel, vec4(0.0));
-        imageStore(raw_transmission_aux_image, pixel, vec4(0.0));
+        if (gi_enabled) {
+            imageStore(raw_diffuse_image, pixel, vec4(0.0));
+            imageStore(raw_specular_image, pixel, vec4(0.0));
+            imageStore(raw_specular_aux_image, pixel, vec4(0.0));
+            imageStore(raw_transmission_image, pixel, vec4(0.0));
+            imageStore(raw_transmission_aux_image, pixel, vec4(0.0));
+        }
+        if (local_direct_enabled)
+            imageStore(raw_local_direct_image, pixel, vec4(0.0));
         return;
     }
     vec3 normal = normal_sample * inversesqrt(normal_length_squared);
@@ -540,6 +684,57 @@ void main() {
                          (uint(source_pixel.y) * 0x9e3779b9u) ^
                          (constants.presented_frame_index * 0x85ebca6bu) ^
                          0xc2b2ae35u);
+    // Primary local direct is evaluated on every lighting dispatch, even when
+    // GI is disabled. Use a frame-independent seed for its single finite-area
+    // source sample so the undenoised lane remains stable across frames.
+    uint direct_seed = pcg_hash(uint(source_pixel.x) ^
+                                (uint(source_pixel.y) * 0x9e3779b9u) ^
+                                0x4f1bbcddu);
+    vec3 direct_normal = primary_water_evaluated
+        ? primary_water_state.shading_normal : normal;
+    float primary_transmission = 0.0;
+    if (material_id < rt_materials.length()) {
+        RtMaterialGpu primary_material = rt_materials[material_id];
+        primary_transmission = clamp(
+            primary_material.transmission.x, 0.0, 1.0);
+        if (primary_water_evaluated) {
+            float clear_coherent = max(
+                (1.0 - primary_water_state.optics.reflection_weight) *
+                primary_water_state.optics.bottom_visibility, 1.0e-5);
+            primary_transmission *= clamp(
+                primary_water_state.optics.coherent_transmission_weight /
+                clear_coherent, 0.0, 1.0);
+        }
+        // With GI off the transmission lane stays empty and composite uses its
+        // Fresnel fallback coverage. Match that exact weighting here because
+        // this image stores final direct radiance, not separate BRDF lobes.
+        if (!gi_enabled && primary_transmission > 0.0) {
+            float ior = max(primary_material.transmission.y, 1.001);
+            float r0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
+            vec3 primary_view = normalize(unproject(source_uv, 1.0) -
+                                          shading_world);
+            float cos_i = clamp(abs(dot(direct_normal, -primary_view)),
+                                0.0, 1.0);
+            float fresnel = r0 + (1.0 - r0) * pow(1.0 - cos_i, 5.0);
+            primary_transmission *= 1.0 - fresnel;
+        }
+    }
+    if (local_direct_enabled) {
+        vec3 primary_local_direct = evaluate_rt_local_lighting(
+            shading_world, direct_normal, direct_normal,
+            normalize(unproject(source_uv, 1.0) - shading_world), albedo.rgb,
+            clamp(orm.x, 0.02, 1.0), clamp(orm.y, 0.0, 1.0),
+            primary_transmission, direct_seed);
+        if (any(isnan(primary_local_direct)) ||
+            any(isinf(primary_local_direct)))
+            primary_local_direct = vec3(0.0);
+        imageStore(raw_local_direct_image, pixel,
+                   vec4(primary_local_direct, 1.0));
+    }
+
+    if (!gi_enabled) {
+        return;
+    }
     // WP-G: spawn the path's ray cone from the traced-pixel footprint at this
     // primary shading point (see the cone model above hit_emission).
     vec3 primary_near_world = unproject(source_uv, 1.0);
@@ -615,16 +810,30 @@ void main() {
         vec3 hit_base;
         vec3 hit_shading_normal;
         float hit_mean_occlusion_unused;
+        float hit_roughness;
+        float hit_metallic;
+        float hit_transmission;
         bool final_vertex = vertex == 1;
         // sky_irradiance approximates everything beyond the final vertex;
         // adding it at the intermediate vertex too would double count the
         // sky, so intermediate vertices contribute emission only.
-        bounce += throughput * horizon_ray_scale *
-                  (final_vertex
-                       ? hit_radiance(hit.surface, hit_base)
-                       : hit_emission(hit.surface, hit_base,
-                                      hit_shading_normal,
-                                      hit_mean_occlusion_unused));
+        vec3 hit_outgoing;
+        if (final_vertex) {
+            hit_outgoing = hit_radiance(hit.surface, -direction, seed,
+                                        hit_base);
+        } else {
+            hit_outgoing = hit_emission(
+                hit.surface, hit_base, hit_shading_normal,
+                hit_mean_occlusion_unused, hit_roughness, hit_metallic,
+                hit_transmission);
+            if (hit.surface.material_index < rt_materials.length()) {
+                hit_outgoing += evaluate_rt_local_lighting(
+                    hit.surface.position, hit_shading_normal,
+                    hit.surface.normal, -direction, hit_base, hit_roughness,
+                    hit_metallic, hit_transmission, seed);
+            }
+        }
+        bounce += throughput * horizon_ray_scale * hit_outgoing;
         hit_shading_normal = hit.surface.normal;
         if (hit.surface.material_index < rt_materials.length()) {
             RtMaterialGpu hit_material =
@@ -777,7 +986,7 @@ void main() {
                         reflected, constants.max_distance, 1);
             vec3 spec_hit_base;
             vec3 incoming = (hit.surface.flags & RT_SURFACE_VALID) != 0u
-                ? hit_radiance(hit.surface, spec_hit_base)
+                ? hit_radiance(hit.surface, -reflected, seed, spec_hit_base)
                 : reflection_environment(reflected, roughness);
             float g = ggx_g1(n_dot_v, roughness) *
                       ggx_g1(n_dot_l, roughness);
@@ -892,8 +1101,8 @@ void main() {
                     }
                     path_length += max(hit.surface.hit_t, 0.0);
                     if ((hit.surface.flags & RT_SURFACE_FRONT_FACE) != 0u) {
-                        exit_radiance = hit_radiance_sunlit(hit.surface,
-                                                            to_sun);
+                        exit_radiance = hit_radiance_sunlit(
+                            hit.surface, to_sun, -walk_dir, seed);
                         signal_t = path_length;
                         shaded = true;
                         break;
@@ -927,8 +1136,8 @@ void main() {
                         trace_walk_ray(exit_origin, exit_dir, exit_cone_width,
                                        pixel_spread);
                         if ((hit.surface.flags & RT_SURFACE_VALID) != 0u) {
-                            exit_radiance = hit_radiance_sunlit(hit.surface,
-                                                                to_sun);
+                            exit_radiance = hit_radiance_sunlit(
+                                hit.surface, to_sun, -exit_dir, seed);
                             signal_t = path_length + hit.surface.hit_t;
                         } else {
                             exit_radiance = environment_radiance(exit_dir);

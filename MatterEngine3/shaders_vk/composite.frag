@@ -41,6 +41,7 @@ const uint MATERIAL_THIN_WALLED = 1u << 0u;
 layout(set = 0, binding = 8) uniform sampler2D transmission_texture;
 layout(set = 0, binding = 9) uniform sampler3D vol_integrated_texture;
 layout(set = 0, binding = 10) uniform sampler2D depth_texture;
+layout(set = 0, binding = 11) uniform sampler2D local_direct_texture;
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -495,11 +496,19 @@ void main() {
         }
     }
     vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +
-                       raw_diffuse + local_direct.diffuse) *
+                       raw_diffuse) *
                           (1.0 - transmission_coverage) +
-                      emission + specular + local_direct.specular +
+                      emission + specular +
                       transmission.rgb * transmission_coverage +
                       glass_reflection;
+    // The RT lane is already diffuse/specular/transmission weighted. Raster
+    // keeps its two BRDF terms separate until coverage is known here. Select
+    // exactly one owner; never add unshadowed raster direct to traced direct.
+    if (local_light_counts.w == LOCAL_DIRECT_RAY_TRACED)
+        linear_hdr += texture(local_direct_texture, in_uv).rgb;
+    else
+        linear_hdr += local_direct.diffuse * (1.0 - transmission_coverage) +
+                      local_direct.specular;
 
     if (lighting.vol_enabled > 0.5) {
         float depth_sample = texture(depth_texture, in_uv).r;

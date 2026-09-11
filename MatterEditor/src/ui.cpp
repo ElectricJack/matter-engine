@@ -843,6 +843,7 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     // ALWAYS drawn.
     if (matter::props::Binding* b = props.gpu())
         draw_group(*b, nullptr, true, nullptr, &props.gpu_field_veto());
+    if (matter::props::Binding* b = props.gi()) draw_group(*b, nullptr, true);
     if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
     // Directly under Ground POM: the near band used to BE the POM band, and
     // the first question anyone reading one has about the other is how far

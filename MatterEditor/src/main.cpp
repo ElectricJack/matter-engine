@@ -6886,6 +6886,9 @@ int main() {
         // the checkbox live — see the group definition in editor_props.cpp for
         // the trace proving the renderer tolerates the flip.
         options.vulkan_ray_tracing.enabled = native_rt_enabled;
+        options.vulkan_gi.enabled = editor_props.gi_prefs().enabled ? 1u : 0u;
+        options.vulkan_gi.diffuse_multiplier =
+            editor_props.gi_prefs().diffuse_multiplier;
         // Part Workbench (W2, "modal isolation" — see part_workbench.h):
         // VulkanFrame/render() always draws the whole frame extent and
         // begin_frame() yields exactly one frame per call, so only ONE
