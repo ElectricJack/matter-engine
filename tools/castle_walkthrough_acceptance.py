@@ -88,6 +88,25 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def positive_int(value):
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError('must be a positive integer')
+    return number
+
+
+def static_buffer_reserve_env(args):
+    result = {}
+    for option, variable in (
+            ('static_vertex_reserve_mb', 'MATTER_VK_STATIC_RESERVE_VERTEX_MB'),
+            ('static_index_reserve_mb', 'MATTER_VK_STATIC_RESERVE_INDEX_MB')):
+        value = getattr(args, option, None)
+        if value is not None:
+            require(type(value) is int and value > 0, option + ' must be a positive integer')
+            result[variable] = str(value)
+    return result
+
+
 def vector(value):
     return (isinstance(value, list) and len(value) == 3 and
             all(type(v) in (int, float) and math.isfinite(v) for v in value))
@@ -394,6 +413,7 @@ class NativeSession:
 
     def launch(self):
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('MATTER_')}
+        env.update(static_buffer_reserve_env(self.args))
         env.update(MATTER_WORLD=self.args.world, MATTER_CMD_FIFO=str(self.fifo),
                    MATTER_HIDE_UI='1', MATTER_VK_VALIDATION='1',
                    MATTER_WINDOW_WIDTH='1280', MATTER_WINDOW_HEIGHT='720',
@@ -529,6 +549,7 @@ def execute(args, plan):
     session = NativeSession(args)
     result = {'status': 'failed', 'native_executed': False, 'started_ns': session.started_ns,
               'editor_sha256': sha(args.editor), 'cmake_cache_sha256': sha(cache),
+              'static_buffer_reserve_env': static_buffer_reserve_env(args),
               'manifest_sha256': plan['manifest_sha256'], 'world': args.world, 'player': args.player,
               'door_crossings': [], 'waypoint_arrivals': [], 'screenshots': []}
     try:
@@ -835,6 +856,10 @@ def main():
     parser.add_argument('--height', type=float, default=1.8)
     parser.add_argument('--radius', type=float, default=.4)
     parser.add_argument('--speed', type=float, default=4.5)
+    parser.add_argument('--static-vertex-reserve-mb', type=positive_int,
+                        help='explicit native static vertex reservation in MiB')
+    parser.add_argument('--static-index-reserve-mb', type=positive_int,
+                        help='explicit native static index reservation in MiB')
     parser.add_argument('--timeout', type=int, default=1800)
     parser.add_argument('--settle-seconds', type=float, default=5,
                         help='idle stability after completed numeric publication (default: 5 seconds)')
