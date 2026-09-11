@@ -767,7 +767,7 @@ function jointOps(node, byId) {
     if (len(axis) < 0.2) axis = Math.abs(dirR[1]) > 0.9 ? [0, 0, 1] : cross(dirR, [0, 1, 0]);
     axis = norm(axis);
     const reach = 0.5 * Math.max(R.section[0], R.section[1]) + 0.07;
-    const pegLen = (body ? memberExtent(B, axis) : Math.max(memberExtent(B, axis), memberExtent(R, axis))) + 0.024;
+    const pegLen = (body ? memberExtent(B, axis) : Math.max(memberExtent(B, axis), memberExtent(R, axis))) + 0.016;
     const centres = body ? [add(node.position, mul(body, reach))] : [node.position];
     if (body && B.joint === 2) centres.push(add(node.position, mul(body, reach + 0.09)));
     for (const c of centres)
@@ -776,12 +776,12 @@ function jointOps(node, byId) {
       const v = norm(cross(axis, body));
       const half = Math.min(0.24, len(sub(B.to, B.from)) * 0.3);
       for (const side of [-1, 1]) {
-        const face = add(add(node.position, mul(body, half * 0.8)), mul(axis, side * (memberExtent(B, axis) * 0.5 + 0.001)));
+        const face = add(add(node.position, mul(body, half + 0.01)), mul(axis, side * (memberExtent(B, axis) * 0.5 + 0.001)));
         const loop = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, w]) =>
           add(face, add(mul(body, u * half), mul(v, w * 0.034))));
         ops.push(convexPrism('joint-plate', 'iron', loop, mul(axis, side * 0.012), tag));
         const bolt = add(face, mul(body, half * 0.45));
-        ops.push(cylOp('joint-bolt', 'iron', bolt, add(bolt, mul(axis, side * 0.03)), 0.021, tag));
+        ops.push(cylOp('joint-bolt', 'iron', bolt, add(bolt, mul(axis, side * 0.018)), 0.021, tag));
       }
     }
   }
@@ -876,8 +876,14 @@ function layoutStair(ctx, stair, style) {
     members.push({ id: owner + ':' + id, role, from, to, section, owner, levelId: stair.lowerLevelId,
       source: 'stair', joint: 1, strap: 0, material: 'oak', ...extra });
   const stepYaw = (g) => (g.runAxis === 'x' ? -Math.PI / 2 : 0);
+  // Open-side stringers and balustrades stop below the destination floor's
+  // structure: above that height the trimmed floor edge flanks the flight and
+  // the stairwell guard rail takes over.
+  const upperFloor = (ctx.manifest.floors || []).find((fl) => stair.holes.length && fl.id === stair.holes[0].floorId);
+  const ceiling = upperFloor ? floorStack(ctx.manifest, upperFloor).bottom - 0.02 : Infinity;
   geoms.forEach((g, fi) => {
     const f = stair.flights[fi];
+    const clipAt = (lift) => Math.min(g.run, (ceiling - lift - f.fromY - f.riser) / g.slope);
     const cMid = (g.t0 + g.t1) * 0.5;
     for (const st of g.steps) {
       const nose = st.k === 0 ? 0 : D.nosing;
@@ -904,11 +910,13 @@ function layoutStair(ctx, stair, style) {
     sides[fi].forEach((side, si) => {
       const outward = side.outward;
       if (style === 'timber' && side.kind !== 'shared') {
-        const c = side.c + outward * D.stringerWidth * 0.5;
+        const c = side.c + outward * (D.stringerWidth * 0.5 + 0.01);
         const drop = (D.stringerHeight * 0.5) / g.cos - 0.06;
-        const d0 = D.stringerHeight * 0.5 * Math.sin(Math.atan(g.slope)) + 0.005, d1 = g.run - f.tread;
-        member('flight' + fi + ':stringer' + si, 'stringer', g.at(d0, c, g.nosing(d0) - drop), g.at(d1, c, g.nosing(d1) - drop),
-          [D.stringerWidth, D.stringerHeight], { joint: 2 });
+        const d0 = D.stringerHeight * 0.5 * Math.sin(Math.atan(g.slope)) + 0.005;
+        const d1 = Math.min(g.run - f.tread, side.kind === 'wall' ? Infinity : clipAt(0.06 + D.stringerHeight * 0.5 * Math.sin(Math.atan(g.slope))));
+        if (d1 - d0 >= 0.3)
+          member('flight' + fi + ':stringer' + si, 'stringer', g.at(d0, c, g.nosing(d0) - drop), g.at(d1, c, g.nosing(d1) - drop),
+            [D.stringerWidth, D.stringerHeight], { joint: 2 });
       }
       if (side.kind === 'open') {
         const c = side.c + outward * (D.postSection * 0.5 + 0.02);
@@ -918,8 +926,11 @@ function layoutStair(ctx, stair, style) {
           const top = [[0, w0], [g.run, w0], [g.run, w1], [0, w1]].map(([d, cc]) => g.at(d, cc, g.nosing(d) + D.railHeight));
           ctx.op(owner, loopShell('parapet', 'stone2', bottom, top, { flightId: f.id }));
         } else {
-          const count = Math.max(2, Math.ceil(g.run / 1.5) + 1);
-          const ins = D.postSection * 0.5 + 0.01, span = g.run - 2 * ins;
+          const ins = D.postSection * 0.5 + 0.01;
+          const end = Math.min(g.run - ins, clipAt(D.railHeight + 0.08));
+          const span = end - ins;
+          if (span < 0.4) return;
+          const count = Math.max(2, Math.ceil(span / 1.5) + 1);
           const base = (d) => g.nosing(d) - (D.stringerHeight * 0.5) / g.cos + 0.06;
           const rail = (d, h) => g.at(d, c, g.nosing(d) + h);
           for (let i = 0; i < count; ++i) {
@@ -927,8 +938,8 @@ function layoutStair(ctx, stair, style) {
             member('flight' + fi + ':post' + si + ':' + i, i === 0 || i === count - 1 ? 'newel' : 'baluster-post',
               g.at(d, c, base(d)), g.at(d, c, g.nosing(d) + D.railHeight + 0.06), [D.postSection, D.postSection]);
           }
-          member('flight' + fi + ':rail' + si, 'handrail', rail(ins, D.railHeight), rail(g.run - ins, D.railHeight), [D.railSection, D.railSection]);
-          member('flight' + fi + ':midrail' + si, 'mid-rail', rail(ins, D.railHeight * 0.5), rail(g.run - ins, D.railHeight * 0.5), [D.railSection, D.railSection]);
+          member('flight' + fi + ':rail' + si, 'handrail', rail(ins, D.railHeight), rail(end, D.railHeight), [D.railSection, D.railSection]);
+          member('flight' + fi + ':midrail' + si, 'mid-rail', rail(ins, D.railHeight * 0.5), rail(end, D.railHeight * 0.5), [D.railSection, D.railSection]);
         }
       } else if (side.kind === 'wall') {
         const c = side.c + outward * 0.05;
@@ -958,7 +969,18 @@ function layoutStair(ctx, stair, style) {
   });
   for (const landing of stair.landings) layoutLanding(ctx, stair, style, landing, geoms, member);
   layoutStairwellRails(ctx, stair, member);
-  for (const m of members) ctx.member(m);
+  // Newels of two flights meeting at a turn become one post spanning both.
+  const kept = [];
+  for (const m of members) {
+    const vertical = /newel|baluster-post/.test(m.role) && Math.abs(m.from[0] - m.to[0]) < EPS && Math.abs(m.from[2] - m.to[2]) < EPS;
+    const twin = vertical && kept.find((k) => /newel|baluster-post/.test(k.role) &&
+      Math.hypot(k.from[0] - m.from[0], k.from[2] - m.from[2]) < D.postSection);
+    if (!twin) { kept.push(m); continue; }
+    twin.from = [twin.from[0], Math.min(twin.from[1], m.from[1]), twin.from[2]];
+    twin.to = [twin.to[0], Math.max(twin.to[1], m.to[1]), twin.to[2]];
+    twin.role = 'newel';
+  }
+  for (const m of kept) ctx.member(m);
 }
 function layoutLanding(ctx, stair, style, landing, geoms, member) {
   if (landing.kind === 'lower') return;
@@ -1017,7 +1039,7 @@ function layoutLanding(ctx, stair, style, landing, geoms, member) {
 function guardRail(member, id, e, a0, a1, c, top, postBase) {
   const at = (a, y) => (e.dir === 'x' ? [a, y, c] : [c, y, a]);
   const count = Math.max(2, Math.ceil((a1 - a0) / 1.5) + 1);
-  const inset = 0.07;
+  const inset = D.postSection * 0.5 + 0.04;
   for (let i = 0; i < count; ++i) {
     const a = a0 + inset + (a1 - a0 - 2 * inset) * i / (count - 1);
     member(id + ':post' + i, 'guard-post', at(a, postBase === undefined ? top - 0.1 : postBase),
