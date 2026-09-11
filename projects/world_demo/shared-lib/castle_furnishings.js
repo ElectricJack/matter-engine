@@ -1385,9 +1385,12 @@ function pointedArchBars(part, x0, x1, y, inset, width, depth) {
   const radius = span - inset;
   const rise = Math.sqrt(Math.max(0, radius * radius - (span / 2) * (span / 2)));
   const theta = Math.atan2(rise, span / 2);
-  // Each half is struck from the opposite springing point.
-  arcBars(part, [x0, y], radius, 0, theta, 10, width, depth);
-  arcBars(part, [x1, y], radius, Math.PI, Math.PI - theta, 10, width, depth);
+  // Each half is struck from the opposite springing point. Chords of at most
+  // 60 mm keep the sagitta under 1 mm even on 3 m windows, so the bar never
+  // pulls inside the curve that the glazing rows are clipped against.
+  const segments = Math.max(10, Math.ceil(radius * theta / 0.06));
+  arcBars(part, [x0, y], radius, 0, theta, segments, width, depth);
+  arcBars(part, [x1, y], radius, Math.PI, Math.PI - theta, segments, width, depth);
 }
 
 // Lancet bar centrelines of light i: jamb-bar centre or mullion centre.
@@ -1530,7 +1533,8 @@ export function emitWindowGlazing(part, input) {
     }
     if (L.oculus) {
       const c = [0, L.oculus.y];
-      arcBars(part, c, L.oculus.radius, 0, TAU, 20, mw, bd * 0.9);
+      arcBars(part, c, L.oculus.radius, 0, TAU,
+        Math.max(20, Math.ceil(L.oculus.radius * TAU / 0.06)), mw, bd * 0.9);
       for (let i = 0; i < 4; ++i) {
         const a = Math.PI / 4 + i * Math.PI / 2;
         const fr = L.oculus.radius * 0.42;
