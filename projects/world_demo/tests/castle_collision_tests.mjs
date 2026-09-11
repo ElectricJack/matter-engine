@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { compilePlan } from "../shared-lib/castle_plan.js";
 import { castleCollisionEntities } from "../shared-lib/castle_collision.js";
 
 const close = (a, b) => Math.abs(a - b) < 1e-7;
@@ -420,3 +421,28 @@ assert.throws(() => castleCollisionEntities(badFlight), /destination/);
 console.log(
   `castle_collision_tests: PASS (${stairBodies.length} U-stair bodies; ${curveBodies.length} curved fixture bodies)`,
 );
+
+// Compiler-produced arch bays include solid whole-edge jamb modules. Preserve
+// those solids without mistaking genuinely lost aperture records for jambs.
+const jambManifest = compilePlan({id:'jamb-regression',seed:1,entryRoomId:'hall',levels:[
+  {id:'g',baseY:0,height:4,rooms:[{id:'hall',use:'hall',rect:{x:0,z:0,width:8,depth:8}}],
+   edgeOverrides:[{id:'entry',from:[2,0],to:[6,0],kind:'arch',connects:['hall','outside'],
+     opening:{offset:1,width:2,bottom:0,height:2.8}}]}]});
+const jambModule = jambManifest.wallModules.find(m=>m.kind==='arch'&&!m.apertures.length);
+assert.ok(jambModule,'regression actually exercises a pure-jamb arch module');
+const jambBodies = castleCollisionEntities(jambManifest);
+assert.ok(blocked(jambBodies,[2.5,1,0]));
+assert.ok(blocked(jambBodies,[5.5,1,0]));
+assert.equal(blocked(jambBodies,[4,1,0]),false);
+assert.ok(blocked(jambBodies,[4,3.5,0]));
+const lostOpening = structuredClone(jambManifest);
+const apertureModule = lostOpening.wallModules.find(m=>m.apertures.length);
+apertureModule.apertures=[]; apertureModule.apertureIds=[]; apertureModule.ownsAperture=false;
+assert.throws(()=>castleCollisionEntities(lostOpening),/no aperture extents/,
+  'source edges exposing a real aperture prohibit filling it as a solid jamb');
+const contradictory = structuredClone(jambManifest);
+const overlap = contradictory.walls.find(w=>w.openings.length).openings[0];
+overlap.globalStart=0;
+assert.throws(()=>castleCollisionEntities(contradictory),/no aperture extents/,
+  'sibling global aperture overlapping a claimed jamb is an invalid manifest');
+console.log('castle_collision_tests: compiler pure-jamb solids and missing/contradictory aperture ownership passed');

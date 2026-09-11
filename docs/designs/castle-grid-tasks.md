@@ -11,6 +11,8 @@ Astra owns final assembly; its two queue tasks are paused to reserve them for th
 - `clear-apex.3` — Assemble wall modules, openings, corners and curved masonry. Dependencies: clear-apex.1, clear-apex.2.
 - `clear-apex.4` — Build grid floors, connected timber, stairs and roofs. Dependencies: clear-apex.1, clear-apex.2.
 - `clear-apex.5` — Create furnished interiors, gold/glass details and light fixtures. Dependencies: clear-apex.2.
+- `clear-apex.6` — Compose rotated local grid wings, portal sockets, polygon vestibules and global routes. Codex; angled-site extension.
+- `clear-apex.7` — Detailed clipped connector floors, roofs and angled brick joints. Codex; related to clear-apex.6 for parallel API development.
 
 ## swift-flare: Castle lighting: many point/spot lights in raster and ray-traced GI
 
@@ -32,7 +34,14 @@ Source graph documents and creation/validation responses: `build/qa/castle-grid/
 Workers are explicitly encouraged to use subagents for independent work.
 `clear-apex.3` and `.4` use Claude standard-high; `.5` uses Claude
 standard-medium. The other seven leaf tasks (including Astra integration)
-remain Codex: a 70/30 split by task count.
+remain Codex: initially a 70/30 split by task count. The two user-requested
+angled-site tasks also use Codex, bringing the current split to 9 Codex and
+3 standard Claude leaf tasks (including Astra integration).
+
+The user requested 15/30/45-degree layouts after reviewing actual courtyard
+masonry. [Angled-site specification](castle-angled-sites.md) defines the
+extension and architectural references. The rectangular scenes remain component
+studies; final acceptance requires irregular connected sites.
 
 Scheduling refinement: furniture task `clear-apex.5` consumes the already pushed
 primitive API at `7facdb36` while `clear-apex.2` completes additional visual
