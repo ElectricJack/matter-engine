@@ -12,7 +12,7 @@ class CastleStructureFixturePart extends Part {
   static noImpostor = true;
   static params = {
     manifestId: '', recordKind: 'floor', recordId: '', recordIndex: 0,
-    seed: 0, detail: 1, stairStyle: 0,
+    seed: 0, detail: 1, stairStyle: 0, layer: 0,
     // matStone0..3, matFoundation, matMortar, matOak, matOakEnd, matIron,
     // matSlate, matTerracotta, matPlaster -- engine built-in fallbacks.
     ...structureMaterialParams(),

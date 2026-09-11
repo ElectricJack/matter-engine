@@ -17,6 +17,12 @@
 //   buildTimberGraph(manifest, options)           deduplicated members/nodes/joints
 //   structureSolidVolumes / structureClearanceVolumes / validateStructure
 //
+// Layers: structureRecipes() emits up to two World roots per record that share
+// one transform: a mesh root (params.layer 1: slabs, tiles, joints, shells) and
+// a children root (params.layer 2, expand:true) whose CastleStone/CastleBeam/
+// CastlePlank placements become world instances instead of being flattened
+// into the record's part. layer 0 (or omitted) emits everything in one part.
+//
 // Wrapper pattern (params stay scalar; the manifest is closed over):
 //   class MyCastleStructure extends Part {
 //     static noImpostor = true;
@@ -1243,6 +1249,8 @@ function layoutRoof(ctx, roof) {
 const KIND_ORDER = { floor: 0, stair: 1, roof: 2, frame: 3 };
 const LAYOUT_CACHE = new WeakMap();
 const STAIR_STYLE_CODE = { auto: 0, stone: 1, timber: 2 };
+export const STRUCTURE_LAYER = Object.freeze({ all: 0, mesh: 1, children: 2 });
+function layerOf(params) { const v = num(params && params.layer, 0); return v === 1 || v === 2 ? v : 0; }
 
 function checkManifest(manifest) {
   if (!manifest || manifest.schema !== 'matter.castle-manifest/v1')
@@ -1416,15 +1424,22 @@ export function structureRecipes(manifest, options = {}) {
   const mats = options.materials
     ? ('matOak' in options.materials ? { ...options.materials } : structureMaterialParams(options.materials)) : {};
   const offset = options.offset || [0, 0, 0];
-  return layout.records.filter((r) => r.ops.length).map((r) => ({
-    module: options.module || 'CastleStructure',
-    params: { manifestId: manifest.planId, recordKind: r.kind, recordId: r.id, recordIndex: r.index,
-      seed: manifest.seed || 0, detail: num(options.detail, 1), stairStyle: STAIR_STYLE_CODE[layout.stairStyle], ...mats },
-    transform: [1, 0, 0, r.anchor[0] + offset[0], 0, 1, 0, r.anchor[1] + offset[1], 0, 0, 1, r.anchor[2] + offset[2], 0, 0, 0, 1],
-  }));
+  const module = options.module || 'CastleStructure';
+  const out = [];
+  for (const r of layout.records) {
+    if (!r.ops.length) continue;
+    const params = { manifestId: manifest.planId, recordKind: r.kind, recordId: r.id, recordIndex: r.index,
+      seed: manifest.seed || 0, detail: num(options.detail, 1), stairStyle: STAIR_STYLE_CODE[layout.stairStyle], ...mats };
+    const transform = [1, 0, 0, r.anchor[0] + offset[0], 0, 1, 0, r.anchor[1] + offset[1], 0, 0, 1, r.anchor[2] + offset[2], 0, 0, 0, 1];
+    if (options.split === false) { out.push({ module, params: { ...params, layer: 0 }, transform }); continue; }
+    if (r.ops.some((op) => op.op !== 'child')) out.push({ module, params: { ...params, layer: 1 }, transform: transform.slice() });
+    if (r.ops.some((op) => op.op === 'child')) out.push({ module, params: { ...params, layer: 2 }, transform: transform.slice(), expand: true });
+  }
+  return out;
 }
 export function structureChildVariants(manifest, params) {
   const record = resolveRecord(manifest, params);
+  if (layerOf(params) === STRUCTURE_LAYER.mesh) return [];
   const seen = new Map();
   for (const op of record.ops) {
     if (op.op !== 'child') continue;
@@ -1442,10 +1457,12 @@ function applyOpFrame(part, frame) {
 }
 export function emitStructure(part, manifest, params) {
   const record = resolveRecord(manifest, params);
+  const layer = layerOf(params);
   const triangles = typeof SHAPE !== 'undefined' ? SHAPE.triangles : 0;
   part.pushMatrix();
   part.translate(-record.anchor[0], -record.anchor[1], -record.anchor[2]);
   for (const op of record.ops) {
+    if (op.op === 'child' ? layer === STRUCTURE_LAYER.mesh : layer === STRUCTURE_LAYER.children) continue;
     if (op.op === 'child') {
       part.pushMatrix();
       applyOpFrame(part, op.frame);

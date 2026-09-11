@@ -566,6 +566,26 @@ function section7() {
     assert.throws(() => S.emitStructure(new RecordingPart(), manifest, { ...sample.params, manifestId: 'not-a-real-manifest' }),
       name + ': emitStructure did not throw on a mismatched manifestId');
   }
+  // Layers: each record yields a mesh root and an expand:true children root;
+  // the children root places only children and the mesh root none.
+  for (const [name, manifest] of MANIFESTS) {
+    for (const recipe of S.structureRecipes(manifest, { module: 'CastleStructureFixturePart' })) {
+      const calls = { child: 0, geometry: 0 };
+      const probe = new Proxy({}, { get: (_, key) => (...args) => {
+        if (key === 'placeChild') calls.child++;
+        else if (['box', 'cylinder', 'vertex'].includes(key)) calls.geometry++;
+      } });
+      S.emitStructure(probe, manifest, recipe.params);
+      if (recipe.params.layer === S.STRUCTURE_LAYER.children) {
+        assert.equal(recipe.expand, true, name + ': children root must expand');
+        assert.ok(calls.child > 0 && calls.geometry === 0, name + ': children root ' + recipe.params.recordId + ' emits geometry');
+      } else {
+        assert.equal(recipe.params.layer, S.STRUCTURE_LAYER.mesh, name + ': unexpected layer');
+        assert.ok(!recipe.expand && calls.child === 0 && calls.geometry > 0, name + ': mesh root ' + recipe.params.recordId + ' places children');
+        assert.deepEqual(S.structureChildVariants(manifest, recipe.params), [], name + ': mesh root declares children');
+      }
+    }
+  }
   console.log('  section 7 (emission): OK');
 }
 
