@@ -85,6 +85,7 @@ function fnv(text) {
 }
 function round6(v) { return Math.round(v * 1e6) / 1e6; }
 function snap(v, q) { return round6(Math.round(v / q) * q); }
+function floorTo(v, q) { return round6(Math.floor(v / q + 1e-6) * q); }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function num(v, fallback) { return typeof v === 'number' && Number.isFinite(v) ? v : fallback; }
 function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
@@ -461,8 +462,8 @@ function layFlags(ctx, owner, region, axis, top, seedText) {
   const H = D.flagThickness, J = D.flagJoint;
   forEachCourse(region, axis, D.flagCourse, seedText, [0.55, 0.65, 0.75, 0.85], 0.22, (s, e, c0, c1) => {
     const gross = e - s, width = c1 - c0;
-    const seed = fnv(seedText + ':' + snap(s, 0.01) + ':' + snap(c0, 0.01)) % 6;
-    const length = snap(gross - J, 0.05), depth = snap(width - J, 0.02);
+    const seed = fnv(seedText + ':' + snap(s, 0.01) + ':' + snap(c0, 0.01)) % 4;
+    const length = floorTo(gross - J, 0.05), depth = floorTo(width - J, 0.02);
     const frame = surfaceFrame(axis, (s + e) * 0.5, (c0 + c1) * 0.5, top - H);
     if (length >= 0.18 && depth >= 0.16) ctx.op(owner, stoneChild('flag', length, H, depth, seed, frame));
     else if (gross > J && width > J) ctx.op(owner, boxOp('flag-sliver', stoneKey(seed),
@@ -473,8 +474,8 @@ function layPlanks(ctx, owner, region, axis, top, seedText) {
   const T = D.plankThickness, G = D.plankGap;
   forEachCourse(region, axis, D.plankCourse, seedText, [2.0, 2.5, 3.0, 3.5, 4.0], 0.6, (s, e, c0, c1) => {
     const gross = e - s, width = c1 - c0;
-    const seed = fnv(seedText + ':' + snap(s, 0.01) + ':' + snap(c0, 0.01)) % 8;
-    const length = snap(gross - G, 0.05), plankWidth = snap(width - G, 0.02);
+    const seed = fnv(seedText + ':' + snap(s, 0.01) + ':' + snap(c0, 0.01)) % 4;
+    const length = floorTo(gross - G, 0.05), plankWidth = floorTo(width - G, 0.02);
     const frame = surfaceFrame(axis, (s + e) * 0.5, (c0 + c1) * 0.5, top - T * 0.5);
     if (length >= 0.3 && plankWidth >= 0.12) ctx.op(owner, plankChild('plank', length, plankWidth, T, seed, frame));
     else if (gross > G && width > G) ctx.op(owner, boxOp('plank-sliver', 'oak', [0, 0, 0],
@@ -535,10 +536,86 @@ function joistSupports(ctx, floor, region, jAxis, cy, h) {
   }
   return { members, trimmerCs, off, halfT };
 }
+// Open (unwalled) boundary runs of a floor: gallery void edges and open joins
+// to a neighbouring floor. normal is +-1 pointing out of this floor.
+function openEdges(ctx, floor, region) {
+  const runs = [];
+  for (const id of floor.openBoundaryIds || []) {
+    const ob = (ctx.manifest.openBoundaries || []).find((o) => o.id === id);
+    if (!ob) continue;
+    const otherRoom = ob.kind === 'room-open' ? ob.roomIds.find((r) => r !== floor.roomId) : null;
+    const other = otherRoom && (ctx.manifest.floors || []).find((f) => f.roomId === otherRoom && f.levelId === floor.levelId);
+    for (const hid of ob.hostEdgeIds) {
+      const w = (ctx.manifest.walls || []).find((x) => x.id === hid);
+      if (!w) continue;
+      const dir = w.from[1] === w.to[1] ? 'x' : 'z';
+      const pos = dir === 'x' ? w.from[1] : w.from[0];
+      const [a0, a1] = dir === 'x' ? [Math.min(w.from[0], w.to[0]), Math.max(w.from[0], w.to[0])] : [Math.min(w.from[1], w.to[1]), Math.max(w.from[1], w.to[1])];
+      const probe = (d) => { const [x, z] = dir === 'x' ? [(a0 + a1) / 2, pos + d] : [pos + d, (a0 + a1) / 2];
+        return region.rects.some((r) => x > r.x0 && x < r.x1 && z > r.z0 && z < r.z1); };
+      const normal = probe(-0.25) ? 1 : -1;
+      runs.push({ dir, pos, a0, a1, normal, otherFloorId: other ? other.id : null });
+    }
+  }
+  runs.sort((p, q) => (p.dir < q.dir ? -1 : p.dir > q.dir ? 1 : 0) || p.pos - q.pos || p.normal - q.normal || p.a0 - q.a0);
+  const out = [];
+  for (const e of runs) {
+    const last = out[out.length - 1];
+    if (last && last.dir === e.dir && last.pos === e.pos && last.normal === e.normal && last.otherFloorId === e.otherFloorId && Math.abs(last.a1 - e.a0) < EPS) last.a1 = e.a1;
+    else out.push({ ...e });
+  }
+  return out;
+}
+function lowerFloorTop(ctx, floor, x, z) {
+  let best = null;
+  for (const f of ctx.manifest.floors || []) {
+    if (f.elevation >= floor.elevation - EPS) continue;
+    if (!pointInRegion(floorRegion(ctx.manifest, f), x, z, false)) continue;
+    if (best === null || f.elevation > best) best = f.elevation;
+  }
+  return best;
+}
+function hitsClearance(ctx, box) {
+  if (!ctx.clearances) ctx.clearances = structureClearanceVolumes(ctx.manifest).concat((ctx.manifest.occupiedVolumes || [])
+    .filter((v) => v.kind === 'fixture-clearance' || v.kind === 'stair-clearance').map((v) => ({ id: v.id, ...v.bounds })));
+  return ctx.clearances.some((c) => overlaps(box, c));
+}
+function layEdgeBeams(ctx, floor, region, jAxis, cy, h) {
+  const tw = D.trimmerWidth, off = tw * 0.5 + 0.005;
+  const members = [], parallelCs = [], shifts = [];
+  let n = 0;
+  for (const e of openEdges(ctx, floor, region)) {
+    if (e.otherFloorId && e.otherFloorId < floor.id) { shifts.push({ ...e, shift: 0 }); continue; }
+    const pos = e.otherFloorId ? e.pos : e.pos - e.normal * off;
+    shifts.push({ ...e, shift: e.otherFloorId ? 0 : off });
+    if (e.dir === jAxis) parallelCs.push(pos);
+    const from = e.dir === 'x' ? [e.a0, cy, pos] : [pos, cy, e.a0];
+    const to = e.dir === 'x' ? [e.a1, cy, pos] : [pos, cy, e.a1];
+    const id = floor.id + ':edge-beam:' + n++;
+    members.push({ id, role: 'edge-beam', from, to, section: [tw, h] });
+    if (e.otherFloorId) continue;
+    // Long void edges get posts down to the floor below where they block
+    // no clearance (a gallery over a hall).
+    const count = Math.ceil((e.a1 - e.a0) / 4.5) - 1;
+    for (let i = 1; i <= count; ++i) {
+      const a = e.a0 + (e.a1 - e.a0) * i / (count + 1);
+      const [x, z] = e.dir === 'x' ? [a, pos] : [pos, a];
+      const base = lowerFloorTop(ctx, floor, x, z);
+      if (base === null) continue;
+      const half = 0.125, top = cy - h * 0.5;
+      if (hitsClearance(ctx, { minX: x - half, maxX: x + half, minZ: z - half, maxZ: z + half, minY: base, maxY: top })) continue;
+      members.push({ id: id + ':post' + i, role: 'gallery-post', from: [x, base, z], to: [x, top, z], section: [0.25, 0.25] });
+    }
+  }
+  return { members, parallelCs, shifts };
+}
 function layJoists(ctx, floor, region, jAxis, joistTop, h) {
   const w = D.joistWidth, cy = round6(joistTop - h * 0.5);
   const spacing = num(floor.joists && floor.joists.spacing, D.joistSpacing);
   const supports = joistSupports(ctx, floor, region, jAxis, cy, h);
+  const edges = layEdgeBeams(ctx, floor, region, jAxis, cy, h);
+  supports.members.push(...edges.members);
+  supports.trimmerCs.push(...edges.parallelCs);
   const b = bboxSpan(region, true);
   const [lo, hi] = jAxis === 'x' ? [b.z0, b.z1] : [b.x0, b.x1];
   const edge = supports.halfT + w * 0.5;
@@ -558,6 +635,11 @@ function layJoists(ctx, floor, region, jAxis, joistTop, h) {
         if (Math.abs(a1 - h0) < 1e-4) a1 = h0 - supports.off;
         if (Math.abs(a0 - h1) < 1e-4) a0 = h1 + supports.off;
       }
+      for (const e of edges.shifts) {
+        if (e.dir === jAxis || c < e.a0 - EPS || c > e.a1 + EPS) continue;
+        if (e.normal > 0 && Math.abs(a1 - e.pos) < 1e-4) a1 = e.pos - e.shift;
+        if (e.normal < 0 && Math.abs(a0 - e.pos) < 1e-4) a0 = e.pos + e.shift;
+      }
       if (a1 - a0 < 0.3) return;
       const from = jAxis === 'x' ? [a0, cy, c] : [c, cy, a0];
       const to = jAxis === 'x' ? [a1, cy, c] : [c, cy, a1];
@@ -565,7 +647,7 @@ function layJoists(ctx, floor, region, jAxis, joistTop, h) {
     });
   }
   for (const m of members) ctx.member({ ...m, owner: floor.id, levelId: floor.levelId, source: 'floor',
-    joint: m.role === 'joist' ? 2 : 1, strap: m.role === 'header' ? 1 : 0, material: 'oak' });
+    joint: m.role === 'joist' ? 2 : 1, strap: m.role === 'header' || m.role === 'edge-beam' ? 1 : 0, material: 'oak' });
   // Joists crossing an intermediate support beam are joined where they cross.
   const supportIds = (floor.bearing && floor.bearing.intermediateSupportIds) || [];
   for (const id of supportIds) {
@@ -635,7 +717,11 @@ function layThresholds(ctx, floor, stack) {
     if (portal.kind !== 'door' && portal.kind !== 'arch') continue;
     const floors = (portal.floorIds || []).slice().sort();
     if (floors[0] !== floor.id) continue;
-    const b = portal.bounds;
+    const holes = (floor.holes || []).flatMap((h) => (h.regions || [h.footprint]).map(rectFromBounds));
+    const pieces = subtractRects([rectFromBounds(portal.bounds)], holes)
+      .sort((p, q) => (q.x1 - q.x0) * (q.z1 - q.z0) - (p.x1 - p.x0) * (p.z1 - p.z0));
+    if (!pieces.length || Math.min(pieces[0].x1 - pieces[0].x0, pieces[0].z1 - pieces[0].z0) < 0.2) continue;
+    const b = { minX: pieces[0].x0, maxX: pieces[0].x1, minZ: pieces[0].z0, maxZ: pieces[0].z1 };
     const crossX = Math.abs(portal.thresholds[0][0] - portal.thresholds[1][0]) > Math.abs(portal.thresholds[0][2] - portal.thresholds[1][2]);
     const axis = crossX ? 'z' : 'x';
     const [a0, a1] = axis === 'x' ? [b.minX, b.maxX] : [b.minZ, b.maxZ];
@@ -643,12 +729,12 @@ function layThresholds(ctx, floor, stack) {
     const seed = fnv(portal.id) % 6;
     if (stack.kind === 'stone') {
       const frame = surfaceFrame(axis, (a0 + a1) * 0.5, (c0 + c1) * 0.5, stack.top - D.flagThickness);
-      ctx.op(floor.id, stoneChild('threshold', snap(a1 - a0 - D.flagJoint, 0.05), D.flagThickness,
-        snap(c1 - c0 - D.flagJoint, 0.02), seed, frame, { portalId: portal.id }));
+      ctx.op(floor.id, stoneChild('threshold', floorTo(a1 - a0 - D.flagJoint, 0.05), D.flagThickness,
+        floorTo(c1 - c0 - D.flagJoint, 0.02), seed % 4, frame, { portalId: portal.id }));
     } else {
       const frame = surfaceFrame(axis, (a0 + a1) * 0.5, (c0 + c1) * 0.5, stack.top - D.plankThickness * 0.5);
-      ctx.op(floor.id, plankChild('threshold', snap(a1 - a0, 0.05), snap(c1 - c0, 0.02),
-        D.plankThickness, seed % 8, frame, { portalId: portal.id }));
+      ctx.op(floor.id, plankChild('threshold', floorTo(a1 - a0, 0.05), floorTo(c1 - c0, 0.02),
+        D.plankThickness, seed % 4, frame, { portalId: portal.id }));
     }
   }
 }
@@ -792,7 +878,7 @@ function beamChildOp(m) {
   const frame = memberFrame(m.from, m.to, m.roll || 0);
   if (L < 0.35) return boxOp(m.role, 'oak', [0, 0, 0], [L * 0.5, m.section[1] * 0.5, m.section[0] * 0.5], frame, { memberId: m.id });
   return { op: 'child', role: m.role, module: 'CastleBeam', frame, memberId: m.id,
-    params: { seed: fnv(m.id) % 8, length: Math.floor(L * 100 + 1e-6) / 100, width: m.section[0], height: m.section[1],
+    params: { seed: fnv(m.id) % 4, length: Math.floor(L * 100 + 1e-6) / 100, width: m.section[0], height: m.section[1],
       material: 'oak', endMaterial: 'oakEnd', ironMaterial: 'iron', joint: m.joint, strap: m.strap } };
 }
 
@@ -891,19 +977,19 @@ function layoutStair(ctx, stair, style) {
       const [x, z] = toXZ(g.runAxis, centre, cMid);
       const tag = { flightId: f.id, step: st.k };
       if (style === 'stone') {
-        const seed = fnv(f.id + ':' + st.k) % 6;
-        ctx.op(owner, stoneChild('step', snap(g.width - 0.01, 0.05), f.riser, snap(f.tread + nose, 0.01), seed,
+        const seed = fnv(f.id + ':' + st.k) % 4;
+        ctx.op(owner, stoneChild('step', floorTo(g.width - 0.01, 0.05), f.riser, floorTo(f.tread + nose, 0.01), seed,
           { t: [x, st.top - f.riser, z], ry: stepYaw(g), rz: 0, rx: 0 }, tag));
         if (st.top - f.riser > lowerBase + EPS) {
           const [lo, hi] = [toXZ(g.runAxis, st.s0, g.t0), toXZ(g.runAxis, st.s1, g.t1)];
           ctx.op(owner, axisBox('step-base', 'stone2', [lo[0], lowerBase, lo[1]], [hi[0], st.top - f.riser, hi[1]], tag));
         }
       } else {
-        ctx.op(owner, plankChild('tread', snap(g.width + D.stringerWidth, 0.05), snap(f.tread + nose, 0.02),
-          D.plankThickness, fnv(f.id + ':t' + st.k) % 8, { t: [x, st.top - D.plankThickness * 0.5, z], ry: stepYaw(g), rz: 0, rx: 0 }, tag));
+        ctx.op(owner, plankChild('tread', floorTo(g.width + D.stringerWidth, 0.05), floorTo(f.tread + nose, 0.02),
+          D.plankThickness, fnv(f.id + ':t' + st.k) % 4, { t: [x, st.top - D.plankThickness * 0.5, z], ry: stepYaw(g), rz: 0, rx: 0 }, tag));
         const along0 = st.front + g.sign * 0.05;
         const [rx, rz] = toXZ(g.runAxis, along0, cMid);
-        ctx.op(owner, plankChild('riser', snap(g.width, 0.05), 0.12, D.plankThickness, fnv(f.id + ':r' + st.k) % 8,
+        ctx.op(owner, plankChild('riser', floorTo(g.width, 0.05), 0.12, D.plankThickness, fnv(f.id + ':r' + st.k) % 4,
           { t: [rx, st.top - D.plankThickness - 0.04, rz], ry: stepYaw(g), rz: 0, rx: Math.PI / 2 }, tag));
       }
     }
@@ -1069,7 +1155,7 @@ function layoutStairwellRails(ctx, stair, member) {
       for (const [a0, a1] of spans) {
         if (a1 - a0 < 0.2 || nearWall(ctx.manifest, floor.levelId, e.dir, e.pos, a0, a1, 0.2)) continue;
         guardRail(member, 'well:' + e.dir + e.normal + ':' + round6(e.pos) + ':' + round6(a0), e, a0, a1,
-          e.pos + e.normal * (D.postSection * 0.5 + 0.15), floor.elevation);
+          e.pos + e.normal * (D.postSection * 0.5 + 0.02), floor.elevation);
       }
     }
   }
@@ -1402,7 +1488,11 @@ function wallFootprintContains(manifest, levelIds, x, z, slack = 0.02) {
 export function validateStructure(manifest, options = {}) {
   const layout = structureLayout(manifest, options);
   const errors = [];
+  const warnings = [];
   const solids = structureSolidVolumes(manifest, options);
+  const GUARD = /^(guard-post|guard-rail|mid-rail|handrail|newel|baluster-post)$/;
+  const memberRole = new Map(layout.graph.members.map((m) => [m.id, m.role]));
+  const jointGuard = new Map(layout.graph.joints.map((j) => [j.id, j.memberIds.some((id) => GUARD.test(memberRole.get(id)))]));
   const clearances = structureClearanceVolumes(manifest);
   const stairOf = new Map((manifest.stairs || []).map((s) => [s.id, s]));
   // 1. No structure inside a clear envelope (the stair's own treads, landing
@@ -1416,6 +1506,12 @@ export function validateStructure(manifest, options = {}) {
       if (hit.has(s.id) || !overlaps(s, c)) continue;
       if (c.stairId && s.recordId === c.stairId && STAIR_OWN_WALKING.has(s.role)) continue;
       hit.add(s.id);
+      const guard = GUARD.test(s.role) || (s.jointId && jointGuard.get(s.jointId));
+      const lateral = Math.min(Math.min(s.maxX, c.maxX) - Math.max(s.minX, c.minX), Math.min(s.maxZ, c.maxZ) - Math.max(s.minZ, c.minZ));
+      if (c.kind === 'route-segment' && guard && lateral <= 0.25) {
+        warnings.push({ kind: 'guard-narrows-route', clearanceId: c.id, solidId: s.id, role: s.role, recordId: s.recordId, lateral: round6(lateral) });
+        continue;
+      }
       errors.push({ kind: 'clearance-intrusion', clearanceId: c.id, clearanceKind: c.kind, solidId: s.id, role: s.role, recordId: s.recordId });
     }
   }
@@ -1440,7 +1536,9 @@ export function validateStructure(manifest, options = {}) {
     if (m.source !== 'floor') continue;
     for (const end of ['from', 'to']) {
       const p = m[end];
-      if (nodeAt.has(m.id + ':' + end) || wallFootprintContains(manifest, levelsBelow(m.levelId), p[0], p[2])) supportedEnds++;
+      const onFloor = (manifest.floors || []).some((f) => Math.abs(f.elevation - p[1]) < 0.05 &&
+        pointInRegion(floorRegion(manifest, f), p[0], p[2], false));
+      if (nodeAt.has(m.id + ':' + end) || onFloor || wallFootprintContains(manifest, levelsBelow(m.levelId), p[0], p[2])) supportedEnds++;
       else errors.push({ kind: 'unsupported-member-end', memberId: m.id, end, point: p });
     }
   }
@@ -1483,7 +1581,7 @@ export function validateStructure(manifest, options = {}) {
     if (op.op === 'tris') triangles += op.verts.length / 9;
     if (op.op === 'box') triangles += 12;
   }
-  return { valid: errors.length === 0, errors, diagnostics: layout.diagnostics,
+  return { valid: errors.length === 0, errors, warnings, diagnostics: layout.diagnostics,
     stats: { records: layout.records.length, children, meshTriangles: triangles, members: layout.graph.members.length,
       nodes: layout.graph.nodes.length, joints: layout.graph.joints.length, aliases: layout.graph.aliases.length,
       supportedEnds, solids: solids.length, clearances: clearances.length, roles } };
