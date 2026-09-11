@@ -742,12 +742,28 @@ function routeRoomSegment(room, from, to, width, holes, volumes = []) {
   return null;
 }
 
+// The structure stands a stair's side members (open-side parapets and
+// balustrades, stringers, tread overhangs, landing guard rails and bearer ends)
+// in a band this wide beside each flight and around each carried landing,
+// outside the footprints published here. Flat routes keep clear of the band;
+// floor holes stay the exact footprints.
+export const STAIR_SIDE_ALLOWANCE = 0.2;
+
+function expandedFootprint(footprint, dx, dz) {
+  return { x: footprint.x - dx, z: footprint.z - dz,
+    width: footprint.width + 2 * dx, depth: footprint.depth + 2 * dz };
+}
+
 function roomRouteObstacles(roomId, floor, stairs) {
+  const side = STAIR_SIDE_ALLOWANCE;
   return [
     ...floor.holes,
     ...stairs.filter(stair => stair.lowerRoomId === roomId).flatMap(stair => [
+      // Across the run only: the lower landing hands off at the flight's foot.
       ...stair.flights.map(flight => ({
-        id: `route-obstacle:${flight.id}`, footprint: flight.footprint,
+        id: `route-obstacle:${flight.id}`,
+        footprint: flight.direction === 'E' || flight.direction === 'W'
+          ? expandedFootprint(flight.footprint, 0, side) : expandedFootprint(flight.footprint, side, 0),
         replacementLandingId: null,
       })),
       // An intermediate landing is carried from the lower floor (corner posts or a
@@ -755,7 +771,7 @@ function roomRouteObstacles(roomId, floor, stairs) {
       ...stair.landings.filter(landing => landing.kind === 'intermediate' ||
         (landing.kind === 'upper' &&
           landing.elevation < floor.elevation + MIN_PORTAL_HEIGHT - 1e-9)).map(landing => ({
-        id: `route-obstacle:${landing.id}`, footprint: landing.bounds,
+        id: `route-obstacle:${landing.id}`, footprint: expandedFootprint(landing.bounds, side, side),
         replacementLandingId: null,
       })),
     ]),

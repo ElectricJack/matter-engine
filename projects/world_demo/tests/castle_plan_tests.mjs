@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   CASTLE_MANIFEST_SCHEMA, CASTLE_PLAN_SCHEMA, canonicalEdge, compilePlan,
-  emitManifest, manifestPartRecipes, planToJSON, planToSVG, validatePlan,
+  emitManifest, manifestPartRecipes, planToJSON, planToSVG, STAIR_SIDE_ALLOWANCE, validatePlan,
 } from '../shared-lib/castle_plan.js';
+import { raisedLandingPlan } from './fixtures/castle_plan_raised_landing.js';
 import { TWO_ROOM_TWO_LEVEL_PLAN } from './fixtures/castle_plan_two_room_two_level.js';
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -66,47 +67,6 @@ function stairApproachPlan({ entryAtUpper = false } = {}) {
       landings: [
         { id: 'lower', kind: 'lower', bounds: { x: 0.8, z: 0.8, width: 1.2, depth: 1.2 } },
         { id: 'upper', kind: 'upper', bounds: { x: 7, z: 0.8, width: 1.2, depth: 1.2 } },
-      ],
-    }],
-    beams: [], curves: [], fixtures: [], roofs: [], localLights: [],
-  };
-}
-
-// A straight two-flight stair whose turn landing sits above 2.1m, crossing the
-// hall between its entry door and an annex door. The direct hall route runs
-// underneath the landing, which the structure carries on posts or a solid base.
-function raisedLandingPlan() {
-  return {
-    schema: CASTLE_PLAN_SCHEMA, id: 'raised-landing-route', seed: 23, entryRoomId: 'hall',
-    levels: [
-      { id: 'ground', baseY: 0, height: 4, rooms: [
-        { id: 'hall', use: 'hall', rect: { x: 0, z: 0, width: 10, depth: 6 } },
-        { id: 'annex', use: 'pantry', rect: { x: 0, z: 6, width: 10, depth: 3 } },
-      ], edgeOverrides: [
-        { id: 'entry', from: [4, 0], to: [6, 0], kind: 'door', connects: ['outside', 'hall'],
-          opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 } },
-        { id: 'annex-door', from: [4, 6], to: [6, 6], kind: 'door', connects: ['hall', 'annex'],
-          opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 } },
-      ] },
-      { id: 'upper', baseY: 4, height: 4, rooms: [
-        { id: 'gallery', use: 'gallery', rect: { x: 0, z: 0, width: 10, depth: 6 } },
-      ], edgeOverrides: [] },
-    ],
-    stairs: [{
-      id: 'straight-stair', lowerLevelId: 'ground', upperLevelId: 'upper',
-      lowerRoomId: 'hall', upperRoomId: 'gallery',
-      width: 1.2, maxRiser: 0.2, tread: 0.25, headroom: 2.2,
-      flights: [
-        { id: 'lower-flight', direction: 'E', stepCount: 11,
-          footprint: { x: 1.65, z: 2.4, width: 2.75, depth: 1.2 } },
-        { id: 'upper-flight', direction: 'E', stepCount: 9,
-          footprint: { x: 5.6, z: 2.4, width: 2.25, depth: 1.2 } },
-      ],
-      landings: [
-        { id: 'lower', kind: 'lower', bounds: { x: 0.45, z: 2.4, width: 1.2, depth: 1.2 } },
-        { id: 'turn', kind: 'intermediate', elevation: 2.2,
-          bounds: { x: 4.4, z: 2.4, width: 1.2, depth: 1.2 } },
-        { id: 'upper', kind: 'upper', bounds: { x: 7.85, z: 2.4, width: 1.2, depth: 1.2 } },
       ],
     }],
     beams: [], curves: [], fixtures: [], roofs: [], localLights: [],
@@ -469,6 +429,20 @@ for (const footprint of [raisedTurn.bounds, ...raisedStair.flights.map(flight =>
   assert.ok(annexHallSegment.segments.every(segment => !segmentEntersExpandedRect(
     segment.from, segment.to, footprint, annexHallSegment.width / 2)),
     'flat hall route stays outside the capsule-expanded posted landing and flights');
+// ...and outside the side band beyond them, where the structure stands the
+// flights' open-side parapets/balustrades and the landing's guard rails.
+const sideBand = (rect, dx, dz) => ({ x: rect.x - dx, z: rect.z - dz,
+  width: rect.width + 2 * dx, depth: rect.depth + 2 * dz });
+assert.ok(STAIR_SIDE_ALLOWANCE > 0.16, 'side allowance covers a 0.16m parapet / post band');
+for (const footprint of [sideBand(raisedTurn.bounds, STAIR_SIDE_ALLOWANCE, STAIR_SIDE_ALLOWANCE),
+  ...raisedStair.flights.map(flight => sideBand(flight.footprint, 0, STAIR_SIDE_ALLOWANCE))])
+  assert.ok(annexHallSegment.segments.every(segment => !segmentEntersExpandedRect(
+    segment.from, segment.to, footprint, annexHallSegment.width / 2)),
+    'flat hall route stays outside the stair side band');
+// Floor holes stay the exact footprint union; only routing sees the band.
+assert.deepEqual(raisedStair.holes.map(hole => hole.footprint),
+  [...raisedStair.flights.map(flight => flight.footprint),
+    ...raisedStair.landings.filter(landing => landing.kind !== 'lower').map(landing => landing.bounds)]);
 
 // Beams and fixture clearances inside the 2.1m walk band are routing obstacles:
 // the hall route detours to the clear lane beside them instead of failing the

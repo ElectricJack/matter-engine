@@ -757,6 +757,57 @@ function opSolidsMinY(op) {
   return ys;
 }
 
+// ---------------------------------------------------------------------------
+// 10. Stair side band vs flat routes. castle_plan widens every flight (across
+// its run) and posted landing by STAIR_SIDE_ALLOWANCE before routing a room,
+// so every stair solid must stay inside that band: then a compiled room
+// segment running flush past the widened obstacle never meets an open-side
+// parapet, balustrade, stringer or landing guard. The stone parapet also stops
+// below the destination floor's structure instead of rising through the deck
+// beside the hole.
+// ---------------------------------------------------------------------------
+async function section10() {
+  const { raisedLandingPlan } = await import('./fixtures/castle_plan_raised_landing.js');
+  const manifest = Plan.compilePlan(raisedLandingPlan());
+  const stair = manifest.stairs[0];
+  const band = Plan.STAIR_SIDE_ALLOWANCE;
+  // Every flight runs E and every structured landing shares the flights' z band.
+  const [z0, z1] = [Math.min(...stair.flights.map((f) => f.footprint.z)),
+    Math.max(...stair.flights.map((f) => f.footprint.z + f.footprint.depth))];
+  assert.ok(stair.flights.every((f) => f.direction === 'E') &&
+    stair.landings.every((l) => l.bounds.z === z0 && l.bounds.z + l.bounds.depth === z1), 'fixture shape');
+  const upperFloorIds = new Set(stair.holes.map((h) => h.floorId));
+  for (const style of ['stone', 'timber']) {
+    const v = S.validateStructure(manifest, { stairStyle: style });
+    if (v.errors.length) report(`raised-landing ${style} errors`, v.errors);
+    assert.deepEqual(v.errors, [], style + ': raised-landing stair has structure errors');
+    assert.deepEqual(v.warnings.filter((w) => /^route-segment:/.test(w.clearanceId || '')), [],
+      style + ': stair guards narrow the flat hall route');
+    const solids = S.structureSolidVolumes(manifest, { stairStyle: style });
+    for (const s of solids.filter((x) => x.recordId === stair.id))
+      assert.ok(s.minZ >= z0 - band - 1e-6 && s.maxZ <= z1 + band + 1e-6,
+        `${style}: stair ${s.role} ${s.id} reaches z ${s.minZ.toFixed(3)}..${s.maxZ.toFixed(3)}, outside the published ${band}m side band`);
+    if (style !== 'stone') continue;
+    const floorSolids = solids.filter((x) => upperFloorIds.has(x.recordId));
+    const parapets = solids.filter((x) => x.recordId === stair.id && x.role === 'parapet');
+    for (const p of parapets) {
+      const hit = floorSolids.find((f) => p.minX < f.maxX - 1e-4 && p.maxX > f.minX + 1e-4 && p.minY < f.maxY - 1e-4 &&
+        p.maxY > f.minY + 1e-4 && p.minZ < f.maxZ - 1e-4 && p.maxZ > f.minZ + 1e-4);
+      assert.ok(!hit, `parapet ${p.id} (top ${p.maxY.toFixed(3)}) rises into upper floor solid ${hit && hit.role}`);
+    }
+    // Stopping under the floor still guards the whole open side of each flight.
+    for (const f of stair.flights) for (const south of [true, false]) {
+      const spans = parapets.filter((p) => (south ? p.maxZ <= z0 + 1e-6 : p.minZ >= z1 - 1e-6) &&
+        p.maxX > f.footprint.x + 1e-6 && p.minX < f.footprint.x + f.footprint.width - 1e-6)
+        .map((p) => [p.minX, p.maxX]).sort((a, b) => a[0] - b[0]);
+      let reach = f.footprint.x;
+      for (const [a, b] of spans) if (a <= reach + 1e-6) reach = Math.max(reach, b);
+      assert.ok(reach >= f.footprint.x + f.run - 1e-6, `${f.id} ${south ? 'south' : 'north'} parapet stops short at x ${reach}`);
+    }
+  }
+  console.log('  section 10 (stair side band vs flat routes): OK');
+}
+
 // ===========================================================================
 // Run
 // ===========================================================================
@@ -769,5 +820,6 @@ section6();
 section7();
 await section9();
 section8();
+await section10();
 
 console.log('castle structure: PASS - determinism, validation, stairs, floors, beams/joints, closed geometry, emission, scene, roofs');
