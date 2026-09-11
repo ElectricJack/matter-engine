@@ -72,6 +72,95 @@ function stairApproachPlan({ entryAtUpper = false } = {}) {
   };
 }
 
+// A straight two-flight stair whose turn landing sits above 2.1m, crossing the
+// hall between its entry door and an annex door. The direct hall route runs
+// underneath the landing, which the structure carries on posts or a solid base.
+function raisedLandingPlan() {
+  return {
+    schema: CASTLE_PLAN_SCHEMA, id: 'raised-landing-route', seed: 23, entryRoomId: 'hall',
+    levels: [
+      { id: 'ground', baseY: 0, height: 4, rooms: [
+        { id: 'hall', use: 'hall', rect: { x: 0, z: 0, width: 10, depth: 6 } },
+        { id: 'annex', use: 'pantry', rect: { x: 0, z: 6, width: 10, depth: 3 } },
+      ], edgeOverrides: [
+        { id: 'entry', from: [4, 0], to: [6, 0], kind: 'door', connects: ['outside', 'hall'],
+          opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 } },
+        { id: 'annex-door', from: [4, 6], to: [6, 6], kind: 'door', connects: ['hall', 'annex'],
+          opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 } },
+      ] },
+      { id: 'upper', baseY: 4, height: 4, rooms: [
+        { id: 'gallery', use: 'gallery', rect: { x: 0, z: 0, width: 10, depth: 6 } },
+      ], edgeOverrides: [] },
+    ],
+    stairs: [{
+      id: 'straight-stair', lowerLevelId: 'ground', upperLevelId: 'upper',
+      lowerRoomId: 'hall', upperRoomId: 'gallery',
+      width: 1.2, maxRiser: 0.2, tread: 0.25, headroom: 2.2,
+      flights: [
+        { id: 'lower-flight', direction: 'E', stepCount: 11,
+          footprint: { x: 1.65, z: 2.4, width: 2.75, depth: 1.2 } },
+        { id: 'upper-flight', direction: 'E', stepCount: 9,
+          footprint: { x: 5.6, z: 2.4, width: 2.25, depth: 1.2 } },
+      ],
+      landings: [
+        { id: 'lower', kind: 'lower', bounds: { x: 0.45, z: 2.4, width: 1.2, depth: 1.2 } },
+        { id: 'turn', kind: 'intermediate', elevation: 2.2,
+          bounds: { x: 4.4, z: 2.4, width: 1.2, depth: 1.2 } },
+        { id: 'upper', kind: 'upper', bounds: { x: 7.85, z: 2.4, width: 1.2, depth: 1.2 } },
+      ],
+    }],
+    beams: [], curves: [], fixtures: [], roofs: [], localLights: [],
+  };
+}
+
+// The hall of the castle structure fixture: the store route from the entry door
+// runs west past a quarter-turn stair, and callers stand a post or fixture in
+// its default lane. Flight-west's inflated edge (5.6 + 2.8 + 0.6) also lands
+// 2e-15 short of the door threshold x=9.
+function postedHallPlan({ beams = [], fixtures = [] } = {}) {
+  return {
+    schema: CASTLE_PLAN_SCHEMA, id: 'posted-hall-route', seed: 29, entryRoomId: 'hall',
+    levels: [
+      { id: 'ground', baseY: 0, height: 4, rooms: [
+        { id: 'hall', use: 'hall', rect: { x: 0, z: 0, width: 10, depth: 6 } },
+        { id: 'store', use: 'pantry', rect: { x: -4, z: 1, width: 4, depth: 4 } },
+      ], edgeOverrides: [
+        { id: 'entry', from: [8, 0], to: [10, 0], kind: 'door', connects: ['outside', 'hall'],
+          opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 } },
+        { id: 'store-door', from: [0, 1], to: [0, 5], kind: 'door', connects: ['hall', 'store'],
+          opening: { offset: 1.3, width: 1.4, bottom: 0, height: 2.2 } },
+      ] },
+      { id: 'upper', baseY: 4, height: 4, rooms: [
+        { id: 'chamber', use: 'chamber', rect: { x: 0, z: 0, width: 10, depth: 6 } },
+      ], edgeOverrides: [] },
+    ],
+    stairs: [{
+      id: 'quarter-turn', lowerLevelId: 'ground', upperLevelId: 'upper',
+      lowerRoomId: 'hall', upperRoomId: 'chamber',
+      width: 1.2, tread: 0.28, maxRiser: 0.2, headroom: 2.2,
+      flights: [
+        { id: 'flight-west', direction: 'W', stepCount: 10,
+          footprint: { x: 5.6, z: 4.4, width: 2.8, depth: 1.2 } },
+        { id: 'flight-south', direction: 'S', stepCount: 10,
+          footprint: { x: 4.4, z: 1.6, width: 1.2, depth: 2.8 } },
+      ],
+      landings: [
+        { id: 'lower', kind: 'lower', bounds: { x: 8.4, z: 4.4, width: 1.2, depth: 1.2 } },
+        { id: 'turn', kind: 'intermediate', elevation: 2,
+          bounds: { x: 4.4, z: 4.4, width: 1.2, depth: 1.2 } },
+        { id: 'upper', kind: 'upper', bounds: { x: 4.4, z: 0.4, width: 1.2, depth: 1.2 } },
+      ],
+    }],
+    beams, curves: [], fixtures, roofs: [], localLights: [],
+  };
+}
+
+function volumesOverlap(a, b) {
+  return a.minX < b.maxX - 1e-9 && b.minX < a.maxX - 1e-9 &&
+    a.minY < b.maxY - 1e-9 && b.minY < a.maxY - 1e-9 &&
+    a.minZ < b.maxZ - 1e-9 && b.minZ < a.maxZ - 1e-9;
+}
+
 function samePoint(a, b) {
   return a.length === b.length && a.every((value, index) => Math.abs(value - b[index]) < 1e-9);
 }
@@ -367,6 +456,53 @@ blockedApproach.beams.push({
   section: [0.2, 0.2], jointFamily: 'mortise-tenon', role: 'blocked-stair-approach',
 });
 expectInvalid(blockedApproach, /walkRoute.*(headroom|clearance)|approach.*headroom/i);
+
+// An intermediate landing stands on the lower floor at any elevation, so a flat
+// hall route detours around it and the flights instead of passing beneath.
+const raisedLandingManifest = compilePlan(raisedLandingPlan());
+const raisedStair = raisedLandingManifest.stairs[0];
+const raisedTurn = raisedStair.landings.find(landing => landing.kind === 'intermediate');
+assert.ok(raisedTurn.elevation >= 2.1, 'fixture turn landing clears the 2.1m walk headroom');
+const annexHallSegment = raisedLandingManifest.walkRoute.find(route => route.roomId === 'annex')
+  .roomSegments.find(segment => segment.roomId === 'hall');
+for (const footprint of [raisedTurn.bounds, ...raisedStair.flights.map(flight => flight.footprint)])
+  assert.ok(annexHallSegment.segments.every(segment => !segmentEntersExpandedRect(
+    segment.from, segment.to, footprint, annexHallSegment.width / 2)),
+    'flat hall route stays outside the capsule-expanded posted landing and flights');
+
+// Beams and fixture clearances inside the 2.1m walk band are routing obstacles:
+// the hall route detours to the clear lane beside them instead of failing the
+// plan. A knee brace above the band does not block the lane passing under it.
+const hallPost = {
+  levelId: 'ground', from: [7.5, 0, 1.5], to: [7.5, 3.36, 1.5],
+  section: [0.25, 0.25], jointFamily: 'pegged', role: 'post',
+};
+const kneeBrace = {
+  levelId: 'ground', from: [7.5, 2.61, 1.5], to: [7.5, 3.36, 0.75],
+  section: [0.14, 0.14], jointFamily: 'pegged', role: 'brace',
+};
+const hallChest = {
+  id: 'chest', levelId: 'ground',
+  clearance: { minX: 7, maxX: 8, minY: 0, maxY: 1, minZ: 1.2, maxZ: 1.8 },
+};
+const storeHallSegment = plan => compilePlan(plan).walkRoute
+  .find(route => route.roomId === 'store').roomSegments.find(segment => segment.roomId === 'hall');
+const openHallSegment = storeHallSegment(postedHallPlan());
+const postVolume = { minX: 7.375, maxX: 7.625, minY: -0.125, maxY: 3.485, minZ: 1.375, maxZ: 1.625 };
+assert.ok(openHallSegment.segments.some(segment => volumesOverlap(segment.bounds, postVolume)),
+  'fixture: the default store lane runs through the post footprint');
+for (const [label, extra, volume] of [
+  ['post', { beams: [hallPost] }, postVolume],
+  ['post under a knee brace', { beams: [hallPost, kneeBrace] }, postVolume],
+  ['fixture clearance', { fixtures: [hallChest] }, hallChest.clearance],
+]) {
+  const segment = storeHallSegment(postedHallPlan(extra));
+  assert.ok(segment.segments.every(leg => !volumesOverlap(leg.bounds, volume)),
+    `hall route detours around the ${label}`);
+}
+assert.deepEqual(storeHallSegment(postedHallPlan({ beams: [hallPost, kneeBrace] })).waypoints,
+  storeHallSegment(postedHallPlan({ beams: [hallPost] })).waypoints,
+  'a brace above the 2.1m walk band leaves the post detour unchanged');
 
 for (const [field, value, pattern] of [
   ['headroom', 2.09, /headroom.*at least 2\.1m/],
