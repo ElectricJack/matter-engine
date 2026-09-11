@@ -514,9 +514,14 @@ consumer following only `walkRoute[].waypoints` still visits each flight and
 landing rather than taking a lower-to-upper shortcut. Between consecutive
 connectors the compiler emits a `roomSegment`
 with `roomId`, `from`, `to`, `width`, routed `waypoints`, per-leg `segments`,
-and aggregate `sweptBounds`. It uses 1.2m width, checks width-offset samples
-remain in the shared room and do not enter a floor hole, and rejects headroom
-overlap with beam bounds or fixture clearance. On a stair's lower level, every
+and aggregate `sweptBounds`. It uses 1.2m width and checks width-offset samples
+remain in the shared room and do not enter a floor hole. Beam bounds and
+fixture clearances are routing obstacles: a leg whose swept bounds (the 1.2m
+strip from floor level to 2.1m above it) overlap one is rejected, so the route
+detours along a clear lane, such as one passing a post edge-to-edge, whenever
+the room has one. Members above the 2.1m walk band do not block. A room that
+can only be crossed beneath a beam or through a fixture clearance fails,
+naming that beam or fixture. On a stair's lower level, every
 rising flight footprint is a routing obstacle expanded by half the 1.2m route
 width. Every intermediate landing is blocked the same way at any elevation:
 the structure carries it from the lower floor on corner posts or a solid base,

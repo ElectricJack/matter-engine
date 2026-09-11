@@ -579,7 +579,21 @@ function segmentEntersExpandedRect(from, to, rect, radius) {
   return Math.max(first, epsilon) < Math.min(last, 1 - epsilon) - epsilon;
 }
 
-function roomSegmentLeg(room, from, to, width, holes) {
+// Sorted lane coordinates with float near-duplicates merged (5.6 + 2.8 + 0.6 is
+// not 9), so a lane is never split by a zero-length leg that roomSegmentLeg
+// rejects. Exact threshold coordinates win a merge so route ends stay nodes.
+function mergedLanes(values, exact) {
+  const lanes = [];
+  for (const value of [...values].sort((a, b) => a - b)) {
+    const last = lanes.length - 1;
+    if (last < 0 || value - lanes[last] > 1e-9 ||
+        (exact.includes(value) && exact.includes(lanes[last]))) lanes.push(value);
+    else if (exact.includes(value)) lanes[last] = value;
+  }
+  return lanes;
+}
+
+function roomSegmentLeg(room, from, to, width, holes, volumes = []) {
   const dx = to[0] - from[0], dz = to[2] - from[2];
   const length = Math.hypot(dx, dz);
   if (length < 1e-9) return null;
@@ -594,6 +608,7 @@ function roomSegmentLeg(room, from, to, width, holes) {
   };
   if (holes.some(hole => hole.replacementLandingId === null &&
       segmentEntersExpandedRect(from, to, hole.footprint, width / 2))) return null;
+  if (volumes.some(volume => volumesOverlap(bounds, volume))) return null;
   const samples = Math.max(1, Math.ceil(length / 0.2));
   for (let i = 0; i <= samples; ++i) {
     const t = i / samples;
@@ -609,7 +624,11 @@ function roomSegmentLeg(room, from, to, width, holes) {
   };
 }
 
-function validateRoomSegment(room, from, to, width, holes, path) {
+// Routes a flat walk between two thresholds of one room, or returns null when no
+// lane exists. `holes` are floor footprints (holes, flights, carried landings);
+// `volumes` are headroom obstacles (beam bounds, fixture clearances) rejected by
+// the same swept-bounds overlap the compiler's post-hoc headroom checks use.
+function routeRoomSegment(room, from, to, width, holes, volumes = []) {
   const y = from[1];
   const inset = width / 2;
   const makeRecord = (waypoints, legs) => ({
@@ -638,7 +657,7 @@ function validateRoomSegment(room, from, to, width, holes, path) {
     const legs = [];
     let valid = true;
     for (let i = 0; i + 1 < waypoints.length; ++i) {
-      const leg = roomSegmentLeg(room, waypoints[i], waypoints[i + 1], width, holes);
+      const leg = roomSegmentLeg(room, waypoints[i], waypoints[i + 1], width, holes, volumes);
       if (!leg) { valid = false; break; }
       legs.push(leg);
     }
@@ -658,6 +677,14 @@ function validateRoomSegment(room, from, to, width, holes, path) {
     xs.add(hole.footprint.x - inset); xs.add(hole.footprint.x + hole.footprint.width + inset);
     zs.add(hole.footprint.z - inset); zs.add(hole.footprint.z + hole.footprint.depth + inset);
   }
+  // A headroom volume only blocks when it reaches into this segment's walk band;
+  // its inflated edges are the lanes that pass it edge-to-edge.
+  const bandMinY = Math.min(from[1], to[1]), bandMaxY = Math.max(from[1], to[1]) + MIN_PORTAL_HEIGHT;
+  for (const volume of volumes.filter(candidate =>
+      candidate.minY < bandMaxY - 1e-9 && bandMinY < candidate.maxY - 1e-9)) {
+    xs.add(volume.minX - inset); xs.add(volume.maxX + inset);
+    zs.add(volume.minZ - inset); zs.add(volume.maxZ + inset);
+  }
   for (const [x, z] of room._cells) {
     xs.add(x + inset); xs.add(x + 1 - inset);
     zs.add(z + inset); zs.add(z + 1 - inset);
@@ -669,8 +696,9 @@ function validateRoomSegment(room, from, to, width, holes, path) {
   }
   const keyFor = point => `${point[0]},${point[2]}`;
   const nodes = new Map();
-  for (const x of [...xs].sort((a, b) => a - b))
-    for (const z of [...zs].sort((a, b) => a - b)) {
+  const zLanes = mergedLanes(zs, [from[2], to[2]]);
+  for (const x of mergedLanes(xs, [from[0], to[0]]))
+    for (const z of zLanes) {
       const point = [x, y, z];
       if ((x === from[0] && z === from[2]) || (x === to[0] && z === to[2]) ||
           (pointInsideRoom(room, point) && !pointInsideFloorHole(point, holes)))
@@ -681,7 +709,7 @@ function validateRoomSegment(room, from, to, width, holes, path) {
     for (const group of groups.values()) {
       group.sort((a, b) => a[0] - b[0] || a[2] - b[2]);
       for (let i = 0; i + 1 < group.length; ++i) {
-        if (!roomSegmentLeg(room, group[i], group[i + 1], width, holes)) continue;
+        if (!roomSegmentLeg(room, group[i], group[i + 1], width, holes, volumes)) continue;
         const a = keyFor(group[i]), b = keyFor(group[i + 1]);
         adjacency.get(a).push(b); adjacency.get(b).push(a);
       }
@@ -708,10 +736,10 @@ function validateRoomSegment(room, from, to, width, holes, path) {
     const waypoints = raw.filter((point, index) => index === 0 || index === raw.length - 1 ||
       (raw[index - 1][0] === point[0]) !== (point[0] === raw[index + 1][0]));
     const legs = waypoints.slice(0, -1).map((point, index) =>
-      roomSegmentLeg(room, point, waypoints[index + 1], width, holes));
+      roomSegmentLeg(room, point, waypoints[index + 1], width, holes, volumes));
     if (legs.every(Boolean)) return makeRecord(waypoints, legs);
   }
-  fail(path, `walk clearance leaves room ${room.id} floor`);
+  return null;
 }
 
 function rectanglesTouch(a, b) {
@@ -1464,6 +1492,12 @@ function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, flo
       })),
     ]),
   ];
+  // Beams and fixture clearances are routing obstacles judged by the same
+  // swept-bounds overlap as the headroom checks below, which remain a backstop.
+  const headroomVolumes = [
+    ...beamMembers.map(beamBounds),
+    ...fixtures.filter(fixture => fixture.clearance).map(fixture => fixture.clearance),
+  ];
   const walkRoute = [...reachable].sort().map(roomId => {
     const path = [], routeEdges = [];
     for (let cursor = roomId; cursor !== undefined; cursor = parent.get(cursor)) {
@@ -1482,11 +1516,15 @@ function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, flo
       if (!sharedRoomId) fail('walkRoute', `connectors ${fullEdges[i].id} and ${fullEdges[i + 1].id} share no room`);
       const floor = floors.find(candidate => candidate.roomId === sharedRoomId);
       if (!floor) fail('walkRoute', `room ${sharedRoomId} has no walkable floor`);
-      const segment = validateRoomSegment(rooms.find(room => room.id === sharedRoomId),
-        fullEdges[i].roomThresholds[sharedRoomId],
-        fullEdges[i + 1].roomThresholds[sharedRoomId],
-        MIN_PORTAL_WIDTH, routeObstaclesForRoom(sharedRoomId, floor),
-        `walkRoute.${roomId}`);
+      const sharedRoom = rooms.find(room => room.id === sharedRoomId);
+      const from = fullEdges[i].roomThresholds[sharedRoomId];
+      const to = fullEdges[i + 1].roomThresholds[sharedRoomId];
+      const holes = routeObstaclesForRoom(sharedRoomId, floor);
+      // With no lane clear of beams and fixtures, route beneath them instead so
+      // the backstop below names the member that blocks the room.
+      const segment = routeRoomSegment(sharedRoom, from, to, MIN_PORTAL_WIDTH, holes, headroomVolumes) ??
+        routeRoomSegment(sharedRoom, from, to, MIN_PORTAL_WIDTH, holes) ??
+        fail(`walkRoute.${roomId}`, `walk clearance leaves room ${sharedRoomId} floor`);
       segment.id = `route-segment:${roomId}:${i}`;
       for (const beam of beamMembers)
         if (segment.segments.some(leg => volumesOverlap(leg.bounds, beamBounds(beam))))
