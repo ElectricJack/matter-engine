@@ -8,6 +8,7 @@ const { validateConnectorGeometry, validateConnectorRecords } =
   await import('../shared-lib/castle_connector_kit.js');
 
 const clone = value => structuredClone(value);
+const EXPECTED_COURTYARDS = [1, 1, 2];
 
 for (let variant = 0; variant < CASTLE_SITE_NAMES.length; ++variant) {
   const input = clone(castleSiteProgram(variant));
@@ -17,6 +18,11 @@ for (let variant = 0; variant < CASTLE_SITE_NAMES.length; ++variant) {
     manifest.roomGraph.nodes.filter(node => node.required).length,
     `${manifest.siteId} reaches every required room`);
   assert.equal(manifest.walkRoutes.length, manifest.roomGraph.reachableRoomIds.length);
+  assert.equal(manifest.courtyards.length, EXPECTED_COURTYARDS[variant]);
+  assert.ok(manifest.courtyards.every(courtyard =>
+    manifest.roomGraph.reachableRoomIds.includes(courtyard.nodeId)));
+  assert.equal(manifest.roomGraph.edges.filter(edge => edge.rooms.includes('outside')).length, 1,
+    'the selected entry remains the only global outside edge');
 
   const records = validateConnectorRecords(manifest);
   assert.equal(records.valid, true, `${manifest.siteId}: ${records.errors.join('; ')}`);

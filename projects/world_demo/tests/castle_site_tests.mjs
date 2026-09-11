@@ -38,6 +38,10 @@ function midpoint(a, b) {
   return a.map((value, index) => (value + b[index]) / 2);
 }
 
+function distance2(a, b) {
+  return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
+}
+
 function signedArea(polygon) {
   return polygon.reduce((sum, point, index) => {
     const next = polygon[(index + 1) % polygon.length];
@@ -102,6 +106,12 @@ for (const mouth of connector.mouths) {
   near(Math.hypot(...mouth.outward), 1, `${mouth.wing} outward length`);
   assert.ok(mouth.hostModules.length > 0);
   assert.ok(mouth.hostModules.every(id => id.startsWith(`${mouth.wing}:`)));
+  near(Math.hypot(mouth.insideSegment[1][0] - mouth.insideSegment[0][0],
+    mouth.insideSegment[1][1] - mouth.insideSegment[0][1]), mouth.clearWidth,
+  `${mouth.wing} inside face preserves authored clear width`);
+  near(Math.hypot(mouth.outsideSegment[1][0] - mouth.outsideSegment[0][0],
+    mouth.outsideSegment[1][1] - mouth.outsideSegment[0][1]), mouth.clearWidth,
+  `${mouth.wing} outside face preserves authored clear width`);
   for (const point of [...mouth.segment, [mouth.inside[0], mouth.inside[2]],
     [mouth.outside[0], mouth.outside[2]]])
     assert.ok(pointInConvexPolygon(point, connector.clearPolygon),
@@ -124,8 +134,18 @@ for (const span of connector.wallSpans) {
     `${span.id} normal points outward`);
   assert.equal(span.trimPlanes.length, 2);
   assert.ok(span.cornerOwners.every(owner => owner.startsWith(`${span.id}:`)));
-  assert.deepEqual(span.jambOwners,
-    ['connector:vestibule:mouth:a:jambs', 'connector:vestibule:mouth:b:jambs']);
+  span.jambOwners.forEach((owner, endpointIndex) => {
+    const ownedMouth = connector.mouths.find(mouth => mouth.jambOwner === owner);
+    const otherMouth = connector.mouths.find(mouth => mouth.jambOwner !== owner);
+    assert.ok(ownedMouth && otherMouth);
+    const ownedPoints = [...ownedMouth.insideSegment, ...ownedMouth.segment,
+      ...ownedMouth.outsideSegment];
+    const otherPoints = [...otherMouth.insideSegment, ...otherMouth.segment,
+      ...otherMouth.outsideSegment];
+    assert.ok(Math.min(...ownedPoints.map(point => distance2(span.segment[endpointIndex], point))) <=
+      Math.min(...otherPoints.map(point => distance2(span.segment[endpointIndex], point))) + EPSILON,
+    `${span.id} endpoint ${endpointIndex} belongs to its nearest mouth`);
+  });
   cornerOwners.push(...span.cornerOwners);
 }
 assert.equal(new Set(cornerOwners).size, cornerOwners.length, 'miter corners have one owner each');
@@ -187,6 +207,19 @@ assert.equal(outsideEdges[0].sourceId, 'core:main-entry');
 assert.equal(manifest.entry.portalId, 'main-entry');
 assert.equal(manifest.entry.roomId, 'core:core-ground');
 near(manifest.spawn, [-0.2, 0, 6], 'entry-opening spawn');
+
+// Authored portal source IDs are level-scoped. A same-named upper portal must
+// not survive as a second site exterior edge for the selected ground entry.
+const levelQualifiedEntry = clone(CASTLE_SITE_ANGLED_STUDY);
+levelQualifiedEntry.wings.find(wing => wing.id === 'core').plan.levels[1].edgeOverrides.push({
+  id: 'main-entry', from: [0, 0], to: [0, 12], kind: 'door',
+  connects: ['outside', 'core-upper'],
+  opening: { width: 2.4, height: 3.2, offset: 4.8 },
+});
+const qualifiedManifest = compileSite(levelQualifiedEntry);
+assert.equal(qualifiedManifest.roomGraph.edges.filter(edge => edge.rooms.includes('outside')).length, 1);
+assert.equal(qualifiedManifest.roomGraph.edges.find(edge => edge.rooms.includes('outside')).portalVolumeId,
+  'core:portal:aperture:ground:main-entry');
 
 // Every supported angle uses the exact placement equation; world coordinates
 // remain fractional instead of being rounded to the metre grid.
@@ -261,6 +294,55 @@ const courtRoute = courtyardManifest.walkRoutes.find(route =>
 assert.ok(courtRoute.waypoints.length >= 4);
 assert.match(courtRoute.traversals.at(-1).edgeId, /^route:courtyard:/);
 
+const intrudingCourt = clone(courtyardSite);
+intrudingCourt.courtyards[0].clearPolygon = [[-5, -5], [20, -5], [20, 20], [-5, 20]];
+expectInvalid(intrudingCourt, /courtyards\.inner-court.*intrudes into wing volume/);
+
+// Socket arrays are semantically unordered. IDs and routes remain stable when
+// a court has multiple openings on the same facade and their input is reversed.
+const orderedCourt = clone(courtyardSite);
+const originalNorthCourt = orderedCourt.wings.find(wing => wing.id === 'core')
+  .plan.levels[0].edgeOverrides.find(override => override.id === 'north-court');
+originalNorthCourt.from = [3, 12];
+originalNorthCourt.to = [9, 12];
+originalNorthCourt.opening.offset = 1.8;
+orderedCourt.wings.find(wing => wing.id === 'core').plan.levels[0].edgeOverrides.push({
+  id: 'north-court-west', from: [0, 12], to: [3, 12], kind: 'arch',
+  connects: ['outside', 'core-ground'],
+  opening: { width: 1.2, height: 3.2, offset: 0.9 },
+});
+orderedCourt.courtyards[0].clearPolygon = [[0.9, 11.7], [8, 11.7], [8, 18], [0.9, 18]];
+orderedCourt.courtyards[0].sockets.push({
+  wing: 'core', level: 'ground', portal: 'north-court-west',
+});
+const reversedCourt = clone(orderedCourt);
+reversedCourt.courtyards[0].sockets.reverse();
+assert.equal(siteToJSON(compileSite(reversedCourt)), siteToJSON(compileSite(orderedCourt)),
+  'courtyard socket input order does not change compiled IDs or routes');
+
+// Tuple components are escaped before global namespacing, so authored colons
+// cannot alias the reserved courtyard node namespace.
+const collisionSafe = clone(courtyardSite);
+collisionSafe.wings = [clone(collisionSafe.wings.find(wing => wing.id === 'core'))];
+collisionSafe.wings[0].id = 'site';
+collisionSafe.wings[0].frame = { origin: [0, 0, 0], yawDeg: 0 };
+delete collisionSafe.wings[0].placement;
+collisionSafe.wings[0].plan.levels = [collisionSafe.wings[0].plan.levels[0]];
+collisionSafe.wings[0].plan.stairs = [];
+collisionSafe.wings[0].plan.entryRoomId = 'courtyard:court';
+collisionSafe.wings[0].plan.levels[0].rooms[0].id = 'courtyard:court';
+for (const override of collisionSafe.wings[0].plan.levels[0].edgeOverrides)
+  override.connects = override.connects.map(room => room === 'core-ground' ? 'courtyard:court' : room);
+collisionSafe.connections = [];
+collisionSafe.entry.wing = 'site';
+collisionSafe.courtyards[0].id = 'court';
+collisionSafe.courtyards[0].sockets[0].wing = 'site';
+const collisionSafeManifest = compileSite(collisionSafe);
+assert.equal(new Set(collisionSafeManifest.roomGraph.nodes.map(node => node.id)).size,
+  collisionSafeManifest.roomGraph.nodes.length);
+assert.ok(collisionSafeManifest.roomGraph.nodes.some(node => node.id === 'site:courtyard~3Acourt'));
+assert.ok(collisionSafeManifest.roomGraph.nodes.some(node => node.id === 'site:courtyard:court'));
+
 // Site summaries rotate record positions, AABBs and spot-light directions with
 // the solved wing frame rather than replacing them with axis-aligned bounds.
 const transformedRecordsSite = clone(CASTLE_SITE_ANGLED_STUDY);
@@ -332,6 +414,42 @@ expectInvalid(narrow, /circulation portal must be at least 1\.2m wide/);
 const intruding = clone(CASTLE_SITE_ANGLED_STUDY);
 intruding.wings.find(wing => wing.id === 'hall').placement.outset = -1;
 expectInvalid(intruding, /mouths do not face the connector|intrud/);
+
+const participantIntrusion = clone(CASTLE_SITE_ANGLED_STUDY);
+participantIntrusion.wings.find(wing => wing.id === 'core').plan.levels[0].rooms.push({
+  id: 'outboard-turret', use: 'guardroom', required: false,
+  rect: { x: 14, z: 5, width: 2, depth: 2 },
+});
+expectInvalid(participantIntrusion,
+  /intrudes into wing volume core:occupied:room:outboard-turret/);
+
+const participantWallIntrusion = angledStudySite(0);
+participantWallIntrusion.connections[0].wallThickness = 1.2;
+const wallObstaclePlan = clone(ANGLED_STUDY_HALL_PLAN);
+wallObstaclePlan.id = 'wall-obstacle-plan';
+wallObstaclePlan.entryRoomId = 'outboard-wall-room';
+wallObstaclePlan.levels[0].rooms = [{
+  id: 'outboard-wall-room', use: 'guardroom', required: false,
+  rect: { x: 0, z: 0, width: 2, depth: 2 },
+}];
+wallObstaclePlan.levels[0].edgeOverrides = [{
+  id: 'obstacle-entry', from: [0, 0], to: [0, 2], kind: 'arch',
+  connects: ['outside', 'outboard-wall-room'],
+  opening: { width: 1.2, height: 2.8, offset: 0.4 },
+}];
+participantWallIntrusion.wings.push({
+  id: 'wall-obstacle', plan: wallObstaclePlan,
+  frame: { origin: [14, 0, 2.7], yawDeg: 0 },
+});
+expectInvalid(participantWallIntrusion, /wallSpans.*solid intrudes into wing volume.*outboard-wall-room/);
+
+const lowHeadroom = clone(CASTLE_SITE_ANGLED_STUDY);
+lowHeadroom.connections[0].height = 1;
+expectInvalid(lowHeadroom, /clearHeight.*at least 2\.1m headroom/);
+
+const unsupportedRoof = clone(CASTLE_SITE_ANGLED_STUDY);
+unsupportedRoof.connections[0].roof.kind = 'flat';
+expectInvalid(unsupportedRoof, /roof\.kind.*only low-hip is supported/);
 
 const overlapping = clone(CASTLE_SITE_ANGLED_STUDY);
 overlapping.wings.push({
