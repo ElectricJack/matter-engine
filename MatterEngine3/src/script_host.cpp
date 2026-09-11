@@ -1447,6 +1447,17 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
     const float cell_size = 1.0f;   // smallest_cell_size (matches Cluster default)
     const float base_detail = buf.ops.empty()
                                   ? 0.1f : buf.ops[0].spacing;
+    // Brush spacing is an absolute sampling request, regardless of shape or
+    // CSG operation. Fat primitives and subtractive spheres carry no additive
+    // particle detail_size, so inferring resolution from that subset silently
+    // left thin boxes, timber and carved details on a 66.7 mm lattice. Use one
+    // minimum for the whole expression so neighbouring cell meshes also agree.
+    float absolute_spacing = 0.0f;
+    for (const dsl::BuildOp& op : buf.ops) {
+        if (op.spacing > 0.0f && std::isfinite(op.spacing) &&
+            (absolute_spacing == 0.0f || op.spacing < absolute_spacing))
+            absolute_spacing = op.spacing;
+    }
 
     // group_id -> accumulated (Tri, TriEx) across all cells. std::map for
     // deterministic group iteration order.
@@ -1589,7 +1600,7 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         CellMeshResult res = cell->build_cell_meshes(
             particles, scratch, /*simplification*/1.0f, base_detail,
             /*max_pow*/6, /*uniform_detail*/0.0f, carvePtr, carveCount,
-            gstagesPtr, fatPtr, fatCount, clusterStage);
+            gstagesPtr, fatPtr, fatCount, clusterStage, absolute_spacing);
 
         // Register each group's GL-free triangle arrays directly into the BLAS
         // and place an identity instance in the TLAS.
