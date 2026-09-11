@@ -3,7 +3,8 @@
 Code checkpoints: `f94946ca` fixes the scene-GI dispatch flag and uses the
 POM-lifted world position only for local-light visibility origins;
 `76a383a3` isolates the diagnostic local-direct readback from the established
-multi-attachment raster/GI readback.
+multi-attachment raster/GI readback; `05f6a424` keeps the analytic sources
+clear of their RT-visible fixture housings.
 
 ## Automated/native checks
 
@@ -47,19 +48,36 @@ arguments were temporarily changed from `true` to `false`, followed by
 cells/0 buckets`; the after image is black. Both source arguments were restored
 to `true` before this evidence was committed.
 
-## Pending grain controls
+## Corrected local-direct grain controls
 
-Read-only diagnosis found that the raw local-direct lane uses four fixed
-finite-radius visibility samples and no temporal filter. The fixture's old
-analytic point/spot locations were tangent to or inside their RT-visible iron
-housings, so those fixed rays made the intersection error stable. The follow-up
-moves each housing farther than `housingRadius + sourceRadius`, with a Node
-geometry guard.
+The final six controls were captured with the corrected 2026-09-11 09:49:44
+MSVC editor supplied by the renderer owner. That build uses frame-varying
+finite-radius samples, a separate full-resolution local-direct temporal
+history, and one narrow edge-aware spatial pass. All three controls use the
+same GI-off material camera and independent history resets at one and 96
+presented frames:
 
-`grain-old.timeline`, `grain-cleared.timeline`, and
-`grain-zero-radius.timeline` pin the same GI-off material camera and independent
-history resets at one and 96 presented frames. Run `grain-old.timeline` at
-`241d2d52`; run `grain-cleared.timeline` at the housing-fix commit; then
-temporarily set all six authored `sourceRadius` fields to zero, reload, and run
-`grain-zero-radius.timeline`. The GPU run is deliberately deferred while the
-root connector fixture owns the device.
+- `old-frame-1.png` / `old-frame-96.png` transiently recreate the former
+  intersecting housing. Sampling noise converges, but the invalid emitter/body
+  intersection leaves visibly dark, fuzzy residuals at the fixtures.
+- `cleared-frame-1.png` / `cleared-frame-96.png` use the committed housing
+  clearance. The noisy first sample converges to smooth soft shadows while
+  direct illumination remains present across the floor, gold, glass, and pale
+  receivers.
+- `zero-radius-frame-1.png` / `zero-radius-frame-96.png` temporarily set only
+  the six source radii to zero. Both frames show the expected stable hard-shadow
+  control without black pepper.
+
+`grain-old.log`, `grain-cleared.log`, and `grain-zero-radius.log` record six
+published lights, native RT effective, zero bake errors, and clean editor exit.
+They contain no rejected property, Vulkan validation error, device loss, or
+fatal renderer message. The authored housing positions and all six source
+radii were restored before archiving the evidence.
+
+The WSL invocation passed
+`WSLENV=...:MATTER_WORLD:MATTER_CMD_FIFO/p:...` so the Windows child received
+both the selected world and translated command-file path. The editor wrote all
+PNG/`.done` pairs and exited 0; the POSIX `drive.py` post-check nevertheless
+reported a false-negative because it treated the timeline's `C:/...` shot
+paths as relative Linux paths. The files above were verified directly at
+`/mnt/c/tmp/local-light-rt-grain-controls/` before copying them here.
