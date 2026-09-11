@@ -24,6 +24,7 @@ export const CASTLE_SITE_MIN_CLEAR_WIDTH =
   2 * (CASTLE_SITE_CAPSULE_RADIUS + CASTLE_SITE_CLEARANCE);
 
 const EPSILON = 1e-8;
+const COLLISION_AREA_EPSILON = 2e-5;
 
 function fail(path, message) {
   throw new Error(`castle site ${path}: ${message}`);
@@ -149,6 +150,49 @@ function convexPolygonsOverlap(a, b, positiveOnly = true) {
   return true;
 }
 
+function convexIntersection(subject, clipper) {
+  let result = subject.map(point => [...point]);
+  for (let edgeIndex = 0; edgeIndex < clipper.length && result.length; ++edgeIndex) {
+    const a = clipper[edgeIndex], b = clipper[(edgeIndex + 1) % clipper.length];
+    const input = result;
+    result = [];
+    for (let index = 0; index < input.length; ++index) {
+      const from = input[index], to = input[(index + 1) % input.length];
+      const fromCross = cross(a, b, from), toCross = cross(a, b, to);
+      const fromInside = fromCross >= -EPSILON, toInside = toCross >= -EPSILON;
+      if (fromInside) result.push(from);
+      if (fromInside !== toInside) {
+        const denominator = fromCross - toCross;
+        const t = Math.abs(denominator) <= EPSILON ? 0 : fromCross / denominator;
+        result.push([from[0] + (to[0] - from[0]) * t,
+          from[1] + (to[1] - from[1]) * t]);
+      }
+    }
+  }
+  return result;
+}
+
+function positivePolygonArea(polygon) {
+  return polygon.length < 3 ? 0 : Math.abs(polygonArea(polygon));
+}
+
+function clipPolygonHalfPlane(polygon, signedDistance) {
+  const result = [];
+  for (let index = 0; index < polygon.length; ++index) {
+    const from = polygon[index], to = polygon[(index + 1) % polygon.length];
+    const fromDistance = signedDistance(from), toDistance = signedDistance(to);
+    const fromInside = fromDistance >= -EPSILON, toInside = toDistance >= -EPSILON;
+    if (fromInside) result.push([...from]);
+    if (fromInside !== toInside) {
+      const denominator = fromDistance - toDistance;
+      const amount = Math.abs(denominator) <= EPSILON ? 0 : fromDistance / denominator;
+      result.push([from[0] + (to[0] - from[0]) * amount,
+        from[1] + (to[1] - from[1]) * amount]);
+    }
+  }
+  return result;
+}
+
 function transformPolygon(frame, polygon) {
   return polygon.map(point => transformPointXZ(frame, point));
 }
@@ -160,7 +204,7 @@ function levelFor(manifest, levelId, path) {
 }
 
 function socketKey(reference) {
-  return `${reference.wing}:${reference.level}:${reference.portal}`;
+  return `${idToken(reference.wing)}:${idToken(reference.level)}:${idToken(reference.portal)}`;
 }
 
 function normalizeSocketReference(value, path, wingRequired = true) {
@@ -314,6 +358,7 @@ function wingRoomVolumes(wing) {
       const b = volume.bounds;
       result.push({
         id: `${wing.id}:${volume.id}`, wing: wing.id, levelId: volume.levelId,
+        roomId: volume.roomId,
         minY: b.minY + wing.frame.origin[1], maxY: b.maxY + wing.frame.origin[1],
         polygon: transformPolygon(wing.frame,
           [[b.minX, b.minZ], [b.maxX, b.minZ], [b.maxX, b.maxZ], [b.minX, b.maxZ]]),
@@ -325,6 +370,7 @@ function wingRoomVolumes(wing) {
           volume.center[1] + Math.sin(angle) * volume.radius];
       });
       result.push({ id: `${wing.id}:${volume.id}`, wing: wing.id, levelId: volume.levelId,
+        roomId: volume.roomId,
         minY: volume.minY + wing.frame.origin[1], maxY: volume.maxY + wing.frame.origin[1],
         polygon: transformPolygon(wing.frame, local) });
     }
@@ -348,7 +394,8 @@ function validateWingOverlap(wings) {
 }
 
 function shiftedMouthSegment(mouth, threshold) {
-  const center = [mouth.center[0], mouth.center[2]];
+  const center = mouth.center ? [mouth.center[0], mouth.center[2]] :
+    midpoint2(mouth.segment[0], mouth.segment[1]);
   const face = [threshold[0], threshold[2]];
   const offset = subtract2(face, center);
   return mouth.segment.map(point => add2(point, offset));
@@ -359,22 +406,30 @@ function belongsToMouthEdge(edge, mouthPointGroups) {
     points.some(point => samePoint(point, endpoint))));
 }
 
-function buildWallSpans(id, polygon, mouthPointGroups, thickness, baseY, height, material) {
+function squaredDistanceToPoints(point, points) {
+  return Math.min(...points.map(candidate =>
+    (point[0] - candidate[0]) ** 2 + (point[1] - candidate[1]) ** 2));
+}
+
+function buildWallSpans(id, polygon, mouthGroups, thickness, baseY, height, material) {
   const spans = [];
   for (let index = 0; index < polygon.length; ++index) {
     const segment = [polygon[index], polygon[(index + 1) % polygon.length]];
-    if (belongsToMouthEdge(segment, mouthPointGroups)) continue;
+    if (belongsToMouthEdge(segment, mouthGroups.map(group => group.points))) continue;
     const tangent = normalize2(subtract2(segment[1], segment[0]), `connections.${id}.wallSpans`);
     // clearPolygon is counter-clockwise, so its exterior is to the right of
     // each directed boundary edge.
     const normal = [tangent[1], -tangent[0]];
     const spanId = `connector:${id}:wall:${spans.length}`;
+    const jambOwners = segment.map(endpoint => [...mouthGroups].sort((left, right) =>
+      squaredDistanceToPoints(endpoint, left.points) - squaredDistanceToPoints(endpoint, right.points) ||
+      cmp(left.owner, right.owner))[0].owner);
     spans.push({
       id: spanId, segment: segment.map(point => [...point]), tangent, normal,
       thickness, height, material,
       courseOrigin: [segment[0][0], baseY, segment[0][1]],
       cornerOwners: [`${spanId}:start`, `${spanId}:end`],
-      jambOwners: [`connector:${id}:mouth:a:jambs`, `connector:${id}:mouth:b:jambs`],
+      jambOwners,
       trimPlanes: [
         { normal: [tangent[0], tangent[1]], offset: dot2(segment[0], tangent), keepSign: 1 },
         { normal: [tangent[0], tangent[1]], offset: dot2(segment[1], tangent), keepSign: -1 },
@@ -386,7 +441,7 @@ function buildWallSpans(id, polygon, mouthPointGroups, thickness, baseY, height,
 }
 
 function publicMouth(mouth, connectorId, side) {
-  const { portal, center, clearWidth, roomId, ...record } = mouth;
+  const { portal, ...record } = mouth;
   return { ...record, jambOwner: `connector:${connectorId}:mouth:${side}:jambs` };
 }
 
@@ -420,15 +475,30 @@ function buildConnector(connection, index, byId) {
   const minimumWidth = polygonMinimumWidth(clearPolygon);
   if (minimumWidth + EPSILON < CASTLE_SITE_MIN_CLEAR_WIDTH)
     fail(`${path}.clearPolygon`, `narrow join ${minimumWidth}m cannot fit radius 0.4 capsule with 0.2m clearance`);
+  for (const mouth of [a, b]) {
+    // The socket contract publishes the authored clear-width endpoints at
+    // both faces. The bounded throat polygon separately describes the small
+    // miter transition through the host wall without widening those openings.
+    mouth.insideSegment = shiftedMouthSegment(mouth, mouth.inside);
+    mouth.outsideSegment = shiftedMouthSegment(mouth, mouth.outside);
+    mouth.throatPolygon = convexHull([...mouth.insideSegment, ...mouth.outsideSegment],
+      `${path}.${mouth.wing}.throatPolygon`);
+  }
   // The vestibule enclosure may rise above its door apertures. Detailed
   // geometry uses height; walk/headroom validation uses the smaller physical
   // aperture clearance.
   const height = positive(connection.height ?? Math.min(a.clearHeight, b.clearHeight), `${path}.height`);
   const clearHeight = Math.min(height, a.clearHeight, b.clearHeight);
+  if (clearHeight + EPSILON < 2.1)
+    fail(`${path}.clearHeight`, 'must preserve at least 2.1m headroom');
   const wallThickness = positive(connection.wallThickness ?? Math.max(a.wallThickness, b.wallThickness),
     `${path}.wallThickness`);
   const wallMaterial = connection.wallMaterial ?? 'castle.stone';
-  const wallSpans = buildWallSpans(id, clearPolygon, [aPoints, bPoints], wallThickness,
+  const wallSpans = buildWallSpans(id, clearPolygon,
+    [{ owner: `connector:${id}:mouth:a:jambs`,
+      points: [...a.insideSegment, ...a.segment, ...a.outsideSegment] },
+    { owner: `connector:${id}:mouth:b:jambs`,
+      points: [...b.insideSegment, ...b.segment, ...b.outsideSegment] }], wallThickness,
     aBaseY, height, wallMaterial);
   const floorMaterial = connection.floor ?? 'stone';
   const floorThickness = positive(connection.floorThickness ?? 0.25, `${path}.floorThickness`);
@@ -436,6 +506,7 @@ function buildConnector(connection, index, byId) {
     ? { ...connection.roof, material: connection.roof.material ?? 'slate', overhang: connection.roof.overhang ?? 0.2 }
     : { kind: 'low-hip', rise: 0.8, material: 'slate', overhang: 0.2 };
   positive(roof.rise, `${path}.roof.rise`);
+  if (roof.kind !== 'low-hip') fail(`${path}.roof.kind`, 'only low-hip is supported');
   // Threshold-to-mouth-to-mouth-to-threshold keeps the path centred in each
   // finite aperture. Using the exterior face centres as turns can put a 0.6m
   // swept capsule against an oblique side wall even though the convex passage
@@ -447,18 +518,74 @@ function buildConnector(connection, index, byId) {
     mouths: [publicMouth(a, id, 'a'), publicMouth(b, id, 'b')], wallSpans,
     floor: { thickness: floorThickness, material: floorMaterial, owner: `connector:${id}:floor` },
     height, clearHeight, roof, routeWaypoints,
-    _rooms: [`${a.wing}:${a.roomId}`, `${b.wing}:${b.roomId}`],
+    _rooms: [namespaceRoom(a.wing, a.roomId), namespaceRoom(b.wing, b.roomId)],
   };
 }
 
 function validateConnectorIntrusion(connectors, wingVolumes) {
   for (const connector of connectors) {
-    const participantWings = new Set(connector.mouths.map(mouth => mouth.wing));
-    const volume = { minY: connector.baseY, maxY: connector.baseY + connector.clearHeight };
+    const participantMouths = new Map(connector.mouths.map(mouth => [mouth.wing, mouth]));
+    const volume = { minY: connector.baseY, maxY: connector.baseY + connector.height };
+    const clearIntrusionArea = (footprint, wingVolume) => {
+      let overlap = convexIntersection(footprint, wingVolume.polygon);
+      const mouth = participantMouths.get(wingVolume.wing);
+      if (mouth?.roomId === wingVolume.roomId) {
+        // room-cell footprints include the inner half of their perimeter wall.
+        // Ignore that host-wall slab, but reject any connector geometry that
+        // crosses the authored inside face into the actual room interior.
+        const inside = [mouth.inside[0], mouth.inside[2]];
+        overlap = clipPolygonHalfPlane(overlap,
+          point => -dot2(subtract2(point, inside), mouth.outward));
+      }
+      return positivePolygonArea(overlap);
+    };
+    const wallIntrusionArea = (footprint, wingVolume) => {
+      const overlap = convexIntersection(footprint, wingVolume.polygon);
+      const overlapArea = positivePolygonArea(overlap);
+      const mouth = participantMouths.get(wingVolume.wing);
+      if (overlapArea <= EPSILON || !mouth) return overlapArea;
+      const inside = [mouth.inside[0], mouth.inside[2]];
+      // The owned jamb joint is bounded longitudinally by the host wall,
+      // never by an arbitrarily oversized connector wall supplied by the
+      // caller. Its finite tangential reach covers an oblique miter no longer
+      // than the connector itself.
+      const otherMouth = connector.mouths.find(candidate => candidate !== mouth);
+      const connectorLength = length2(subtract2(
+        [otherMouth.center[0], otherMouth.center[2]], [mouth.center[0], mouth.center[2]]));
+      const interfaceDepth = mouth.wallThickness;
+      const halfWidth = mouth.clearWidth / 2 + connectorLength;
+      const depth = mouth.wallThickness;
+      const corner = (along, across) => add2(inside,
+        add2(scale2(mouth.outward, along), scale2(mouth.tangent, across)));
+      const jambEnvelope = convexHull([corner(-interfaceDepth, -halfWidth),
+        corner(depth, -halfWidth), corner(depth, halfWidth),
+        corner(-interfaceDepth, halfWidth)],
+      `connections.${connector.id}.mouths.${mouth.wing}.jambEnvelope`);
+      const permittedArea = positivePolygonArea(convexIntersection(overlap, jambEnvelope));
+      return Math.max(0, overlapArea - permittedArea);
+    };
     for (const wingVolume of wingVolumes) {
-      if (participantWings.has(wingVolume.wing) || !yRangesOverlap(volume, wingVolume)) continue;
-      if (convexPolygonsOverlap(connector.clearPolygon, wingVolume.polygon, true))
-        fail(`connections.${connector.id}`, `intrudes into wing volume ${wingVolume.id}`);
+      if (!yRangesOverlap(volume, wingVolume)) continue;
+      const area = clearIntrusionArea(connector.clearPolygon, wingVolume);
+      if (area > COLLISION_AREA_EPSILON)
+        fail(`connections.${connector.id}`, `intrudes into wing volume ${wingVolume.id} (${area}m2)`);
+    }
+    // The clear floor is not the full physical footprint: each side wall is
+    // extruded along its outward normal. Those solids may meet their two host
+    // wings at owned jambs, but may never cut into an unrelated wing.
+    for (const span of connector.wallSpans) {
+      const offset = scale2(span.normal, span.thickness);
+      const footprint = convexHull([
+        ...span.segment,
+        add2(span.segment[0], offset), add2(span.segment[1], offset),
+      ], `connections.${connector.id}.wallSpans.${span.id}.footprint`);
+      for (const wingVolume of wingVolumes) {
+        if (!yRangesOverlap(volume, wingVolume)) continue;
+        const area = wallIntrusionArea(footprint, wingVolume);
+        if (area > COLLISION_AREA_EPSILON)
+          fail(`connections.${connector.id}.wallSpans.${span.id}`,
+            `solid intrudes into wing volume ${wingVolume.id} (${area}m2)`);
+      }
     }
   }
 }
@@ -477,8 +604,12 @@ function buildCourtyard(source, index, byId) {
     fail(`${path}.clearPolygon`, `must retain ${CASTLE_SITE_MIN_CLEAR_WIDTH}m passage width`);
   if (!Array.isArray(source.sockets) || source.sockets.length === 0)
     fail(`${path}.sockets`, 'must contain at least one wing socket');
-  const sockets = source.sockets.map((value, socketIndex) => {
-    const reference = normalizeSocketReference(value, `${path}.sockets[${socketIndex}]`);
+  const socketSources = stableSort(source.sockets.map((value, socketIndex) => ({
+    reference: normalizeSocketReference(value, `${path}.sockets[${socketIndex}]`),
+    sourceIndex: socketIndex,
+  })), value => socketKey(value.reference));
+  const sockets = socketSources.map(({ reference, sourceIndex }) => {
+    const socketIndex = sourceIndex;
     const wing = byId.get(reference.wing);
     if (!wing) fail(`${path}.sockets[${socketIndex}].wing`, `unknown wing ${reference.wing}`);
     const socket = worldSocket(wing, reference, `${path}.sockets[${socketIndex}]`);
@@ -515,12 +646,41 @@ function buildCourtyard(source, index, byId) {
   };
 }
 
+function validateCourtyardIntrusion(courtyards, wingVolumes) {
+  for (const courtyard of courtyards) {
+    const participantMouths = new Map();
+    for (const mouth of courtyard.sockets) {
+      if (!participantMouths.has(mouth.wing)) participantMouths.set(mouth.wing, []);
+      participantMouths.get(mouth.wing).push(mouth);
+    }
+    const floorVolume = { minY: courtyard.baseY - courtyard.floor.thickness,
+      maxY: courtyard.baseY + EPSILON * 2 };
+    for (const wingVolume of wingVolumes) {
+      if (!yRangesOverlap(floorVolume, wingVolume)) continue;
+      let overlap = convexIntersection(courtyard.clearPolygon, wingVolume.polygon);
+      const mouth = participantMouths.get(wingVolume.wing)
+        ?.find(candidate => candidate.roomId === wingVolume.roomId);
+      if (mouth?.roomId === wingVolume.roomId) {
+        const inside = [mouth.inside[0], mouth.inside[2]];
+        overlap = clipPolygonHalfPlane(overlap,
+          point => -dot2(subtract2(point, inside), mouth.outward));
+      }
+      const overlapArea = positivePolygonArea(overlap);
+      if (overlapArea <= COLLISION_AREA_EPSILON) continue;
+      fail(`courtyards.${courtyard.id}`,
+        `intrudes into wing volume ${wingVolume.id} (${overlapArea}m2)`);
+    }
+  }
+}
+
 function pointInConvex(point, polygon) {
   return polygon.every((a, index) =>
     cross(a, polygon[(index + 1) % polygon.length], point) >= -EPSILON);
 }
 
-function namespaceRoom(wingId, roomId) { return roomId === 'outside' ? 'outside' : `${wingId}:${roomId}`; }
+function namespaceRoom(wingId, roomId) {
+  return roomId === 'outside' ? 'outside' : `${idToken(wingId)}:${idToken(roomId)}`;
+}
 
 function transformGraphEdge(wing, edge) {
   const roomThresholds = Object.fromEntries(Object.entries(edge.roomThresholds || {})
@@ -533,12 +693,12 @@ function transformGraphEdge(wing, edge) {
   }
   if (!routeWaypoints) routeWaypoints = edge.thresholds.map(point => transformPoint(wing.frame, point));
   return {
-    ...edge, id: `${wing.id}:${edge.id}`, sourceId: `${wing.id}:${edge.sourceId}`,
+    ...edge, id: `${idToken(wing.id)}:${edge.id}`, sourceId: `${idToken(wing.id)}:${edge.sourceId}`,
     rooms, thresholds: edge.thresholds.map(point => transformPoint(wing.frame, point)),
     roomThresholds, routeWaypoints,
-    portalVolumeId: `${wing.id}:${edge.portalVolumeId}`,
-    floorIds: (edge.floorIds || []).map(id => `${wing.id}:${id}`),
-    sweptVolumeIds: (edge.sweptVolumeIds || []).map(id => `${wing.id}:${id}`),
+    portalVolumeId: `${idToken(wing.id)}:${edge.portalVolumeId}`,
+    floorIds: (edge.floorIds || []).map(id => `${idToken(wing.id)}:${id}`),
+    sweptVolumeIds: (edge.sweptVolumeIds || []).map(id => `${idToken(wing.id)}:${id}`),
   };
 }
 
@@ -584,7 +744,7 @@ function transformRoomSegment(wing, roomId, segment, index) {
 
 function courtyardGraphEdges(courtyards) {
   return courtyards.flatMap(courtyard => courtyard.sockets.map((mouth, index) => {
-    const roomId = `${mouth.wing}:${mouth.roomId}`;
+    const roomId = namespaceRoom(mouth.wing, mouth.roomId);
     const routeWaypoints = [mouth.inside, mouth.center, mouth.outside,
       mouth.courtyardThreshold].map(point => [...point]);
     return {
@@ -605,27 +765,31 @@ function courtyardGraphEdges(courtyards) {
 function buildGlobalGraph(wings, connectors, courtyards, entryRef) {
   const entryWing = wings.find(wing => wing.id === entryRef.wing);
   const entrySocket = worldSocket(entryWing, entryRef, 'entry');
-  const entryRoomId = `${entryWing.id}:${entrySocket.roomId}`;
+  const entryRoomId = namespaceRoom(entryWing.id, entrySocket.roomId);
   const roomOwners = new Map();
   const nodes = wings.flatMap(wing => wing.manifest.roomGraph.nodes.map(node => ({
-    ...node, id: `${wing.id}:${node.id}`, wingId: wing.id, localRoomId: node.id,
-    levelId: `${wing.id}:${node.levelId}`,
+    ...node, id: namespaceRoom(wing.id, node.id), wingId: wing.id, localRoomId: node.id,
+    levelId: `${idToken(wing.id)}:${idToken(node.levelId)}`,
   }))).concat(courtyards.map(courtyard => ({
     id: courtyard.nodeId, levelId: `site:${courtyard.level}`, use: 'court',
     required: courtyard.required, walkable: true, courtyardId: courtyard.id,
   }))).sort((a, b) => cmp(a.id, b.id));
+  if (new Set(nodes.map(node => node.id)).size !== nodes.length)
+    fail('roomGraph.nodes', 'compiled node IDs must be unique');
   for (const node of nodes) if (node.wingId)
     roomOwners.set(node.id, { wing: wings.find(wing => wing.id === node.wingId), roomId: node.localRoomId });
   const edges = [];
   for (const wing of wings) for (const edge of wing.manifest.roomGraph.edges) {
     if (edge.rooms.includes('outside')) {
-      if (wing.id !== entryRef.wing || edge.sourceId !== entryRef.portal) continue;
+      if (wing.id !== entryRef.wing || edge.portalVolumeId !== entrySocket.portal.id) continue;
     }
     edges.push(transformGraphEdge(wing, edge));
   }
   edges.push(...connectors.map(connectorGraphEdge));
   edges.push(...courtyardGraphEdges(courtyards));
   edges.sort((a, b) => cmp(a.id, b.id));
+  if (new Set(edges.map(edge => edge.id)).size !== edges.length)
+    fail('roomGraph.edges', 'compiled edge IDs must be unique');
   const adjacency = new Map(nodes.map(node => [node.id, []]));
   for (const edge of edges) {
     const realRooms = edge.rooms.filter(room => room !== 'outside');
@@ -692,7 +856,7 @@ function buildGlobalGraph(wings, connectors, courtyards, entryRef) {
     };
   });
   return {
-    entryRoomId, entryPortalId: `${entryWing.id}:${entrySocket.portal.id}`,
+    entryRoomId, entryPortalId: `${idToken(entryWing.id)}:${entrySocket.portal.id}`,
     nodes, edges, reachableRoomIds: [...reachable].sort(),
     walkRoute: walkRoutes, walkRoutes,
   };
@@ -777,6 +941,7 @@ function compile(site) {
   }), courtyard => courtyard.id);
   const wingVolumes = validateWingOverlap(wings);
   validateConnectorIntrusion(connectors, wingVolumes);
+  validateCourtyardIntrusion(courtyards, wingVolumes);
   const roomGraph = buildGlobalGraph(wings, connectors, courtyards, entryRef);
   const entrySocket = worldSocket(byId.get(entryRef.wing), entryRef, 'entry');
   const spawn = [

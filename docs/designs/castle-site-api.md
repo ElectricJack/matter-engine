@@ -100,7 +100,9 @@ world-space supported floor polygon and one or more exterior wing sockets.
 Those sockets are consumed just like connector mouths. Compilation emits a
 walkable `site:courtyard:<id>` node plus one threshold edge per socket; it does
 not merge the court with `outside`. This lets an enclosed outdoor court remain
-reachable while the selected `entry` stays the site's only outside edge.
+reachable while the selected `entry` stays the site's only outside edge. Court
+socket arrays are sorted by their semantic wing/level/portal tuple, and a court
+floor that cuts through a wing beyond its host wall interface is rejected.
 
 ## Compiled site
 
@@ -128,7 +130,10 @@ is stored in world space.
 The global `roomGraph` namespaces every wing-local room, edge, portal, floor
 and swept-volume identity with the wing ID. Local manifests retain their own
 outside edges, but the global graph suppresses all of them except the selected
-site entry. A consumed socket is represented only by its compound connector
+site entry, matched by wing, level and portal. Namespace tuple components are
+percent-escaped (`%` is serialized as `~`) and compiled node/edge uniqueness is
+asserted, so authored colons cannot alias reserved site IDs. A consumed socket
+is represented only by its compound connector
 edge. Global `walkRoutes` are ordered world-space polylines and preserve every
 compiled stair waypoint, including intermediate landing turns. Between graph
 edges the site compiler calls `routeManifestRoomSegment` from
@@ -146,9 +151,11 @@ rectangles are published as OBBs rather than misleading global AABBs.
   id, level, baseY,
   clearPolygon:[[x,z], ...],        // convex, counter-clockwise, world space
   mouths:[{
-    wing, level, portalId,
+    wing, level, portalId, roomId, clearWidth, center:[x,y,z],
     inside:[x,y,z], outside:[x,y,z],
     segment:[[x,z],[x,z]], tangent:[x,z], outward:[x,z],
+    insideSegment:[[x,z],[x,z]], outsideSegment:[[x,z],[x,z]],
+    throatPolygon:[[x,z],...],
     wallThickness, hostModules:[...], jambOwner,
   }, {…}],
   wallSpans:[{
@@ -166,13 +173,22 @@ rectangles are published as OBBs rather than misleading global AABBs.
 ```
 
 `portalId` is the authored source ID, not the compiler's prefixed aperture ID.
-All connector geometry is world-space. `segment` is the clear-width mouth line
-on the wall centre plane. The convex polygon extends through each wall to the
-interior threshold and its minimum caliper width must fit a radius-0.4 capsule
-plus 0.2m clearance on both sides. Narrow joins, non-facing/intruding mouths,
-positive-area wing overlap, connector intrusion into an unrelated wing,
+All connector geometry is world-space. `segment` is the authored clear-width
+mouth line on the wall centre plane. `insideSegment` and `outsideSegment` keep
+the authored clear-width endpoints translated exactly onto both wall faces;
+`throatPolygon` is their finite convex wall-thickness prism. The connector
+polygon extends through each wall to the interior threshold
+and its minimum caliper width must fit a radius-0.4 capsule plus 0.2m clearance
+on both sides. Narrow joins, non-facing/intruding mouths,
+positive-area wing overlap, connector floor/wall-solid intrusion,
 incompatible elevations, duplicate sockets, invalid polygons and globally
 disconnected required rooms are rejected.
+
+Participant wings are not exempt from intrusion checks. Only the finite prism
+through the host wall and the bounded, owned jamb join may meet the host wing;
+positive area in the actual room interior or another wing is rejected. This
+lets asymmetric connector stones own the miter without widening the declared
+portal opening or allowing a long connector to cut through another room.
 
 The authored vestibule `height` may exceed a door aperture: a 3.6m enclosure
 meeting a 2.8m arch is ordinary architecture. `height` drives side walls and
