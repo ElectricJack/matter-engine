@@ -4,9 +4,14 @@ const primitiveSource = readFileSync(new URL(
   '../shared-lib/castle_primitives.js', import.meta.url), 'utf8');
 const primitiveUrl = `data:text/javascript;base64,${Buffer.from(
   primitiveSource + '\n//# sourceURL=castle_primitives.test.mjs').toString('base64')}`;
+const stockSource = readFileSync(new URL(
+  '../shared-lib/castle_stock.js', import.meta.url), 'utf8').replace(
+  "'shared-lib/castle_primitives'", JSON.stringify(primitiveUrl));
+const stockUrl = `data:text/javascript;base64,${Buffer.from(
+  stockSource + '\n//# sourceURL=castle_stock.test.mjs').toString('base64')}`;
 const connectorSource = readFileSync(new URL(
   '../shared-lib/castle_connector_kit.js', import.meta.url), 'utf8').replace(
-  "'shared-lib/castle_primitives'", JSON.stringify(primitiveUrl));
+  "'shared-lib/castle_stock'", JSON.stringify(stockUrl));
 const connectorUrl = `data:text/javascript;base64,${Buffer.from(
   connectorSource + '\n//# sourceURL=castle_connector_kit.test.mjs').toString('base64')}`;
 const {
@@ -81,10 +86,10 @@ function cross(a, b, point) {
     (b[1] - a[1]) * (point[0] - a[0]);
 }
 
-function insideConvex(polygon, point) {
+function insideConvex(polygon, point, tolerance = EPSILON) {
   const sign = Math.sign(polygonArea(polygon));
   return polygon.every((vertex, index) =>
-    sign * cross(vertex, polygon[(index + 1) % polygon.length], point) >= -EPSILON);
+    sign * cross(vertex, polygon[(index + 1) % polygon.length], point) >= -tolerance);
 }
 
 function normalized(vector) {
@@ -454,25 +459,51 @@ assert.deepEqual(new Set(childVariants.map(variant =>
   'declared requires exactly cover child-only assembly placements');
 
 const translated = translatedRecord(canonical, 0.75, 0);
-const translatedParams = { ...params, flagSize: 0.75 };
+const translatedParams = { ...params };
 const translatedMesh = emitConnectorMesh(new RecordingPart(), translated, translatedParams);
 const translatedChildPart = new RecordingPart();
 const translatedChildren = emitConnectorChildren(
   translatedChildPart, translated, translatedParams);
-assert.ok(translatedMesh.inlineFloorPieces.some(polygon => polygon.length === 4),
-  'subminimum rectangular grid slivers stay exact inline geometry');
+assert.ok(translatedMesh.inlineFloorPieces.length > 0,
+  'fractional non-rectangular flags remain exact inline geometry');
+assert.ok(translatedMesh.inlineFloorPieces.some(polygon =>
+  Math.abs(polygonArea(polygon)) < 0.18 * 0.9),
+  'subminimum rectangular slivers remain inline instead of clamping stock dimensions');
 for (const stone of translatedChildren.floorStones) {
-  assert.ok(Math.abs(stone.params.length * stone.params.depth -
+  assert.ok(Math.abs(stone.params.length * stone.scale[0] *
+    stone.params.depth * stone.scale[2] -
     Math.abs(polygonArea(stone.polygon))) < 1e-6,
-  stone.id + ' reusable floor child preserves its exact plan area');
-  assert.ok(Math.abs(stone.params.height - translated.floor.thickness) < EPSILON,
-    stone.id + ' reusable floor child preserves exact floor thickness');
+  stone.id + ' scaled stock floor child preserves its exact plan area');
+  assert.ok(Math.abs(stone.params.height * stone.scale[1] -
+    translated.floor.thickness) < EPSILON,
+  stone.id + ' scaled stock floor child preserves exact floor thickness');
 }
-const translatedPlacementVariants = new Set(translatedChildPart.placements.map(placement =>
+const resizedParams = { ...params, flagSize: 0.75 };
+const resizedPart = new RecordingPart();
+emitConnectorChildren(resizedPart, translated, resizedParams);
+const resizedPlacementVariants = new Set(resizedPart.placements.map(placement =>
   placement.module + ':' + JSON.stringify(placement.params)));
-assert.deepEqual(new Set(connectorChildVariants(translated, translatedParams).map(variant =>
-  variant.module + ':' + JSON.stringify(variant.params))), translatedPlacementVariants,
+assert.deepEqual(new Set(connectorChildVariants(translated, resizedParams).map(variant =>
+  variant.module + ':' + JSON.stringify(variant.params))), resizedPlacementVariants,
   'non-default flagSize child catalogue exactly matches emitted placements');
+
+const ordinaryVariants = childVariants.filter(variant => variant.module === 'CastleStone');
+assert.ok(ordinaryVariants.length <= 10,
+  'five material palettes use at most two ordinary stock stones each');
+assert.ok(ordinaryVariants.every(variant => variant.params.length === 0.72 &&
+  variant.params.height === 0.28 && variant.params.depth === 0.42 &&
+  variant.params.seed < 2), 'ordinary stone variants use shared canonical size and two seeds');
+const beamVariants = childVariants.filter(variant => variant.module === 'CastleBeam');
+assert.ok(beamVariants.length <= 2 && beamVariants.every(variant =>
+  variant.params.length === 4 && variant.params.seed < 2),
+  'rafters reuse the shared two-seed canonical beam stock');
+for (const brick of childrenOnly.wallBricks.filter(brick => !brick.cut)) {
+  assert.ok(Math.abs(brick.params.length * brick.scale[0] -
+    (brick.to - brick.from)) < EPSILON,
+  brick.spanId + ' stock brick scale preserves exact run length');
+  assert.ok(Math.abs(brick.params.height * brick.scale[1] - 0.3) < EPSILON,
+    brick.spanId + ' stock brick scale preserves course height');
+}
 
 for (const record of records) {
   const emittedRecord = emitConnectorChildren(new RecordingPart(), record, params);
@@ -489,7 +520,7 @@ for (const record of records) {
     ]) {
       const worldPoint = [stone.world[0] + cosine * x + sine * z,
         stone.world[1] - sine * x + cosine * z];
-      assert.ok(insideConvex(wall.polygon, worldPoint),
+      assert.ok(insideConvex(wall.polygon, worldPoint, 2e-6),
         `${record.id} ${stone.spanId} cut stone stays inside its wall solid`);
     }
   }

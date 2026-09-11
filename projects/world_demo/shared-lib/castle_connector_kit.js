@@ -2,16 +2,13 @@
 // world coordinates; Part parameters stay flat scalars. The site compiler owns
 // placement, while this module owns every visible/collidable connector solid.
 
-import {
-  beamParams,
-  stoneParams,
-} from 'shared-lib/castle_primitives';
+import { primitiveStock } from 'shared-lib/castle_stock';
 
 export const CONNECTOR_MIN_CAPSULE_RADIUS = 0.4;
 export const CONNECTOR_MIN_SIDE_CLEARANCE = 0.2;
 export const CONNECTOR_MIN_PASSAGE_WIDTH =
   2 * (CONNECTOR_MIN_CAPSULE_RADIUS + CONNECTOR_MIN_SIDE_CLEARANCE);
-export const CASTLE_CUT_STONE_VARIANT_COUNT = 12;
+export const CASTLE_CUT_STONE_VARIANT_COUNT = 2;
 
 const EPS = 1e-8;
 
@@ -530,14 +527,15 @@ function wrappedSeed(value) {
 }
 
 export function connectorCutStoneParams(input = {}) {
+  const geometry = value => Math.round(value * 1e6) / 1e6;
   const params = {
     seed: wrappedSeed(input.seed),
-    height: Math.max(0.12, Number.isFinite(input.height) ? input.height : 0.28),
-    depth: Math.max(0.16, Number.isFinite(input.depth) ? input.depth : 0.42),
-    leftFront: Number.isFinite(input.leftFront) ? input.leftFront : -0.36,
-    leftBack: Number.isFinite(input.leftBack) ? input.leftBack : -0.36,
-    rightFront: Number.isFinite(input.rightFront) ? input.rightFront : 0.36,
-    rightBack: Number.isFinite(input.rightBack) ? input.rightBack : 0.36,
+    height: geometry(Math.max(0.12, Number.isFinite(input.height) ? input.height : 0.28)),
+    depth: geometry(Math.max(0.16, Number.isFinite(input.depth) ? input.depth : 0.42)),
+    leftFront: geometry(Number.isFinite(input.leftFront) ? input.leftFront : -0.36),
+    leftBack: geometry(Number.isFinite(input.leftBack) ? input.leftBack : -0.36),
+    rightFront: geometry(Number.isFinite(input.rightFront) ? input.rightFront : 0.36),
+    rightBack: geometry(Number.isFinite(input.rightBack) ? input.rightBack : 0.36),
     material: Math.max(0, Math.floor(Number.isFinite(input.material) ? input.material : 8)),
     detail: Math.max(0.5, Math.min(3, Number.isFinite(input.detail) ? input.detail : 1)),
   };
@@ -712,37 +710,37 @@ function floorLayout(record, params) {
     }));
 }
 
-function floorPieceCanReuseStone(piece, record) {
-  if (!piece.rectangle) return false;
-  const candidate = stoneParams({
-    length: piece.rectangle.length,
-    height: record.floor.thickness,
-    depth: piece.rectangle.depth,
+function floorPieceStock(piece, record, params, seed) {
+  if (!piece.rectangle) return null;
+  const rectangle = piece.rectangle;
+  const stock = primitiveStock('CastleStone', {
+    seed, length: rectangle.length, height: record.floor.thickness,
+    depth: rectangle.depth, material: params.floorMaterial, detail: params.detail,
   });
-  return Math.abs(candidate.length - piece.rectangle.length) <= EPS &&
-    Math.abs(candidate.height - record.floor.thickness) <= EPS &&
-    Math.abs(candidate.depth - piece.rectangle.depth) <= EPS;
+  const desired = [rectangle.length, record.floor.thickness, rectangle.depth];
+  if (desired.some((value, axis) =>
+    Math.abs(stock.params[['length', 'height', 'depth'][axis]] * stock.scale[axis] - value) > EPS))
+    return null;
+  return stock;
 }
 
 function placeFloorChildren(part, record, params) {
   const placements = [];
   for (const piece of floorLayout(record, params)) {
-    if (!floorPieceCanReuseStone(piece, record)) continue;
+    const stock = floorPieceStock(piece, record, params,
+      params.seed + placements.length * 7);
+    if (!stock) continue;
     const rectangle = piece.rectangle;
-    const childParams = stoneParams({
-      seed: wrappedSeed(params.seed + placements.length * 7),
-      length: rectangle.length, height: record.floor.thickness,
-      depth: rectangle.depth, material: params.floorMaterial,
-      detail: params.detail,
-    });
+    const childParams = stock.params, scale = stock.scale;
     part.pushMatrix();
     part.translate(rectangle.center[0], record.baseY - record.floor.thickness,
       rectangle.center[1]);
     part.rotateY(rectangle.yaw);
+    part.scale(...scale);
     part.placeChild('CastleStone', childParams);
     part.popMatrix();
     placements.push({ id: piece.id, polygon: piece.polygon,
-      module: 'CastleStone', params: childParams });
+      module: 'CastleStone', params: childParams, scale });
   }
   return placements;
 }
@@ -825,11 +823,12 @@ function placeWallCourses(part, record, span, params) {
       part.rotateY(Math.atan2(-span.tangent[1], span.tangent[0]));
       const seed = wrappedSeed(params.seed + course * 17 + index * 5);
       const isCut = first || last || Math.abs(lf - lb) > 1e-6 || Math.abs(rf - rb) > 1e-6;
+      let childParams, childScale = [1, 1, 1];
       if (isCut) {
         const placedProfile = placedCutProfile(span, {
           leftFront: lf, leftBack: lb, rightFront: rf, rightBack: rb,
         });
-        const childParams = connectorCutStoneParams({ seed, height: courseHeight,
+        childParams = connectorCutStoneParams({ seed, height: courseHeight,
           depth: span.thickness, ...placedProfile,
           material: params.stoneMaterial, detail: params.detail });
         part.placeChild('CastleConnectorCutStone', childParams);
@@ -838,13 +837,19 @@ function placeWallCourses(part, record, span, params) {
           owners: first ? [span.cornerOwners[0], span.jambOwners[0]] :
             [span.cornerOwners[1], span.jambOwners[1]] });
       } else {
-        const childParams = stoneParams({ seed, length: b - a,
-          height: courseHeight, depth: span.thickness,
-          material: params.stoneMaterial, detail: params.detail });
+        const stock = primitiveStock('CastleStone', {
+          seed, length: b - a, height: courseHeight, depth: span.thickness,
+          material: params.stoneMaterial, detail: params.detail,
+        });
+        childParams = stock.params;
+        childScale = stock.scale;
+        part.scale(...childScale);
         part.placeChild('CastleStone', childParams);
       }
       part.popMatrix();
-      bricks.push({ spanId: span.id, course, index, from: a, to: b, cut: isCut });
+      bricks.push({ spanId: span.id, course, index, from: a, to: b, cut: isCut,
+        module: isCut ? 'CastleConnectorCutStone' : 'CastleStone',
+        params: childParams, scale: childScale });
     }
   }
   return { bricks, cutStones, footprint };
@@ -870,9 +875,13 @@ function placeBeamBetween(part, a, b, params, seed) {
   part.pushMatrix();
   part.translate((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5);
   part.rotateY(yaw); part.rotateZ(pitch);
-  part.placeChild('CastleBeam', beamParams({ seed, length, width: 0.14, height: 0.18,
+  const stock = primitiveStock('CastleBeam', {
+    seed, length, width: 0.14, height: 0.18,
     material: params.timberMaterial, endMaterial: params.timberMaterial,
-    ironMaterial: params.timberMaterial, joint: 1, strap: 0, detail: params.detail }));
+    ironMaterial: params.timberMaterial, joint: 1, strap: 0, detail: params.detail,
+  });
+  part.scale(...stock.scale);
+  part.placeChild('CastleBeam', stock.params);
   part.popMatrix();
 }
 
@@ -926,7 +935,7 @@ export function connectorChildVariants(input, params = {}) {
   const p = normalizedEmitParams(params);
   const variants = [];
   const collector = {
-    pushMatrix() {}, popMatrix() {}, translate() {}, rotateY() {}, rotateZ() {},
+    pushMatrix() {}, popMatrix() {}, translate() {}, scale() {}, rotateY() {}, rotateZ() {},
     placeChild(module, childParams) { variants.push({ module, params: childParams }); },
   };
   placeFloorChildren(collector, record, p);
@@ -955,7 +964,7 @@ export function emitConnectorMesh(part, input, params = {}) {
   const p = normalizedEmitParams(params);
   const floorPieces = floorLayout(record, p);
   const inlineFloorPieces = floorPieces.filter(piece =>
-    !floorPieceCanReuseStone(piece, record));
+    !floorPieceStock(piece, record, p, p.seed));
   for (const piece of inlineFloorPieces)
     emitPolygonPrism(part, piece.polygon, record.baseY - record.floor.thickness,
       record.baseY, p.floorMaterial);
