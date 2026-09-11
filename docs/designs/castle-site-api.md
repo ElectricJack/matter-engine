@@ -22,16 +22,18 @@ CASTLE_SITE_MIN_CLEAR_WIDTH        // 1.2m
 compileSite(site)
 validateSite(site)
 siteToJSON(manifest, space = 2)
-siteToSVG(manifest, {scale = 24, padding = 24})
+siteToSVG(manifest, {scale = 24, padding = 24, levelId = 'ground'})
 emitSite(manifest, {wing, connector})
 sitePartRecipes(manifest, {wing, connector})
 ```
 
 `validateSite` performs the same compilation and validation as `compileSite`;
 both throw an error beginning with `castle site` and an input path on failure.
-`siteToJSON` returns pretty JSON with a trailing newline. `siteToSVG` draws the
-actual transformed walls, convex connector polygons, named room uses, wing
-angles, connector IDs and global routes.
+`siteToJSON` returns pretty JSON with a trailing newline. `siteToSVG` defaults
+to a legible ground-level sheet and filters walls, rooms, links and routes by
+`levelId`; request `upper` (or another authored level) for a separate sheet.
+It draws actual transformed walls, courtyard floors and portals, convex
+connector polygons, named room uses, wing angles and global routes.
 
 `castle_frames.js` publishes point/vector and inverse transforms,
 frame solve/compose, yaw/direction/quaternion conversion, row-major root

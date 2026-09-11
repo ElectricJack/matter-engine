@@ -11,6 +11,8 @@ const manifest = compileSite(CASTLE_SITE_ANGLED_STUDY);
 await Promise.all([
   writeFile(resolve(output, 'castle-site-angled-study.manifest.json'), siteToJSON(manifest)),
   writeFile(resolve(output, 'castle-site-angled-study.svg'), siteToSVG(manifest)),
+  writeFile(resolve(output, 'castle-site-angled-study.upper.svg'),
+    siteToSVG(manifest, { levelId: 'upper' })),
   writeFile(resolve(output, 'castle-site-angled-study.connector.json'),
     `${JSON.stringify(manifest.connectors[0], null, 2)}\n`),
 ]);

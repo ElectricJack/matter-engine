@@ -376,6 +376,15 @@ assert.match(svg, /data-wing="hall"/);
 assert.match(svg, /data-link="vestibule"/);
 assert.match(svg, /30°/);
 assert.match(svg, /class="route"/);
+assert.match(svg, /data-level="ground"/);
+assert.doesNotMatch(svg, /core solar/);
+const upperSvg = siteToSVG(manifest, { scale: 10, padding: 12, levelId: 'upper' });
+assert.match(upperSvg, /data-level="upper"/);
+assert.match(upperSvg, /core solar/);
+assert.doesNotMatch(upperSvg, /hall feasting-hall/);
+const courtyardSvg = siteToSVG(courtyardManifest, { scale: 10, padding: 12 });
+assert.match(courtyardSvg, /class="courtyard" data-courtyard="inner-court"/);
+assert.match(courtyardSvg, /class="court-portal" data-portal="north-court"/);
 
 // Validation failures: off-grid yaw, cyclic placement, socket reuse, narrow
 // capsule clearance, through-wing intrusion, positive overlap and elevations.
@@ -416,6 +425,7 @@ intruding.wings.find(wing => wing.id === 'hall').placement.outset = -1;
 expectInvalid(intruding, /mouths do not face the connector|intrud/);
 
 const participantIntrusion = clone(CASTLE_SITE_ANGLED_STUDY);
+participantIntrusion.connections[0].wallThickness = 1.2;
 participantIntrusion.wings.find(wing => wing.id === 'core').plan.levels[0].rooms.push({
   id: 'outboard-turret', use: 'guardroom', required: false,
   rect: { x: 14, z: 5, width: 2, depth: 2 },
