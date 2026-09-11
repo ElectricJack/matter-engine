@@ -11,6 +11,8 @@
 //   structureMaterialParams(materials)            flat scalar material handles
 //   structureLayout(manifest, options)            memoised per-record op lists
 //   structureRecipes(manifest, options)           World roots, scalar params
+//   structurePlacements / structureAssemblyRequires / emitStructureAssembly
+//                                                 one expanded assembly root
 //   structureChildVariants(manifest, params)      static requires(p) list
 //   emitStructure(part, manifest, params)         build(p) body
 //   emitFloor/emitStair/emitRoof/emitFrame        per-family emitters
@@ -1423,19 +1425,77 @@ export function structureRecipes(manifest, options = {}) {
   const layout = structureLayout(manifest, options);
   const mats = options.materials
     ? ('matOak' in options.materials ? { ...options.materials } : structureMaterialParams(options.materials)) : {};
-  const offset = options.offset || [0, 0, 0];
   const module = options.module || 'CastleStructure';
   const out = [];
   for (const r of layout.records) {
     if (!r.ops.length) continue;
     const params = { manifestId: manifest.planId, recordKind: r.kind, recordId: r.id, recordIndex: r.index,
       seed: manifest.seed || 0, detail: num(options.detail, 1), stairStyle: STAIR_STYLE_CODE[layout.stairStyle], ...mats };
-    const transform = [1, 0, 0, r.anchor[0] + offset[0], 0, 1, 0, r.anchor[1] + offset[1], 0, 0, 1, r.anchor[2] + offset[2], 0, 0, 0, 1];
+    const transform = mul16(baseTransform(options), [1, 0, 0, r.anchor[0], 0, 1, 0, r.anchor[1], 0, 0, 1, r.anchor[2], 0, 0, 0, 1]);
     if (options.split === false) { out.push({ module, params: { ...params, layer: 0 }, transform }); continue; }
     if (r.ops.some((op) => op.op !== 'child')) out.push({ module, params: { ...params, layer: 1 }, transform: transform.slice() });
     if (r.ops.some((op) => op.op === 'child')) out.push({ module, params: { ...params, layer: 2 }, transform: transform.slice(), expand: true });
   }
   return out;
+}
+// Row-major 4x4 helpers for placements (same layout as World root transforms
+// and Part.applyMatrix).
+const IDENTITY16 = Object.freeze([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+function mat16(frame) {
+  const { R, t } = frameRows(frame);
+  return [R[0][0], R[0][1], R[0][2], t[0], R[1][0], R[1][1], R[1][2], t[1], R[2][0], R[2][1], R[2][2], t[2], 0, 0, 0, 1];
+}
+function mul16(A, B) {
+  const out = new Array(16).fill(0);
+  for (let r = 0; r < 4; ++r) for (let c = 0; c < 4; ++c) for (let k = 0; k < 4; ++k) out[r * 4 + c] += A[r * 4 + k] * B[k * 4 + c];
+  return out.map(round6);
+}
+function baseTransform(options) {
+  const o = options.offset || [0, 0, 0];
+  const base = options.transform || IDENTITY16;
+  if (!Array.isArray(base) || base.length !== 16 || !base.every(Number.isFinite)) fail('options.transform', 'must be 16 finite row-major numbers');
+  return mul16(base, [1, 0, 0, o[0], 0, 1, 0, o[1], 0, 0, 1, o[2], 0, 0, 0, 1]);
+}
+// Flat placement list for one expanded assembly root (or direct World roots):
+// every record's mesh part (layer 1, the recipe module) plus every
+// CastleStone/CastleBeam/CastlePlank placement with its own world transform,
+// all premultiplied by options.transform (rigid, row-major) and options.offset.
+// Expanding a single assembly then instances every primitive.
+export function structurePlacements(manifest, options = {}) {
+  const layout = structureLayout(manifest, options);
+  const mats = options.materials
+    ? ('matOak' in options.materials ? { ...options.materials } : structureMaterialParams(options.materials)) : {};
+  const base = baseTransform(options);
+  const module = options.module || 'CastleStructure';
+  const childParams = { detail: num(options.detail, 1), ...mats };
+  const out = [];
+  for (const r of layout.records) {
+    if (r.ops.some((op) => op.op !== 'child'))
+      out.push({ module, params: { manifestId: manifest.planId, recordKind: r.kind, recordId: r.id, recordIndex: r.index,
+        seed: manifest.seed || 0, detail: childParams.detail, stairStyle: STAIR_STYLE_CODE[layout.stairStyle], layer: STRUCTURE_LAYER.mesh, ...mats },
+        transform: mul16(base, [1, 0, 0, r.anchor[0], 0, 1, 0, r.anchor[1], 0, 0, 1, r.anchor[2], 0, 0, 0, 1]) });
+    for (const op of r.ops) if (op.op === 'child')
+      out.push({ module: op.module, params: canonicalChild(op, childParams), transform: mul16(base, mat16(op.frame)) });
+  }
+  return out;
+}
+export function structureAssemblyRequires(manifest, options = {}) {
+  const seen = new Map();
+  for (const p of structurePlacements(manifest, options)) {
+    const key = childKey(p.module, p.params);
+    if (!seen.has(key)) seen.set(key, { module: p.module, params: p.params });
+  }
+  return [...seen.values()];
+}
+export function emitStructureAssembly(part, manifest, options = {}) {
+  const placements = structurePlacements(manifest, options);
+  for (const p of placements) {
+    part.pushMatrix();
+    part.applyMatrix(p.transform);
+    part.placeChild(p.module, p.params);
+    part.popMatrix();
+  }
+  return placements.length;
 }
 export function structureChildVariants(manifest, params) {
   const record = resolveRecord(manifest, params);
@@ -1521,8 +1581,16 @@ export function structureClearanceVolumes(manifest) {
   checkManifest(manifest);
   const out = [];
   for (const stair of manifest.stairs || []) out.push(...stairClearanceVolumes(manifest, stair));
-  for (const v of manifest.occupiedVolumes || [])
-    if (v.kind === 'portal-clearance' || v.kind === 'radial-throat-clearance') out.push({ id: v.id, kind: v.kind, ...v.bounds });
+  const levelHeight = new Map(manifest.levels.map((l) => [l.id, l.height]));
+  const portalBySwept = new Map((manifest.portals || []).map((p) => [p.sweptVolumeId, p]));
+  for (const v of manifest.occupiedVolumes || []) {
+    if (v.kind !== 'portal-clearance' && v.kind !== 'radial-throat-clearance') continue;
+    const portal = portalBySwept.get(v.id);
+    // An open boundary has no aperture top: its clearance is the whole storey,
+    // so only walking headroom constrains structure overhead.
+    const fullHeightOpen = !!portal && portal.kind === 'open' && portal.clearHeight >= (levelHeight.get(portal.levelId) || Infinity) - 0.01;
+    out.push({ id: v.id, kind: v.kind, fullHeightOpen, ...v.bounds });
+  }
   for (const route of manifest.walkRoute || [])
     for (const seg of route.roomSegments || [])
       (seg.segments || []).forEach((leg, i) => out.push({ id: seg.id + ':' + i, kind: 'route-segment', roomId: seg.roomId, ...leg.bounds }));
@@ -1576,6 +1644,11 @@ export function validateStructure(manifest, options = {}) {
       // axis); a rail spanning that width blocks the route and stays an error.
       const widthX = c.maxX - c.minX <= c.maxZ - c.minZ;
       const lateral = widthX ? Math.min(s.maxX, c.maxX) - Math.max(s.minX, c.minX) : Math.min(s.maxZ, c.maxZ) - Math.max(s.minZ, c.minZ);
+      if (c.fullHeightOpen && s.minY >= c.minY + 2.1 - 1e-6) {
+        warnings.push({ kind: 'structure-above-open-boundary', clearanceId: c.id, solidId: s.id, role: s.role, recordId: s.recordId,
+          headroom: round6(s.minY - c.minY) });
+        continue;
+      }
       if (c.kind === 'route-segment' && guard && lateral <= 0.25) {
         warnings.push({ kind: 'guard-narrows-route', clearanceId: c.id, solidId: s.id, role: s.role, recordId: s.recordId, lateral: round6(lateral) });
         continue;
@@ -1697,9 +1770,10 @@ function capLine(ctx, roof, role, from, to, radius) {
     ctx.op(roof.id, cylOp(role, roofMaterial(roof), lerp3(from, to, i / n + (i ? 0.004 : 0)), lerp3(from, to, (i + 1) / n - 0.004), radius));
 }
 // Is (x,y,z) inside any authored room volume (air rooms included)?
-function occupiedAt(manifest, x, y, z) {
+function occupiedAt(manifest, x, y, z, skipCourts) {
   const levels = new Map(manifest.levels.map((l) => [l.id, l]));
   return (manifest.rooms || []).some((r) => {
+    if (skipCourts && r.use === 'court') return false;
     const L = levels.get(r.levelId);
     if (!L || y < L.baseY - EPS || y >= L.baseY + L.height) return false;
     if (r.boundary.kind === 'circle') return Math.hypot(x - r.boundary.center[0], z - r.boundary.center[1]) < r.boundary.radius;
@@ -1775,8 +1849,10 @@ function layoutRectRoof(ctx, roof) {
   const ha = hip ? Math.min(H, (a1 - a0) * 0.5) : 0;
   // An eave or verge that abuts a taller occupied volume stops at that wall's
   // near face instead of overhanging into it.
+  // Probe just above the wall top and just below it (an eave hanging into a
+  // neighbouring gallery storey); open courts may be overhung.
   const abuts = (samples) => samples.some(([a, sx]) => { const [x, z] = axis === 'x' ? [a, sx] : [sx, a];
-    return occupiedAt(ctx.manifest, x, roof.baseY + 0.5, z); });
+    return occupiedAt(ctx.manifest, x, roof.baseY + 0.5, z, true) || occupiedAt(ctx.manifest, x, roof.baseY - 0.3, z, true); });
   const along3 = (lo, hi) => [0.25, 0.5, 0.75].map((t) => lo + (hi - lo) * t);
   const ovS = [0, 1].map((j) => (abuts(along3(a0, a1).map((a) => [a, j ? s1 + 0.45 : s0 - 0.45])) ? -T / 2 : ov));
   const ovA = [0, 1].map((k) => (abuts(along3(s0, s1).map((sx) => [k ? a1 + 0.45 : a0 - 0.45, sx])) ? -T / 2 : ov));

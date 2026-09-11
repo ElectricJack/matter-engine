@@ -56,3 +56,15 @@ TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp"
 
 See `docs/agent/qa-cookbook.md` and the root `CLAUDE.md` QA quick reference
 for the FIFO-driven multi-shot alternative (`MatterEngine3/tools/drive.py`).
+
+## Layers and assembly placements
+
+`structureRecipes()` emits up to two roots per record with one transform: a
+mesh root (`params.layer` 1: slabs, tiles, joint hardware, closed shells) and
+a children root (`layer` 2, `expand: true`) so CastleStone/CastleBeam/
+CastlePlank placements become world instances instead of being flattened into
+the record part. A single expanded assembly root should instead use
+`structureAssemblyRequires(manifest, options)` / `emitStructureAssembly(part,
+manifest, options)`, which place every mesh record and every primitive
+directly (`options.transform` is a rigid row-major base transform, e.g. for
+angled wings; `options.offset` a translation).
