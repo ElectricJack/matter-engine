@@ -59,6 +59,26 @@ shot $shots/rt-lantern.png
 cam 0.3 3.1 1.6 -1.2 3.0 0.3
 wait_frames 90
 shot $shots/rt-chandelier.png
+render_path raster
+set render.lighting.sun_multiplier 0
+set render.lighting.sky_multiplier 0.04
+set render.lighting.day_ambient_multiplier 0
+cam 5.2 3.0 5.4 -1.2 1.1 -1.4
+wait_frames 120
+stats furnishings-night-raster
+shot $shots/night-raster-overview.png
+cam 1.6 1.9 2.8 -1.8 0.9 0.0
+wait_frames 60
+shot $shots/night-raster-hall.png
+cam -1.2 2.0 -1.0 -1.2 2.2 -4.0
+wait_frames 60
+shot $shots/night-raster-sconces.png
+cam -2.5 2.2 1.5 -4.8 0.8 -0.6
+wait_frames 60
+shot $shots/night-raster-lantern-spot.png
+cam 2.2 1.6 -0.8 3.6 1.2 -3.4
+wait_frames 60
+shot $shots/night-raster-altar.png
 quit
 "@
 $timelineFile = Join-Path $OutputDir 'capture.timeline'
