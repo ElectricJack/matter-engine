@@ -210,6 +210,12 @@ assert.equal(validateConnectorRecord(narrow).valid, false);
 assert.ok(validateConnectorRecord(narrow).errors.some(error =>
   /narrow|clearance|capsule|mouth|width/i.test(String(error))));
 
+const thinMasonry = clone(canonical);
+thinMasonry.id = 'thin-masonry';
+thinMasonry.wallSpans[0].thickness = 0.1;
+assert.equal(validateConnectorRecord(thinMasonry).valid, false,
+  'wall thickness below exact stone/cut-stone support is rejected');
+
 const nonConvex = clone(canonical);
 nonConvex.id = 'non-convex';
 nonConvex.clearPolygon = [canonical.clearPolygon[0], canonical.clearPolygon[2],

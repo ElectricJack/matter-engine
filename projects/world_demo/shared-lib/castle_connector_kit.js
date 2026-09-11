@@ -210,9 +210,12 @@ function normalizeSpan(input, index) {
     return value.map((owner, ownerIndex) => requiredString(owner,
       `${path}.${name}[${ownerIndex}]`));
   };
+  const thickness = positive(input.thickness, `${path}.thickness`);
+  if (thickness < 0.16 - EPS)
+    fail(`${path}.thickness`, 'must be at least 0.16m for exact masonry geometry');
   return {
     id: requiredString(input.id, `${path}.id`), segment, tangent, normal,
-    thickness: positive(input.thickness, `${path}.thickness`),
+    thickness,
     courseOrigin: point3(input.courseOrigin, `${path}.courseOrigin`),
     cornerOwners: ownership(input.cornerOwners ??
       [input.startJointOwnerId, input.endJointOwnerId], 'cornerOwners'),
