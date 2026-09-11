@@ -57,9 +57,11 @@ function addCourtyards(site) {
  } else {
   const lower=courtDoor(site,'keep','ground-north',[0,9],[0,11]);
   const upper=courtDoor(site,'hall','ground-hall',[0,5],[0,8]);
+  // The upper court's west edge stays ~5cm east of the outer face of the
+  // upper-court passage's east wall; courts may not overlap connector floors.
   site.courtyards=[court('lower-court',[[0,8],[0,18],[-6,18],[-4,12]],[lower]),
    court('upper-court',[[2.542111807598,23.413502104845],[3.240923229375,26.021501835825],
-    [4,30],[1,33],[-4,34],[-5,28]],[upper])];
+    [4,30],[1,33],[-4,34],[-4.4,31.2],[-3.6,27.15]],[upper])];
  }
  return site;
 }
