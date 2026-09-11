@@ -216,6 +216,43 @@ thinMasonry.wallSpans[0].thickness = 0.1;
 assert.equal(validateConnectorRecord(thinMasonry).valid, false,
   'wall thickness below exact stone/cut-stone support is rejected');
 
+const shortMasonry = clone(canonical);
+shortMasonry.id = 'short-masonry-run';
+const shortSpan = shortMasonry.wallSpans[0];
+shortSpan.segment[1] = [shortSpan.segment[0][0] + shortSpan.tangent[0] * 0.1,
+  shortSpan.segment[0][1] + shortSpan.tangent[1] * 0.1];
+assert.equal(validateConnectorRecord(shortMasonry).valid, false,
+  'wall runs below exact stock support are rejected before bake placement');
+
+const taperedMasonry = clone(canonical);
+taperedMasonry.id = 'subminimum-trimmed-bed';
+const taperedSpan = taperedMasonry.wallSpans[0];
+const taperedLength = Math.hypot(
+  taperedSpan.segment[1][0] - taperedSpan.segment[0][0],
+  taperedSpan.segment[1][1] - taperedSpan.segment[0][1]);
+const taper = (taperedLength * 0.5 - 0.05) / taperedSpan.thickness;
+const startNormal = [
+  taperedSpan.tangent[0] - taper * taperedSpan.normal[0],
+  taperedSpan.tangent[1] - taper * taperedSpan.normal[1],
+];
+const endNormal = [
+  taperedSpan.tangent[0] + taper * taperedSpan.normal[0],
+  taperedSpan.tangent[1] + taper * taperedSpan.normal[1],
+];
+taperedSpan.trimPlanes = [{
+  normal: startNormal,
+  offset: startNormal[0] * taperedSpan.segment[0][0] +
+    startNormal[1] * taperedSpan.segment[0][1],
+  keepSign: 1,
+}, {
+  normal: endNormal,
+  offset: endNormal[0] * taperedSpan.segment[0][0] +
+    endNormal[1] * taperedSpan.segment[0][1] + taperedLength,
+  keepSign: -1,
+}];
+assert.equal(validateConnectorRecord(taperedMasonry).valid, false,
+  'trimmed wall beds below exact cut-stone support are rejected during validation');
+
 const nonConvex = clone(canonical);
 nonConvex.id = 'non-convex';
 nonConvex.clearPolygon = [canonical.clearPolygon[0], canonical.clearPolygon[2],
