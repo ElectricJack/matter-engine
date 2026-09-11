@@ -1119,8 +1119,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 struct RasterReadbackRecord {
-    matter::VkImageResource* images[17];
-    VkImageAspectFlags aspects[17];
+    matter::VkImageResource* images[16];
+    VkImageAspectFlags aspects[16];
     VkBuffer destination;
     uint32_t x;
     uint32_t y;
@@ -1131,10 +1131,10 @@ struct RasterReadbackRecord {
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
     // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[17] = {0, 8, 16, 20, 24, 32,
+    constexpr VkDeviceSize offsets[16] = {0, 8, 16, 20, 24, 32,
                                           40, 48, 56, 64, 72, 80,
-                                          88, 96, 104, 112, 120};
-    for (size_t i = 0; i < 17; ++i) {
+                                          88, 96, 104, 112};
+    for (size_t i = 0; i < 16; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -1143,11 +1143,8 @@ void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
         copy.bufferOffset = offsets[i];
         copy.imageSubresource.aspectMask = record.aspects[i];
         copy.imageSubresource.layerCount = 1;
-        // GI/denoiser lanes 9..15 can be sub-resolution. Local direct at 16
-        // is deliberately full-resolution and therefore uses raster x/y.
-        const bool raw_gi_lane = i >= 9 && i < 16;
-        const uint32_t copy_x = raw_gi_lane ? record.raw_x : record.x;
-        const uint32_t copy_y = raw_gi_lane ? record.raw_y : record.y;
+        const uint32_t copy_x = i >= 9 ? record.raw_x : record.x;
+        const uint32_t copy_y = i >= 9 ? record.raw_y : record.y;
         copy.imageOffset = {static_cast<int32_t>(copy_x),
                             static_cast<int32_t>(copy_y), 0};
         copy.imageExtent = {1, 1, 1};
@@ -5343,6 +5340,33 @@ void VkSceneRenderer::probe_skin_raster_draws(
                 draw.local_vertex_base,
                 draw.local_vertex_base + draw.vertex_count);
     }
+}
+
+struct LocalDirectReadbackRecord {
+    matter::VkImageResource* image;
+    VkBuffer destination;
+    uint32_t x;
+    uint32_t y;
+};
+
+void record_local_direct_readback(VkCommandBuffer command_buffer,
+                                  void* user_data) {
+    const auto& record =
+        *static_cast<LocalDirectReadbackRecord*>(user_data);
+    transition_for_use(command_buffer, *record.image,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageOffset = {static_cast<int32_t>(record.x),
+                        static_cast<int32_t>(record.y), 0};
+    copy.imageExtent = {1, 1, 1};
+    vkCmdCopyImageToBuffer(command_buffer, record.image->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           record.destination, 1, &copy);
 }
 
 // Uploads this frame's skin arenas (source vertices, influences, both joint
@@ -17396,7 +17420,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkBufferResource staging;
-    constexpr VkDeviceSize readback_size = 128;
+    constexpr VkDeviceSize readback_size = 120;
     if (!matter::create_buffer(
             *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -17421,14 +17445,12 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                  &accumulated_specular,
                                  &raw_transmission_,
                                  &accumulated_transmission,
-                                 &raw_transmission_aux_,
-                                 &raw_local_direct_},
+                                 &raw_transmission_aux_},
                                 {VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_DEPTH_BIT,
-                                 VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
@@ -17457,7 +17479,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         accumulated_diffuse.lifetime,
         raw_specular_.lifetime, accumulated_specular.lifetime,
         raw_transmission_.lifetime, accumulated_transmission.lifetime,
-        raw_transmission_aux_.lifetime, raw_local_direct_.lifetime,
+        raw_transmission_aux_.lifetime,
         staging.lifetime};
     if (!matter::submit_immediate(
             *vulkan_, record_raster_readback, &record, error,
@@ -17577,14 +17599,49 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                 sizeof(transmission_aux_half));
     pixel.transmission_aux = {half_to_float(transmission_aux_half[0]),
                               half_to_float(transmission_aux_half[1]), 0.0f};
-    uint16_t local_direct_half[4]{};
-    std::memcpy(local_direct_half, bytes.data() + 120,
-                sizeof(local_direct_half));
-    pixel.raw_local_direct = {
-        half_to_float(local_direct_half[0]),
-        half_to_float(local_direct_half[1]),
-        half_to_float(local_direct_half[2]),
-        half_to_float(local_direct_half[3])};
+    return true;
+}
+
+bool VkSceneRenderer::readback_local_direct_pixel(uint32_t x, uint32_t y,
+                                                  matter::Float4& value,
+                                                  std::string& error) {
+    error.clear();
+    value = {};
+    if (fail_if_poisoned(error)) return false;
+    if (!raster_attachments_ready_ || raw_local_direct_.image == VK_NULL_HANDLE) {
+        error = "local-direct readback is unavailable until a render completes";
+        return false;
+    }
+    if (x >= raster_extent_.width || y >= raster_extent_.height) {
+        error = "local-direct readback pixel is outside the rendered extent";
+        return false;
+    }
+    matter::VkBufferResource staging;
+    constexpr VkDeviceSize kReadbackSize = 8;
+    if (!matter::create_buffer(
+            *vulkan_, kReadbackSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            staging, error)) {
+        return false;
+    }
+    LocalDirectReadbackRecord record{&raw_local_direct_, staging.buffer, x, y};
+    std::vector<std::shared_ptr<void>> dependencies{
+        raw_local_direct_.lifetime, staging.lifetime};
+    if (!matter::submit_immediate(
+            *vulkan_, record_local_direct_readback, &record, error,
+            matter::ImmediateSubmitPhase::compute_dispatch,
+            std::move(dependencies))) {
+        return poison(error);
+    }
+    uint16_t half[4]{};
+    if (!matter::readback_buffer(*vulkan_, staging, half, sizeof(half), 0,
+                                 error)) {
+        return false;
+    }
+    value = {half_to_float(half[0]), half_to_float(half[1]),
+             half_to_float(half[2]), half_to_float(half[3])};
     return true;
 }
 

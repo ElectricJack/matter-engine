@@ -854,9 +854,6 @@ struct VkRasterPixel {
     matter::Float4 raw_transmission{};
     matter::Float4 accumulated_transmission{};
     matter::Float3 transmission_aux{};
-    // Full-resolution, BRDF/transmission-weighted local direct written by the
-    // native-RT ownership pass. Exposed only to the Vulkan smoke suite.
-    matter::Float4 raw_local_direct{};
 };
 
 struct WaterForwardObservation {
@@ -1847,6 +1844,12 @@ public:
     void test_skip_volumetrics(bool skip) { test_skip_volumetrics_ = skip; }
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
+    // Reads only the full-resolution native-RT local-direct lane. Keeping this
+    // separate avoids perturbing the long-standing multi-attachment readback
+    // transition contract for raster/GI tests that do not use this lane.
+    bool readback_local_direct_pixel(uint32_t x, uint32_t y,
+                                     matter::Float4& value,
+                                     std::string& error);
     bool readback_materials(std::vector<MaterialGpuRecord>& records,
                             std::string& error);
     uint64_t test_material_upload_record_count(uint32_t frame_slot) const {
