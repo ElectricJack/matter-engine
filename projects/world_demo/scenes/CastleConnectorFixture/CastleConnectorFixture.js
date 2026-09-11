@@ -1,7 +1,7 @@
 import { defineCastleMaterials } from 'shared-lib/castle_materials';
 import {
   connectorCollisionEntities,
-  connectorRecipes,
+  connectorLayerRecipes,
 } from 'shared-lib/castle_connector_kit';
 import {
   CASTLE_CONNECTOR_FIXTURE,
@@ -34,18 +34,20 @@ function translatedEntity(entity, offset) {
   return copy;
 }
 
-const RECIPES = connectorRecipes(CASTLE_CONNECTOR_FIXTURE.records, {
-  module: 'CastleConnectorFixturePart', materials: MATERIALS, detail: 1.15,
+const RECIPES = connectorLayerRecipes(CASTLE_CONNECTOR_FIXTURE.records, {
+  meshModule: 'CastleConnectorFixtureMesh',
+  assemblyModule: 'CastleConnectorFixtureAssembly',
+  materials: MATERIALS, detail: 1.15,
 });
 
 class CastleConnectorFixture extends World {
   static camera = { position: [18, 14, 29], target: [7, 1.5, 3] };
   static atmosphere = { groundAlbedo: 0.26 };
-  // Inline polygon floors and roof facets live on each root, so expansion must
-  // remain disabled even though the masonry and rafters are child parts.
+  // Exact polygon meshes stay unexpanded; the coincident child-only roots are
+  // expanded so detailed stones and rafters remain instanced.
   static roots = RECIPES.map(recipe => ({
     module: recipe.module, params: recipe.params,
-    transform: transform(OFFSETS[recipe.recordId]), expand: false,
+    transform: transform(OFFSETS[recipe.recordId]), expand: recipe.expand,
   }));
   static lights = {
     sun: { dir: [0.35, -0.82, -0.42], color: [1.0, 0.91, 0.78] },

@@ -8,49 +8,49 @@
       "clearPolygon": [[11.7, 5.2], [17.85980762113533, 5.157179676972449], [18.65980762113533, 6.54282032302755], [18.14019237886467, 6.842820323027551], [11.7, 6.8]],
       "mouths": [
         {
-          "wing": "core", "level": "ground", "portalId": "core:ground:east-hall",
+          "wing": "core", "level": "ground", "portalId": "east-hall",
           "inside": [11.7, 0, 6], "outside": [12.3, 0, 6],
-          "segment": [[11.7, 5.2], [11.7, 6.8]],
+          "segment": [[12, 5.2], [12, 6.8]],
           "insideSegment": [[11.7, 5.2], [11.7, 6.8]],
           "outsideSegment": [[12.3, 5.2], [12.3, 6.8]],
           "tangent": [0, 1], "outward": [1, 0], "wallThickness": 0.6,
-          "hostModules": ["core:ground:east-wall"], "jambOwner": "core",
+          "hostModules": ["core:ground:east-wall"], "jambOwner": "connector:core-hall-30:mouth:a:jambs",
           "portalSourceId": "east-hall"
         },
         {
-          "wing": "hall", "level": "ground", "portalId": "hall:ground:west-entry",
+          "wing": "hall", "level": "ground", "portalId": "west-entry",
           "inside": [18.25980762113533, 0, 5.85], "outside": [17.74019237886467, 0, 6.15],
-          "segment": [[17.85980762113533, 5.157179676972449], [18.65980762113533, 6.54282032302755]],
+          "segment": [[17.6, 5.307179676972449], [18.4, 6.692820323027551]],
           "insideSegment": [[17.85980762113533, 5.157179676972449], [18.65980762113533, 6.54282032302755]],
           "outsideSegment": [[17.34019237886467, 5.45717967697245], [18.14019237886467, 6.842820323027551]],
           "tangent": [0.5, 0.866025403784439], "outward": [-0.866025403784439, 0.5], "wallThickness": 0.6,
-          "hostModules": ["hall:ground:west-wall"], "jambOwner": "hall",
+          "hostModules": ["hall:ground:west-wall"], "jambOwner": "connector:core-hall-30:mouth:b:jambs",
           "portalSourceId": "west-entry"
         }
       ],
       "wallSpans": [
         {
-          "id": "south", "segment": [[12.3, 5.2], [17.34019237886467, 5.45717967697245]],
-          "tangent": [0.998700722179613, 0.050959469364572], "normal": [0.050959469364572, -0.998700722179613],
-          "thickness": 0.6, "courseOrigin": [12.3, 0, 5.2],
-          "cornerOwners": ["core", "connector"], "jambOwners": ["core", "hall"],
+          "id": "connector:core-hall-30:wall:south", "segment": [[11.7, 5.2], [17.85980762113533, 5.157179676972449]],
+          "tangent": [0.9999758387251767, -0.006951400281891659], "normal": [-0.006951400281891659, -0.9999758387251767],
+          "thickness": 0.6, "courseOrigin": [11.7, 0, 5.2],
+          "cornerOwners": ["connector:core-hall-30:wall:south:start", "connector:core-hall-30:wall:south:end"], "jambOwners": ["connector:core-hall-30:mouth:a:jambs", "connector:core-hall-30:mouth:b:jambs"],
           "trimPlanes": [
-            {"normal": [1, 0], "offset": 12.3, "keepSign": 1},
-            {"normal": [-0.866025403784439, 0.5], "offset": -12.288457268119902, "keepSign": 1}
+            {"normal": [1, 0], "offset": 11.7, "keepSign": 1},
+            {"normal": [-0.8660254037844387, 0.49999999999999994], "offset": -12.888457268119897, "keepSign": 1}
           ]
         },
         {
-          "id": "north", "segment": [[12.3, 6.8], [18.14019237886467, 6.842820323027551]],
-          "tangent": [0.999973121930876, 0.007331808495711], "normal": [-0.007331808495711, 0.999973121930876],
-          "thickness": 0.6, "courseOrigin": [12.3, 0, 6.8],
-          "cornerOwners": ["core", "connector"], "jambOwners": ["core", "hall"],
+          "id": "connector:core-hall-30:wall:north", "segment": [[11.7, 6.8], [18.14019237886467, 6.842820323027551]],
+          "tangent": [0.9999778966651873, 0.006648772899415021], "normal": [-0.006648772899415021, 0.9999778966651873],
+          "thickness": 0.6, "courseOrigin": [11.7, 0, 6.8],
+          "cornerOwners": ["connector:core-hall-30:wall:north:start", "connector:core-hall-30:wall:north:end"], "jambOwners": ["connector:core-hall-30:mouth:a:jambs", "connector:core-hall-30:mouth:b:jambs"],
           "trimPlanes": [
-            {"normal": [1, 0], "offset": 12.3, "keepSign": 1},
-            {"normal": [-0.866025403784439, 0.5], "offset": -12.288457268119902, "keepSign": 1}
+            {"normal": [1, 0], "offset": 11.7, "keepSign": 1},
+            {"normal": [-0.8660254037844387, 0.49999999999999994], "offset": -12.888457268119897, "keepSign": 1}
           ]
         }
       ],
-      "floor": {"thickness": 0.22, "material": "castle.flagstone", "owner": "connector"},
+      "floor": {"thickness": 0.22, "material": "castle.flagstone", "owner": "connector:core-hall-30:floor"},
       "clearHeight": 3.6,
       "roof": {"kind": "low-hip", "rise": 0.8, "material": "castle.roofTile", "overhang": 0.18},
       "routeWaypoints": [[11.7, 0, 6], [12.3, 0, 6], [17.74019237886467, 0, 6.15], [18.25980762113533, 0, 5.85]]
@@ -60,14 +60,14 @@
       "level": "ground", "baseY": 0,
       "clearPolygon": [[11.7, 5.2], [18.082722511804704, 5.149613625437989], [18.496832983968737, 6.695094947500498], [17.917277488195296, 6.850386374562011], [11.7, 6.8]],
       "mouths": [
-        {"wing": "core", "level": "ground", "portalId": "core:ground:east-hall", "portalSourceId": "east-hall", "inside": [11.7, 0, 6], "outside": [12.3, 0, 6], "segment": [[11.7, 5.2], [11.7, 6.8]], "insideSegment": [[11.7, 5.2], [11.7, 6.8]], "outsideSegment": [[12.3, 5.2], [12.3, 6.8]], "tangent": [0, 1], "outward": [1, 0], "wallThickness": 0.6, "hostModules": ["core:ground:east-wall"], "jambOwner": "core"},
-        {"wing": "hall", "level": "ground", "portalId": "hall:ground:west-entry", "portalSourceId": "west-entry", "inside": [18.28977774788672, 0, 5.922354286469243], "outside": [17.71022225211328, 0, 6.077645713530757], "segment": [[18.082722511804704, 5.149613625437989], [18.496832983968737, 6.695094947500498]], "insideSegment": [[18.082722511804704, 5.149613625437989], [18.496832983968737, 6.695094947500498]], "outsideSegment": [[17.503167016031263, 5.304905052499502], [17.917277488195296, 6.850386374562011]], "tangent": [0.258819045102521, 0.965925826289068], "outward": [-0.965925826289068, 0.258819045102521], "wallThickness": 0.6, "hostModules": ["hall:ground:west-wall"], "jambOwner": "hall"}
+        {"wing": "core", "level": "ground", "portalId": "east-hall", "portalSourceId": "east-hall", "inside": [11.7, 0, 6], "outside": [12.3, 0, 6], "segment": [[12, 5.2], [12, 6.8]], "insideSegment": [[11.7, 5.2], [11.7, 6.8]], "outsideSegment": [[12.3, 5.2], [12.3, 6.8]], "tangent": [0, 1], "outward": [1, 0], "wallThickness": 0.6, "hostModules": ["core:ground:east-wall"], "jambOwner": "connector:core-hall-15:mouth:a:jambs"},
+        {"wing": "hall", "level": "ground", "portalId": "west-entry", "portalSourceId": "west-entry", "inside": [18.28977774788672, 0, 5.922354286469243], "outside": [17.71022225211328, 0, 6.077645713530757], "segment": [[17.792944763917984, 5.227259338968745], [18.207055236082016, 6.772740661031255]], "insideSegment": [[18.082722511804704, 5.149613625437989], [18.496832983968737, 6.695094947500498]], "outsideSegment": [[17.503167016031263, 5.304905052499502], [17.917277488195296, 6.850386374562011]], "tangent": [0.258819045102521, 0.965925826289068], "outward": [-0.965925826289068, 0.258819045102521], "wallThickness": 0.6, "hostModules": ["hall:ground:west-wall"], "jambOwner": "connector:core-hall-15:mouth:b:jambs"}
       ],
       "wallSpans": [
-        {"id": "south", "segment": [[12.3, 5.2], [17.503167016031263, 5.304905052499502]], "tangent": [0.999796813475239, 0.020157672602725], "normal": [0.020157672602725, -0.999796813475239], "thickness": 0.6, "courseOrigin": [12.3, 0, 5.2], "cornerOwners": ["core", "connector"], "jambOwners": ["core", "hall"], "trimPlanes": [{"normal": [1, 0], "offset": 12.3, "keepSign": 1}, {"normal": [-0.965925826289068, 0.258819045102521], "offset": -15.5337506025881, "keepSign": 1}]},
-        {"id": "north", "segment": [[12.3, 6.8], [17.917277488195296, 6.850386374562011]], "tangent": [0.999959772942761, 0.008969531551952], "normal": [-0.008969531551952, 0.999959772942761], "thickness": 0.6, "courseOrigin": [12.3, 0, 6.8], "cornerOwners": ["core", "connector"], "jambOwners": ["core", "hall"], "trimPlanes": [{"normal": [1, 0], "offset": 12.3, "keepSign": 1}, {"normal": [-0.965925826289068, 0.258819045102521], "offset": -15.5337506025881, "keepSign": 1}]}
+        {"id": "connector:core-hall-15:wall:south", "segment": [[11.7, 5.2], [18.082722511804704, 5.149613625437989]], "tangent": [0.9999688423998004, -0.007893936255306655], "normal": [-0.007893936255306655, -0.9999688423998004], "thickness": 0.6, "courseOrigin": [11.7, 0, 5.2], "cornerOwners": ["connector:core-hall-15:wall:south:start", "connector:core-hall-15:wall:south:end"], "jambOwners": ["connector:core-hall-15:mouth:a:jambs", "connector:core-hall-15:mouth:b:jambs"], "trimPlanes": [{"normal": [1, 0], "offset": 11.7, "keepSign": 1}, {"normal": [-0.9659258262890683, 0.25881904510252074], "offset": -16.133750602588105, "keepSign": 1}]},
+        {"id": "connector:core-hall-15:wall:north", "segment": [[11.7, 6.8], [17.917277488195296, 6.850386374562011]], "tangent": [0.9999671621789892, 0.008103984433528518], "normal": [-0.008103984433528518, 0.9999671621789892], "thickness": 0.6, "courseOrigin": [11.7, 0, 6.8], "cornerOwners": ["connector:core-hall-15:wall:north:start", "connector:core-hall-15:wall:north:end"], "jambOwners": ["connector:core-hall-15:mouth:a:jambs", "connector:core-hall-15:mouth:b:jambs"], "trimPlanes": [{"normal": [1, 0], "offset": 11.7, "keepSign": 1}, {"normal": [-0.9659258262890683, 0.25881904510252074], "offset": -16.133750602588105, "keepSign": 1}]}
       ],
-      "floor": {"thickness": 0.22, "material": "castle.flagstone", "owner": "connector"}, "clearHeight": 3.6,
+      "floor": {"thickness": 0.22, "material": "castle.flagstone", "owner": "connector:core-hall-15:floor"}, "clearHeight": 3.6,
       "roof": {"kind": "low-hip", "rise": 0.8, "material": "castle.roofTile", "overhang": 0.18},
       "routeWaypoints": [[11.7, 0, 6], [12.3, 0, 6], [17.71022225211328, 0, 6.077645713530757], [18.28977774788672, 0, 5.922354286469243]]
     },
@@ -76,14 +76,14 @@
       "level": "ground", "baseY": 0,
       "clearPolygon": [[11.7, 5], [12.3, 5], [17.505025253169418, 5.080761184457488], [18.91923881554251, 6.494974746830584], [18.494974746830582, 6.919238815542512], [12.3, 7], [11.7, 7]],
       "mouths": [
-        {"wing": "core", "level": "ground", "portalId": "core:ground:east-hall", "portalSourceId": "east-hall", "inside": [11.7, 0, 6], "outside": [12.3, 0, 6], "segment": [[11.7, 5], [11.7, 7]], "insideSegment": [[11.7, 5], [11.7, 7]], "outsideSegment": [[12.3, 5], [12.3, 7]], "tangent": [0, 1], "outward": [1, 0], "wallThickness": 0.6, "hostModules": ["core:ground:east-wall"], "jambOwner": "core"},
-        {"wing": "hall", "level": "ground", "portalId": "hall:ground:west-entry", "portalSourceId": "west-entry", "inside": [18.212132034355964, 0, 5.787867965644036], "outside": [17.787867965644036, 0, 6.212132034355964], "segment": [[17.505025253169418, 5.080761184457488], [18.91923881554251, 6.494974746830584]], "insideSegment": [[17.505025253169418, 5.080761184457488], [18.91923881554251, 6.494974746830584]], "outsideSegment": [[17.08076118445749, 5.505025253169416], [18.494974746830582, 6.919238815542512]], "tangent": [0.7071067811865476, 0.7071067811865476], "outward": [-0.7071067811865476, 0.7071067811865476], "wallThickness": 0.6, "hostModules": ["hall:ground:west-wall"], "jambOwner": "hall"}
+        {"wing": "core", "level": "ground", "portalId": "east-hall", "portalSourceId": "east-hall", "inside": [11.7, 0, 6], "outside": [12.3, 0, 6], "segment": [[12, 5], [12, 7]], "insideSegment": [[11.7, 5], [11.7, 7]], "outsideSegment": [[12.3, 5], [12.3, 7]], "tangent": [0, 1], "outward": [1, 0], "wallThickness": 0.6, "hostModules": ["core:ground:east-wall"], "jambOwner": "connector:core-hall-45:mouth:a:jambs"},
+        {"wing": "hall", "level": "ground", "portalId": "west-entry", "portalSourceId": "west-entry", "inside": [18.212132034355964, 0, 5.787867965644036], "outside": [17.787867965644036, 0, 6.212132034355964], "segment": [[17.292893218813454, 5.292893218813452], [18.707106781186546, 6.707106781186548]], "insideSegment": [[17.505025253169418, 5.080761184457488], [18.91923881554251, 6.494974746830584]], "outsideSegment": [[17.08076118445749, 5.505025253169416], [18.494974746830582, 6.919238815542512]], "tangent": [0.7071067811865476, 0.7071067811865476], "outward": [-0.7071067811865476, 0.7071067811865476], "wallThickness": 0.6, "hostModules": ["hall:ground:west-wall"], "jambOwner": "connector:core-hall-45:mouth:b:jambs"}
       ],
       "wallSpans": [
-        {"id": "south", "segment": [[12.3, 5], [17.08076118445749, 5.505025253169416]], "tangent": [0.994466680107733, 0.105052473343102], "normal": [0.105052473343102, -0.994466680107733], "thickness": 0.6, "courseOrigin": [12.3, 0, 5], "cornerOwners": ["core", "connector"], "jambOwners": ["core", "hall"], "trimPlanes": [{"normal": [1, 0], "offset": 12.3, "keepSign": 1}, {"normal": [-0.707106781186548, 0.707106781186548], "offset": -8.18528137423857, "keepSign": 1}]},
-        {"id": "north", "segment": [[12.3, 7], [18.494974746830582, 6.919238815542512]], "tangent": [0.999915034830032, -0.013035456296418], "normal": [0.013035456296418, 0.999915034830032], "thickness": 0.6, "courseOrigin": [12.3, 0, 7], "cornerOwners": ["core", "connector"], "jambOwners": ["core", "hall"], "trimPlanes": [{"normal": [1, 0], "offset": 12.3, "keepSign": 1}, {"normal": [-0.707106781186548, 0.707106781186548], "offset": -8.18528137423857, "keepSign": 1}]}
+        {"id": "connector:core-hall-45:wall:south", "segment": [[12.3, 5], [17.505025253169418, 5.080761184457488]], "tangent": [0.9998796485645415, 0.015514135053204344], "normal": [0.015514135053204344, -0.9998796485645415], "thickness": 0.6, "courseOrigin": [12.3, 0, 5], "cornerOwners": ["connector:core-hall-45:wall:south:start", "connector:core-hall-45:wall:south:end"], "jambOwners": ["connector:core-hall-45:mouth:a:jambs", "connector:core-hall-45:mouth:b:jambs"], "trimPlanes": [{"normal": [1, 0], "offset": 11.7, "keepSign": 1}, {"normal": [-0.7071067811865476, 0.7071067811865475], "offset": -8.78528137423857, "keepSign": 1}]},
+        {"id": "connector:core-hall-45:wall:north", "segment": [[12.3, 7], [18.494974746830582, 6.919238815542512]], "tangent": [0.999915034830032, -0.013035456296418129], "normal": [0.013035456296418129, 0.999915034830032], "thickness": 0.6, "courseOrigin": [12.3, 0, 7], "cornerOwners": ["connector:core-hall-45:wall:north:start", "connector:core-hall-45:wall:north:end"], "jambOwners": ["connector:core-hall-45:mouth:a:jambs", "connector:core-hall-45:mouth:b:jambs"], "trimPlanes": [{"normal": [1, 0], "offset": 11.7, "keepSign": 1}, {"normal": [-0.7071067811865476, 0.7071067811865475], "offset": -8.78528137423857, "keepSign": 1}]}
       ],
-      "floor": {"thickness": 0.22, "material": "castle.flagstone", "owner": "connector"}, "clearHeight": 3.6,
+      "floor": {"thickness": 0.22, "material": "castle.flagstone", "owner": "connector:core-hall-45:floor"}, "clearHeight": 3.6,
       "roof": {"kind": "low-hip", "rise": 0.8, "material": "castle.roofTile", "overhang": 0.18},
       "routeWaypoints": [[11.7, 0, 6], [12.3, 0, 6], [17.787867965644036, 0, 6.212132034355964], [18.212132034355964, 0, 5.787867965644036]]
     },
@@ -92,14 +92,14 @@
       "level": "ground", "baseY": 0,
       "clearPolygon": [[11.7, 5.2], [18.14019237886467, 5.157179676972449], [18.65980762113533, 5.45717967697245], [17.85980762113533, 6.842820323027551], [11.7, 6.8]],
       "mouths": [
-        {"wing": "core", "level": "ground", "portalId": "core:ground:east-hall", "portalSourceId": "east-hall", "inside": [11.7, 0, 6], "outside": [12.3, 0, 6], "segment": [[11.7, 5.2], [11.7, 6.8]], "insideSegment": [[11.7, 5.2], [11.7, 6.8]], "outsideSegment": [[12.3, 5.2], [12.3, 6.8]], "tangent": [0, 1], "outward": [1, 0], "wallThickness": 0.6, "hostModules": ["core:ground:east-wall"], "jambOwner": "core"},
-        {"wing": "hall", "level": "ground", "portalId": "hall:ground:west-entry", "portalSourceId": "west-entry", "inside": [18.25980762113533, 0, 6.15], "outside": [17.74019237886467, 0, 5.85], "segment": [[18.65980762113533, 5.45717967697245], [17.85980762113533, 6.842820323027551]], "insideSegment": [[18.65980762113533, 5.45717967697245], [17.85980762113533, 6.842820323027551]], "outsideSegment": [[18.14019237886467, 5.157179676972449], [17.34019237886467, 6.54282032302755]], "tangent": [-0.5, 0.866025403784439], "outward": [-0.866025403784439, -0.5], "wallThickness": 0.6, "hostModules": ["hall:ground:west-wall"], "jambOwner": "hall"}
+        {"wing": "core", "level": "ground", "portalId": "east-hall", "portalSourceId": "east-hall", "inside": [11.7, 0, 6], "outside": [12.3, 0, 6], "segment": [[12, 5.2], [12, 6.8]], "insideSegment": [[11.7, 5.2], [11.7, 6.8]], "outsideSegment": [[12.3, 5.2], [12.3, 6.8]], "tangent": [0, 1], "outward": [1, 0], "wallThickness": 0.6, "hostModules": ["core:ground:east-wall"], "jambOwner": "connector:core-hall-neg-30:mouth:a:jambs"},
+        {"wing": "hall", "level": "ground", "portalId": "west-entry", "portalSourceId": "west-entry", "inside": [18.25980762113533, 0, 6.15], "outside": [17.74019237886467, 0, 5.85], "segment": [[18.4, 5.307179676972449], [17.6, 6.692820323027551]], "insideSegment": [[18.65980762113533, 5.45717967697245], [17.85980762113533, 6.842820323027551]], "outsideSegment": [[18.14019237886467, 5.157179676972449], [17.34019237886467, 6.54282032302755]], "tangent": [-0.5, 0.866025403784439], "outward": [-0.866025403784439, -0.5], "wallThickness": 0.6, "hostModules": ["hall:ground:west-wall"], "jambOwner": "connector:core-hall-neg-30:mouth:b:jambs"}
       ],
       "wallSpans": [
-        {"id": "south", "segment": [[12.3, 5.2], [18.14019237886467, 5.157179676972449]], "tangent": [0.999973121930876, -0.007331808495711], "normal": [-0.007331808495711, -0.999973121930876], "thickness": 0.6, "courseOrigin": [12.3, 0, 5.2], "cornerOwners": ["core", "connector"], "jambOwners": ["core", "hall"], "trimPlanes": [{"normal": [1, 0], "offset": 12.3, "keepSign": 1}, {"normal": [-0.866025403784439, -0.5], "offset": -18.288457268119902, "keepSign": 1}]},
-        {"id": "north", "segment": [[12.3, 6.8], [17.34019237886467, 6.54282032302755]], "tangent": [0.998700722179613, -0.050959469364572], "normal": [0.050959469364572, 0.998700722179613], "thickness": 0.6, "courseOrigin": [12.3, 0, 6.8], "cornerOwners": ["core", "connector"], "jambOwners": ["core", "hall"], "trimPlanes": [{"normal": [1, 0], "offset": 12.3, "keepSign": 1}, {"normal": [-0.866025403784439, -0.5], "offset": -18.288457268119902, "keepSign": 1}]}
+        {"id": "connector:core-hall-neg-30:wall:south", "segment": [[11.7, 5.2], [18.14019237886467, 5.157179676972449]], "tangent": [0.9999778966651873, -0.006648772899415021], "normal": [-0.006648772899415021, -0.9999778966651873], "thickness": 0.6, "courseOrigin": [11.7, 0, 5.2], "cornerOwners": ["connector:core-hall-neg-30:wall:south:start", "connector:core-hall-neg-30:wall:south:end"], "jambOwners": ["connector:core-hall-neg-30:mouth:a:jambs", "connector:core-hall-neg-30:mouth:b:jambs"], "trimPlanes": [{"normal": [1, 0], "offset": 11.7, "keepSign": 1}, {"normal": [-0.8660254037844387, -0.49999999999999994], "offset": -18.888457268119897, "keepSign": 1}]},
+        {"id": "connector:core-hall-neg-30:wall:north", "segment": [[11.7, 6.8], [17.85980762113533, 6.842820323027551]], "tangent": [0.9999758387251767, 0.006951400281891659], "normal": [-0.006951400281891659, 0.9999758387251767], "thickness": 0.6, "courseOrigin": [11.7, 0, 6.8], "cornerOwners": ["connector:core-hall-neg-30:wall:north:start", "connector:core-hall-neg-30:wall:north:end"], "jambOwners": ["connector:core-hall-neg-30:mouth:a:jambs", "connector:core-hall-neg-30:mouth:b:jambs"], "trimPlanes": [{"normal": [1, 0], "offset": 11.7, "keepSign": 1}, {"normal": [-0.8660254037844387, -0.49999999999999994], "offset": -18.888457268119897, "keepSign": 1}]}
       ],
-      "floor": {"thickness": 0.22, "material": "castle.flagstone", "owner": "connector"}, "clearHeight": 3.6,
+      "floor": {"thickness": 0.22, "material": "castle.flagstone", "owner": "connector:core-hall-neg-30:floor"}, "clearHeight": 3.6,
       "roof": {"kind": "low-hip", "rise": 0.8, "material": "castle.roofTile", "overhang": 0.18},
       "routeWaypoints": [[11.7, 0, 6], [12.3, 0, 6], [17.74019237886467, 0, 5.85], [18.25980762113533, 0, 6.15]]
     }

@@ -70,38 +70,39 @@ function makeRecord(yawDeg, id) {
   ];
   const wallSpan = (side, a, b, normal) => {
     const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const spanId = `connector:${id}:wall:${side}`;
     return {
-      id: `${id}:wall:${side}`, segment: [a, b],
+      id: spanId, segment: [a, b],
       tangent: [(b[0] - a[0]) / length, (b[1] - a[1]) / length], normal,
       thickness: 0.6, courseOrigin: [a[0], 0, a[1]],
-      cornerOwners: ['core:portal:east-hall', 'hall:portal:west-entry'],
-      jambOwners: ['core:portal:east-hall', 'hall:portal:west-entry'],
+      cornerOwners: [`${spanId}:start`, `${spanId}:end`],
+      jambOwners: [`connector:${id}:mouth:a:jambs`, `connector:${id}:mouth:b:jambs`],
       trimPlanes,
     };
   };
   const mouth = (wing, portalId, portalSourceId, inside, outside,
-    centerSegment, insideSegment, outsideSegment, mouthTangent, outward) => ({
+    centerSegment, insideSegment, outsideSegment, mouthTangent, outward, jambOwner) => ({
     wing, level: 'ground', portalId, portalSourceId,
     inside: [inside[0], 0, inside[1]], outside: [outside[0], 0, outside[1]],
     segment: centerSegment, insideSegment, outsideSegment,
     tangent: mouthTangent, outward, wallThickness: 0.6,
-    hostModules: [`${wing}:ground:${portalSourceId}-wall`], jambOwner: portalId,
+    hostModules: [`${wing}:ground:${wing === 'core' ? 'east' : 'west'}-wall`], jambOwner,
   });
   return {
     id, level: 'ground', baseY: 0, clearPolygon,
     mouths: [
-      mouth('core', 'core:portal:east-hall', 'east-hall', coreInside, coreOutside,
+      mouth('core', 'east-hall', 'east-hall', coreInside, coreOutside,
         segmentAt(coreCenter, coreTangent), coreInsideSegment, coreOutsideSegment,
-        coreTangent, coreOutward),
-      mouth('hall', 'hall:portal:west-entry', 'west-entry', hallInside, hallOutside,
+        coreTangent, coreOutward, `connector:${id}:mouth:a:jambs`),
+      mouth('hall', 'west-entry', 'west-entry', hallInside, hallOutside,
         segmentAt(hallCenter, tangent), hallInsideSegment, hallOutsideSegment,
-        tangent, hallOutward),
+        tangent, hallOutward, `connector:${id}:mouth:b:jambs`),
     ],
     wallSpans: [
       wallSpan('south', southSegment[0], southSegment[1], southNormal),
       wallSpan('north', northSegment[0], northSegment[1], northNormal),
     ],
-    floor: { thickness: 0.22, material: 'castle.flagstone', owner: `${id}:floor` },
+    floor: { thickness: 0.22, material: 'castle.flagstone', owner: `connector:${id}:floor` },
     clearHeight: 3.6,
     roof: { kind: 'low-hip', rise: 0.8, material: 'castle.roofTile', overhang: 0.18 },
     routeWaypoints: [
