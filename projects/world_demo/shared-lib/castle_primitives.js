@@ -20,6 +20,9 @@
 // stoneChildVariants()/beamChildVariants()/plankChildVariants() and the matching
 // place*() helpers both pass the same canonical parameter object, so requires
 // and placeChild cannot diverge through omitted defaults or seed wrapping.
+// Treat dimensions in those child params as a small canonical bake catalogue:
+// fit masonry runs with the placement transform where practical instead of
+// requesting a new child for every computed floating-point span.
 
 export const CASTLE_STONE_VARIANT_COUNT = 12;
 export const CASTLE_BEAM_VARIANT_COUNT = 8;
@@ -163,8 +166,7 @@ function chamferedBox(part, centerY, length, height, depth, bevel) {
 
   // Twelve oriented half-space cutters produce planar 45-degree arrises. This
   // is deliberately ordered voxel CSG rather than an axis-aligned stepped
-  // approximation; the large cutter faces survive the script mesher's native
-  // ~67 mm sampling while preserving broad planar beds between them.
+  // approximation; the cutter faces preserve broad planar beds between them.
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     const point = [sx * (hx - b * 0.5), centerY, sz * (hz - b * 0.5)];
     bevelCut(part, point, [sx * rootHalf, 0, sz * rootHalf], [0, 1, 0],
@@ -199,6 +201,40 @@ function emitPeg(part, x, halfHeight, halfWidth, radius, materialId) {
   part.cylinder([x, -halfHeight - 0.004, 0], [x, halfHeight + 0.004, 0], radius * 0.78);
 }
 
+function emitTimberSurfaceDetail(part, p, random, hx, hy, hz) {
+  // These narrow, direct primitives sit after the voxel modifier. That keeps
+  // their sub-centimetre profile from being quantized away and gives grazing
+  // light real normals to catch on close inspection. They remain geometry,
+  // not a texture/tint stand-in for the larger subtractive checks above.
+  const ridgeRadius = Math.max(0.0045, Math.min(0.007, Math.min(hy, hz) * 0.035));
+  part.fill(p.material);
+  for (let i = 0; i < 3; ++i) {
+    const x0 = range(random, -hx * 0.82, -hx * 0.46);
+    const xm = range(random, -hx * 0.10, hx * 0.12);
+    const x1 = range(random, hx * 0.42, hx * 0.84);
+    const z = range(random, -hz * 0.68, hz * 0.68);
+    const drift = range(random, -0.012, 0.012);
+    part.capsule([x0, hy + ridgeRadius * 0.18, z],
+      [xm, hy + ridgeRadius * 0.18, z + drift], ridgeRadius);
+    part.capsule([xm, hy + ridgeRadius * 0.18, z + drift],
+      [x1, hy + ridgeRadius * 0.18, z + drift * 0.35], ridgeRadius * 0.82);
+  }
+
+  // Raised radial fissures make the separately-materialed end caps read as
+  // sawn end grain even when viewed nearly head-on.
+  part.fill(p.material);
+  for (const side of [-1, 1]) {
+    const x = side * (hx + 0.0025);
+    const phase = range(random, -0.35, 0.35);
+    for (let ray = 0; ray < 4; ++ray) {
+      const angle = phase + ray * Math.PI * 0.5;
+      part.capsule([x, Math.sin(angle) * hy * 0.10, Math.cos(angle) * hz * 0.10],
+        [x, Math.sin(angle) * hy * 0.68, Math.cos(angle) * hz * 0.68],
+        ridgeRadius * 0.68);
+    }
+  }
+}
+
 export function emitStone(part, input = {}) {
   const p = stoneParams(input);
   const random = generator(p.seed, 0x51f15e);
@@ -207,10 +243,8 @@ export function emitStone(part, input = {}) {
   const hx = p.length * 0.5, hy = p.height * 0.5, hz = p.depth * 0.5;
 
   part.beginModifier();
-  // Two ordered sessions are intentional. The native script mesher takes the
-  // first brush as its base detail and later, smaller brush spacing selects a
-  // finer division rung. A single all-0.02 session would remain on its coarse
-  // baseline despite the authored spacing.
+  // Sessions separate core construction from fine surface work. The engine
+  // honors the finest authored spacing across both sessions and all brushes.
   part.beginVoxels(0.08);
   part.fill(p.material);
   // Low smoothing softens cutter intersections but does not crown the beds.
@@ -280,8 +314,8 @@ function emitTimberCore(part, p, thicknessName, salt) {
   const bevel = Math.max(0.024, Math.min(0.045, minSection * range(random, 0.13, 0.20)));
 
   part.beginModifier();
-  // As with stone, a coarse core followed by a fine ordered-detail session
-  // forces the mesher above its otherwise fixed script-part baseline.
+  // The engine samples the whole expression at its finest authored spacing;
+  // sessions retain the structural core / surface-detail authoring grouping.
   part.beginVoxels(0.08);
   part.fill(p.material);
   part.smoothing(Math.min(0.006, bevel * 0.22));
@@ -370,7 +404,10 @@ function emitTimberCore(part, p, thicknessName, salt) {
   }
 
   part.endVoxels();
-  part.endModifier([{ simplify: thicknessName === 'thickness' ? 0.42 : 0.32 }]);
+  // Preserve fine joinery and thin board silhouettes. An unconstrained author
+  // simplifier can move vertices into fins on these nearly planar sections.
+  part.endModifier([]);
+  emitTimberSurfaceDetail(part, p, random, hx, hy, hz);
   return p;
 }
 

@@ -108,6 +108,7 @@
 #include "water_field_vk.h"
 #include "water_field_vk_resources.h"
 #include "water_animation_gpu.h"
+#include "../world_lights.h"
 // For VkComputePipelineResource (the visible-id reduce pass; the HZB pyramid
 // that used to be this header's other user was deleted in M4).
 #include "vk_pipeline.h"
@@ -1053,6 +1054,50 @@ static_assert(offsetof(VkSceneLighting, camera_pos_x) == 96);
 static_assert(offsetof(VkSceneLighting, camera_pos_z) == 100);
 static_assert(kVkSceneLightingPushBytes == 104);
 
+// GPU metadata for descriptor set 2, shared by deferred raster local-direct
+// shading and the follow-up RT local-light stage. The first lane is integer
+// counts; the second is index configuration/debug data.
+struct alignas(16) LocalLightGpuMeta {
+    uint32_t light_count = 0;
+    uint32_t cell_bucket_count = 0;
+    uint32_t oversized_light_count = 0;
+    uint32_t direct_owner = 0;  // LocalDirectOwner
+    float cell_size = 8.0f;
+    float inverse_cell_size = 0.125f;
+    uint32_t max_candidates_per_cell = 0;
+    uint32_t reserved = 0;
+};
+static_assert(sizeof(LocalLightGpuMeta) == 32,
+              "local-light metadata must remain two aligned vec4 lanes");
+
+// Exactly one stage owns primary local-direct radiance. This task publishes
+// Raster; the RT lighting task may publish RayTraced only after its separate
+// local-direct image lane is valid for the same light revision. Composite must
+// select one owner and never add both. Diffuse GI strength is intentionally not
+// part of this contract.
+enum class LocalDirectOwner : uint32_t {
+    Raster = 0u,
+    RayTraced = 1u,
+};
+
+struct LocalDirectLightingContract {
+    LocalDirectOwner owner = LocalDirectOwner::Raster;
+    uint64_t light_revision = 0;
+    uint64_t lane_revision = 0;  // zero until an RT local-direct lane exists
+};
+
+struct LocalLightRenderStats {
+    uint32_t light_count = 0;
+    uint32_t occupied_cell_count = 0;
+    uint32_t bucket_count = 0;
+    uint32_t oversized_light_count = 0;
+    uint32_t max_candidates_per_cell = 0;
+    uint64_t list_entry_count = 0;
+    uint64_t light_upload_bytes = 0;
+    uint64_t index_upload_bytes = 0;
+    uint64_t publication_generation = 0;
+};
+
 // Monotonic upload census for one renderer, surfaced by upload_counters().
 // Observation only — nothing branches on these. The interesting ratios are
 // static_full vs static_append (a full count that climbs with resident parts is
@@ -1462,6 +1507,19 @@ public:
         return upload_counters_;
     }
     VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
+
+    // Accepts one immutable provider publication. GPU resources are uploaded
+    // transactionally into each fence-owned frame slot on its next
+    // prepare_frame(), so resize/reload never rewrites an in-flight descriptor.
+    // An empty publication is an explicit clear and still receives bindable
+    // one-element resources.
+    bool update_local_lights(
+        const world_lights::LocalLightPublication& publication,
+        std::string& error);
+    LocalLightRenderStats local_light_stats() const noexcept;
+    LocalDirectLightingContract local_direct_contract() const noexcept {
+        return {LocalDirectOwner::Raster, local_light_revision_, 0u};
+    }
 
     // ---- occlusion culling (M4) -------------------------------------------
     // Two switches, and both are needed because the ID pass must be RUNNING
@@ -2459,6 +2517,14 @@ private:
         // a new camera/sun cannot rewrite storage still referenced by a
         // submitted composite, RT, or froxel dispatch.
         matter::VkBufferResource environment_constants;
+        // Descriptor set 2: immutable-for-this-frame local-light publication.
+        // Each slot owns its buffers because descriptor sets are not
+        // UPDATE_AFTER_BIND and another slot may still be in flight.
+        matter::VkBufferResource local_light_records;
+        matter::VkBufferResource local_light_cells;
+        matter::VkBufferResource local_light_indices;
+        matter::VkBufferResource local_light_oversized_indices;
+        matter::VkBufferResource local_light_meta;
         matter::VkBufferResource instances;
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
@@ -2522,6 +2588,7 @@ private:
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet environment_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet local_light_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet water_forward_descriptor_set = VK_NULL_HANDLE;
         VkImageView environment_cloud_views[4]{};
         VkExtent3D environment_cloud_extents[4]{};
@@ -2539,6 +2606,7 @@ private:
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
         uint64_t material_generation = 0;
+        uint64_t local_light_generation = 0;
         uint64_t material_upload_record_count = 0;
         VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
@@ -2698,6 +2766,8 @@ private:
     void probe_skin_raster_draws(
         const std::vector<VkSkinRasterDraw>& draws) const;
     void update_composite_descriptor(FrameResources& frame);
+    void update_local_light_descriptor(FrameResources& frame);
+    bool upload_local_lights(FrameResources& frame, std::string& error);
     void update_water_forward_descriptor(FrameResources& frame);
     bool upload_water_forward_constants(FrameResources& frame,
                                         const FrameMatrices& matrices,
@@ -2938,6 +3008,7 @@ private:
     VkPipeline wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout local_light_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
@@ -3337,6 +3408,9 @@ private:
     uint64_t material_shading_revision_ = 0;
     uint64_t material_geometry_revision_ = 0;
     uint64_t material_generation_ = 1;
+    world_lights::LocalLightPublication local_light_publication_{};
+    uint64_t local_light_revision_ = 0;
+    uint64_t local_light_generation_ = 1;
     bool gi_history_reset_pending_ = false;
     bool gi_diffuse_history_reset_pending_ = false;
     bool gi_reflection_history_reset_pending_ = false;

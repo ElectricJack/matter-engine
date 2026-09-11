@@ -54,12 +54,14 @@ export const CASTLE_MATERIAL_SPECS = Object.freeze({
     mergeGroup: CASTLE_JOINERY_GROUP,
   }),
   gold: Object.freeze({
-    albedo: [0.95, 0.69, 0.24], roughness: 0.16, metallic: 1,
+    // A moderately broad lobe keeps the gold body readable under the castle's
+    // sky lighting while still producing unmistakable environment highlights.
+    albedo: [0.95, 0.69, 0.24], roughness: 0.24, metallic: 1,
     clearcoat: 0.12, clearcoatRoughness: 0.1,
     mergeGroup: CASTLE_JOINERY_GROUP,
   }),
   agedGold: Object.freeze({
-    albedo: [0.66, 0.43, 0.12], roughness: 0.28, metallic: 1,
+    albedo: [0.66, 0.43, 0.12], roughness: 0.34, metallic: 1,
     mergeGroup: CASTLE_JOINERY_GROUP,
   }),
   clearGlass: Object.freeze({

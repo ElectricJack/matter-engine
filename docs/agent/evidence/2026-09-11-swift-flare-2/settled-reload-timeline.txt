@@ -1,0 +1,13 @@
+render_path raster
+wait_idle 2 60
+wait_frames 120
+shot C:/tmp/swift-flare-2/settled-pre-reload-a.png
+wait_frames 120
+shot C:/tmp/swift-flare-2/settled-pre-reload-b.png
+reload
+wait_idle 2 60
+wait_frames 120
+shot C:/tmp/swift-flare-2/settled-post-reload-a.png
+wait_frames 120
+shot C:/tmp/swift-flare-2/settled-post-reload-b.png
+quit

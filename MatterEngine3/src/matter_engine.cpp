@@ -13164,6 +13164,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     lighting.emission_multiplier = controls.emission_multiplier;
     lighting.vol_enabled = opts.volumetrics.enabled ? 1.0f : 0.0f;
     lighting.vol_debug_view = opts.volumetrics.vol_debug_view;
+    // Local lights are a separate immutable publication from the small
+    // sun/sky push block. Revision equality makes the steady camera path a
+    // no-op; a light-only edit republishes buffers without touching geometry.
+    if (!impl_->vk_scene->update_local_lights(
+            impl_->manifest.lights.local, err)) {
+        return false;
+    }
     // Request the live coefficients before the renderer records this frame's
     // LUT work. Unchanged settings are a no-op inside VkAtmosphere.
     impl_->vk_scene->set_atmosphere_settings(opts.atmosphere);
@@ -13316,6 +13323,19 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vk_static_append_uploads =
         upload_counters.static_append_uploads;
     impl_->stats.vk_immediate_submits = matter::immediate_submit_count();
+    {
+        const viewer::LocalLightRenderStats light_stats =
+            impl_->vk_scene->local_light_stats();
+        impl_->stats.local_light_count = light_stats.light_count;
+        impl_->stats.local_light_occupied_cells =
+            light_stats.occupied_cell_count;
+        impl_->stats.local_light_index_entries = light_stats.list_entry_count;
+        impl_->stats.local_light_index_bytes = light_stats.index_upload_bytes;
+        impl_->stats.local_light_max_candidates =
+            light_stats.max_candidates_per_cell;
+        impl_->stats.local_light_oversized =
+            light_stats.oversized_light_count;
+    }
     // WP-E (chart-space virtual texturing) residency census.
     {
         const vt::VtResidency::Stats vt_stats = impl_->vk_scene->vt_stats();

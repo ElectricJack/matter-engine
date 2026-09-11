@@ -174,6 +174,8 @@ for (const [emit, input, expected] of [
   const part = new RecordingPart();
   emit(part, input);
   part.balanced();
+  assert.deepEqual(part.ops.find((op) => op.kind === 'endModifier').args, [],
+    expected + ' preserves its fine mesh without unconstrained author simplification');
   assert.ok(part.ops.some((op) => op.kind === 'capsule' && op.csg === 'difference'),
     expected + ' has longitudinal checks');
   assert.ok(part.ops.some((op) => op.kind === 'sphere'), expected + ' has knot relief');
@@ -186,6 +188,11 @@ for (const [emit, input, expected] of [
   assert.ok(part.ops.some((op) => op.kind === 'box' &&
     op.material === input.ironMaterial), expected + ' straps own iron material');
   assert.ok(part.ops.some((op) => op.csg === 'difference'), expected + ' uses CSG joinery');
+  const lastVoxel = part.ops.map((op) => op.kind).lastIndexOf('endVoxels');
+  const directRelief = part.ops.slice(lastVoxel + 1)
+    .filter((op) => op.kind === 'capsule' && op.csg === 'union');
+  assert.ok(directRelief.length >= 14,
+    expected + ' retains raised face grain and radial end detail below voxel size');
 }
 
 const jointStreams = [];

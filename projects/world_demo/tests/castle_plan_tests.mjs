@@ -30,6 +30,77 @@ function portalPlan() {
   }], { id: 'physical-portal' });
 }
 
+function stairApproachPlan({ entryAtUpper = false } = {}) {
+  const entryLevelId = entryAtUpper ? 'upper' : 'ground';
+  const entryRoomId = entryAtUpper ? 'upper-hall' : 'lower-hall';
+  return {
+    schema: CASTLE_PLAN_SCHEMA,
+    id: entryAtUpper ? 'reverse-stair-route' : 'stair-approach-route',
+    seed: 19,
+    entryRoomId,
+    levels: [
+      { id: 'ground', baseY: 0, height: 4, rooms: [
+        { id: 'lower-hall', use: 'hall', rect: { x: 0, z: 0, width: 10, depth: 4 } },
+      ], edgeOverrides: entryLevelId === 'ground' ? [{
+        id: 'entry', from: [10, 0], to: [10, 2], kind: 'door',
+        connects: ['outside', entryRoomId],
+        opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 },
+      }] : [] },
+      { id: 'upper', baseY: 4, height: 4, rooms: [
+        { id: 'upper-hall', use: 'gallery', rect: { x: 0, z: 0, width: 10, depth: 4 } },
+      ], edgeOverrides: entryLevelId === 'upper' ? [{
+        id: 'entry', from: [10, 0], to: [10, 2], kind: 'door',
+        connects: ['outside', entryRoomId],
+        opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 },
+      }] : [] },
+    ],
+    stairs: [{
+      id: 'cross-room-stair', lowerLevelId: 'ground', upperLevelId: 'upper',
+      lowerRoomId: 'lower-hall', upperRoomId: 'upper-hall',
+      width: 1.2, maxRiser: 0.2, tread: 0.25, headroom: 2.2,
+      entryDirection: 'E', exitDirection: 'E',
+      flights: [{
+        id: 'rising-flight', direction: 'E', stepCount: 20,
+        footprint: { x: 2, z: 0.8, width: 5, depth: 1.2 },
+      }],
+      landings: [
+        { id: 'lower', kind: 'lower', bounds: { x: 0.8, z: 0.8, width: 1.2, depth: 1.2 } },
+        { id: 'upper', kind: 'upper', bounds: { x: 7, z: 0.8, width: 1.2, depth: 1.2 } },
+      ],
+    }],
+    beams: [], curves: [], fixtures: [], roofs: [], localLights: [],
+  };
+}
+
+function samePoint(a, b) {
+  return a.length === b.length && a.every((value, index) => Math.abs(value - b[index]) < 1e-9);
+}
+
+function containsPointSequence(points, expected) {
+  return points.some((_, start) =>
+    expected.every((point, index) => points[start + index] && samePoint(points[start + index], point)));
+}
+
+function segmentEntersExpandedRect(from, to, rect, radius) {
+  const epsilon = 1e-7;
+  const mins = [rect.x - radius, rect.z - radius];
+  const maxs = [rect.x + rect.width + radius, rect.z + rect.depth + radius];
+  const starts = [from[0], from[2]], deltas = [to[0] - from[0], to[2] - from[2]];
+  let first = 0, last = 1;
+  for (let axis = 0; axis < 2; ++axis) {
+    if (Math.abs(deltas[axis]) < 1e-9) {
+      if (starts[axis] <= mins[axis] + epsilon || starts[axis] >= maxs[axis] - epsilon)
+        return false;
+      continue;
+    }
+    const a = (mins[axis] - starts[axis]) / deltas[axis];
+    const b = (maxs[axis] - starts[axis]) / deltas[axis];
+    first = Math.max(first, Math.min(a, b));
+    last = Math.min(last, Math.max(a, b));
+  }
+  return Math.max(first, epsilon) < Math.min(last, 1 - epsilon) - epsilon;
+}
+
 assert.deepEqual(canonicalEdge([1, 0], [0, 0]), {
   from: [0, 0], to: [1, 0], key: '0,0|1,0', axis: 'x',
 });
@@ -270,6 +341,33 @@ assert.deepEqual(stair.voids.map(hole => hole.kind), ['ceiling', 'floor']);
 assert.equal(fixtureManifest.floors.find(floor => floor.roomId === 'hall').holes.length, 0);
 assert.equal(fixtureManifest.floors.find(floor => floor.roomId === 'chamber').holes.length,
   stair.holes.length);
+
+// A top-level walk route is a directly executable capsule path: stair traversals
+// retain every authored flight/landing waypoint, and flat approaches treat the
+// rising flight as an obstacle expanded by half the route width.
+const stairApproachManifest = compilePlan(stairApproachPlan());
+const approachStair = stairApproachManifest.stairs[0];
+const routeUpstairs = stairApproachManifest.walkRoute.find(route => route.roomId === 'upper-hall');
+assert.ok(containsPointSequence(routeUpstairs.waypoints, approachStair.route.waypoints),
+  'upward walkRoute retains every stair.route waypoint in traversal order');
+const lowerApproach = routeUpstairs.roomSegments.find(segment => segment.roomId === 'lower-hall');
+assert.ok(lowerApproach.segments.every(segment => !segmentEntersExpandedRect(
+  segment.from, segment.to, approachStair.flights[0].footprint, lowerApproach.width / 2)),
+  'flat lower-room approach stays outside the capsule-expanded rising flight');
+
+const reverseStairManifest = compilePlan(stairApproachPlan({ entryAtUpper: true }));
+const reverseStair = reverseStairManifest.stairs[0];
+const routeDownstairs = reverseStairManifest.walkRoute.find(route => route.roomId === 'lower-hall');
+assert.ok(containsPointSequence(routeDownstairs.waypoints, [...reverseStair.route.waypoints].reverse()),
+  'downward walkRoute retains every stair.route waypoint in reverse traversal order');
+
+const blockedApproach = stairApproachPlan();
+blockedApproach.beams.push({
+  levelId: 'ground', from: [5, 2.05, 2.2], to: [5, 2.05, 4],
+  section: [0.2, 0.2], jointFamily: 'mortise-tenon', role: 'blocked-stair-approach',
+});
+expectInvalid(blockedApproach, /walkRoute.*(headroom|clearance)|approach.*headroom/i);
+
 for (const [field, value, pattern] of [
   ['headroom', 2.09, /headroom.*at least 2\.1m/],
 ]) {
