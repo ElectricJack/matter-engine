@@ -351,6 +351,37 @@ connectorCourtOverlap.courtyards = [{
 expectInvalid(connectorCourtOverlap,
   /courtyards\.connector-court.*positive-area floor overlap with connector vestibule/);
 
+// A raised courtyard slab can descend into the top of a lower connector wall
+// even when its authored walking surface is above that wall.
+const raisedCourtWallOverlap = clone(angledStudySite(0));
+raisedCourtWallOverlap.wings.push({
+  id: 'mezzanine',
+  frame: { origin: [12, 0, -10], yawDeg: 0 },
+  plan: {
+    schema: ANGLED_STUDY_CORE_PLAN.schema, id: 'raised-court-wing', seed: 9414,
+    entryRoomId: 'mezz',
+    style: { wallThickness: 0.6, wallMaterial: 'castle.limestone', bond: 'ashlar' },
+    levels: [{
+      id: 'ground', baseY: 3.3, height: 4,
+      rooms: [{ id: 'mezz', use: 'gallery', floorType: 'flags',
+        rect: { x: 0, z: 0, width: 4, depth: 4 } }],
+      edgeOverrides: [{
+        id: 'court-door', from: [0, 4], to: [4, 4], kind: 'door',
+        connects: ['outside', 'mezz'], opening: { width: 1.2, height: 2.8, offset: 1.4 },
+      }],
+    }],
+    stairs: [], beams: [], fixtures: [], roofs: [], localLights: [], curves: [],
+  },
+});
+raisedCourtWallOverlap.courtyards = [{
+  id: 'raised-court', level: 'ground', baseY: 3.3,
+  clearPolygon: [[13.4, -6.3], [14.6, -6.3], [14.6, 4.5], [13.4, 4.5]],
+  floor: { material: 'stone', thickness: 0.25 },
+  sockets: [{ wing: 'mezzanine', level: 'ground', portal: 'court-door' }],
+}];
+expectInvalid(raisedCourtWallOverlap,
+  /courtyards\.raised-court.*floor overlaps wall solid.*connector vestibule/);
+
 // Tuple components are escaped before global namespacing, so authored colons
 // cannot alias the reserved courtyard node namespace.
 const collisionSafe = clone(courtyardSite);

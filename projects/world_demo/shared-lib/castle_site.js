@@ -746,8 +746,9 @@ function validateSiteSurfaceOverlap(connectors, courtyards) {
           positivePolygonArea(convexIntersection(left.clearPolygon, connector.clearPolygon)) >
             COLLISION_AREA_EPSILON)
         fail(`courtyards.${left.id}`, `positive-area floor overlap with connector ${connector.id}`);
-      if (left.baseY < connector.baseY - EPSILON ||
-          left.baseY >= connector.baseY + connector.height - EPSILON) continue;
+      if (!yRangesOverlap(courtFloorVolume(left), {
+        minY: connector.baseY, maxY: connector.baseY + connector.height,
+      })) continue;
       for (const span of connector.wallSpans) {
         const footprint = connectorWallFootprint(connector, span,
           `connections.${connector.id}.wallSpans.${span.id}.footprint`);
