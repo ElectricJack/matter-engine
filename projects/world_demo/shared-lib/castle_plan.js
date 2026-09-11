@@ -742,6 +742,61 @@ function routeRoomSegment(room, from, to, width, holes, volumes = []) {
   return null;
 }
 
+function roomRouteObstacles(roomId, floor, stairs) {
+  return [
+    ...floor.holes,
+    ...stairs.filter(stair => stair.lowerRoomId === roomId).flatMap(stair => [
+      ...stair.flights.map(flight => ({
+        id: `route-obstacle:${flight.id}`, footprint: flight.footprint,
+        replacementLandingId: null,
+      })),
+      // An intermediate landing is carried from the lower floor (corner posts or a
+      // solid base) at any elevation; an upper landing hangs from the upper floor.
+      ...stair.landings.filter(landing => landing.kind === 'intermediate' ||
+        (landing.kind === 'upper' &&
+          landing.elevation < floor.elevation + MIN_PORTAL_HEIGHT - 1e-9)).map(landing => ({
+        id: `route-obstacle:${landing.id}`, footprint: landing.bounds,
+        replacementLandingId: null,
+      })),
+    ]),
+  ];
+}
+
+// Route against compiled records. Compiler rooms still carry `_cells`; public
+// manifests carry the same cells under `boundary`, so either representation can
+// use the exact same lane search and post-route obstacle backstops.
+function routeCompiledRoomSegment(records, roomId, from, to, width, failurePath,
+  missingFloorPath = failurePath) {
+  const floor = records.floors.find(candidate => candidate.roomId === roomId);
+  if (!floor) fail(missingFloorPath, `room ${roomId} has no walkable floor`);
+  const sourceRoom = records.rooms.find(candidate => candidate.id === roomId);
+  if (!sourceRoom) fail(failurePath, `unknown room ${roomId}`);
+  const room = sourceRoom._cells ? sourceRoom : {
+    ...sourceRoom,
+    _cells: sourceRoom.boundary?.kind === 'cells'
+      ? sourceRoom.boundary.cells.map(cell => [...cell]) : [],
+  };
+  const holes = roomRouteObstacles(roomId, floor, records.stairs);
+  // With no lane clear of beams and fixtures, route beneath them instead so the
+  // validation backstop below names the member that blocks the room.
+  const headroomVolumes = [
+    ...records.beamMembers.map(beamBounds),
+    ...records.fixtures.filter(fixture => fixture.clearance)
+      .map(fixture => fixture.clearance),
+  ];
+  const segment = routeRoomSegment(room, from, to, width, holes, headroomVolumes) ??
+    routeRoomSegment(room, from, to, width, holes) ??
+    fail(failurePath, `walk clearance leaves room ${roomId} floor`);
+  for (const beam of records.beamMembers)
+    if (segment.segments.some(leg => volumesOverlap(leg.bounds, beamBounds(beam))))
+      fail(failurePath, `room swept headroom intersects beam ${beam.id}`);
+  for (const fixture of records.fixtures)
+    if (fixture.clearance &&
+        segment.segments.some(leg => volumesOverlap(leg.bounds, fixture.clearance)))
+      fail(failurePath, `room swept clearance intersects fixture ${fixture.id}`);
+  return segment;
+}
+
 function rectanglesTouch(a, b) {
   const aa = boundsFromRect(a), bb = boundsFromRect(b);
   return aa.maxX + 1e-9 >= bb.minX && bb.maxX + 1e-9 >= aa.minX &&
@@ -1517,29 +1572,7 @@ function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, flo
   }
   const missing = nodes.filter(node => node.required && !reachable.has(node.id)).map(node => node.id);
   if (missing.length) fail('roomGraph', `required rooms are unreachable from ${entryRoomId}: ${missing.join(', ')}`);
-  const routeObstaclesForRoom = (roomId, floor) => [
-    ...floor.holes,
-    ...stairs.filter(stair => stair.lowerRoomId === roomId).flatMap(stair => [
-      ...stair.flights.map(flight => ({
-        id: `route-obstacle:${flight.id}`, footprint: flight.footprint,
-        replacementLandingId: null,
-      })),
-      // An intermediate landing is carried from the lower floor (corner posts or a
-      // solid base) at any elevation; an upper landing hangs from the upper floor.
-      ...stair.landings.filter(landing => landing.kind === 'intermediate' ||
-        (landing.kind === 'upper' &&
-          landing.elevation < floor.elevation + MIN_PORTAL_HEIGHT - 1e-9)).map(landing => ({
-        id: `route-obstacle:${landing.id}`, footprint: landing.bounds,
-        replacementLandingId: null,
-      })),
-    ]),
-  ];
-  // Beams and fixture clearances are routing obstacles judged by the same
-  // swept-bounds overlap as the headroom checks below, which remain a backstop.
-  const headroomVolumes = [
-    ...beamMembers.map(beamBounds),
-    ...fixtures.filter(fixture => fixture.clearance).map(fixture => fixture.clearance),
-  ];
+  const routeRecords = { rooms, floors, stairs, beamMembers, fixtures };
   const walkRoute = [...reachable].sort().map(roomId => {
     const path = [], routeEdges = [];
     for (let cursor = roomId; cursor !== undefined; cursor = parent.get(cursor)) {
@@ -1556,24 +1589,11 @@ function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, flo
       const sharedRoomId = fullEdges[i].rooms.find(candidate =>
         candidate !== 'outside' && fullEdges[i + 1].rooms.includes(candidate));
       if (!sharedRoomId) fail('walkRoute', `connectors ${fullEdges[i].id} and ${fullEdges[i + 1].id} share no room`);
-      const floor = floors.find(candidate => candidate.roomId === sharedRoomId);
-      if (!floor) fail('walkRoute', `room ${sharedRoomId} has no walkable floor`);
-      const sharedRoom = rooms.find(room => room.id === sharedRoomId);
       const from = fullEdges[i].roomThresholds[sharedRoomId];
       const to = fullEdges[i + 1].roomThresholds[sharedRoomId];
-      const holes = routeObstaclesForRoom(sharedRoomId, floor);
-      // With no lane clear of beams and fixtures, route beneath them instead so
-      // the backstop below names the member that blocks the room.
-      const segment = routeRoomSegment(sharedRoom, from, to, MIN_PORTAL_WIDTH, holes, headroomVolumes) ??
-        routeRoomSegment(sharedRoom, from, to, MIN_PORTAL_WIDTH, holes) ??
-        fail(`walkRoute.${roomId}`, `walk clearance leaves room ${sharedRoomId} floor`);
+      const segment = routeCompiledRoomSegment(routeRecords, sharedRoomId, from, to,
+        MIN_PORTAL_WIDTH, `walkRoute.${roomId}`, 'walkRoute');
       segment.id = `route-segment:${roomId}:${i}`;
-      for (const beam of beamMembers)
-        if (segment.segments.some(leg => volumesOverlap(leg.bounds, beamBounds(beam))))
-          fail(`walkRoute.${roomId}`, `room swept headroom intersects beam ${beam.id}`);
-      for (const fixture of fixtures)
-        if (fixture.clearance && segment.segments.some(leg => volumesOverlap(leg.bounds, fixture.clearance)))
-          fail(`walkRoute.${roomId}`, `room swept clearance intersects fixture ${fixture.id}`);
       roomSegments.push(segment);
     }
     const traversalPairs = fullEdges.map((edge, index) => entryEdge
@@ -2046,6 +2066,23 @@ export function validatePlan(plan) {
 
 export function compilePlan(plan) {
   return compile(plan);
+}
+
+// Finds an obstacle-aware flat route using only records preserved in a compiled
+// castle manifest. The manifest is read-only; the returned route owns its point
+// and bounds records.
+export function routeManifestRoomSegment(manifest, roomId, from, to, width = MIN_PORTAL_WIDTH) {
+  if (manifest?.schema !== CASTLE_MANIFEST_SCHEMA)
+    fail('manifest.schema', `must be ${CASTLE_MANIFEST_SCHEMA}`);
+  const id = string(roomId, 'routeManifestRoomSegment.roomId');
+  if (!Array.isArray(manifest.rooms) || !manifest.rooms.some(room => room.id === id))
+    fail('routeManifestRoomSegment.roomId', `unknown room ${id}`);
+  const start = point3(from, 'routeManifestRoomSegment.from');
+  const end = point3(to, 'routeManifestRoomSegment.to');
+  const clearWidth = finite(width, 'routeManifestRoomSegment.width');
+  if (clearWidth <= 0) fail('routeManifestRoomSegment.width', 'must be positive');
+  return routeCompiledRoomSegment(manifest, id, start, end, clearWidth,
+    `routeManifestRoomSegment.${id}`);
 }
 
 export function planToJSON(manifest, space = 2) {

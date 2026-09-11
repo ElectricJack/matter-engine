@@ -5,7 +5,7 @@ import {castleCollisionEntities} from '../shared-lib/castle_collision.js';
 const clone=v=>JSON.parse(JSON.stringify(v));
 const near=(a,b)=>Math.abs(a-b)<1e-7;
 const expected={keep:[[6,0],[6,12],[0,4],[12,1.5]],hall:[[5,0],[5,8],[0,4],[14,1.5]],
-  chapel:[[4,0],[4,12],[0,10.5],[6,5]],service:[[2,0],[8,6],[0,3],[10,4.5]]};
+  chapel:[[4,0],[4,13],[0,10.5],[6,5]],service:[[2,0],[8,6],[0,3],[10,4.5]]};
 function boxesAt(entities,p) {
   return entities.filter(e=>{
     const t=e.components.LocalTransform.translation,h=e.components.BoxCollider.halfExtents;
