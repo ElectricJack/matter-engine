@@ -2428,6 +2428,7 @@ void VkSceneRenderer::set_dlss_mode(matter::DlssMode mode) {
     if (selected_dlss_mode_ == mode) return;
     selected_dlss_mode_ = mode;
     gi_history_reset_pending_ = true;
+    local_direct_history_state_.reset_pending = true;
 }
 
 void VkSceneRenderer::set_geometry_debug_view(matter::GeometryDebugView view) {
@@ -2437,6 +2438,7 @@ void VkSceneRenderer::set_geometry_debug_view(matter::GeometryDebugView view) {
     // behind it describes a differently-coloured world. Reset on the switch in
     // BOTH directions rather than ghosting the old albedo through the change.
     gi_history_reset_pending_ = true;
+    local_direct_history_state_.reset_pending = true;
 }
 
 void VkSceneRenderer::set_wireframe(bool enabled) {
@@ -2445,6 +2447,7 @@ void VkSceneRenderer::set_wireframe(bool enabled) {
     // Same reasoning as the tint: the G-buffer the temporal/GI history
     // accumulated behind a filled frame does not describe a line frame.
     gi_history_reset_pending_ = true;
+    local_direct_history_state_.reset_pending = true;
 }
 
 bool VkSceneRenderer::wireframe_available() const noexcept {
@@ -2457,6 +2460,7 @@ void VkSceneRenderer::set_ray_tracing_settings(
     const matter::VulkanRayTracingSettings& settings) {
     if (ray_tracing_settings_.enabled != settings.enabled) {
         gi_history_reset_pending_ = true;
+        local_direct_history_state_.reset_pending = true;
         // RT enablement also changes who owns primary local direct (raster or
         // traced). Whole-frame temporal upscaling must not reuse the previous
         // owner's lighting, even though the GI histories have their own reset.
@@ -2479,6 +2483,7 @@ void VkSceneRenderer::set_gi_settings(
         return;
     gi_settings_ = normalized;
     gi_history_reset_pending_ = true;
+    local_direct_history_state_.reset_pending = true;
     gi_diffuse_history_reset_pending_ = true;
     gi_reflection_history_reset_pending_ = true;
     gi_filtered_valid_ = false;
@@ -2563,12 +2568,14 @@ void VkSceneRenderer::destroy_pipeline() {
     raw_transmission_.reset();
     raw_transmission_aux_.reset();
     raw_local_direct_.reset();
+    local_direct_filtered_.reset();
+    local_direct_history_state_ = {};
     vol_dummy_3d_.reset();
     for (auto& image : gi_atrous_) image.reset();
     for (auto& image : gi_spec_atrous_) image.reset();
     for (auto& image : gi_trans_atrous_) image.reset();
     for (auto* histories : {&gi_history_, &gi_spec_history_,
-                            &gi_trans_history_}) {
+                            &gi_trans_history_, &local_direct_history_}) {
         for (auto& history : *histories) {
             history.radiance.reset();
             history.moments.reset();
@@ -4773,7 +4780,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     // RT PBR Phase 1 adds, per frame slot: one gi_temporal set (13 combined
     // samplers, 8 storage images) and three gi_atrous sets (7 combined
     // samplers, 1 storage image, 1 storage buffer each) for the transmission
-    // signal chain -- the counts below already fold those in.
+    // signal chain -- the counts below already fold those in. Primary direct
+    // adds one temporal set (14 sampled + 8 storage images) and one narrow
+    // filter set (8 sampled + 1 storage image + 1 marker storage buffer).
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 3},
         // 27 for the scene/VT buffers above, +1 for the per-module
@@ -4782,15 +4791,15 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // +1 for the per-part occlusion-class table at binding 19.
         // +5 for the standalone local-light publication set (records, hashed
         // cells, compact indices, oversized indices, metadata).
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 38},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 39},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
-              (133 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+              (155 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
               vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 43}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 19;
+    pool.maxSets = frame_slot_count * 21;
     pool.poolSizeCount = 4;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
@@ -4828,7 +4837,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 19);
+    layouts.reserve(frame_slot_count * 21);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
@@ -4842,6 +4851,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             layouts.push_back(gi_atrous_set_layout_);
         // Appended so every pre-existing descriptor index above stays stable.
         layouts.push_back(local_light_set_layout_);
+        layouts.push_back(gi_temporal_set_layout_);
+        layouts.push_back(gi_atrous_set_layout_);
     }
     std::vector<VkDescriptorSet> sets(layouts.size());
     VkDescriptorSetAllocateInfo allocate{
@@ -4885,18 +4896,20 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 19];
-        frame.descriptor_sets[1] = sets[index * 19 + 1];
-        frame.skin_descriptor_set = sets[index * 19 + 2];
-        frame.composite_descriptor_set = sets[index * 19 + 3];
-        frame.environment_descriptor_set = sets[index * 19 + 4];
-        frame.display_descriptor_set = sets[index * 19 + 5];
+        frame.descriptor_sets[0] = sets[index * 21];
+        frame.descriptor_sets[1] = sets[index * 21 + 1];
+        frame.skin_descriptor_set = sets[index * 21 + 2];
+        frame.composite_descriptor_set = sets[index * 21 + 3];
+        frame.environment_descriptor_set = sets[index * 21 + 4];
+        frame.display_descriptor_set = sets[index * 21 + 5];
         frame.water_forward_descriptor_set = water_sets[index];
         for (uint32_t i = 0; i < 3; ++i)
-            frame.gi_temporal_descriptor_sets[i] = sets[index * 19 + 6 + i];
+            frame.gi_temporal_descriptor_sets[i] = sets[index * 21 + 6 + i];
         for (uint32_t i = 0; i < 9; ++i)
-            frame.gi_atrous_descriptor_sets[i] = sets[index * 19 + 9 + i];
-        frame.local_light_descriptor_set = sets[index * 19 + 18];
+            frame.gi_atrous_descriptor_sets[i] = sets[index * 21 + 9 + i];
+        frame.local_light_descriptor_set = sets[index * 21 + 18];
+        frame.local_direct_temporal_descriptor_set = sets[index * 21 + 19];
+        frame.local_direct_filter_descriptor_set = sets[index * 21 + 20];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
@@ -8347,7 +8360,11 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
                           ? &volumetrics_->cloud_density_or_dummy()
                           : &volumetrics_->vol_integrated())
                    : &vol_dummy_3d_,
-        &depth_, &raw_local_direct_};
+        &depth_, local_direct_history_state_.candidate_serial != 0
+            ? (local_direct_history_state_.filtered_valid
+                ? &local_direct_filtered_
+                : &local_direct_history_[local_direct_history_state_.candidate_index].radiance)
+            : &raw_local_direct_};
     const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11};
     VkDescriptorImageInfo image_infos[11]{};
     VkWriteDescriptorSet writes[12]{};
@@ -8583,6 +8600,7 @@ bool VkSceneRenderer::update_local_lights(
     // presentation. Raster remains the sole direct owner until a future RT
     // lane explicitly proves itself ready for this same revision.
     gi_history_reset_pending_ = true;
+    local_direct_history_state_.reset_pending = true;
     gi_diffuse_history_reset_pending_ = true;
     gi_reflection_history_reset_pending_ = true;
     dlss_history_reset_pending_ = true;
@@ -9986,8 +10004,10 @@ bool VkSceneRenderer::update_materials(
     // pages, so a material table change has to reach it too. Deferred to the
     // next vt_begin_frame (the setter wants the device idle w.r.t. fills).
     vt_inputs_dirty_ = true;
-    if (!first_upload && (shading_changed || geometry_changed))
+    if (!first_upload && (shading_changed || geometry_changed)) {
         gi_history_reset_pending_ = true;
+        local_direct_history_state_.reset_pending = true;
+    }
     return true;
 }
 
@@ -10306,10 +10326,12 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     // Test-only diagnostics may run immediately after an asynchronous smoke
     // frame. Recycle descriptor sets only after that submitted work is done.
     vulkan_->wait_idle();
+    const VkExtent2D fixture_extent = fixture.signal_mode == 3u
+        ? raster_extent_ : raw_diffuse_extent_;
     if (frames_.empty() || raw_diffuse_.image == VK_NULL_HANDLE ||
         fixture.output_pixel.x < 0 || fixture.output_pixel.y < 0 ||
-        fixture.output_pixel.x >= static_cast<int>(raw_diffuse_extent_.width) ||
-        fixture.output_pixel.y >= static_cast<int>(raw_diffuse_extent_.height)) {
+        fixture.output_pixel.x >= static_cast<int>(fixture_extent.width) ||
+        fixture.output_pixel.y >= static_cast<int>(fixture_extent.height)) {
         error = "GI temporal GPU fixture requires initialized in-bounds targets";
         return false;
     }
@@ -10346,6 +10368,13 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     const bool saved_candidate_reset = gi_candidate_was_reset_;
     const bool saved_composite = last_composite_used_gi_temporal_;
     const TemporalFrame saved_temporal = temporal_frame_;
+    const auto saved_direct = local_direct_history_state_;
+    if (fixture.signal_mode == 3u) {
+        local_direct_history_state_.presented_token = 1;
+        local_direct_history_state_.reset_pending = false;
+        local_direct_history_state_.candidate_scene_key =
+            local_direct_history_state_.presented_scene_key;
+    }
     gi_presented_attempt_token_ = 1;
     temporal_frame_.reset = fixture.reset;
     temporal_frame_.attempt_token = kGiTestTemporalToken;
@@ -10372,13 +10401,15 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         value.float32[2] = f.raw.z;
         value.float32[3] = f.raw.w;
         matter::VkImageResource& raw_signal =
-            f.signal_mode == 0u ? renderer.raw_diffuse_
+            f.signal_mode == 3u ? renderer.raw_local_direct_
+            : f.signal_mode == 0u ? renderer.raw_diffuse_
                                 : renderer.raw_specular_;
         clear_color(raw_signal, value);
         value = {};
         value.float32[0] = f.raw_aux.x;
         value.float32[1] = f.raw_aux.y;
-        clear_color(renderer.raw_specular_aux_, value);
+        clear_color(f.signal_mode == 3u ? renderer.orm_
+                                       : renderer.raw_specular_aux_, value);
         value = {};
         value.float32[0] = f.velocity.x;
         value.float32[1] = f.velocity.y;
@@ -10418,10 +10449,13 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         sampled(renderer.normal_, VK_IMAGE_ASPECT_COLOR_BIT);
         sampled(renderer.material_instance_, VK_IMAGE_ASPECT_COLOR_BIT);
 
-        GiHistorySet* histories = f.signal_mode == 0u
+        GiHistorySet* histories = f.signal_mode == 3u
+            ? renderer.local_direct_history_ : f.signal_mode == 0u
             ? renderer.gi_history_ : renderer.gi_spec_history_;
         GiHistorySet& previous =
-            histories[renderer.gi_presented_history_index_];
+            histories[f.signal_mode == 3u
+                ? renderer.local_direct_history_state_.presented_index
+                : renderer.gi_presented_history_index_];
         value = {};
         value.float32[0] = f.previous_radiance.x;
         value.float32[1] = f.previous_radiance.y;
@@ -10475,7 +10509,9 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
             fake, f.signal_mode, *item.error, false);
         if (!item.ok) return;
         GiHistorySet& output =
-            histories[renderer.gi_candidate_history_index_];
+            histories[f.signal_mode == 3u
+                ? renderer.local_direct_history_state_.candidate_index
+                : renderer.gi_candidate_history_index_];
         matter::VkImageResource* images[] = {
             &output.radiance, &output.moments, &output.history_length,
             &output.rejection, &output.aux};
@@ -10534,6 +10570,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     gi_candidate_was_reset_ = saved_candidate_reset;
     last_composite_used_gi_temporal_ = saved_composite;
     temporal_frame_ = saved_temporal;
+    local_direct_history_state_ = saved_direct;
     if (!submitted || !record.ok) return false;
     std::array<uint8_t, 32> bytes{};
     if (!matter::readback_buffer(*vulkan_, readback, bytes.data(), bytes.size(),
@@ -10570,7 +10607,8 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
         fixture.depth.size() != pixel_count ||
         fixture.normal.size() != pixel_count ||
         fixture.material_index.size() != pixel_count ||
-        fixture.history_length.size() != pixel_count) {
+        fixture.history_length.size() != pixel_count ||
+        (!fixture.instance_token.empty() && fixture.instance_token.size() != pixel_count)) {
         error = "GI A-trous GPU fixture requires complete inputs at least 33 pixels wide";
         return false;
     }
@@ -10620,7 +10658,8 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
             float_to_half(fixture.normal[i].y),
             float_to_half(fixture.normal[i].z),
             float_to_half(fixture.normal[i].w)};
-        const uint32_t identity[2] = {fixture.material_index[i], 1u};
+        const uint32_t identity[2] = {fixture.material_index[i],
+            fixture.instance_token.empty() ? 1u : fixture.instance_token[i]};
         const uint16_t history = static_cast<uint16_t>(
             std::min(fixture.history_length[i], kGiHistoryLengthMax));
         std::memcpy(bytes + signal_offset + i * 8, signal, sizeof(signal));
@@ -10640,22 +10679,28 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
         VkBuffer readback;
         VkDeviceSize offsets[6];
         VkExtent2D extent;
+        uint32_t signal_mode;
         bool ok = true;
         std::string* error;
     } record{this, upload.buffer, readback.buffer,
              {signal_offset, moments_offset, depth_offset, normal_offset,
-              identity_offset, history_offset}, fixture.extent, true, &error};
+              identity_offset, history_offset}, fixture.extent, fixture.signal_mode, true, &error};
     const uint64_t saved_candidate_serial = gi_candidate_frame_serial_;
     const uint32_t saved_composite_index = gi_composite_history_index_;
     const bool saved_filtered_valid = gi_filtered_valid_;
     const uint32_t saved_filtered_index = gi_filtered_index_;
+    const auto saved_direct = local_direct_history_state_;
+    if (fixture.signal_mode == 3u)
+        local_direct_history_state_.candidate_serial = kGiTestAtrousToken;
     gi_composite_history_index_ = gi_candidate_history_index_;
     gi_candidate_frame_serial_ = kGiTestAtrousToken;
     const auto callback = [](VkCommandBuffer command_buffer, void* opaque) {
         auto& item = *static_cast<FixtureRecord*>(opaque);
         VkSceneRenderer& renderer = *item.renderer;
         GiHistorySet& guide =
-            renderer.gi_history_[renderer.gi_composite_history_index_];
+            item.signal_mode == 3u
+                ? renderer.local_direct_history_[renderer.local_direct_history_state_.candidate_index]
+                : renderer.gi_history_[renderer.gi_composite_history_index_];
         matter::VkImageResource* images[6] = {
             &guide.radiance, &guide.moments, &guide.depth,
             &guide.normal, &guide.identity, &guide.history_length};
@@ -10686,6 +10731,16 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
         vkCmdClearColorImage(command_buffer, renderer.reactivity_.image,
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                              &zero_reactivity, 1, &reactivity_range);
+        if (item.signal_mode == 3u) {
+            transition_for_use(command_buffer, guide.aux,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               VK_IMAGE_ASPECT_COLOR_BIT);
+            vkCmdClearColorImage(command_buffer, guide.aux.image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 &zero_reactivity, 1, &reactivity_range);
+        }
         matter::VulkanFrame fake{};
         fake.command_buffer = command_buffer;
         fake.frame_slot = renderer.active_frame_index_;
@@ -10710,11 +10765,15 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
         clear_dependency.bufferMemoryBarrierCount = 1;
         clear_dependency.pBufferMemoryBarriers = &clear_to_compute;
         vkCmdPipelineBarrier2(command_buffer, &clear_dependency);
-        item.ok = renderer.record_gi_atrous(fake, *item.error, false);
+        item.ok = item.signal_mode == 3u
+            ? renderer.record_gi_atrous_signal(fake, 3u, *item.error, false)
+            : renderer.record_gi_atrous(fake, *item.error, false);
         if (!item.ok) return;
         matter::VkImageResource* outputs[2] = {
-            &renderer.gi_atrous_[renderer.gi_filtered_index_],
-            &renderer.gi_atrous_[renderer.gi_filtered_index_ ^ 1u]};
+            item.signal_mode == 3u ? &renderer.local_direct_filtered_
+                : &renderer.gi_atrous_[renderer.gi_filtered_index_],
+            item.signal_mode == 3u ? &guide.radiance
+                : &renderer.gi_atrous_[renderer.gi_filtered_index_ ^ 1u]};
         for (uint32_t index = 0; index < 2; ++index) {
             transition_for_use(command_buffer, *outputs[index],
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -10764,6 +10823,7 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
     gi_composite_history_index_ = saved_composite_index;
     gi_filtered_valid_ = saved_filtered_valid;
     gi_filtered_index_ = saved_filtered_index;
+    local_direct_history_state_ = saved_direct;
     if (!submitted || !record.ok) return false;
     std::vector<uint16_t> packed(pixel_count * 8);
     if (!matter::readback_buffer(*vulkan_, readback, packed.data(),
@@ -11038,8 +11098,9 @@ bool VkSceneRenderer::test_readback_animation_skin_output(
 // ---------------------------------------------------------------------------
 // RT denoiser: temporal reprojection, then A-trous
 //
-// Three independent signals share one pipeline pair, selected by
-// `signal_mode`: 0 = diffuse GI, 1 = specular, 2 = transmission. Each has its
+// Four independent signals share one pipeline pair, selected by
+// `signal_mode`: 0 = diffuse GI, 1 = specular, 2 = transmission,
+// 3 = full-rate local direct (independent of optional GI). Each has its
 // own double-buffered GiHistorySet (presented / candidate, swapped only when
 // finish_ray_tracing_frame reports the frame succeeded) and its own pair of
 // ping-ponged A-trous targets.
@@ -11064,21 +11125,28 @@ bool VkSceneRenderer::record_gi_temporal_signal(
     if (frame.frame_slot >= frames_.size() ||
         gi_temporal_pipeline_ == VK_NULL_HANDLE)
         return true;
-    const uint32_t previous_index = gi_presented_history_index_;
+    const bool direct = signal_mode == 3u;
+    auto& direct_state = local_direct_history_state_;
+    const VkExtent2D signal_extent = direct ? raster_extent_ : raw_diffuse_extent_;
+    const uint32_t previous_index = direct ? direct_state.presented_index
+                                            : gi_presented_history_index_;
     const uint32_t candidate_index = previous_index ^ 1u;
-    GiHistorySet* histories = signal_mode == 0u   ? gi_history_
+    GiHistorySet* histories = direct ? local_direct_history_
+                              : signal_mode == 0u   ? gi_history_
                               : signal_mode == 1u ? gi_spec_history_
                                                   : gi_trans_history_;
     GiHistorySet& previous = histories[previous_index];
     GiHistorySet& candidate = histories[candidate_index];
     matter::VkImageResource& raw_signal =
-        signal_mode == 0u   ? raw_diffuse_
+        direct ? raw_local_direct_
+        : signal_mode == 0u   ? raw_diffuse_
         : signal_mode == 1u ? raw_specular_
                             : raw_transmission_;
-    // Mode 0 samples but ignores the aux (the shader's aux logic is gated on
-    // signalMode >= 1), so binding the specular aux there stays correct.
+    // Diffuse ignores aux. Direct reads primary ORM; secondary signals read
+    // their (hit distance, roughness) pair.
     matter::VkImageResource& raw_aux =
-        signal_mode == 2u ? raw_transmission_aux_ : raw_specular_aux_;
+        direct ? orm_
+        : signal_mode == 2u ? raw_transmission_aux_ : raw_specular_aux_;
     const auto sampled = [&](matter::VkImageResource& image) {
         transition_for_use(frame.command_buffer, image,
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -11150,7 +11218,8 @@ bool VkSceneRenderer::record_gi_temporal_signal(
     VkWriteDescriptorSet writes[22]{};
     FrameResources& resources = frames_[frame.frame_slot];
     const VkDescriptorSet temporal_set =
-        resources.gi_temporal_descriptor_sets[signal_mode];
+        direct ? resources.local_direct_temporal_descriptor_set
+               : resources.gi_temporal_descriptor_sets[signal_mode];
     for (uint32_t binding = 0; binding < 22; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = temporal_set;
@@ -11164,26 +11233,32 @@ bool VkSceneRenderer::record_gi_temporal_signal(
     }
     vkUpdateDescriptorSets(vulkan_->device(), 22, writes, 0, nullptr);
     VulkanGiTemporalConstants constants{};
-    constants.temporal_extent[0] = raw_diffuse_extent_.width;
-    constants.temporal_extent[1] = raw_diffuse_extent_.height;
+    constants.temporal_extent[0] = signal_extent.width;
+    constants.temporal_extent[1] = signal_extent.height;
     constants.gbuffer_extent[0] = raster_extent_.width;
     constants.gbuffer_extent[1] = raster_extent_.height;
     const bool selective_reset =
-        signal_mode == 0u ? gi_diffuse_history_reset_pending_
+        direct ? direct_state.reset_pending
+        : signal_mode == 0u ? gi_diffuse_history_reset_pending_
                           : gi_reflection_history_reset_pending_;
-    constants.reset = temporal_frame_.reset || gi_history_reset_pending_ ||
-                      selective_reset || gi_presented_attempt_token_ == 0;
-    gi_candidate_was_reset_ = gi_candidate_was_reset_ || constants.reset != 0;
-    gi_candidate_used_diffuse_reset_ =
-        gi_candidate_used_diffuse_reset_ ||
-        (signal_mode == 0u && selective_reset);
-    gi_candidate_used_reflection_reset_ =
-        gi_candidate_used_reflection_reset_ ||
-        (signal_mode != 0u && selective_reset);
+    constants.reset = temporal_frame_.reset || selective_reset ||
+        (direct ? direct_state.presented_token == 0 ||
+                      direct_state.candidate_scene_key != direct_state.presented_scene_key
+                : gi_history_reset_pending_ || gi_presented_attempt_token_ == 0);
+    if (!direct) {
+        gi_candidate_was_reset_ = gi_candidate_was_reset_ || constants.reset != 0;
+        gi_candidate_used_diffuse_reset_ =
+            gi_candidate_used_diffuse_reset_ ||
+            (signal_mode == 0u && selective_reset);
+        gi_candidate_used_reflection_reset_ =
+            gi_candidate_used_reflection_reset_ ||
+            (signal_mode != 0u && selective_reset);
+    }
     constants.attempt_token_lo =
         static_cast<uint32_t>(temporal_frame_.attempt_token);
     constants.presented_attempt_token_lo =
-        static_cast<uint32_t>(gi_presented_attempt_token_);
+        static_cast<uint32_t>(direct ? direct_state.presented_token
+                                     : gi_presented_attempt_token_);
     constants.signal_mode = signal_mode;
     vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       gi_temporal_pipeline_);
@@ -11194,8 +11269,8 @@ bool VkSceneRenderer::record_gi_temporal_signal(
                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants),
                        &constants);
     vkCmdDispatch(frame.command_buffer,
-                  (raw_diffuse_extent_.width + 7u) / 8u,
-                  (raw_diffuse_extent_.height + 7u) / 8u, 1);
+                  (signal_extent.width + 7u) / 8u,
+                  (signal_extent.height + 7u) / 8u, 1);
     matter::record_image_transition(
         frame.command_buffer, candidate.radiance,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -11204,10 +11279,18 @@ bool VkSceneRenderer::record_gi_temporal_signal(
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-    gi_candidate_history_index_ = candidate_index;
-    gi_composite_history_index_ = candidate_index;
-    gi_candidate_frame_serial_ = frame.serial;
-    gi_candidate_attempt_token_ = temporal_frame_.attempt_token;
+    if (direct) {
+        direct_state.candidate_reset = constants.reset != 0;
+        direct_state.candidate_index = candidate_index;
+        direct_state.candidate_serial = frame.serial;
+        direct_state.candidate_token = temporal_frame_.attempt_token;
+        direct_state.filtered_valid = false;
+    } else {
+        gi_candidate_history_index_ = candidate_index;
+        gi_composite_history_index_ = candidate_index;
+        gi_candidate_frame_serial_ = frame.serial;
+        gi_candidate_attempt_token_ = temporal_frame_.attempt_token;
+    }
     update_composite_descriptor(resources);
     std::vector<std::shared_ptr<void>> retained{
         raw_signal.lifetime, raw_aux.lifetime, velocity_.lifetime, depth_.lifetime,
@@ -11250,16 +11333,22 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
 bool VkSceneRenderer::record_gi_atrous_signal(
     const matter::VulkanFrame& frame, uint32_t signal_mode,
     std::string& error, bool retain) {
+    const bool direct = signal_mode == 3u;
+    auto& direct_state = local_direct_history_state_;
+    const VkExtent2D signal_extent = direct ? raster_extent_ : raw_diffuse_extent_;
     if (frame.frame_slot >= frames_.size() ||
         gi_atrous_pipeline_ == VK_NULL_HANDLE ||
-        gi_candidate_frame_serial_ == 0)
+        (direct ? direct_state.candidate_serial : gi_candidate_frame_serial_) == 0)
         return true;
     GiHistorySet& guide =
-        (signal_mode == 0u   ? gi_history_
+        (direct ? local_direct_history_
+         : signal_mode == 0u   ? gi_history_
          : signal_mode == 1u ? gi_spec_history_
-                             : gi_trans_history_)[gi_composite_history_index_];
+                             : gi_trans_history_)[direct ? direct_state.candidate_index
+                                                      : gi_composite_history_index_];
     matter::VkImageResource* filtered =
-        signal_mode == 0u   ? gi_atrous_
+        direct ? &local_direct_filtered_
+        : signal_mode == 0u   ? gi_atrous_
         : signal_mode == 1u ? gi_spec_atrous_
                             : gi_trans_atrous_;
     const auto sampled = [&](matter::VkImageResource& image) {
@@ -11277,7 +11366,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
     sampled(guide.history_length);
     sampled(guide.aux);
     sampled(reactivity_);
-    for (uint32_t output_index = 0; output_index < 2; ++output_index) {
+    for (uint32_t output_index = 0; output_index < (direct ? 1u : 2u); ++output_index) {
         auto& output = filtered[output_index];
         transition_for_use(frame.command_buffer, output,
                            VK_IMAGE_LAYOUT_GENERAL,
@@ -11287,12 +11376,25 @@ bool VkSceneRenderer::record_gi_atrous_signal(
     }
 
     FrameResources& resources = frames_[frame.frame_slot];
+    if (direct) {
+        VkMemoryBarrier2 marker_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        marker_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        marker_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        marker_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        marker_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &marker_barrier;
+        vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    }
     matter::VkImageResource* inputs[3] = {
-        &guide.radiance, &filtered[0], &filtered[1]};
+        &guide.radiance, &filtered[0], &filtered[direct ? 0 : 1]};
     matter::VkImageResource* outputs[3] = {
-        &filtered[0], &filtered[1], &filtered[0]};
-    for (uint32_t set_index = 0; set_index < 3; ++set_index) {
-        const uint32_t descriptor_index = signal_mode * 3u + set_index;
+        &filtered[0], &filtered[direct ? 0 : 1], &filtered[0]};
+    for (uint32_t set_index = 0; set_index < (direct ? 1u : 3u); ++set_index) {
+        const VkDescriptorSet descriptor = direct
+            ? resources.local_direct_filter_descriptor_set
+            : resources.gi_atrous_descriptor_sets[signal_mode * 3u + set_index];
         matter::VkImageResource* sampled_images[6] = {
             inputs[set_index], &guide.moments, &guide.depth,
             &guide.normal, &guide.identity, &guide.history_length};
@@ -11302,8 +11404,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
             infos[binding] = {composite_sampler_, sampled_images[binding]->view,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[binding].dstSet =
-                resources.gi_atrous_descriptor_sets[descriptor_index];
+            writes[binding].dstSet = descriptor;
             writes[binding].dstBinding = binding;
             writes[binding].descriptorCount = 1;
             writes[binding].descriptorType =
@@ -11313,7 +11414,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
         infos[6] = {VK_NULL_HANDLE, outputs[set_index]->view,
                     VK_IMAGE_LAYOUT_GENERAL};
         writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[6].dstSet = resources.gi_atrous_descriptor_sets[descriptor_index];
+        writes[6].dstSet = descriptor;
         writes[6].dstBinding = 6;
         writes[6].descriptorCount = 1;
         writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -11322,7 +11423,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
             resources.gi_atrous_markers.buffer, 0,
             5 * sizeof(uint32_t)};
         writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[7].dstSet = resources.gi_atrous_descriptor_sets[descriptor_index];
+        writes[7].dstSet = descriptor;
         writes[7].dstBinding = 7;
         writes[7].descriptorCount = 1;
         writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -11330,7 +11431,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
         VkDescriptorImageInfo aux_info{composite_sampler_, guide.aux.view,
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[8].dstSet = resources.gi_atrous_descriptor_sets[descriptor_index];
+        writes[8].dstSet = descriptor;
         writes[8].dstBinding = 8;
         writes[8].descriptorCount = 1;
         writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -11339,8 +11440,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
             composite_sampler_, reactivity_.view,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[9].dstSet =
-            resources.gi_atrous_descriptor_sets[descriptor_index];
+        writes[9].dstSet = descriptor;
         writes[9].dstBinding = 9;
         writes[9].descriptorCount = 1;
         writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -11351,7 +11451,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
     constexpr uint32_t steps[5] = {1, 2, 4, 8, 16};
     vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       gi_atrous_pipeline_);
-    const uint32_t iteration_count = signal_mode == 0u ? 5u : 3u;
+    const uint32_t iteration_count = direct ? 1u : signal_mode == 0u ? 5u : 3u;
     for (uint32_t iteration = 0; iteration < iteration_count; ++iteration) {
         const uint32_t set_index = iteration == 0 ? 0 :
                                    (iteration & 1u ? 1u : 2u);
@@ -11364,14 +11464,15 @@ bool VkSceneRenderer::record_gi_atrous_signal(
                                VK_IMAGE_ASPECT_COLOR_BIT);
         }
         const VkDescriptorSet set =
-            resources.gi_atrous_descriptor_sets[signal_mode * 3u + set_index];
+            direct ? resources.local_direct_filter_descriptor_set
+                   : resources.gi_atrous_descriptor_sets[signal_mode * 3u + set_index];
         vkCmdBindDescriptorSets(frame.command_buffer,
                                 VK_PIPELINE_BIND_POINT_COMPUTE,
                                 gi_atrous_pipeline_layout_, 0, 1, &set, 0,
                                 nullptr);
         VulkanGiAtrousConstants constants{};
-        constants.extent[0] = raw_diffuse_extent_.width;
-        constants.extent[1] = raw_diffuse_extent_.height;
+        constants.extent[0] = signal_extent.width;
+        constants.extent[1] = signal_extent.height;
         constants.step_width = steps[iteration];
         constants.signal_mode = signal_mode;
         constants.kernel_radius = signal_mode == 0u ? 2u : 1u;
@@ -11383,8 +11484,8 @@ bool VkSceneRenderer::record_gi_atrous_signal(
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants),
                            &constants);
         vkCmdDispatch(frame.command_buffer,
-                      (raw_diffuse_extent_.width + 7u) / 8u,
-                      (raw_diffuse_extent_.height + 7u) / 8u, 1);
+                      (signal_extent.width + 7u) / 8u,
+                      (signal_extent.height + 7u) / 8u, 1);
         matter::VkImageResource& written = filtered[iteration & 1u];
         matter::record_image_transition(
             frame.command_buffer, written,
@@ -11397,7 +11498,12 @@ bool VkSceneRenderer::record_gi_atrous_signal(
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
-    gi_filtered_index_ = (iteration_count - 1u) & 1u;
+    if (direct) {
+        direct_state.filtered_valid = true;
+        update_composite_descriptor(resources);
+    } else {
+        gi_filtered_index_ = (iteration_count - 1u) & 1u;
+    }
     if (!retain) return true;
     return vulkan_->retain_for_frame(
         frame,
@@ -11405,7 +11511,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
          guide.depth.lifetime, guide.normal.lifetime,
          guide.identity.lifetime, guide.history_length.lifetime,
          guide.aux.lifetime, reactivity_.lifetime,
-         filtered[0].lifetime, filtered[1].lifetime,
+         filtered[0].lifetime, filtered[direct ? 0 : 1].lifetime,
          resources.gi_atrous_markers.lifetime},
         error);
 }
@@ -11424,6 +11530,18 @@ bool VkSceneRenderer::record_gi_atrous_signal(
 void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
                                                bool succeeded) {
     if (frame_serial == 0) return;
+    auto& direct = local_direct_history_state_;
+    if (direct.candidate_serial == frame_serial) {
+        if (succeeded) {
+            direct.presented_index = direct.candidate_index;
+            direct.presented_token = direct.candidate_token;
+            direct.presented_scene_key = direct.candidate_scene_key;
+            direct.reset_pending = false;
+        }
+        direct.candidate_serial = 0;
+        direct.candidate_token = 0;
+        direct.filtered_valid = false;
+    }
     if (gi_candidate_frame_serial_ == frame_serial) {
         if (succeeded) {
             gi_presented_history_index_ = gi_candidate_history_index_;
@@ -14057,6 +14175,8 @@ bool VkSceneRenderer::record_ray_traced_shadows(
 #endif
         ;
     if (!native_trace_enabled || rt_instances_.empty()) {
+        local_direct_history_state_.reset_pending = true;
+        local_direct_history_state_.filtered_valid = false;
         clear_visibility();
         clear_raw_diffuse();
         return publish_local_direct_owner(
@@ -14118,6 +14238,8 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             return false;
     }
     if (instances_empty) {
+        local_direct_history_state_.reset_pending = true;
+        local_direct_history_state_.filtered_valid = false;
         clear_visibility();
         clear_raw_diffuse();
         return publish_local_direct_owner(
@@ -15282,14 +15404,46 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                 rt_frame_slot);
         }
     }
-    if (gi_settings_.enabled) {
+    if (gi_settings_.enabled || trace_local_direct)
         write_gpu_timestamp(frame.command_buffer, kGpuZoneDenoise, false,
                             rt_frame_slot);
+    if (gi_settings_.enabled) {
         if (!record_gi_temporal(frame, error)) return false;
         if (!record_gi_atrous(frame, error)) return false;
+    }
+    if (trace_local_direct) {
+        // Include the emitted TLAS records: receiver motion vectors cannot
+        // identify shadows changed by an off-screen moving occluder. This
+        // conservative reset also covers LOD/BLAS changes, without relying on
+        // upload generations that can change for otherwise static frames.
+        uint64_t key = 14695981039346656037ull;
+        const auto hash_bytes = [&key](const void* data, size_t size) {
+            const auto* bytes = static_cast<const unsigned char*>(data);
+            for (size_t i = 0; i < size; ++i) {
+                key ^= bytes[i];
+                key *= 1099511628211ull;
+            }
+        };
+        hash_bytes(selected.rt_tlas_instances.data(),
+                   selected.rt_tlas_instances.size() *
+                       sizeof(VkAccelerationStructureInstanceKHR));
+        hash_bytes(&rt_geometry_epoch_, sizeof(rt_geometry_epoch_));
+        hash_bytes(&local_light_revision_, sizeof(local_light_revision_));
+        hash_bytes(&material_shading_revision_, sizeof(material_shading_revision_));
+        hash_bytes(&material_geometry_revision_, sizeof(material_geometry_revision_));
+        hash_bytes(&ray_tracing_settings_.bias, sizeof(ray_tracing_settings_.bias));
+        hash_bytes(&gi_settings_.enabled, sizeof(gi_settings_.enabled));
+        local_direct_history_state_.candidate_scene_key = key;
+        if (!record_gi_temporal_signal(frame, 3u, error, true) ||
+            !record_gi_atrous_signal(frame, 3u, error, true))
+            return false;
+    } else {
+        local_direct_history_state_.reset_pending = true;
+        local_direct_history_state_.filtered_valid = false;
+    }
+    if (gi_settings_.enabled || trace_local_direct)
         write_gpu_timestamp(frame.command_buffer, kGpuZoneDenoise, true,
                             rt_frame_slot);
-    }
     VkMemoryBarrier2 counters_to_host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     counters_to_host.srcStageMask =
         VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
@@ -15319,15 +15473,11 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                              : VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-    matter::record_image_transition(
-        frame.command_buffer, raw_local_direct_,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        trace_local_direct ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR
-                           : VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        trace_local_direct ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-                           : VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    transition_for_use(frame.command_buffer, raw_local_direct_,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
     matter::VkImageResource& composite_specular =
         gi_settings_.enabled && gi_filtered_valid_
             ? gi_spec_atrous_[gi_filtered_index_] : raw_specular_;
@@ -16202,6 +16352,8 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     GiHistorySet history[2];
     GiHistorySet spec_history[2];
     GiHistorySet trans_history[2];
+    GiHistorySet direct_history[2];
+    matter::VkImageResource direct_filtered;
     matter::VkImageResource atrous[2];
     matter::VkImageResource spec_atrous[2];
     matter::VkImageResource trans_atrous[2];
@@ -16318,12 +16470,13 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     const VkImageUsageFlags history_usage =
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    for (auto* sets : {&history, &spec_history, &trans_history}) {
+    for (auto* sets : {&history, &spec_history, &trans_history, &direct_history}) {
         for (auto& set : *sets) {
         const auto make = [&](VkFormat format,
                               matter::VkImageResource& resource) {
             return matter::create_image(
-                *vulkan_, VK_IMAGE_TYPE_2D, format, raw_extent, history_usage,
+                *vulkan_, VK_IMAGE_TYPE_2D, format,
+                sets == &direct_history ? extent : raw_extent, history_usage,
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, resource, error);
         };
@@ -16362,6 +16515,11 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, error))
             return false;
     }
+    if (!matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT,
+            extent, history_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, direct_filtered, error))
+        return false;
     albedo_ = std::move(albedo);
     normal_ = std::move(normal);
     orm_ = std::move(orm);
@@ -16384,6 +16542,10 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     raw_transmission_ = std::move(raw_transmission);
     raw_transmission_aux_ = std::move(raw_transmission_aux);
     raw_local_direct_ = std::move(raw_local_direct);
+    local_direct_history_[0] = std::move(direct_history[0]);
+    local_direct_history_[1] = std::move(direct_history[1]);
+    local_direct_filtered_ = std::move(direct_filtered);
+    local_direct_history_state_ = {};
     gi_history_[0] = std::move(history[0]);
     gi_history_[1] = std::move(history[1]);
     gi_spec_history_[0] = std::move(spec_history[0]);
@@ -16405,6 +16567,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     gi_candidate_attempt_token_ = 0;
     gi_presented_attempt_token_ = 0;
     gi_history_reset_pending_ = true;
+    local_direct_history_state_.reset_pending = true;
     raw_diffuse_extent_ = {raw_width, raw_height};
     visibility_usage_ = visibility_usage;
     hdr_usage_ = hdr_usage;
@@ -17071,6 +17234,7 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         if (!dlss_history_reset_pending_) ++dlss_reset_count_;
         dlss_history_reset_pending_ = true;
         gi_history_reset_pending_ = true;
+        local_direct_history_state_.reset_pending = true;
     };
     if (selected_dlss_mode_ == matter::DlssMode::Native) {
         matter::DlssEvaluationOutput ignored_output{};
@@ -17605,10 +17769,23 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
 bool VkSceneRenderer::readback_local_direct_pixel(uint32_t x, uint32_t y,
                                                   matter::Float4& value,
                                                   std::string& error) {
+    return readback_local_direct_image(raw_local_direct_, x, y, value, error);
+}
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+bool VkSceneRenderer::readback_filtered_local_direct_pixel(
+    uint32_t x, uint32_t y, matter::Float4& value, std::string& error) {
+    return readback_local_direct_image(local_direct_filtered_, x, y, value, error);
+}
+#endif
+
+bool VkSceneRenderer::readback_local_direct_image(
+    matter::VkImageResource& image, uint32_t x, uint32_t y,
+    matter::Float4& value, std::string& error) {
     error.clear();
     value = {};
     if (fail_if_poisoned(error)) return false;
-    if (!raster_attachments_ready_ || raw_local_direct_.image == VK_NULL_HANDLE) {
+    if (!raster_attachments_ready_ || image.image == VK_NULL_HANDLE) {
         error = "local-direct readback is unavailable until a render completes";
         return false;
     }
@@ -17626,9 +17803,9 @@ bool VkSceneRenderer::readback_local_direct_pixel(uint32_t x, uint32_t y,
             staging, error)) {
         return false;
     }
-    LocalDirectReadbackRecord record{&raw_local_direct_, staging.buffer, x, y};
+    LocalDirectReadbackRecord record{&image, staging.buffer, x, y};
     std::vector<std::shared_ptr<void>> dependencies{
-        raw_local_direct_.lifetime, staging.lifetime};
+        image.lifetime, staging.lifetime};
     if (!matter::submit_immediate(
             *vulkan_, record_local_direct_readback, &record, error,
             matter::ImmediateSubmitPhase::compute_dispatch,
@@ -17735,6 +17912,7 @@ void VkSceneRenderer::reset() {
     local_light_revision_ = 0u;
     local_direct_owner_ = LocalDirectOwner::Raster;
     local_direct_lane_revision_ = 0;
+    local_direct_history_state_ = {};
     ++local_light_generation_;
     if (local_light_generation_ == 0u) local_light_generation_ = 1u;
     parts_.clear();

@@ -3,7 +3,7 @@
 This is the shared contract between World JavaScript, the provider/cache, CPU
 reference tests, deferred raster lighting, and ray-traced hit lighting. The CPU
 transport, spatial index, Vulkan publication, and deferred raster consumer are
-implemented. Ray-traced local-light visibility remains a later lighting task.
+implemented, including native RT visibility and local lighting at secondary hits.
 
 ## World JavaScript API
 
@@ -171,13 +171,67 @@ Raster reconstructs each visible G-buffer pixel's world position, probes only
 that cell plus the oversized list, and evaluates the shared finite-range/spot
 attenuation and energy-conscious diffuse/GGX BRDF. The contribution is
 independent of diffuse GI. Baseline raster local lights are intentionally
-unshadowed; flag bit 0 is retained for the RT visibility task.
+unshadowed; native RT honors flag bit 0 with finite-segment visibility rays.
 
-`LocalDirectOwner::Raster` is the current ownership state. The RT follow-up must
-publish a separate RT local-direct lane and may switch the metadata owner to
-`RayTraced` only when that lane is ready for the same light revision. Composite
-must select exactly one owner; it must never sum raster and RT local direct.
+`LocalDirectOwner::Raster` is the fallback ownership state. Native RT publishes
+a separate local-direct lane and switches the metadata owner to `RayTraced`
+only for the same light revision. Composite selects exactly one owner; it never
+sums raster and RT local direct.
 Debug-view index 7 (`Local-light candidates`) visualizes the indexed candidate
 count at reconstructed world positions without scanning the complete light
 array. Frame telemetry reports light count, occupied cells, worst candidates,
 oversized count, compact entries, and upload bytes.
+
+
+## Primary RT direct accumulation
+
+`rt_lighting.rgen` evaluates primary local direct at the full internal raster
+resolution, including when GI is disabled or traced at reduced resolution.
+Finite-radius shadow-casting sources retain four visibility samples per light;
+the seed varies with the presented frame index. Secondary local-light samples
+remain part of their existing GI/reflection/transmission signals.
+
+Primary direct uses signal mode 3 in `gi_temporal.comp` and `gi_atrous.comp`:
+independent double-buffered history followed by one 3×3 spatial pass at step
+width 1. Composite binding 11 consumes this filtered radiance once. The raw
+readback remains raw, and tests have a separate filtered readback. History uses
+velocity, depth, normal, material/instance identity and reactivity; mode 3's
+auxiliary data is primary roughness/metallic from ORM, not secondary hit distance.
+The spatial pass rejects material and instance boundaries. Existing modes 0–2
+retain their previous filters and transmission semantics.
+
+Only successful frame submission promotes the candidate history. Explicit
+history resets, target recreation, RT eligibility changes, light/material
+revisions and GI-setting changes invalidate direct independently of the GI
+reset flags. Emitted TLAS records and the geometry epoch also invalidate it:
+this conservatively prevents shadows from lagging behind an off-screen moving
+blocker. Continuous RT geometry animation therefore reduces temporal smoothing
+throughout this lane; the narrow spatial pass still runs. A zero-light
+publication clears raw direct and restores raster ownership without reusing
+accumulated radiance.
+
+The two reused history sets plus one RGBA16F filtered image add **92 bytes per
+internal pixel**, approximately **182 MiB at 1920×1080**, before allocation
+padding. They are allocated with raster targets. Recording adds one temporal
+and one spatial compute dispatch; the denoise GPU timing zone includes them
+with GI disabled too. Ray count remains four per finite-radius source.
+
+### Quality regression evidence
+
+The native `MATTER_VK_SMOKE_MODE=rt-local-direct` gate includes an RT-only card
+bisecting an analytic area source. At a fixed receiver after 16 settling frames,
+32 further frames produced raw mean/variance **1.136047 / 0.227688** and filtered
+**1.089600 / 0.000532**: mean difference 4.1%, remaining temporal variance 0.24%.
+The strengthened 2026-09-11 RTX 4090 gate passed with zero Vulkan validation
+errors, including material/instance shader fixtures and world-reset coverage.
+These are correctness measurements; isolated GPU pass timing is not yet recorded.
+The gate requires mean difference below 15% and remaining variance below 10%.
+It also covers GI-off accumulation with half-resolution GI targets, failed
+candidate promotion, explicit resets, light/GI/blocker changes, zero lights,
+and the existing primary glass weighting formula. Mode-3 shader fixtures check
+history rejection and the single spatial pass's material/instance boundaries.
+
+Keep the complete sampled source region clear of opaque lamp housing. A light
+center tangent to a housing sphere can put much of its finite-radius sample
+disk inside that sphere, creating broad partial occlusion. Accumulation removes
+sampling grain; it does not correct an unintentionally obstructed emitter.

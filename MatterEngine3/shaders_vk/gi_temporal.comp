@@ -72,6 +72,11 @@ void main() {
     // gate for existing glass.
     vec4 rawSample = texelFetch(rawSignal, pixel, 0);
     vec3 raw = rawSample.rgb;
+    // Mode 3 is full-rate primary local direct. Its aux is (roughness,
+    // metallic) from ORM, not a secondary hit distance. Keep it independent
+    // of GI enablement and transmission's deterministic passthrough.
+    bool localDirect = pc.signalMode == 3u;
+    bool secondary = pc.signalMode == 1u || pc.signalMode == 2u;
     vec2 aux = texelFetch(rawAux, pixel, 0).rg;
     bool smoothPassthrough = pc.signalMode == 2u && aux.y < 0.02;
     float depth = texelFetch(depthTex, sourcePixel, 0).r;
@@ -122,12 +127,17 @@ void main() {
             rejection = REJECT_MATERIAL;
         else if (identity.y != oldIdentity.y)
             rejection = REJECT_INSTANCE;
-        else if (pc.signalMode >= 1u) {
+        else if (secondary) {
             vec2 oldAux = texelFetch(previousAux, previousPixel, 0).rg;
             float threshold = max(0.05, 0.1 * max(aux.x, oldAux.x));
             if (abs(aux.x - oldAux.x) > threshold)
                 rejection = REJECT_HIT_DISTANCE;
         }
+    }
+    if (rejection == 0u && localDirect) {
+        vec2 oldAux = texelFetch(previousAux, previousPixel, 0).rg;
+        if (any(greaterThan(abs(aux - oldAux), vec2(0.1))))
+            rejection = REJECT_MATERIAL;
     }
     if (rejection == 0u && !smoothPassthrough) {
         vec3 neighborhoodMin = vec3(1e30);
@@ -144,7 +154,7 @@ void main() {
             rgbToYCoCg(texelFetch(previousRadiance, previousPixel, 0).rgb),
             neighborhoodMin, neighborhoodMax));
         vec2 oldMoments = texelFetch(previousMoments, previousPixel, 0).rg;
-        uint maxHistory = pc.signalMode == 0u ? 32u :
+        uint maxHistory = pc.signalMode == 0u || localDirect ? 32u :
             uint(round(mix(4.0, 16.0, clamp(aux.y, 0.0, 1.0))));
         maxHistory = max(1u, uint(round(mix(float(maxHistory), 2.0,
                                            reactivity))));

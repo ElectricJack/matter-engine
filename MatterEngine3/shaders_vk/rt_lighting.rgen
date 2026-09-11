@@ -700,10 +700,11 @@ void main() {
                          (constants.presented_frame_index * 0x85ebca6bu) ^
                          0xc2b2ae35u);
     // Primary local direct is evaluated on every lighting dispatch, even when
-    // GI is disabled. Use a frame-independent seed for its single finite-area
-    // source sample so the undenoised lane remains stable across frames.
+    // GI is disabled. Its separate full-rate temporal lane accumulates the
+    // four finite-area visibility samples across presented frames.
     uint direct_seed = pcg_hash(uint(source_pixel.x) ^
                                 (uint(source_pixel.y) * 0x9e3779b9u) ^
+                                (constants.presented_frame_index * 0x85ebca6bu) ^
                                 0x4f1bbcddu);
     vec3 direct_normal = primary_water_evaluated
         ? primary_water_state.shading_normal : normal;

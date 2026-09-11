@@ -954,6 +954,8 @@ struct GiTemporalGpuResult {
 };
 
 struct GiAtrousGpuFixture {
+    uint32_t signal_mode = 0;
+    std::vector<uint32_t> instance_token;
     VkExtent2D extent{9, 9};
     std::vector<matter::Float4> signal;
     std::vector<matter::Float3> moments;
@@ -1892,6 +1894,19 @@ public:
     bool test_readback_reflection_sample_counts(uint32_t& base_samples,
                                                 uint32_t& coat_samples,
                                                 std::string& error);
+    uint64_t test_local_direct_presented_token() const {
+        return local_direct_history_state_.presented_token;
+    }
+    bool test_local_direct_candidate_reset() const {
+        return local_direct_history_state_.candidate_reset;
+    }
+    bool test_composite_uses_local_direct_filter() const {
+        return local_direct_history_state_.candidate_serial != 0 &&
+               local_direct_history_state_.filtered_valid;
+    }
+    bool readback_filtered_local_direct_pixel(uint32_t x, uint32_t y,
+                                             matter::Float4& value,
+                                             std::string& error);
     bool test_dispatch_gi_temporal_fixture(
         const GiTemporalGpuFixture& fixture, GiTemporalGpuResult& result,
         std::string& error);
@@ -2604,6 +2619,8 @@ private:
         // temporal set each and three a-trous ping-pong sets each.
         VkDescriptorSet gi_temporal_descriptor_sets[3]{};
         VkDescriptorSet gi_atrous_descriptor_sets[9]{};
+        VkDescriptorSet local_direct_temporal_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet local_direct_filter_descriptor_set = VK_NULL_HANDLE;
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
@@ -2733,6 +2750,9 @@ private:
                                std::string& error);
     bool ensure_dlss_output(FrameResources& frame, VkExtent2D output_extent,
                             std::string& error);
+    bool readback_local_direct_image(matter::VkImageResource& image,
+                                    uint32_t x, uint32_t y,
+                                    matter::Float4& value, std::string& error);
     bool record_gi_temporal(const matter::VulkanFrame& frame,
                             std::string& error, bool retain = true);
     bool record_gi_temporal_signal(const matter::VulkanFrame& frame,
@@ -3299,6 +3319,22 @@ private:
     // RT PBR Phase 1: transmission history mirrors the specular chain
     // (signal mode 2 in gi_temporal.comp / gi_atrous.comp).
     GiHistorySet gi_trans_history_[2];
+    // Full-rate primary radiance is independent of the optional, scaled GI
+    // lanes. Only successful submissions promote this lane's candidate.
+    GiHistorySet local_direct_history_[2];
+    matter::VkImageResource local_direct_filtered_;
+    struct LocalDirectHistoryState {
+        uint32_t presented_index = 0;
+        uint32_t candidate_index = 1;
+        uint64_t presented_token = 0;
+        uint64_t candidate_token = 0;
+        uint64_t candidate_serial = 0;
+        uint64_t presented_scene_key = 0;
+        uint64_t candidate_scene_key = 0;
+        bool reset_pending = true;
+        bool filtered_valid = false;
+        bool candidate_reset = true;
+    } local_direct_history_state_;
     matter::VkImageResource gi_atrous_[2];
     matter::VkImageResource gi_spec_atrous_[2];
     matter::VkImageResource gi_trans_atrous_[2];

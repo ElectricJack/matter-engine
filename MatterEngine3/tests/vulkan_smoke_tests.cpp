@@ -7001,6 +7001,213 @@ static void rt_scenario_local_direct_transmission_weighting(
         "weights=%.3f/%.3f\n",
         off_rgb[0], off_rgb[1], off_rgb[2], on_rgb[0], on_rgb[1], on_rgb[2],
         gi_off_weight, gi_on_weight);
+    // Analytic area source bisected by an RT-only opaque card: the primary
+    // receiver is unobstructed in raster, but half its light samples fail.
+    // This exercises production tracing, temporal ownership and composite
+    // filtering, including the optional GI-off path.
+    constexpr uint64_t kBlockerHash = UINT64_C(0x4c4446494c544552);
+    auto blocker = fixed_part(kBlockerHash, {0.0f, -1.0f, -1.11f},
+                              {1.0f, 1.0f, -1.09f}, 0u);
+    blocker.clusters[0].lods[0].index_count = 6;
+    blocker.vertices = {
+        {{0.0f, -1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 1},
+         {0.65f, 0, 1, 1}, kOpaqueBlack, {}},
+        {{1.0f, -1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 1},
+         {0.65f, 0, 1, 1}, kOpaqueBlack, {}},
+        {{1.0f, 1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 1},
+         {0.65f, 0, 1, 1}, kOpaqueBlack, {}},
+        {{0.0f, 1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 1},
+         {0.65f, 0, 1, 1}, kOpaqueBlack, {}},
+    };
+    blocker.indices = {0, 1, 2, 0, 2, 3};
+    CHECK(renderer.ensure_part(blocker, error) >= 0,
+          error.empty() ? "create area-light half-occluder" : error.c_str());
+    viewer::VkSceneInstance blocker_instance{kBlockerHash, identity_matrix()};
+    blocker_instance.rt_proxy_only = true;
+    std::vector<viewer::VkSceneInstance> instances{
+        {kWhiteHash, identity_matrix()}, blocker_instance};
+    publication.records[0].source_radius = 0.25f;
+    publication.records[0].flags = 1u;
+    CHECK(world_lights::rebuild_local_light_publication(publication, error) &&
+              renderer.update_local_lights(publication, error),
+          "publish finite source for direct convergence gate");
+    matter::VulkanGiSettings direct_gi{};
+    direct_gi.enabled = false;
+    direct_gi.trace_scale = 0.5f;
+    renderer.set_gi_settings(direct_gi);
+    bool all_filtered = true;
+    bool stable_history = true;
+    bool last_reset = false;
+    const auto direct_frame = [&](bool explicit_reset, bool publish = true) {
+        temporal.reset = explicit_reset;
+        temporal.attempt_token = attempt_token++;
+        ++temporal.presented_frame_index;
+        renderer.set_temporal_frame(temporal);
+        if (!renderer.update_instances(instances, error)) return false;
+        matter::VulkanFrame frame{};
+        const bool recorded = vulkan.begin_frame(frame, error) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        if (!recorded) return false;
+        all_filtered = all_filtered && renderer.test_composite_uses_local_direct_filter();
+        last_reset = renderer.test_local_direct_candidate_reset();
+        const bool submitted = vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, submitted && publish);
+        vulkan.wait_idle();
+        return submitted;
+    };
+    std::vector<float> raw_values, filtered_values;
+    for (uint32_t index = 0; index < 48; ++index) {
+        if (!direct_frame(index == 0)) break;
+        if (index > 2) stable_history = stable_history && !last_reset;
+        if (index < 16) continue;
+        matter::Float4 raw_value{}, filtered_value{};
+        if (!renderer.readback_local_direct_pixel(kWidth / 2, kHeight / 2,
+                                                   raw_value, error) ||
+            !renderer.readback_filtered_local_direct_pixel(kWidth / 2, kHeight / 2,
+                                                           filtered_value, error))
+            break;
+        raw_values.push_back(raw_value.x);
+        filtered_values.push_back(filtered_value.x);
+    }
+    const auto moments = [](const std::vector<float>& values) {
+        std::array<double, 2> result{};
+        if (values.empty()) return result;
+        for (float value : values) result[0] += value;
+        result[0] /= values.size();
+        for (float value : values) result[1] += (value - result[0]) * (value - result[0]);
+        result[1] /= values.size();
+        return result;
+    };
+    const auto raw_stats = moments(raw_values);
+    const auto filtered_stats = moments(filtered_values);
+    CHECK(raw_values.size() == 32 && all_filtered && stable_history,
+          error.empty() ? "GI-off direct converges at full resolution with half-rate GI targets"
+                        : error.c_str());
+    CHECK(raw_stats[1] > 0.001 && filtered_stats[1] < raw_stats[1] * 0.1,
+          "direct temporal plus narrow filter reduces sampled visibility variance");
+    CHECK(raw_stats[0] > 0.01 && std::fabs(filtered_stats[0] - raw_stats[0]) < raw_stats[0] * 0.15,
+          "direct filtering preserves mean radiance in the controlled penumbra");
+    std::printf("local-direct filter: raw mean/variance=%.6f/%.6f filtered=%.6f/%.6f history=%d\n",
+                raw_stats[0], raw_stats[1], filtered_stats[0], filtered_stats[1], int(stable_history));
+
+    const uint64_t before_failed = renderer.test_local_direct_presented_token();
+    CHECK(direct_frame(false, false) &&
+              renderer.test_local_direct_presented_token() == before_failed,
+          "failed direct candidate cannot promote history");
+    CHECK(direct_frame(false) && !last_reset &&
+              renderer.test_local_direct_presented_token() != before_failed,
+          "direct retry retains successful history");
+    CHECK(direct_frame(true) && last_reset,
+          "explicit history reset clears direct independently of GI");
+    direct_gi.enabled = true;
+    renderer.set_gi_settings(direct_gi);
+    CHECK(direct_frame(false) && last_reset && direct_frame(false) && !last_reset,
+          "GI toggle resets direct once and scaled GI does not own direct history");
+    publication.records[0].color[0] *= 0.5f;
+    CHECK(world_lights::rebuild_local_light_publication(publication, error) &&
+              renderer.update_local_lights(publication, error) &&
+              direct_frame(false) && last_reset,
+          "light revision invalidates direct radiance history");
+    instances[1].object_to_world = viewer::mat4_translation({0.2f, 0.0f, 0.0f});
+    CHECK(direct_frame(false) && last_reset && direct_frame(false) && !last_reset,
+          "moving RT-only blocker invalidates receiver direct history once");
+    publication.records.clear();
+    CHECK(world_lights::rebuild_local_light_publication(publication, error) &&
+              renderer.update_local_lights(publication, error) && direct_frame(false),
+          "zero-local-light publication renders after accumulated direct");
+    matter::Float4 zero_direct{};
+    CHECK(renderer.readback_local_direct_pixel(kWidth / 2, kHeight / 2, zero_direct, error) &&
+              close4(zero_direct, {}, 0.0f),
+          "zero local lights clear primary direct instead of displaying history");
+
+    renderer.reset();
+    CHECK(renderer.test_local_direct_presented_token() == 0,
+          "world reset discards primary direct history even when GPU targets survive");
+
+    // Exercise the exact mode-3 shaders in this bounded smoke mode too.
+    viewer::GiTemporalGpuFixture temporal_fixture{};
+    viewer::GiTemporalGpuResult temporal_result{};
+    const auto gpu_rejection = [&](const viewer::GiTemporalGpuFixture& fixture,
+                                   uint32_t expected, const char* label) {
+        viewer::GiTemporalGpuResult result{};
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(fixture, result, error) &&
+                  result.history_length == 1u && result.rejection_bits == expected,
+              error.empty() ? label : error.c_str());
+    };
+        auto direct_temporal = temporal_fixture;
+        direct_temporal.signal_mode = 3u;
+        direct_temporal.previous_history_length = 31u;
+        direct_temporal.raw_aux = {0.05f, 0.0f, 0.0f};
+        direct_temporal.previous_aux = direct_temporal.raw_aux;
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                  direct_temporal, temporal_result, error) &&
+                  temporal_result.history_length == 32u &&
+                  temporal_result.rejection_bits == 0u,
+              "primary direct uses independent 32-frame history, not secondary hit-distance rules");
+        auto changed_direct = direct_temporal;
+        changed_direct.previous_instance_token++;
+        gpu_rejection(changed_direct, viewer::kGiRejectInstance,
+                      "direct history rejects changed instance");
+        changed_direct = direct_temporal;
+        changed_direct.previous_aux.y = 1.0f;
+        gpu_rejection(changed_direct, viewer::kGiRejectMaterial,
+                      "direct history rejects metallic discontinuity");
+        changed_direct = direct_temporal;
+        changed_direct.reset = true;
+        gpu_rejection(changed_direct, viewer::kGiRejectReset,
+                      "direct history honors explicit reset");
+
+
+    viewer::GiAtrousGpuFixture atrous_fixture{};
+    viewer::GiAtrousGpuResult atrous_result{};
+    constexpr uint32_t atrous_width = 65, atrous_height = 9, atrous_boundary = 32;
+    constexpr size_t atrous_pixels = atrous_width * atrous_height;
+    atrous_fixture.extent = {atrous_width, atrous_height};
+    atrous_fixture.signal.resize(atrous_pixels);
+    atrous_fixture.moments.resize(atrous_pixels);
+    atrous_fixture.depth.resize(atrous_pixels);
+    atrous_fixture.normal.resize(atrous_pixels);
+    atrous_fixture.material_index.resize(atrous_pixels);
+    atrous_fixture.history_length.resize(atrous_pixels, 8u);
+        atrous_fixture.signal_mode = 3u;
+        atrous_fixture.instance_token.resize(atrous_pixels);
+        std::fill(atrous_fixture.material_index.begin(), atrous_fixture.material_index.end(), 7u);
+        std::fill(atrous_fixture.depth.begin(), atrous_fixture.depth.end(), 0.5f);
+        std::fill(atrous_fixture.normal.begin(), atrous_fixture.normal.end(),
+                  matter::Float4{0, 0, 1, 0});
+        std::fill(atrous_fixture.moments.begin(), atrous_fixture.moments.end(),
+                  matter::Float3{1, 100, 0});
+        for (uint32_t y = 0; y < atrous_height; ++y) {
+            for (uint32_t x = 0; x < atrous_width; ++x) {
+                const size_t i = y * atrous_width + x;
+                const float value = x < atrous_boundary ? 0.25f : 4.0f;
+                atrous_fixture.signal[i] = {value, value, value, 1};
+                atrous_fixture.instance_token[i] = x < atrous_boundary ? 11u : 12u;
+            }
+        }
+        CHECK(renderer.test_dispatch_gi_atrous_fixture(
+                  atrous_fixture, atrous_result, error) &&
+                  atrous_result.gpu_step_widths[0] == 1u &&
+                  atrous_result.gpu_step_widths[1] == 0u &&
+                  close4(atrous_result.filtered[4 * atrous_width + 31],
+                         {0.25f, 0.25f, 0.25f, 1}, 0.002f) &&
+                  close4(atrous_result.filtered[4 * atrous_width + 32],
+                         {4, 4, 4, 1}, 0.002f),
+              "local direct uses one narrow pass and preserves constant color across instance edges");
+        for (size_t i = 0; i < atrous_pixels; ++i) {
+            atrous_fixture.instance_token[i] = 11;
+            atrous_fixture.material_index[i] = i % atrous_width < atrous_boundary ? 7u : 8u;
+        }
+        CHECK(renderer.test_dispatch_gi_atrous_fixture(
+                  atrous_fixture, atrous_result, error) &&
+                  close4(atrous_result.filtered[4 * atrous_width + 31],
+                         {0.25f, 0.25f, 0.25f, 1}, 0.002f) &&
+                  close4(atrous_result.filtered[4 * atrous_width + 32],
+                         {4, 4, 4, 1}, 0.002f),
+              "local direct narrow filter preserves material edges");
+
 }
 
 // ---------------------------------------------------------------------------
@@ -9591,6 +9798,7 @@ static void rt_scenario_atrous_denoising(RtPathContext& ctx) {
                 close4(value, {0.375f, 0.25f, 0.125f, 1.0f}, 0.001f);
         CHECK(constant_identity,
               "constant-color A-trous input is an identity operation");
+
 }
 
 // ---------------------------------------------------------------------------
