@@ -712,10 +712,22 @@ function floorLayout(record, params) {
     }));
 }
 
+function floorPieceCanReuseStone(piece, record) {
+  if (!piece.rectangle) return false;
+  const candidate = stoneParams({
+    length: piece.rectangle.length,
+    height: record.floor.thickness,
+    depth: piece.rectangle.depth,
+  });
+  return Math.abs(candidate.length - piece.rectangle.length) <= EPS &&
+    Math.abs(candidate.height - record.floor.thickness) <= EPS &&
+    Math.abs(candidate.depth - piece.rectangle.depth) <= EPS;
+}
+
 function placeFloorChildren(part, record, params) {
   const placements = [];
   for (const piece of floorLayout(record, params)) {
-    if (!piece.rectangle) continue;
+    if (!floorPieceCanReuseStone(piece, record)) continue;
     const rectangle = piece.rectangle;
     const childParams = stoneParams({
       seed: wrappedSeed(params.seed + placements.length * 7),
@@ -911,12 +923,7 @@ function emitRoof(part, record, params, { mesh = true, children = true } = {}) {
 
 export function connectorChildVariants(input, params = {}) {
   const record = normalizedRecord(input);
-  const p = {
-    seed: wrappedSeed(params.seed), detail: Math.max(0.5, Math.min(3, params.detail ?? 1)),
-    stoneMaterial: params.stoneMaterial ?? 8,
-    floorMaterial: params.floorMaterial ?? 8,
-    timberMaterial: params.timberMaterial ?? 14,
-  };
+  const p = normalizedEmitParams(params);
   const variants = [];
   const collector = {
     pushMatrix() {}, popMatrix() {}, translate() {}, rotateY() {}, rotateZ() {},
@@ -947,7 +954,8 @@ export function emitConnectorMesh(part, input, params = {}) {
   const record = normalizedRecord(input);
   const p = normalizedEmitParams(params);
   const floorPieces = floorLayout(record, p);
-  const inlineFloorPieces = floorPieces.filter(piece => !piece.rectangle);
+  const inlineFloorPieces = floorPieces.filter(piece =>
+    !floorPieceCanReuseStone(piece, record));
   for (const piece of inlineFloorPieces)
     emitPolygonPrism(part, piece.polygon, record.baseY - record.floor.thickness,
       record.baseY, p.floorMaterial);

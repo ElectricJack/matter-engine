@@ -46,6 +46,27 @@ globalThis.SHAPE = Object.freeze({ polygon: 3, triangles: 0 });
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
+function translatedRecord(input, dx, dz) {
+  const record = clone(input);
+  const point2 = point => { point[0] += dx; point[1] += dz; };
+  const point3 = point => { point[0] += dx; point[2] += dz; };
+  record.clearPolygon.forEach(point2);
+  record.routeWaypoints.forEach(point3);
+  for (const mouth of record.mouths) {
+    point3(mouth.inside); point3(mouth.outside);
+    mouth.segment.forEach(point2);
+    mouth.insideSegment.forEach(point2);
+    mouth.outsideSegment.forEach(point2);
+  }
+  for (const span of record.wallSpans) {
+    span.segment.forEach(point2);
+    point3(span.courseOrigin);
+    for (const plane of span.trimPlanes)
+      plane.offset += plane.normal[0] * dx + plane.normal[1] * dz;
+  }
+  return record;
+}
+
 function polygonArea(polygon) {
   let twiceArea = 0;
   for (let index = 0; index < polygon.length; ++index) {
@@ -431,6 +452,27 @@ const placementVariants = new Set(childPart.placements.map(placement =>
 assert.deepEqual(new Set(childVariants.map(variant =>
   variant.module + ':' + JSON.stringify(variant.params))), placementVariants,
   'declared requires exactly cover child-only assembly placements');
+
+const translated = translatedRecord(canonical, 0.75, 0);
+const translatedParams = { ...params, flagSize: 0.75 };
+const translatedMesh = emitConnectorMesh(new RecordingPart(), translated, translatedParams);
+const translatedChildPart = new RecordingPart();
+const translatedChildren = emitConnectorChildren(
+  translatedChildPart, translated, translatedParams);
+assert.ok(translatedMesh.inlineFloorPieces.some(polygon => polygon.length === 4),
+  'subminimum rectangular grid slivers stay exact inline geometry');
+for (const stone of translatedChildren.floorStones) {
+  assert.ok(Math.abs(stone.params.length * stone.params.depth -
+    Math.abs(polygonArea(stone.polygon))) < 1e-6,
+  stone.id + ' reusable floor child preserves its exact plan area');
+  assert.ok(Math.abs(stone.params.height - translated.floor.thickness) < EPSILON,
+    stone.id + ' reusable floor child preserves exact floor thickness');
+}
+const translatedPlacementVariants = new Set(translatedChildPart.placements.map(placement =>
+  placement.module + ':' + JSON.stringify(placement.params)));
+assert.deepEqual(new Set(connectorChildVariants(translated, translatedParams).map(variant =>
+  variant.module + ':' + JSON.stringify(variant.params))), translatedPlacementVariants,
+  'non-default flagSize child catalogue exactly matches emitted placements');
 
 for (const record of records) {
   const emittedRecord = emitConnectorChildren(new RecordingPart(), record, params);
