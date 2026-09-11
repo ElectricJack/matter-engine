@@ -8,7 +8,7 @@ if ($OutputDir -match '\s') { throw 'The editor shot command requires an output 
 New-Item -ItemType Directory -Force $OutputDir | Out-Null
 $shots = $OutputDir.Replace('\','/')
 $timeline = @"
-wait_idle 2 180
+wait_idle 2 420
 render_path raster
 cam 5.2 3.0 5.4 -1.2 1.1 -1.4
 wait_frames 90
@@ -29,7 +29,7 @@ shot $shots/rt-hall.png
 cam -1.6 1.3 1.4 -3.0 0.9 0.3
 wait_frames 90
 shot $shots/rt-throne.png
-cam -2.2 1.9 0.8 -4.6 0.7 -2.4
+cam -2.7 1.8 -1.3 -4.6 0.7 -3.0
 wait_frames 90
 shot $shots/rt-chamber.png
 cam -3.0 1.2 1.9 -5.2 0.7 0.6
@@ -73,7 +73,7 @@ shot $shots/night-raster-hall.png
 cam -1.2 2.0 -1.0 -1.2 2.2 -4.0
 wait_frames 60
 shot $shots/night-raster-sconces.png
-cam -2.5 2.2 1.5 -4.8 0.8 -0.6
+cam -3.4 2.6 -2.7 -4.4 1.0 -0.4
 wait_frames 60
 shot $shots/night-raster-lantern-spot.png
 cam 2.2 1.6 -0.8 3.6 1.2 -3.4
