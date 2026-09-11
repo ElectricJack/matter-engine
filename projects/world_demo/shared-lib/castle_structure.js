@@ -1586,3 +1586,313 @@ export function validateStructure(manifest, options = {}) {
       nodes: layout.graph.nodes.length, joints: layout.graph.joints.length, aliases: layout.graph.aliases.length,
       supportedEnds, solids: solids.length, clearances: clearances.length, roles } };
 }
+
+// ---------------------------------------------------------------------------
+// Roofs: gable, hip and conical. Layers from the inside out: wall plates,
+// trusses on the roof ties, purlins/ridge/rafters, a closed boarding slab per
+// face (its underside is the attic ceiling), then overlapping tile courses,
+// ridge/hip caps, fascias, bargeboards and closed gable-end infill walls.
+// roof.baseY is the wall top; rafter tops rise to about baseY+rise.
+// ---------------------------------------------------------------------------
+
+const TILE_KICK = 0.06;
+function yawOf(out) { return Math.atan2(out[0], out[2]); }
+function roofMaterial(roof) { return /terra/i.test(String(roof.material || '')) ? 'terracotta' : 'slate'; }
+// Overlapping tile courses on one planar face. `origin` is the eave point at
+// along-distance 0; extent(dTop) gives the along range available to a course
+// whose top lies dTop inward (horizontally) from the eave.
+function tileFace(ctx, roof, f) {
+  const mat = roofMaterial(roof);
+  const w = mat === 'terracotta' ? D.tileWidthTerracotta : D.tileWidthSlate;
+  const e = D.tileExposure, T = D.tileThickness;
+  const lift = D.boardingThickness + T * 0.5 + 0.004;
+  for (let k = 0, u = 0; u < f.slopeLen - 0.05; ++k, u += e) {
+    const Lt = Math.min(e + 0.12, f.slopeLen - u);
+    if (Lt < 0.06) break;
+    const [lo, hi] = f.extent((u + Lt) * f.cos);
+    if (hi - lo < 0.06) continue;
+    const start = lo - ((k & 1) ? w * 0.5 : 0);
+    for (let j = 0, a = start; a < hi - 0.02; ++j, a += w) {
+      const a0 = Math.max(lo, a), a1 = Math.min(hi, a + w);
+      if (a1 - a0 < 0.05) continue;
+      const centre = add(add(add(f.origin, mul(f.along, (a0 + a1) * 0.5)), mul(f.upDir, u + Lt * 0.5)), mul(f.normal, lift));
+      const jitter = ((fnv(roof.id + ':' + f.face + ':' + k + ':' + j) % 7) - 3) * 0.006;
+      ctx.op(roof.id, boxOp('roof-tile', mat, [0, 0, 0], [(a1 - a0) * 0.5 - 0.002, T * 0.5, Lt * 0.5],
+        { t: centre, ry: yawOf(f.out), rz: 0, rx: f.theta - TILE_KICK + jitter }, { face: f.face }));
+    }
+  }
+}
+function capLine(ctx, roof, role, from, to, radius) {
+  const L = len(sub(to, from));
+  const n = Math.max(1, Math.round(L / 0.5));
+  for (let i = 0; i < n; ++i)
+    ctx.op(roof.id, cylOp(role, roofMaterial(roof), lerp3(from, to, i / n + (i ? 0.004 : 0)), lerp3(from, to, (i + 1) / n - 0.004), radius));
+}
+// Is (x,y,z) inside any authored room volume (air rooms included)?
+function occupiedAt(manifest, x, y, z) {
+  const levels = new Map(manifest.levels.map((l) => [l.id, l]));
+  return (manifest.rooms || []).some((r) => {
+    const L = levels.get(r.levelId);
+    if (!L || y < L.baseY - EPS || y >= L.baseY + L.height) return false;
+    if (r.boundary.kind === 'circle') return Math.hypot(x - r.boundary.center[0], z - r.boundary.center[1]) < r.boundary.radius;
+    return r.boundary.cells.some(([cx, cz]) => x >= cx && x < cx + 1 && z >= cz && z < cz + 1);
+  });
+}
+function roofTies(ctx, roof) {
+  return sortById(ctx.manifest.beamMembers || []).filter((b) => b.role === 'roof-tie' && authoredOwner(ctx.manifest, b) === roof.id);
+}
+function layoutRoofGeometry(ctx, roof) {
+  if (roof.kind === 'conical') return layoutConicalRoof(ctx, roof);
+  if (roof.kind === 'gable' || roof.kind === 'hip') return layoutRectRoof(ctx, roof);
+  ctx.diagnostic({ recordId: roof.id, kind: 'unsupported-roof-kind', roofKind: roof.kind });
+}
+function layoutRectRoof(ctx, roof) {
+  const b = rectFromBounds(roof.bounds);
+  const dims = { x: b.x1 - b.x0, z: b.z1 - b.z0 };
+  let axis = roof.ridgeAxis === 'x' || roof.ridgeAxis === 'z' ? roof.ridgeAxis : (dims.x >= dims.z ? 'x' : 'z');
+  const hip = roof.kind === 'hip';
+  if (hip && dims[axis] < dims[axis === 'x' ? 'z' : 'x']) axis = axis === 'x' ? 'z' : 'x';
+  const [a0, a1] = axis === 'x' ? [b.x0, b.x1] : [b.z0, b.z1];
+  const [s0, s1] = axis === 'x' ? [b.z0, b.z1] : [b.x0, b.x1];
+  const W = (a, s, y) => (axis === 'x' ? [a, y, s] : [s, y, a]);
+  const aVec = W(1, 0, 0), sVec = W(0, 1, 0), up = [0, 1, 0];
+  const ov = num(roof.overhang, 0.45), tb = D.boardingThickness, T = D.gableThickness;
+  const H = (s1 - s0) * 0.5, sMid = (s0 + s1) * 0.5;
+  const theta0 = Math.atan(roof.rise / H);
+  const y0 = roof.baseY + D.plateHeight + D.rafterHeight / Math.cos(theta0);
+  const slope = Math.max(0.2, (roof.baseY + roof.rise - tb - 0.05 - y0) / H);
+  const theta = Math.atan(slope), cos = Math.cos(theta), sin = Math.sin(theta);
+  const yR = y0 + slope * H;
+  const ha = hip ? Math.min(H, (a1 - a0) * 0.5) : 0;
+  // An eave or verge that abuts a taller occupied volume stops at that wall's
+  // near face instead of overhanging into it.
+  const abuts = (samples) => samples.some(([a, sx]) => { const [x, z] = axis === 'x' ? [a, sx] : [sx, a];
+    return occupiedAt(ctx.manifest, x, roof.baseY + 0.5, z); });
+  const along3 = (lo, hi) => [0.25, 0.5, 0.75].map((t) => lo + (hi - lo) * t);
+  const ovS = [0, 1].map((j) => (abuts(along3(a0, a1).map((a) => [a, j ? s1 + 0.45 : s0 - 0.45])) ? -T / 2 : ov));
+  const ovA = [0, 1].map((k) => (abuts(along3(s0, s1).map((sx) => [k ? a1 + 0.45 : a0 - 0.45, sx])) ? -T / 2 : ov));
+  const yeS = ovS.map((o) => y0 - slope * o), yeA = ovA.map((o) => y0 - slope * o);
+  const aLo = a0 - ovA[0], aHi = a1 + ovA[1];
+  const ext = tb * Math.tan(theta) + 0.01;
+  const rafterDrop = (D.rafterHeight * 0.5) / cos;
+  const planeY = (d) => y0 + slope * d;
+  const member = (id, role, from, to, section, extra) => ctx.member({ id: roof.id + ':' + id, role, from, to, section,
+    owner: roof.id, levelId: roof.levelId, source: 'roof', joint: 1, strap: 0, material: 'oak', ...extra });
+  const faceNormal = (out) => norm(add(mul(out, sin), mul(up, cos)));
+  const faceUp = (out) => norm(add(mul(out, -cos), mul(up, sin)));
+  // --- faces: boarding + tiles
+  const faces = [];
+  const sideLo = (j) => (hip ? a0 - ovS[j] : aLo), sideHi = (j) => (hip ? a1 + ovS[j] : aHi);
+  const eaveOf = (j) => (j ? s1 + ovS[1] : s0 - ovS[0]);
+  for (const j of [0, 1]) {
+    const sign = j ? 1 : -1, eaveS = eaveOf(j), ye = yeS[j], lo = sideLo(j), hi = sideHi(j);
+    const out = mul(sVec, sign);
+    const loop = hip
+      ? (a1 - a0 - 2 * ha > 1e-6
+        ? [W(lo, eaveS, ye), W(hi, eaveS, ye), W(a1 - ha, sMid, yR), W(a0 + ha, sMid, yR)]
+        : [W(lo, eaveS, ye), W(hi, eaveS, ye), W((a0 + a1) * 0.5, sMid, yR)])
+      : [W(lo, eaveS, ye), W(hi, eaveS, ye), W(hi, sMid - sign * ext, planeY(H + ext)), W(lo, sMid - sign * ext, planeY(H + ext))];
+    faces.push({ face: 'side' + j, loop, out, origin: W(lo, eaveS, ye), along: aVec, slopeLen: (H + ovS[j]) / cos + (hip ? 0 : ext),
+      extent: hip ? (d) => [d, hi - lo - d] : () => [0, hi - lo] });
+  }
+  if (hip) for (const k of [0, 1]) {
+    const sign = k ? 1 : -1, aEdge = k ? a1 + ovA[1] : a0 - ovA[0], aRidge = k ? a1 - ha : a0 + ha, o = ovA[k];
+    const out = mul(aVec, sign);
+    faces.push({ face: 'end' + k, loop: [W(aEdge, s0 - o, yeA[k]), W(aEdge, s1 + o, yeA[k]), W(aRidge, sMid, yR)], out,
+      origin: W(aEdge, s0 - o, yeA[k]), along: sVec, slopeLen: (ha + o) / cos, extent: (d) => [d, s1 - s0 + 2 * o - d] });
+  }
+  for (const f of faces) {
+    f.normal = faceNormal(f.out); f.upDir = faceUp(f.out); f.theta = theta; f.cos = cos;
+    ctx.op(roof.id, convexPrism('roof-boarding', 'oak', f.loop, mul(f.normal, tb), { face: f.face }));
+    tileFace(ctx, roof, f);
+  }
+  // --- caps, fascias, bargeboards
+  const capLift = (tb + D.tileThickness + 0.05) / cos;
+  if (hip) {
+    const r0 = W(a0 + ha, sMid, yR + capLift), r1 = W(a1 - ha, sMid, yR + capLift);
+    if (len(sub(r1, r0)) > 0.1) capLine(ctx, roof, 'ridge-cap', r0, r1, 0.085);
+    else capLine(ctx, roof, 'ridge-cap', sub(r0, mul(aVec, 0.18)), add(r0, mul(aVec, 0.18)), 0.1);
+    for (const k of [0, 1]) for (const j of [0, 1])
+      capLine(ctx, roof, 'hip-cap', W(k ? sideHi(j) : sideLo(j), eaveOf(j), yeS[j] + capLift), W(k ? a1 - ha : a0 + ha, sMid, yR + capLift), 0.075);
+  } else capLine(ctx, roof, 'ridge-cap', W(aLo, sMid, yR + capLift), W(aHi, sMid, yR + capLift), 0.085);
+  const fasciaAlong = (from, to, out) => {
+    const lo = add(from, add(mul(out, -0.012), [0, -0.2, 0])), hi = add(to, add(mul(out, 0.018), [0, 0.02, 0]));
+    ctx.op(roof.id, axisBox('fascia', 'oak', [0, 1, 2].map((i) => Math.min(lo[i], hi[i])), [0, 1, 2].map((i) => Math.max(lo[i], hi[i]))));
+  };
+  for (const j of [0, 1]) fasciaAlong(W(sideLo(j), eaveOf(j), yeS[j]), W(sideHi(j), eaveOf(j), yeS[j]), mul(sVec, j ? 1 : -1));
+  if (hip) for (const k of [0, 1]) fasciaAlong(W(k ? a1 + ovA[1] : a0 - ovA[0], s0 - ovA[k], yeA[k]),
+    W(k ? a1 + ovA[1] : a0 - ovA[0], s1 + ovA[k], yeA[k]), mul(aVec, k ? 1 : -1));
+  else for (const a of [aLo, aHi]) for (const j of [0, 1]) {
+    const from = W(a, eaveOf(j), yeS[j] + tb), to = W(a, sMid, yR + tb);
+    const L = len(sub(to, from));
+    ctx.op(roof.id, boxOp('bargeboard', 'oak', [0, 0, 0], [L * 0.5, 0.11, 0.022], memberFrame(from, to)));
+  }
+  // --- closed gable-end walls: the roof encloses the rooms below it
+  if (!hip && roof.gableEnds !== 'open') for (const ae of [a0, a1]) {
+    // On an abutting side the infill stops at the taller wall's near face.
+    const sLo = ovS[0] < 0 ? s0 + T / 2 : s0 - T / 2, sHi = ovS[1] < 0 ? s1 - T / 2 : s1 + T / 2;
+    const yLo = Math.max(roof.baseY + 0.02, planeY(sLo - s0)), yHi = Math.max(roof.baseY + 0.02, planeY(s1 - sHi));
+    const loop = [W(ae - T / 2, sLo, roof.baseY), W(ae - T / 2, sHi, roof.baseY), W(ae - T / 2, sHi, yHi),
+      W(ae - T / 2, sMid, yR), W(ae - T / 2, sLo, yLo)];
+    ctx.op(roof.id, convexPrism('gable-infill', 'stone1', loop, mul(aVec, T), { gableAt: ae }));
+  }
+  // --- timber: wall plates, ridge, purlins, rafters, trusses
+  const plateY = roof.baseY + D.plateHeight * 0.5, plate = [D.plateWidth, D.plateHeight];
+  // Plates sit on the roof's own walls; against a taller abutting wall they
+  // become a ledger on that wall's near face.
+  const ledger = (T + D.plateWidth) * 0.5;
+  const sPlate = [ovS[0] < 0 ? s0 + ledger : s0, ovS[1] < 0 ? s1 - ledger : s1];
+  const aPlate = [ovA[0] < 0 ? a0 + ledger : a0, ovA[1] < 0 ? a1 - ledger : a1];
+  for (const s of sPlate) member('plate:s' + round6(s), 'wall-plate', W(a0, s, plateY), W(a1, s, plateY), plate);
+  if (hip) for (const a of aPlate) member('plate:a' + round6(a), 'wall-plate', W(a, s0, plateY), W(a, s1, plateY), plate);
+  const ridgeY = yR - D.rafterHeight / cos - 0.12;
+  const [rA, rB] = hip ? [a0 + ha, a1 - ha] : [aLo, aHi];
+  if (rB - rA > 0.4) member('ridge', 'ridge-beam', W(rA, sMid, ridgeY), W(rB, sMid, ridgeY), [0.14, 0.24], { strap: 1 });
+  const purlinY = planeY(H * 0.5) - D.rafterHeight / cos - 0.1;
+  for (const j of [0, 1]) {
+    const s = j ? s1 - H * 0.5 : s0 + H * 0.5;
+    const [p0, p1] = hip ? [a0 + H * 0.5, a1 - H * 0.5] : [a0 + T / 2, a1 - T / 2];
+    if (p1 - p0 > 0.4) member('purlin:s' + j, 'purlin', W(p0, s, purlinY), W(p1, s, purlinY), [0.16, 0.2]);
+  }
+  if (hip) for (const k of [0, 1]) {
+    const a = k ? a1 - H * 0.5 : a0 + H * 0.5;
+    if (s1 - s0 - H > 0.4) member('purlin:a' + k, 'purlin', W(a, s0 + H * 0.5, purlinY), W(a, s1 - H * 0.5, purlinY), [0.16, 0.2]);
+  }
+  // Trusses on the roof's own ties (between gable walls / within the ridge run).
+  const tieY = roof.baseY - 0.12;
+  const [tA, tB] = hip ? [a0 + ha - 0.05, a1 - ha + 0.05] : [a0 + T / 2 + 0.05, a1 - T / 2 - 0.05];
+  let trussAt = roofTies(ctx, roof).filter((t) => Math.abs(sub(t.to, t.from)[axis === 'x' ? 0 : 2]) < 1e-6)
+    .map((t) => ({ a: axis === 'x' ? t.from[0] : t.from[2], y: t.from[1] })).filter((t) => t.a >= tA && t.a <= tB);
+  if (!trussAt.length) {
+    const span = Math.max(0, tB - tA), n = Math.max(1, Math.round(span / num(roof.trussSpacing, D.trussSpacing)));
+    trussAt = [];
+    for (let i = 0; i < n; ++i) {
+      const a = round6(n === 1 ? (tA + tB) * 0.5 : tA + span * (i + 0.5) / n);
+      trussAt.push({ a, y: tieY });
+      member('tie:' + a, 'roof-tie', W(a, s0, tieY), W(a, s1, tieY), [0.28, 0.36], { joint: 2, strap: 1 });
+    }
+  }
+  const kingTop = rB - rA > 0.4 ? ridgeY - 0.08 : yR - D.rafterHeight / cos - 0.05;
+  for (const t of trussAt) {
+    const id = 'truss:' + round6(t.a);
+    member(id + ':king', 'king-post', W(t.a, sMid, t.y), W(t.a, sMid, kingTop), [0.2, 0.2], { joint: 2 });
+    for (const j of [0, 1]) {
+      const sE = j ? s1 : s0, sign = j ? 1 : -1;
+      member(id + ':principal' + j, 'principal-rafter', W(t.a, sE, t.y), W(t.a, sMid + sign * 0.1, kingTop), [D.principalWidth, D.principalHeight], { joint: 2 });
+      const mid = lerp3(W(t.a, sE, t.y), W(t.a, sMid + sign * 0.1, kingTop), 0.5);
+      member(id + ':strut' + j, 'strut', W(t.a, sMid, t.y + 0.45), mid, [0.14, 0.14]);
+    }
+  }
+  const nearTruss = (a) => trussAt.some((t) => Math.abs(t.a - a) < 0.3);
+  const rafter = (id, role, a, j, d0, d1) => {
+    const sAt = (d) => (j ? s1 - d : s0 + d);
+    member(id, role, W(a, sAt(d0), planeY(d0) - rafterDrop), W(a, sAt(d1), planeY(d1) - rafterDrop), [D.rafterWidth, D.rafterHeight]);
+  };
+  const count = Math.max(2, Math.ceil((aHi - aLo - 0.12) / D.rafterSpacing) + 1);
+  for (let i = 0; i < count; ++i) {
+    const a = round6(aLo + 0.06 + (aHi - aLo - 0.12) * i / (count - 1));
+    if (!hip && roof.gableEnds !== 'open' && ((a > a0 - T / 2 - 0.07 && a < a0 + T / 2 + 0.07) || (a > a1 - T / 2 - 0.07 && a < a1 + T / 2 + 0.07))) continue;
+    if (nearTruss(a)) continue;
+    for (const j of [0, 1]) {
+      if (!hip) { rafter('rafter:' + j + ':' + i, 'rafter', a, j, -ovS[j], H - 0.07); continue; }
+      if (a < sideLo(j) || a > sideHi(j)) continue;
+      const dEnd = Math.min(H - 0.07, Math.min(a - a0, a1 - a) - 0.08);
+      if (dEnd + ovS[j] > 0.4) rafter('rafter:' + j + ':' + i, dEnd >= H - 0.2 ? 'rafter' : 'jack-rafter', a, j, -ovS[j], dEnd);
+    }
+  }
+  if (hip) {
+    for (const k of [0, 1]) {
+      const o = ovA[k];
+      const sCount = Math.max(2, Math.ceil((s1 - s0 + 2 * o - 0.12) / D.rafterSpacing) + 1);
+      for (let i = 0; i < sCount; ++i) {
+        const s = round6(s0 - o + 0.06 + (s1 - s0 + 2 * o - 0.12) * i / (sCount - 1));
+        const dEnd = Math.min(ha - 0.07, Math.min(s - s0, s1 - s) - 0.08);
+        if (dEnd + o <= 0.4) continue;
+        const aAt = (d) => (k ? a1 - d : a0 + d);
+        member('jack:' + k + ':' + i, dEnd >= ha - 0.2 ? 'rafter' : 'jack-rafter', W(aAt(-o), s, planeY(-o) - rafterDrop), W(aAt(dEnd), s, planeY(dEnd) - rafterDrop),
+          [D.rafterWidth, D.rafterHeight]);
+      }
+    }
+    const hipDrop = 0.13 / cos;
+    for (const k of [0, 1]) for (const j of [0, 1])
+      member('hip:' + k + j, 'hip-rafter', W(k ? sideHi(j) : sideLo(j), eaveOf(j), yeS[j] - hipDrop),
+        W(k ? a1 - ha : a0 + ha, sMid, yR - hipDrop - 0.05), [0.16, 0.26], { strap: 1 });
+  }
+}
+function layoutConicalRoof(ctx, roof) {
+  const [cx, cz] = roof.center;
+  const R = roof.radius, ov = num(roof.overhang, 0.5), tb = D.boardingThickness;
+  const Re = R + D.gableThickness * 0.5 + ov;
+  const theta0 = Math.atan(roof.rise / R);
+  const y0 = roof.baseY + D.plateHeight + D.rafterHeight / Math.cos(theta0);
+  const yA = roof.baseY + roof.rise - tb - 0.05;
+  const slope = Math.max(0.2, (yA - y0) / R);
+  const theta = Math.atan(slope), cos = Math.cos(theta), sin = Math.sin(theta);
+  const planeY = (r) => y0 + slope * (R - r);
+  const ye = planeY(Re), apexY = planeY(0);
+  const pt = (r, phi, y) => [cx + r * Math.cos(phi), y, cz + r * Math.sin(phi)];
+  const member = (id, role, from, to, section, extra) => ctx.member({ id: roof.id + ':' + id, role, from, to, section,
+    owner: roof.id, levelId: roof.levelId, source: 'roof', joint: 1, strap: 0, material: 'oak', ...extra });
+  // Boarding: closed wedges meeting at the apex; together a thick cone shell.
+  const N = 48;
+  for (let i = 0; i < N; ++i) {
+    const p0 = (2 * Math.PI * i) / N, p1 = (2 * Math.PI * (i + 1)) / N;
+    const loop = [pt(Re, p0, ye), pt(Re, p1, ye), [cx, apexY, cz]];
+    const mid = (p0 + p1) * 0.5, out = [Math.cos(mid), 0, Math.sin(mid)];
+    const n = norm(add(mul(out, sin), [0, cos, 0]));
+    ctx.op(roof.id, convexPrism('roof-boarding', 'oak', loop, mul(n, tb), { face: 'wedge' + i }));
+  }
+  // Tiles in rings, staggered, shrinking in count towards the apex.
+  const mat = roofMaterial(roof), w = mat === 'terracotta' ? D.tileWidthTerracotta : D.tileWidthSlate;
+  const e = D.tileExposure, T = D.tileThickness, slopeLen = Re / cos;
+  for (let k = 0, u = 0; u < slopeLen - 0.05; ++k, u += e) {
+    const Lt = Math.min(e + 0.12, slopeLen - u);
+    const rc = Re - (u + Lt * 0.5) * cos;
+    if (rc - Lt * 0.5 * cos < 0.2) break;
+    const n = Math.max(6, Math.ceil((2 * Math.PI * rc) / w));
+    const tw = (2 * Math.PI * rc) / n - 0.004;
+    for (let j = 0; j < n; ++j) {
+      const phi = (2 * Math.PI * (j + ((k & 1) ? 0.5 : 0))) / n;
+      const out = [Math.cos(phi), 0, Math.sin(phi)];
+      const nrm = norm(add(mul(out, sin), [0, cos, 0]));
+      const centre = add(pt(rc, phi, planeY(rc)), mul(nrm, tb + T * 0.5 + 0.004));
+      const jitter = ((fnv(roof.id + ':' + k + ':' + j) % 7) - 3) * 0.006;
+      ctx.op(roof.id, boxOp('roof-tile', mat, [0, 0, 0], [tw * 0.5, T * 0.5, Lt * 0.5],
+        { t: centre, ry: yawOf(out), rz: 0, rx: theta - TILE_KICK + jitter }, { face: 'ring' + k }));
+    }
+  }
+  // Finial: iron spike and a closed lead cone over the apex.
+  const top = apexY + tb / cos;
+  ctx.op(roof.id, cylOp('finial', 'iron', [cx, top - 0.2, cz], [cx, top + 0.9, cz], 0.045));
+  const cone = [];
+  // The cap is seated on the boarding at its rim and rises steeper than the
+  // roof, so it overlaps the innermost tile ring instead of floating.
+  const M = 16, capR = 0.55, base = planeY(capR) + tb / cos - 0.02, capH = top + 0.3 - base;
+  for (let i = 0; i < M; ++i) {
+    const a = pt(capR, (2 * Math.PI * i) / M, base), b = pt(capR, (2 * Math.PI * (i + 1)) / M, base);
+    cone.push(...a, ...[cx, base + capH, cz], ...b);     // side, outward
+    cone.push(...a, ...b, ...[cx, base, cz]);            // base, downward
+  }
+  ctx.op(roof.id, { op: 'tris', role: 'finial', material: mat, verts: signedVolume(cone) >= 0 ? cone : reverseTris(cone) });
+  // Timber: radial rafters to a king post, plate ring, crossing ties.
+  const nr = Math.max(12, Math.round((2 * Math.PI * R) / 0.7));
+  const drop = (D.rafterHeight * 0.5) / cos;
+  const plateY = roof.baseY + D.plateHeight * 0.5;
+  for (let i = 0; i < nr; ++i) {
+    const phi = (2 * Math.PI * i) / nr, next = (2 * Math.PI * (i + 1)) / nr;
+    member('rafter:' + i, 'rafter', pt(Re, phi, planeY(Re) - drop), pt(0.09, phi, planeY(0.09) - drop), [D.rafterWidth, D.rafterHeight]);
+    member('plate:' + i, 'wall-plate', pt(R, phi, plateY), pt(R, next, plateY), [D.plateWidth, D.plateHeight]);
+  }
+  const tieY = roof.baseY - 0.12;
+  const crossing = roofTies(ctx, roof).some((t) => segmentDistance([cx, t.from[1], cz], t.from, t.to).distance < 0.25);
+  if (!crossing) {
+    member('tie:x', 'roof-tie', [cx - R, tieY, cz], [cx + R, tieY, cz], [0.28, 0.36], { joint: 2, strap: 1 });
+    member('tie:z', 'roof-tie', [cx, tieY + 0.36, cz - R], [cx, tieY + 0.36, cz + R], [0.28, 0.36], { joint: 2, strap: 1 });
+  }
+  member('king', 'king-post', [cx, tieY, cz], [cx, apexY - drop, cz], [0.2, 0.2], { joint: 2, strap: 1 });
+}
+function reverseTris(verts) {
+  const out = [];
+  for (let i = 0; i < verts.length; i += 9) out.push(...verts.slice(i, i + 3), ...verts.slice(i + 6, i + 9), ...verts.slice(i + 3, i + 6));
+  return out;
+}
