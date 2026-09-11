@@ -1,0 +1,6643 @@
+{
+  "changedAcrossScenes": [],
+  "schema": "matter.castle-bake-census/v1",
+  "generatedAt": "2026-09-11T16:54:29.222Z",
+  "mode": "requires-and-build",
+  "note": "Keys are module plus merged static/default scalar params. Requested keys are also counted. World placement transforms are excluded. This is recipe/placement evidence, not native content hashes, LOD variants, bake time or GPU performance. Material numbers are stable symbolic IDs within this census; material names are included.",
+  "scenes": [
+    {
+      "scene": "CastleSiteGallery",
+      "rootPlacements": 800,
+      "uniqueEffectiveRecipes": 204,
+      "uniqueRequestedRecipes": 204,
+      "placedUniqueRecipes": 204,
+      "recursivePlacements": 69849,
+      "modules": [
+        {
+          "module": "CastleWingStructure",
+          "category": "architecture-wrapper",
+          "unique": 40,
+          "placedUnique": 40,
+          "placements": 110,
+          "variants": [
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-chapel",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-chancel",
+                "recordIndex": 0,
+                "seed": 9714,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-chapel",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-nave",
+                "recordIndex": 1,
+                "seed": 9714,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-chapel",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-stair",
+                "recordIndex": 2,
+                "seed": 9714,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-chapel",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-choir",
+                "recordIndex": 3,
+                "seed": 9714,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-chapel",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-stair",
+                "recordIndex": 4,
+                "seed": 9714,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-chapel",
+                "recordKind": "stair",
+                "recordId": "stair:choir-stair",
+                "recordIndex": 0,
+                "seed": 9714,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-chapel",
+                "recordKind": "roof",
+                "recordId": "roof:chapel-roof",
+                "recordIndex": 0,
+                "seed": 9714,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-chapel",
+                "recordKind": "frame",
+                "recordId": "frame:upper",
+                "recordIndex": 1,
+                "seed": 9714,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-hall",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-hall",
+                "recordIndex": 0,
+                "seed": 9613,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-stair",
+                "recordIndex": 2,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 7
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-hall",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-north-gallery",
+                "recordIndex": 2,
+                "seed": 9613,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-hall",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-south-gallery",
+                "recordIndex": 3,
+                "seed": 9613,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "floor",
+                "recordId": "floor:level-2:level-2-stair",
+                "recordIndex": 8,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 7
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-hall",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-west-gallery",
+                "recordIndex": 5,
+                "seed": 9613,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-hall",
+                "recordKind": "stair",
+                "recordId": "stair:stair-0",
+                "recordIndex": 0,
+                "seed": 9613,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 5
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-hall",
+                "recordKind": "roof",
+                "recordId": "roof:hall-roof",
+                "recordIndex": 0,
+                "seed": 9613,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-hall",
+                "recordKind": "frame",
+                "recordId": "frame:upper",
+                "recordIndex": 1,
+                "seed": 9613,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-main",
+                "recordIndex": 0,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-north",
+                "recordIndex": 1,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "floor",
+                "recordId": "floor:level-2:level-2-main",
+                "recordIndex": 6,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 5
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-stair",
+                "recordIndex": 5,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "stair",
+                "recordId": "stair:stair-0",
+                "recordIndex": 0,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "stair",
+                "recordId": "stair:stair-1",
+                "recordIndex": 1,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-keep",
+                "recordKind": "roof",
+                "recordId": "roof:keep-roof",
+                "recordIndex": 0,
+                "seed": 9512,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 3,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-service",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-kitchen",
+                "recordIndex": 0,
+                "seed": 9815,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 3,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-service",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-pantry",
+                "recordIndex": 1,
+                "seed": 9815,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 10
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "wingIndex": 3,
+                "siteSeed": 9411,
+                "manifestId": "clustered-court-service",
+                "recordKind": "roof",
+                "recordId": "roof:service-roof",
+                "recordIndex": 0,
+                "seed": 9815,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "wingIndex": 0,
+                "siteSeed": 17029,
+                "manifestId": "angled-bailey-gate",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-kitchen",
+                "recordIndex": 0,
+                "seed": 17130,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "wingIndex": 0,
+                "siteSeed": 17029,
+                "manifestId": "angled-bailey-gate",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-pantry",
+                "recordIndex": 4,
+                "seed": 17130,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "wingIndex": 0,
+                "siteSeed": 17029,
+                "manifestId": "angled-bailey-gate",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-stair",
+                "recordIndex": 5,
+                "seed": 17130,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "wingIndex": 0,
+                "siteSeed": 17029,
+                "manifestId": "angled-bailey-gate",
+                "recordKind": "stair",
+                "recordId": "stair:household-stair",
+                "recordIndex": 0,
+                "seed": 17130,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "wingIndex": 0,
+                "siteSeed": 17029,
+                "manifestId": "angled-bailey-gate",
+                "recordKind": "roof",
+                "recordId": "roof:service-roof",
+                "recordIndex": 0,
+                "seed": 17130,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "wingIndex": 1,
+                "siteSeed": 17029,
+                "manifestId": "angled-bailey-hall",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-hall",
+                "recordIndex": 0,
+                "seed": 17231,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "wingIndex": 3,
+                "siteSeed": 17029,
+                "manifestId": "angled-bailey-service",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-kitchen",
+                "recordIndex": 0,
+                "seed": 17433,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "wingIndex": 3,
+                "siteSeed": 28303,
+                "manifestId": "bent-palace-chapel",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-chancel",
+                "recordIndex": 0,
+                "seed": 28707,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "wingIndex": 1,
+                "siteSeed": 28303,
+                "manifestId": "bent-palace-hall",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-hall",
+                "recordIndex": 0,
+                "seed": 28505,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "wingIndex": 1,
+                "siteSeed": 28303,
+                "manifestId": "bent-palace-hall",
+                "recordKind": "floor",
+                "recordId": "floor:upper:upper-south-gallery",
+                "recordIndex": 3,
+                "seed": 28505,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "wingIndex": 1,
+                "siteSeed": 28303,
+                "manifestId": "bent-palace-hall",
+                "recordKind": "frame",
+                "recordId": "frame:upper",
+                "recordIndex": 1,
+                "seed": 28505,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "wingIndex": 0,
+                "siteSeed": 28303,
+                "manifestId": "bent-palace-keep",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-main",
+                "recordIndex": 0,
+                "seed": 28404,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "wingIndex": 0,
+                "siteSeed": 28303,
+                "manifestId": "bent-palace-keep",
+                "recordKind": "floor",
+                "recordId": "floor:ground:ground-north",
+                "recordIndex": 1,
+                "seed": 28404,
+                "detail": 1,
+                "stairStyle": 0,
+                "layer": 1,
+                "matStone0": 40,
+                "matStone1": 41,
+                "matStone2": 42,
+                "matStone3": 43,
+                "matFoundation": 44,
+                "matMortar": 45,
+                "matOak": 46,
+                "matOakEnd": 47,
+                "matIron": 48,
+                "matSlate": 53,
+                "matTerracotta": 54,
+                "matPlaster": 55
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "architecture-wrapper": 40
+          },
+          "placementsByCategory": {
+            "architecture-wrapper": 110
+          },
+          "parameterValues": {
+            "detail": [
+              1
+            ],
+            "layer": [
+              1
+            ],
+            "manifestId": [
+              "angled-bailey-gate",
+              "angled-bailey-hall",
+              "angled-bailey-service",
+              "bent-palace-chapel",
+              "bent-palace-hall",
+              "bent-palace-keep",
+              "clustered-court-chapel",
+              "clustered-court-hall",
+              "clustered-court-keep",
+              "clustered-court-service"
+            ],
+            "matFoundation": [
+              44
+            ],
+            "matIron": [
+              48
+            ],
+            "matMortar": [
+              45
+            ],
+            "matOak": [
+              46
+            ],
+            "matOakEnd": [
+              47
+            ],
+            "matPlaster": [
+              55
+            ],
+            "matSlate": [
+              53
+            ],
+            "matStone0": [
+              40
+            ],
+            "matStone1": [
+              41
+            ],
+            "matStone2": [
+              42
+            ],
+            "matStone3": [
+              43
+            ],
+            "matTerracotta": [
+              54
+            ],
+            "recordId": [
+              "floor:ground:ground-chancel",
+              "floor:ground:ground-hall",
+              "floor:ground:ground-kitchen",
+              "floor:ground:ground-main",
+              "floor:ground:ground-nave",
+              "floor:ground:ground-north",
+              "floor:ground:ground-pantry",
+              "floor:ground:ground-stair",
+              "floor:level-2:level-2-main",
+              "floor:level-2:level-2-stair",
+              "floor:upper:upper-choir",
+              "floor:upper:upper-north-gallery",
+              "floor:upper:upper-pantry",
+              "floor:upper:upper-south-gallery",
+              "floor:upper:upper-stair",
+              "floor:upper:upper-west-gallery",
+              "frame:upper",
+              "roof:chapel-roof",
+              "roof:hall-roof",
+              "roof:keep-roof",
+              "roof:service-roof",
+              "stair:choir-stair",
+              "stair:household-stair",
+              "stair:stair-0",
+              "stair:stair-1"
+            ],
+            "recordIndex": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              8
+            ],
+            "recordKind": [
+              "floor",
+              "frame",
+              "roof",
+              "stair"
+            ],
+            "seed": [
+              9512,
+              9613,
+              9714,
+              9815,
+              17130,
+              17231,
+              17433,
+              28404,
+              28505,
+              28707
+            ],
+            "siteSeed": [
+              9411,
+              17029,
+              28303
+            ],
+            "siteVariant": [
+              0,
+              1,
+              2
+            ],
+            "stairStyle": [
+              0
+            ],
+            "wingIndex": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "uniqueIgnoringSeed": 40,
+          "uniqueIgnoringMaterials": 40,
+          "uniqueIgnoringSeedAndMaterials": 40,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 40,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {}
+        },
+        {
+          "module": "CastleCutStone",
+          "category": "profile-cut-stone",
+          "unique": 18,
+          "placedUnique": 18,
+          "placements": 217,
+          "variants": [
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.4841,
+                "height": 0.6093,
+                "depth": 0.6,
+                "material": 40,
+                "detail": 1,
+                "c0x": 0.954,
+                "c0y": -0.2999,
+                "c0d": 0.0482,
+                "c1x": -0.9949,
+                "c1y": 0.1013,
+                "c1d": 0.2469,
+                "c2x": -0.2017,
+                "c2y": -0.9795,
+                "c2d": -0.0102
+              },
+              "placements": 19
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.4841,
+                "height": 0.6093,
+                "depth": 0.6,
+                "material": 40,
+                "detail": 1,
+                "c0x": 0.9949,
+                "c0y": 0.1013,
+                "c0d": 0.2469,
+                "c1x": -0.954,
+                "c1y": -0.2999,
+                "c1d": 0.0482,
+                "c2x": 0.2017,
+                "c2y": -0.9795,
+                "c2d": -0.0102
+              },
+              "placements": 14
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.6809,
+                "height": 0.7309,
+                "depth": 0.6,
+                "material": 40,
+                "detail": 1,
+                "c0x": 0.8739,
+                "c0y": -0.4861,
+                "c0d": -0.0578,
+                "c1x": -0.954,
+                "c1y": 0.2999,
+                "c1d": 0.3602,
+                "c2x": -0.395,
+                "c2y": -0.9187,
+                "c2d": 0.0261
+              },
+              "placements": 12
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.6809,
+                "height": 0.7309,
+                "depth": 0.6,
+                "material": 40,
+                "detail": 1,
+                "c0x": 0.954,
+                "c0y": 0.2999,
+                "c0d": 0.3602,
+                "c1x": -0.8739,
+                "c1y": -0.4861,
+                "c1d": -0.0578,
+                "c2x": 0.395,
+                "c2y": -0.9187,
+                "c2d": 0.0261
+              },
+              "placements": 7
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.8583,
+                "height": 0.9111,
+                "depth": 0.6,
+                "material": 40,
+                "detail": 1,
+                "c0x": -0.8739,
+                "c0y": 0.4861,
+                "c0d": 0.4598,
+                "c1x": -0.5722,
+                "c1y": -0.8201,
+                "c1d": 0.1026,
+                "c2x": 0,
+                "c2y": 0,
+                "c2d": 0
+              },
+              "placements": 5
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.4841,
+                "height": 0.6093,
+                "depth": 0.6,
+                "material": 41,
+                "detail": 1,
+                "c0x": 0.954,
+                "c0y": -0.2999,
+                "c0d": 0.0482,
+                "c1x": -0.9949,
+                "c1y": 0.1013,
+                "c1d": 0.2469,
+                "c2x": -0.2017,
+                "c2y": -0.9795,
+                "c2d": -0.0102
+              },
+              "placements": 12
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.6809,
+                "height": 0.7309,
+                "depth": 0.6,
+                "material": 41,
+                "detail": 1,
+                "c0x": 0.8739,
+                "c0y": -0.4861,
+                "c0d": -0.0578,
+                "c1x": -0.954,
+                "c1y": 0.2999,
+                "c1d": 0.3602,
+                "c2x": -0.395,
+                "c2y": -0.9187,
+                "c2d": 0.0261
+              },
+              "placements": 19
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.6809,
+                "height": 0.7309,
+                "depth": 0.6,
+                "material": 41,
+                "detail": 1,
+                "c0x": 0.954,
+                "c0y": 0.2999,
+                "c0d": 0.3602,
+                "c1x": -0.8739,
+                "c1y": -0.4861,
+                "c1d": -0.0578,
+                "c2x": 0.395,
+                "c2y": -0.9187,
+                "c2d": 0.0261
+              },
+              "placements": 20
+            },
+            {
+              "params": {
+                "seed": 2,
+                "length": 0.4103,
+                "height": 0.5479,
+                "depth": 0.6,
+                "material": 42,
+                "detail": 1,
+                "c0x": 0.9949,
+                "c0y": -0.1013,
+                "c0d": 0.1486,
+                "c1x": -0.9949,
+                "c1y": -0.1013,
+                "c1d": 0.1486,
+                "c2x": 0,
+                "c2y": -1,
+                "c2d": 0
+              },
+              "placements": 19
+            },
+            {
+              "params": {
+                "seed": 2,
+                "length": 0.4841,
+                "height": 0.6093,
+                "depth": 0.6,
+                "material": 42,
+                "detail": 1,
+                "c0x": 0.9949,
+                "c0y": 0.1013,
+                "c0d": 0.2469,
+                "c1x": -0.954,
+                "c1y": -0.2999,
+                "c1d": 0.0482,
+                "c2x": 0.2017,
+                "c2y": -0.9795,
+                "c2d": -0.0102
+              },
+              "placements": 14
+            },
+            {
+              "params": {
+                "seed": 2,
+                "length": 0.8583,
+                "height": 0.9111,
+                "depth": 0.6,
+                "material": 42,
+                "detail": 1,
+                "c0x": -0.8739,
+                "c0y": 0.4861,
+                "c0d": 0.4598,
+                "c1x": -0.5722,
+                "c1y": -0.8201,
+                "c1d": 0.1026,
+                "c2x": 0,
+                "c2y": 0,
+                "c2d": 0
+              },
+              "placements": 17
+            },
+            {
+              "params": {
+                "seed": 2,
+                "length": 0.8583,
+                "height": 0.9111,
+                "depth": 0.6,
+                "material": 42,
+                "detail": 1,
+                "c0x": 0.8739,
+                "c0y": 0.4861,
+                "c0d": 0.4598,
+                "c1x": 0.5722,
+                "c1y": -0.8201,
+                "c1d": 0.1026,
+                "c2x": 0,
+                "c2y": 0,
+                "c2d": 0
+              },
+              "placements": 27
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.8583,
+                "height": 0.9111,
+                "depth": 0.6,
+                "material": 41,
+                "detail": 1,
+                "c0x": -0.8739,
+                "c0y": 0.4861,
+                "c0d": 0.4598,
+                "c1x": -0.5722,
+                "c1y": -0.8201,
+                "c1d": 0.1026,
+                "c2x": 0,
+                "c2y": 0,
+                "c2d": 0
+              },
+              "placements": 9
+            },
+            {
+              "params": {
+                "seed": 2,
+                "length": 0.6809,
+                "height": 0.7309,
+                "depth": 0.6,
+                "material": 42,
+                "detail": 1,
+                "c0x": 0.954,
+                "c0y": 0.2999,
+                "c0d": 0.3602,
+                "c1x": -0.8739,
+                "c1y": -0.4861,
+                "c1d": -0.0578,
+                "c2x": 0.395,
+                "c2y": -0.9187,
+                "c2d": 0.0261
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.4103,
+                "height": 0.5479,
+                "depth": 0.6,
+                "material": 40,
+                "detail": 1,
+                "c0x": 0.9949,
+                "c0y": -0.1013,
+                "c0d": 0.1486,
+                "c1x": -0.9949,
+                "c1y": -0.1013,
+                "c1d": 0.1486,
+                "c2x": 0,
+                "c2y": -1,
+                "c2d": 0
+              },
+              "placements": 8
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.8583,
+                "height": 0.9111,
+                "depth": 0.6,
+                "material": 40,
+                "detail": 1,
+                "c0x": 0.8739,
+                "c0y": 0.4861,
+                "c0d": 0.4598,
+                "c1x": 0.5722,
+                "c1y": -0.8201,
+                "c1d": 0.1026,
+                "c2x": 0,
+                "c2y": 0,
+                "c2d": 0
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.4103,
+                "height": 0.5479,
+                "depth": 0.6,
+                "material": 41,
+                "detail": 1,
+                "c0x": 0.9949,
+                "c0y": -0.1013,
+                "c0d": 0.1486,
+                "c1x": -0.9949,
+                "c1y": -0.1013,
+                "c1d": 0.1486,
+                "c2x": 0,
+                "c2y": -1,
+                "c2d": 0
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.4841,
+                "height": 0.6093,
+                "depth": 0.6,
+                "material": 41,
+                "detail": 1,
+                "c0x": 0.9949,
+                "c0y": 0.1013,
+                "c0d": 0.2469,
+                "c1x": -0.954,
+                "c1y": -0.2999,
+                "c1d": 0.0482,
+                "c2x": 0.2017,
+                "c2y": -0.9795,
+                "c2d": -0.0102
+              },
+              "placements": 3
+            }
+          ],
+          "categories": {
+            "profile-cut-stone": 18
+          },
+          "placementsByCategory": {
+            "profile-cut-stone": 217
+          },
+          "parameterValues": {
+            "c0d": [
+              -0.0578,
+              0.0482,
+              0.1486,
+              0.2469,
+              0.3602,
+              0.4598
+            ],
+            "c0x": [
+              -0.8739,
+              0.8739,
+              0.954,
+              0.9949
+            ],
+            "c0y": [
+              -0.4861,
+              -0.2999,
+              -0.1013,
+              0.1013,
+              0.2999,
+              0.4861
+            ],
+            "c1d": [
+              -0.0578,
+              0.0482,
+              0.1026,
+              0.1486,
+              0.2469,
+              0.3602
+            ],
+            "c1x": [
+              -0.9949,
+              -0.954,
+              -0.8739,
+              -0.5722,
+              0.5722
+            ],
+            "c1y": [
+              -0.8201,
+              -0.4861,
+              -0.2999,
+              -0.1013,
+              0.1013,
+              0.2999
+            ],
+            "c2d": [
+              -0.0102,
+              0,
+              0.0261
+            ],
+            "c2x": [
+              -0.395,
+              -0.2017,
+              0,
+              0.2017,
+              0.395
+            ],
+            "c2y": [
+              -1,
+              -0.9795,
+              -0.9187,
+              0
+            ],
+            "depth": [
+              0.6
+            ],
+            "detail": [
+              1
+            ],
+            "height": [
+              0.5479,
+              0.6093,
+              0.7309,
+              0.9111
+            ],
+            "length": [
+              0.4103,
+              0.4841,
+              0.6809,
+              0.8583
+            ],
+            "material": [
+              40,
+              41,
+              42
+            ],
+            "seed": [
+              0,
+              1,
+              2
+            ]
+          },
+          "uniqueIgnoringSeed": 18,
+          "uniqueIgnoringMaterials": 18,
+          "uniqueIgnoringSeedAndMaterials": 7,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 7,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {}
+        },
+        {
+          "module": "CastleSiteConnector",
+          "category": "architecture-wrapper",
+          "unique": 16,
+          "placedUnique": 16,
+          "placements": 16,
+          "variants": [
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "connectorIndex": 0,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "connectorIndex": 1,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "connectorIndex": 2,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "connectorIndex": 3,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 0,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 1,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 2,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 3,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 4,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 0,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 1,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 2,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 3,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 4,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 5,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 6,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "architecture-wrapper": 16
+          },
+          "placementsByCategory": {
+            "architecture-wrapper": 16
+          },
+          "parameterValues": {
+            "connectorIndex": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ],
+            "detail": [
+              1
+            ],
+            "floorMaterial": [
+              42
+            ],
+            "mortarMaterial": [
+              45
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "siteSeed": [
+              9411,
+              17029,
+              28303
+            ],
+            "siteVariant": [
+              0,
+              1,
+              2
+            ],
+            "stoneMaterial": [
+              41
+            ],
+            "tileMaterial": [
+              53
+            ],
+            "timberMaterial": [
+              46
+            ]
+          },
+          "uniqueIgnoringSeed": 16,
+          "uniqueIgnoringMaterials": 16,
+          "uniqueIgnoringSeedAndMaterials": 16,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 16,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "connectorIndex": 10
+          }
+        },
+        {
+          "module": "CastleSiteConnectorAssembly",
+          "category": "architecture-wrapper",
+          "unique": 16,
+          "placedUnique": 16,
+          "placements": 16,
+          "variants": [
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "connectorIndex": 0,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "connectorIndex": 1,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "connectorIndex": 2,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "connectorIndex": 3,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 0,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 1,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 2,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 3,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "connectorIndex": 4,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 0,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 1,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 2,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 3,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 4,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 5,
+                "seed": 1,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "connectorIndex": 6,
+                "seed": 0,
+                "detail": 1,
+                "stoneMaterial": 41,
+                "mortarMaterial": 45,
+                "floorMaterial": 42,
+                "tileMaterial": 53,
+                "timberMaterial": 46
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "architecture-wrapper": 16
+          },
+          "placementsByCategory": {
+            "architecture-wrapper": 16
+          },
+          "parameterValues": {
+            "connectorIndex": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ],
+            "detail": [
+              1
+            ],
+            "floorMaterial": [
+              42
+            ],
+            "mortarMaterial": [
+              45
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "siteSeed": [
+              9411,
+              17029,
+              28303
+            ],
+            "siteVariant": [
+              0,
+              1,
+              2
+            ],
+            "stoneMaterial": [
+              41
+            ],
+            "tileMaterial": [
+              53
+            ],
+            "timberMaterial": [
+              46
+            ]
+          },
+          "uniqueIgnoringSeed": 16,
+          "uniqueIgnoringMaterials": 16,
+          "uniqueIgnoringSeedAndMaterials": 16,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 16,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "connectorIndex": 10
+          }
+        },
+        {
+          "module": "CastleWingMasonry",
+          "category": "architecture-wrapper",
+          "unique": 15,
+          "placedUnique": 15,
+          "placements": 15,
+          "variants": [
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 0,
+                "wingIndex": 3,
+                "siteSeed": 9411,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 4,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 0,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 1,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 2,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 3,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 3,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 1,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 0,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 4,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 5,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 2,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "architecture-wrapper": 15
+          },
+          "placementsByCategory": {
+            "architecture-wrapper": 15
+          },
+          "parameterValues": {
+            "agedGold": [
+              50
+            ],
+            "clearGlass": [
+              51
+            ],
+            "coloredGlass": [
+              52
+            ],
+            "detail": [
+              1
+            ],
+            "foundation": [
+              44
+            ],
+            "gold": [
+              49
+            ],
+            "iron": [
+              48
+            ],
+            "mortar": [
+              45
+            ],
+            "oak": [
+              46
+            ],
+            "oakEnd": [
+              47
+            ],
+            "plaster": [
+              55
+            ],
+            "seed": [
+              9411
+            ],
+            "siteSeed": [
+              9411,
+              17029,
+              28303
+            ],
+            "siteVariant": [
+              0,
+              1,
+              2
+            ],
+            "slate": [
+              53
+            ],
+            "stone0": [
+              40
+            ],
+            "stone1": [
+              41
+            ],
+            "stone2": [
+              42
+            ],
+            "stone3": [
+              43
+            ],
+            "terracotta": [
+              54
+            ],
+            "variant": [
+              0
+            ],
+            "wingIndex": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "uniqueIgnoringSeed": 15,
+          "uniqueIgnoringMaterials": 15,
+          "uniqueIgnoringSeedAndMaterials": 15,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 15,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "wingIndex": 12
+          }
+        },
+        {
+          "module": "CastleWingStructureAssembly",
+          "category": "architecture-wrapper",
+          "unique": 15,
+          "placedUnique": 15,
+          "placements": 15,
+          "variants": [
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 0,
+                "wingIndex": 2,
+                "siteSeed": 9411,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 0,
+                "wingIndex": 1,
+                "siteSeed": 9411,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 0,
+                "wingIndex": 0,
+                "siteSeed": 9411,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 0,
+                "wingIndex": 3,
+                "siteSeed": 9411,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 4,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 0,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 1,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 2,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 1,
+                "wingIndex": 3,
+                "siteSeed": 17029,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 3,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 1,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 0,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 4,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 5,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "variant": 0,
+                "seed": 9411,
+                "stone0": 40,
+                "stone1": 41,
+                "stone2": 42,
+                "stone3": 43,
+                "foundation": 44,
+                "mortar": 45,
+                "oak": 46,
+                "oakEnd": 47,
+                "iron": 48,
+                "gold": 49,
+                "agedGold": 50,
+                "clearGlass": 51,
+                "coloredGlass": 52,
+                "slate": 53,
+                "terracotta": 54,
+                "plaster": 55,
+                "siteVariant": 2,
+                "wingIndex": 2,
+                "siteSeed": 28303,
+                "detail": 1
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "architecture-wrapper": 15
+          },
+          "placementsByCategory": {
+            "architecture-wrapper": 15
+          },
+          "parameterValues": {
+            "agedGold": [
+              50
+            ],
+            "clearGlass": [
+              51
+            ],
+            "coloredGlass": [
+              52
+            ],
+            "detail": [
+              1
+            ],
+            "foundation": [
+              44
+            ],
+            "gold": [
+              49
+            ],
+            "iron": [
+              48
+            ],
+            "mortar": [
+              45
+            ],
+            "oak": [
+              46
+            ],
+            "oakEnd": [
+              47
+            ],
+            "plaster": [
+              55
+            ],
+            "seed": [
+              9411
+            ],
+            "siteSeed": [
+              9411,
+              17029,
+              28303
+            ],
+            "siteVariant": [
+              0,
+              1,
+              2
+            ],
+            "slate": [
+              53
+            ],
+            "stone0": [
+              40
+            ],
+            "stone1": [
+              41
+            ],
+            "stone2": [
+              42
+            ],
+            "stone3": [
+              43
+            ],
+            "terracotta": [
+              54
+            ],
+            "variant": [
+              0
+            ],
+            "wingIndex": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "uniqueIgnoringSeed": 15,
+          "uniqueIgnoringMaterials": 15,
+          "uniqueIgnoringSeedAndMaterials": 15,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 15,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "wingIndex": 12
+          }
+        },
+        {
+          "module": "CastleBeam",
+          "category": "timber-stock",
+          "unique": 12,
+          "placedUnique": 12,
+          "placements": 3420,
+          "variants": [
+            {
+              "params": {
+                "seed": 0,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 0,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 367
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 1,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 790
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 0,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 324
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 1,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 745
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 1,
+                "strap": 1,
+                "detail": 1
+              },
+              "placements": 39
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 1,
+                "strap": 1,
+                "detail": 1
+              },
+              "placements": 43
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 2,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 454
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 2,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 488
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 2,
+                "strap": 1,
+                "detail": 1
+              },
+              "placements": 54
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 2,
+                "strap": 1,
+                "detail": 1
+              },
+              "placements": 30
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 46,
+                "ironMaterial": 46,
+                "joint": 1,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 45
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 4,
+                "width": 0.24,
+                "height": 0.28,
+                "material": 46,
+                "endMaterial": 46,
+                "ironMaterial": 46,
+                "joint": 1,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 41
+            }
+          ],
+          "categories": {
+            "timber-stock": 12
+          },
+          "placementsByCategory": {
+            "timber-stock": 3420
+          },
+          "parameterValues": {
+            "detail": [
+              1
+            ],
+            "endMaterial": [
+              46,
+              47
+            ],
+            "height": [
+              0.28
+            ],
+            "ironMaterial": [
+              46,
+              48
+            ],
+            "joint": [
+              0,
+              1,
+              2
+            ],
+            "length": [
+              4
+            ],
+            "material": [
+              46
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "strap": [
+              0,
+              1
+            ],
+            "width": [
+              0.24
+            ]
+          },
+          "uniqueIgnoringSeed": 6,
+          "uniqueIgnoringMaterials": 10,
+          "uniqueIgnoringSeedAndMaterials": 5,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 5,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "joint": 6,
+            "seed": 6,
+            "strap": 4
+          }
+        },
+        {
+          "module": "CastleStone",
+          "category": "ordinary-stone",
+          "unique": 8,
+          "placedUnique": 8,
+          "placements": 58323,
+          "variants": [
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.72,
+                "height": 0.28,
+                "depth": 0.42,
+                "material": 40,
+                "detail": 1
+              },
+              "placements": 7107
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.72,
+                "height": 0.28,
+                "depth": 0.42,
+                "material": 41,
+                "detail": 1
+              },
+              "placements": 8532
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.72,
+                "height": 0.28,
+                "depth": 0.42,
+                "material": 42,
+                "detail": 1
+              },
+              "placements": 7304
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 0.72,
+                "height": 0.28,
+                "depth": 0.42,
+                "material": 43,
+                "detail": 1
+              },
+              "placements": 6221
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.72,
+                "height": 0.28,
+                "depth": 0.42,
+                "material": 40,
+                "detail": 1
+              },
+              "placements": 6168
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.72,
+                "height": 0.28,
+                "depth": 0.42,
+                "material": 41,
+                "detail": 1
+              },
+              "placements": 9680
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.72,
+                "height": 0.28,
+                "depth": 0.42,
+                "material": 42,
+                "detail": 1
+              },
+              "placements": 6545
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 0.72,
+                "height": 0.28,
+                "depth": 0.42,
+                "material": 43,
+                "detail": 1
+              },
+              "placements": 6766
+            }
+          ],
+          "categories": {
+            "ordinary-stone": 8
+          },
+          "placementsByCategory": {
+            "ordinary-stone": 58323
+          },
+          "parameterValues": {
+            "depth": [
+              0.42
+            ],
+            "detail": [
+              1
+            ],
+            "height": [
+              0.28
+            ],
+            "length": [
+              0.72
+            ],
+            "material": [
+              40,
+              41,
+              42,
+              43
+            ],
+            "seed": [
+              0,
+              1
+            ]
+          },
+          "uniqueIgnoringSeed": 4,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "material": 6,
+            "seed": 4
+          }
+        },
+        {
+          "module": "CastleWindowGlazing",
+          "category": "furnishing-or-other",
+          "unique": 8,
+          "placedUnique": 8,
+          "placements": 246,
+          "variants": [
+            {
+              "params": {
+                "arch": 0,
+                "barDepth": 0.14,
+                "barWidth": 0.07,
+                "cameMaterial": 61,
+                "coloredMaterial": 52,
+                "glassMaterial": 51,
+                "glassThickness": 0.012,
+                "height": 1.9,
+                "mullions": 1,
+                "quarry": 0.16,
+                "rubyMaterial": 63,
+                "seed": 1,
+                "stained": 0,
+                "thin": 0,
+                "thinGlassMaterial": 62,
+                "traceryMaterial": 43,
+                "transom": 1,
+                "width": 1.4
+              },
+              "placements": 71
+            },
+            {
+              "params": {
+                "arch": 0,
+                "barDepth": 0.14,
+                "barWidth": 0.07,
+                "cameMaterial": 61,
+                "coloredMaterial": 52,
+                "glassMaterial": 51,
+                "glassThickness": 0.012,
+                "height": 1.9,
+                "mullions": 1,
+                "quarry": 0.16,
+                "rubyMaterial": 63,
+                "seed": 0,
+                "stained": 0,
+                "thin": 0,
+                "thinGlassMaterial": 62,
+                "traceryMaterial": 43,
+                "transom": 1,
+                "width": 1.4
+              },
+              "placements": 93
+            },
+            {
+              "params": {
+                "arch": 0,
+                "barDepth": 0.14,
+                "barWidth": 0.07,
+                "cameMaterial": 61,
+                "coloredMaterial": 52,
+                "glassMaterial": 51,
+                "glassThickness": 0.012,
+                "height": 1.9,
+                "mullions": 1,
+                "quarry": 0.16,
+                "rubyMaterial": 63,
+                "seed": 1,
+                "stained": 1,
+                "thin": 0,
+                "thinGlassMaterial": 62,
+                "traceryMaterial": 43,
+                "transom": 1,
+                "width": 1.4
+              },
+              "placements": 6
+            },
+            {
+              "params": {
+                "arch": 0,
+                "barDepth": 0.14,
+                "barWidth": 0.07,
+                "cameMaterial": 61,
+                "coloredMaterial": 52,
+                "glassMaterial": 51,
+                "glassThickness": 0.012,
+                "height": 1.9,
+                "mullions": 1,
+                "quarry": 0.16,
+                "rubyMaterial": 63,
+                "seed": 0,
+                "stained": 1,
+                "thin": 0,
+                "thinGlassMaterial": 62,
+                "traceryMaterial": 43,
+                "transom": 1,
+                "width": 1.5
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "arch": 0,
+                "barDepth": 0.14,
+                "barWidth": 0.07,
+                "cameMaterial": 61,
+                "coloredMaterial": 52,
+                "glassMaterial": 51,
+                "glassThickness": 0.012,
+                "height": 1.9,
+                "mullions": 1,
+                "quarry": 0.16,
+                "rubyMaterial": 63,
+                "seed": 0,
+                "stained": 1,
+                "thin": 0,
+                "thinGlassMaterial": 62,
+                "traceryMaterial": 43,
+                "transom": 1,
+                "width": 1.4
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "arch": 0,
+                "barDepth": 0.14,
+                "barWidth": 0.07,
+                "cameMaterial": 61,
+                "coloredMaterial": 52,
+                "glassMaterial": 51,
+                "glassThickness": 0.012,
+                "height": 1.9,
+                "mullions": 1,
+                "quarry": 0.16,
+                "rubyMaterial": 63,
+                "seed": 1,
+                "stained": 1,
+                "thin": 0,
+                "thinGlassMaterial": 62,
+                "traceryMaterial": 43,
+                "transom": 1,
+                "width": 1.5
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "arch": 0,
+                "barDepth": 0.14,
+                "barWidth": 0.07,
+                "cameMaterial": 61,
+                "coloredMaterial": 52,
+                "glassMaterial": 51,
+                "glassThickness": 0.012,
+                "height": 1.9,
+                "mullions": 1,
+                "quarry": 0.16,
+                "rubyMaterial": 63,
+                "seed": 0,
+                "stained": 0,
+                "thin": 0,
+                "thinGlassMaterial": 62,
+                "traceryMaterial": 43,
+                "transom": 1,
+                "width": 1.5
+              },
+              "placements": 26
+            },
+            {
+              "params": {
+                "arch": 0,
+                "barDepth": 0.14,
+                "barWidth": 0.07,
+                "cameMaterial": 61,
+                "coloredMaterial": 52,
+                "glassMaterial": 51,
+                "glassThickness": 0.012,
+                "height": 1.9,
+                "mullions": 1,
+                "quarry": 0.16,
+                "rubyMaterial": 63,
+                "seed": 1,
+                "stained": 0,
+                "thin": 0,
+                "thinGlassMaterial": 62,
+                "traceryMaterial": 43,
+                "transom": 1,
+                "width": 1.5
+              },
+              "placements": 40
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 8
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 246
+          },
+          "parameterValues": {
+            "arch": [
+              0
+            ],
+            "barDepth": [
+              0.14
+            ],
+            "barWidth": [
+              0.07
+            ],
+            "cameMaterial": [
+              61
+            ],
+            "coloredMaterial": [
+              52
+            ],
+            "glassMaterial": [
+              51
+            ],
+            "glassThickness": [
+              0.012
+            ],
+            "height": [
+              1.9
+            ],
+            "mullions": [
+              1
+            ],
+            "quarry": [
+              0.16
+            ],
+            "rubyMaterial": [
+              63
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "stained": [
+              0,
+              1
+            ],
+            "thin": [
+              0
+            ],
+            "thinGlassMaterial": [
+              62
+            ],
+            "traceryMaterial": [
+              43
+            ],
+            "transom": [
+              1
+            ],
+            "width": [
+              1.4,
+              1.5
+            ]
+          },
+          "uniqueIgnoringSeed": 4,
+          "uniqueIgnoringMaterials": 8,
+          "uniqueIgnoringSeedAndMaterials": 4,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 4,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 4,
+            "stained": 4,
+            "width": 4
+          }
+        },
+        {
+          "module": "CastleChandelier",
+          "category": "furnishing-or-other",
+          "unique": 6,
+          "placedUnique": 6,
+          "placements": 26,
+          "variants": [
+            {
+              "params": {
+                "candles": 6,
+                "castsShadow": 1,
+                "chains": 4,
+                "drop": 0.75,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 2.5,
+                "lightRange": 8,
+                "radius": 0.45,
+                "seed": 0,
+                "tiers": 1,
+                "waxMaterial": 56
+              },
+              "placements": 6
+            },
+            {
+              "params": {
+                "candles": 10,
+                "castsShadow": 1,
+                "chains": 4,
+                "drop": 2.2,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 3,
+                "lightRange": 12,
+                "radius": 0.7,
+                "seed": 1,
+                "tiers": 1,
+                "waxMaterial": 56
+              },
+              "placements": 5
+            },
+            {
+              "params": {
+                "candles": 6,
+                "castsShadow": 1,
+                "chains": 4,
+                "drop": 0.75,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 2.5,
+                "lightRange": 8,
+                "radius": 0.45,
+                "seed": 1,
+                "tiers": 1,
+                "waxMaterial": 56
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "candles": 6,
+                "castsShadow": 1,
+                "chains": 4,
+                "drop": 0.75,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 3,
+                "lightRange": 12,
+                "radius": 0.45,
+                "seed": 0,
+                "tiers": 1,
+                "waxMaterial": 56
+              },
+              "placements": 5
+            },
+            {
+              "params": {
+                "candles": 6,
+                "castsShadow": 1,
+                "chains": 4,
+                "drop": 0.75,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 3,
+                "lightRange": 12,
+                "radius": 0.45,
+                "seed": 1,
+                "tiers": 1,
+                "waxMaterial": 56
+              },
+              "placements": 5
+            },
+            {
+              "params": {
+                "candles": 10,
+                "castsShadow": 1,
+                "chains": 4,
+                "drop": 2.2,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 3,
+                "lightRange": 12,
+                "radius": 0.7,
+                "seed": 0,
+                "tiers": 1,
+                "waxMaterial": 56
+              },
+              "placements": 2
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 6
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 26
+          },
+          "parameterValues": {
+            "candles": [
+              6,
+              10
+            ],
+            "castsShadow": [
+              1
+            ],
+            "chains": [
+              4
+            ],
+            "drop": [
+              0.75,
+              2.2
+            ],
+            "flameMaterial": [
+              57
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "lightIntensity": [
+              2.5,
+              3
+            ],
+            "lightRange": [
+              8,
+              12
+            ],
+            "radius": [
+              0.45,
+              0.7
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "tiers": [
+              1
+            ],
+            "waxMaterial": [
+              56
+            ]
+          },
+          "uniqueIgnoringSeed": 3,
+          "uniqueIgnoringMaterials": 6,
+          "uniqueIgnoringSeedAndMaterials": 3,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 3,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 3
+          }
+        },
+        {
+          "module": "CastleFixtureGlow",
+          "category": "furnishing-or-other",
+          "unique": 6,
+          "placedUnique": 6,
+          "placements": 142,
+          "variants": [
+            {
+              "params": {
+                "candles": 8,
+                "castsShadow": 1,
+                "clothMaterial": 18,
+                "cross": 1,
+                "depth": 0.9,
+                "detail": 1,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "height": 1,
+                "ironMaterial": 48,
+                "lightIntensity": 18,
+                "lightRange": 6.5,
+                "mortarMaterial": 9,
+                "seed": 0,
+                "stoneMaterial": 8,
+                "waxMaterial": 56,
+                "width": 2,
+                "chains": 4,
+                "drop": 1.3,
+                "radius": 0.7,
+                "tiers": 1,
+                "arms": 2,
+                "candleHeight": 0.16,
+                "glassMaterial": 51,
+                "reach": 0.3,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 0,
+                "fixture": 0
+              },
+              "placements": 74
+            },
+            {
+              "params": {
+                "candles": 6,
+                "castsShadow": 1,
+                "clothMaterial": 18,
+                "cross": 1,
+                "depth": 0.9,
+                "detail": 1,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "height": 1,
+                "ironMaterial": 48,
+                "lightIntensity": 2.5,
+                "lightRange": 8,
+                "mortarMaterial": 9,
+                "seed": 0,
+                "stoneMaterial": 8,
+                "waxMaterial": 56,
+                "width": 2,
+                "chains": 4,
+                "drop": 0.75,
+                "radius": 0.45,
+                "tiers": 1,
+                "arms": 1,
+                "candleHeight": 0.16,
+                "glassMaterial": 4,
+                "reach": 0.3,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 0,
+                "fixture": 1
+              },
+              "placements": 9
+            },
+            {
+              "params": {
+                "candles": 1,
+                "castsShadow": 1,
+                "clothMaterial": 58,
+                "cross": 1,
+                "depth": 0.6,
+                "detail": 1,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "height": 0.95,
+                "ironMaterial": 48,
+                "lightIntensity": 2.5,
+                "lightRange": 5,
+                "mortarMaterial": 45,
+                "seed": 0,
+                "stoneMaterial": 41,
+                "waxMaterial": 56,
+                "width": 1.2,
+                "chains": 4,
+                "drop": 1.3,
+                "radius": 0.7,
+                "tiers": 1,
+                "arms": 1,
+                "candleHeight": 0.16,
+                "glassMaterial": 4,
+                "reach": 0.3,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 0,
+                "fixture": 2
+              },
+              "placements": 3
+            },
+            {
+              "params": {
+                "candles": 10,
+                "castsShadow": 1,
+                "clothMaterial": 18,
+                "cross": 1,
+                "depth": 0.9,
+                "detail": 1,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "height": 1,
+                "ironMaterial": 48,
+                "lightIntensity": 3,
+                "lightRange": 12,
+                "mortarMaterial": 9,
+                "seed": 0,
+                "stoneMaterial": 8,
+                "waxMaterial": 56,
+                "width": 2,
+                "chains": 4,
+                "drop": 2.2,
+                "radius": 0.7,
+                "tiers": 1,
+                "arms": 1,
+                "candleHeight": 0.16,
+                "glassMaterial": 4,
+                "reach": 0.3,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 0,
+                "fixture": 1
+              },
+              "placements": 7
+            },
+            {
+              "params": {
+                "candles": 8,
+                "castsShadow": 1,
+                "clothMaterial": 18,
+                "cross": 1,
+                "depth": 0.9,
+                "detail": 1,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "height": 1,
+                "ironMaterial": 48,
+                "lightIntensity": 18,
+                "lightRange": 6.5,
+                "mortarMaterial": 9,
+                "seed": 0,
+                "stoneMaterial": 8,
+                "waxMaterial": 56,
+                "width": 2,
+                "chains": 4,
+                "drop": 1.3,
+                "radius": 0.7,
+                "tiers": 1,
+                "arms": 2,
+                "candleHeight": 0.16,
+                "glassMaterial": 51,
+                "reach": 0.3,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 1,
+                "fixture": 0
+              },
+              "placements": 39
+            },
+            {
+              "params": {
+                "candles": 6,
+                "castsShadow": 1,
+                "clothMaterial": 18,
+                "cross": 1,
+                "depth": 0.9,
+                "detail": 1,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "height": 1,
+                "ironMaterial": 48,
+                "lightIntensity": 3,
+                "lightRange": 12,
+                "mortarMaterial": 9,
+                "seed": 0,
+                "stoneMaterial": 8,
+                "waxMaterial": 56,
+                "width": 2,
+                "chains": 4,
+                "drop": 0.75,
+                "radius": 0.45,
+                "tiers": 1,
+                "arms": 1,
+                "candleHeight": 0.16,
+                "glassMaterial": 4,
+                "reach": 0.3,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 0,
+                "fixture": 1
+              },
+              "placements": 10
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 6
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 142
+          },
+          "parameterValues": {
+            "arms": [
+              1,
+              2
+            ],
+            "candleHeight": [
+              0.16
+            ],
+            "candles": [
+              1,
+              6,
+              8,
+              10
+            ],
+            "castsShadow": [
+              1
+            ],
+            "chains": [
+              4
+            ],
+            "clothMaterial": [
+              18,
+              58
+            ],
+            "cross": [
+              1
+            ],
+            "depth": [
+              0.6,
+              0.9
+            ],
+            "detail": [
+              1
+            ],
+            "drop": [
+              0.75,
+              1.3,
+              2.2
+            ],
+            "fixture": [
+              0,
+              1,
+              2
+            ],
+            "flameMaterial": [
+              57
+            ],
+            "glassMaterial": [
+              4,
+              51
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "height": [
+              0.95,
+              1
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "lightIntensity": [
+              2.5,
+              3,
+              18
+            ],
+            "lightRange": [
+              5,
+              6.5,
+              8,
+              12
+            ],
+            "mortarMaterial": [
+              9,
+              45
+            ],
+            "radius": [
+              0.45,
+              0.7
+            ],
+            "reach": [
+              0.3
+            ],
+            "seed": [
+              0
+            ],
+            "spot": [
+              0
+            ],
+            "spotInner": [
+              22
+            ],
+            "spotOuter": [
+              50
+            ],
+            "spotPitch": [
+              35
+            ],
+            "stoneMaterial": [
+              8,
+              41
+            ],
+            "style": [
+              0,
+              1
+            ],
+            "tiers": [
+              1
+            ],
+            "waxMaterial": [
+              56
+            ],
+            "width": [
+              1.2,
+              2
+            ]
+          },
+          "uniqueIgnoringSeed": 6,
+          "uniqueIgnoringMaterials": 6,
+          "uniqueIgnoringSeedAndMaterials": 6,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 6,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "style": 1
+          }
+        },
+        {
+          "module": "CastleChair",
+          "category": "furnishing-or-other",
+          "unique": 4,
+          "placedUnique": 4,
+          "placements": 24,
+          "variants": [
+            {
+              "params": {
+                "backHeight": 1.12,
+                "cushionMaterial": 60,
+                "depth": 0.54,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "material": 46,
+                "seatHeight": 0.46,
+                "seed": 1,
+                "throne": 0,
+                "width": 0.6
+              },
+              "placements": 4
+            },
+            {
+              "params": {
+                "backHeight": 1.12,
+                "cushionMaterial": 60,
+                "depth": 0.54,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "material": 46,
+                "seatHeight": 0.46,
+                "seed": 0,
+                "throne": 0,
+                "width": 0.6
+              },
+              "placements": 6
+            },
+            {
+              "params": {
+                "backHeight": 1.12,
+                "cushionMaterial": 60,
+                "depth": 0.54,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 0,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "material": 46,
+                "seatHeight": 0.46,
+                "seed": 1,
+                "throne": 0,
+                "width": 0.6
+              },
+              "placements": 6
+            },
+            {
+              "params": {
+                "backHeight": 1.12,
+                "cushionMaterial": 60,
+                "depth": 0.54,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 0,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "material": 46,
+                "seatHeight": 0.46,
+                "seed": 0,
+                "throne": 0,
+                "width": 0.6
+              },
+              "placements": 8
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 4
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 24
+          },
+          "parameterValues": {
+            "backHeight": [
+              1.12
+            ],
+            "cushionMaterial": [
+              60
+            ],
+            "depth": [
+              0.54
+            ],
+            "detail": [
+              1
+            ],
+            "endMaterial": [
+              47
+            ],
+            "gold": [
+              0,
+              1
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "material": [
+              46
+            ],
+            "seatHeight": [
+              0.46
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "throne": [
+              0
+            ],
+            "width": [
+              0.6
+            ]
+          },
+          "uniqueIgnoringSeed": 2,
+          "uniqueIgnoringMaterials": 4,
+          "uniqueIgnoringSeedAndMaterials": 2,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 2,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "gold": 2,
+            "seed": 2
+          }
+        },
+        {
+          "module": "CastlePavingSlab",
+          "category": "paving-slab",
+          "unique": 4,
+          "placedUnique": 4,
+          "placements": 4,
+          "variants": [
+            {
+              "params": {
+                "height": 0.215,
+                "material": 45,
+                "pointCount": 6,
+                "x0": -5.5,
+                "z0": -5.25,
+                "x1": 1.3000000000000007,
+                "z1": -5.75,
+                "x2": 5.5,
+                "z2": -3.25,
+                "x3": 2.5,
+                "z3": 4.75,
+                "x4": -2,
+                "z4": 5.75,
+                "x5": -5.5,
+                "z5": 0.75,
+                "x6": 0,
+                "z6": 0,
+                "x7": 0,
+                "z7": 0,
+                "x8": 0,
+                "z8": 0,
+                "x9": 0,
+                "z9": 0,
+                "x10": 0,
+                "z10": 0,
+                "x11": 0,
+                "z11": 0,
+                "x12": 0,
+                "z12": 0,
+                "x13": 0,
+                "z13": 0,
+                "x14": 0,
+                "z14": 0,
+                "x15": 0,
+                "z15": 0
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "height": 0.215,
+                "material": 45,
+                "pointCount": 6,
+                "x0": -13.5,
+                "z0": -1.5,
+                "x1": -8.5,
+                "z1": -5.5,
+                "x2": 1.5,
+                "z2": -5.5,
+                "x3": 13.5,
+                "z3": -1.5,
+                "x4": 13.5,
+                "z4": 5.5,
+                "x5": -11.5,
+                "z5": 2.5,
+                "x6": 0,
+                "z6": 0,
+                "x7": 0,
+                "z7": 0,
+                "x8": 0,
+                "z8": 0,
+                "x9": 0,
+                "z9": 0,
+                "x10": 0,
+                "z10": 0,
+                "x11": 0,
+                "z11": 0,
+                "x12": 0,
+                "z12": 0,
+                "x13": 0,
+                "z13": 0,
+                "x14": 0,
+                "z14": 0,
+                "x15": 0,
+                "z15": 0
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "height": 0.215,
+                "material": 45,
+                "pointCount": 4,
+                "x0": -3,
+                "z0": 5,
+                "x1": -1,
+                "z1": -1,
+                "x2": 3,
+                "z2": -5,
+                "x3": 3,
+                "z3": 5,
+                "x4": 0,
+                "z4": 0,
+                "x5": 0,
+                "z5": 0,
+                "x6": 0,
+                "z6": 0,
+                "x7": 0,
+                "z7": 0,
+                "x8": 0,
+                "z8": 0,
+                "x9": 0,
+                "z9": 0,
+                "x10": 0,
+                "z10": 0,
+                "x11": 0,
+                "z11": 0,
+                "x12": 0,
+                "z12": 0,
+                "x13": 0,
+                "z13": 0,
+                "x14": 0,
+                "z14": 0,
+                "x15": 0,
+                "z15": 0
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "height": 0.215,
+                "material": 45,
+                "pointCount": 6,
+                "x0": -4,
+                "z0": 5.293248947577499,
+                "x1": -3.6,
+                "z1": -0.7067510524225007,
+                "x2": 2.542111807598,
+                "z2": -5.293248947577499,
+                "x3": 3.240923229375,
+                "z3": -2.6852492165975015,
+                "x4": 4,
+                "z4": 1.2932489475774993,
+                "x5": 1,
+                "z5": 4.293248947577499,
+                "x6": 0,
+                "z6": 0,
+                "x7": 0,
+                "z7": 0,
+                "x8": 0,
+                "z8": 0,
+                "x9": 0,
+                "z9": 0,
+                "x10": 0,
+                "z10": 0,
+                "x11": 0,
+                "z11": 0,
+                "x12": 0,
+                "z12": 0,
+                "x13": 0,
+                "z13": 0,
+                "x14": 0,
+                "z14": 0,
+                "x15": 0,
+                "z15": 0
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "paving-slab": 4
+          },
+          "placementsByCategory": {
+            "paving-slab": 4
+          },
+          "parameterValues": {
+            "height": [
+              0.215
+            ],
+            "material": [
+              45
+            ],
+            "pointCount": [
+              4,
+              6
+            ],
+            "x0": [
+              -13.5,
+              -5.5,
+              -4,
+              -3
+            ],
+            "x1": [
+              -8.5,
+              -3.6,
+              -1,
+              1.3000000000000007
+            ],
+            "x10": [
+              0
+            ],
+            "x11": [
+              0
+            ],
+            "x12": [
+              0
+            ],
+            "x13": [
+              0
+            ],
+            "x14": [
+              0
+            ],
+            "x15": [
+              0
+            ],
+            "x2": [
+              1.5,
+              2.542111807598,
+              3,
+              5.5
+            ],
+            "x3": [
+              2.5,
+              3,
+              3.240923229375,
+              13.5
+            ],
+            "x4": [
+              -2,
+              0,
+              4,
+              13.5
+            ],
+            "x5": [
+              -11.5,
+              -5.5,
+              0,
+              1
+            ],
+            "x6": [
+              0
+            ],
+            "x7": [
+              0
+            ],
+            "x8": [
+              0
+            ],
+            "x9": [
+              0
+            ],
+            "z0": [
+              -5.25,
+              -1.5,
+              5,
+              5.293248947577499
+            ],
+            "z1": [
+              -5.75,
+              -5.5,
+              -1,
+              -0.7067510524225007
+            ],
+            "z10": [
+              0
+            ],
+            "z11": [
+              0
+            ],
+            "z12": [
+              0
+            ],
+            "z13": [
+              0
+            ],
+            "z14": [
+              0
+            ],
+            "z15": [
+              0
+            ],
+            "z2": [
+              -5.5,
+              -5.293248947577499,
+              -5,
+              -3.25
+            ],
+            "z3": [
+              -2.6852492165975015,
+              -1.5,
+              4.75,
+              5
+            ],
+            "z4": [
+              0,
+              1.2932489475774993,
+              5.5,
+              5.75
+            ],
+            "z5": [
+              0,
+              0.75,
+              2.5,
+              4.293248947577499
+            ],
+            "z6": [
+              0
+            ],
+            "z7": [
+              0
+            ],
+            "z8": [
+              0
+            ],
+            "z9": [
+              0
+            ]
+          },
+          "uniqueIgnoringSeed": 4,
+          "uniqueIgnoringMaterials": 4,
+          "uniqueIgnoringSeedAndMaterials": 4,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 4,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {}
+        },
+        {
+          "module": "CastlePlank",
+          "category": "timber-stock",
+          "unique": 4,
+          "placedUnique": 4,
+          "placements": 2886,
+          "variants": [
+            {
+              "params": {
+                "seed": 1,
+                "length": 2,
+                "width": 0.28,
+                "thickness": 0.12,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 0,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 1389
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 2,
+                "width": 0.28,
+                "thickness": 0.12,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 0,
+                "strap": 0,
+                "detail": 1
+              },
+              "placements": 1422
+            },
+            {
+              "params": {
+                "seed": 1,
+                "length": 2,
+                "width": 0.28,
+                "thickness": 0.12,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 0,
+                "strap": 1,
+                "detail": 1
+              },
+              "placements": 38
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 2,
+                "width": 0.28,
+                "thickness": 0.12,
+                "material": 46,
+                "endMaterial": 47,
+                "ironMaterial": 48,
+                "joint": 0,
+                "strap": 1,
+                "detail": 1
+              },
+              "placements": 37
+            }
+          ],
+          "categories": {
+            "timber-stock": 4
+          },
+          "placementsByCategory": {
+            "timber-stock": 2886
+          },
+          "parameterValues": {
+            "detail": [
+              1
+            ],
+            "endMaterial": [
+              47
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "joint": [
+              0
+            ],
+            "length": [
+              2
+            ],
+            "material": [
+              46
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "strap": [
+              0,
+              1
+            ],
+            "thickness": [
+              0.12
+            ],
+            "width": [
+              0.28
+            ]
+          },
+          "uniqueIgnoringSeed": 2,
+          "uniqueIgnoringMaterials": 4,
+          "uniqueIgnoringSeedAndMaterials": 2,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 2,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 2,
+            "strap": 2
+          }
+        },
+        {
+          "module": "CastleSconce",
+          "category": "furnishing-or-other",
+          "unique": 4,
+          "placedUnique": 4,
+          "placements": 113,
+          "variants": [
+            {
+              "params": {
+                "arms": 2,
+                "candleHeight": 0.16,
+                "castsShadow": 1,
+                "flameMaterial": 57,
+                "glassMaterial": 51,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 18,
+                "lightRange": 6.5,
+                "reach": 0.3,
+                "seed": 0,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 0,
+                "waxMaterial": 56
+              },
+              "placements": 37
+            },
+            {
+              "params": {
+                "arms": 2,
+                "candleHeight": 0.16,
+                "castsShadow": 1,
+                "flameMaterial": 57,
+                "glassMaterial": 51,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 18,
+                "lightRange": 6.5,
+                "reach": 0.3,
+                "seed": 1,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 0,
+                "waxMaterial": 56
+              },
+              "placements": 37
+            },
+            {
+              "params": {
+                "arms": 2,
+                "candleHeight": 0.16,
+                "castsShadow": 1,
+                "flameMaterial": 57,
+                "glassMaterial": 51,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 18,
+                "lightRange": 6.5,
+                "reach": 0.3,
+                "seed": 1,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 1,
+                "waxMaterial": 56
+              },
+              "placements": 19
+            },
+            {
+              "params": {
+                "arms": 2,
+                "candleHeight": 0.16,
+                "castsShadow": 1,
+                "flameMaterial": 57,
+                "glassMaterial": 51,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "lightIntensity": 18,
+                "lightRange": 6.5,
+                "reach": 0.3,
+                "seed": 0,
+                "spot": 0,
+                "spotInner": 22,
+                "spotOuter": 50,
+                "spotPitch": 35,
+                "style": 1,
+                "waxMaterial": 56
+              },
+              "placements": 20
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 4
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 113
+          },
+          "parameterValues": {
+            "arms": [
+              2
+            ],
+            "candleHeight": [
+              0.16
+            ],
+            "castsShadow": [
+              1
+            ],
+            "flameMaterial": [
+              57
+            ],
+            "glassMaterial": [
+              51
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "lightIntensity": [
+              18
+            ],
+            "lightRange": [
+              6.5
+            ],
+            "reach": [
+              0.3
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "spot": [
+              0
+            ],
+            "spotInner": [
+              22
+            ],
+            "spotOuter": [
+              50
+            ],
+            "spotPitch": [
+              35
+            ],
+            "style": [
+              0,
+              1
+            ],
+            "waxMaterial": [
+              56
+            ]
+          },
+          "uniqueIgnoringSeed": 2,
+          "uniqueIgnoringMaterials": 4,
+          "uniqueIgnoringSeedAndMaterials": 2,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 2,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 2,
+            "style": 2
+          }
+        },
+        {
+          "module": "CastleSitePaving",
+          "category": "architecture-wrapper",
+          "unique": 4,
+          "placedUnique": 4,
+          "placements": 4,
+          "variants": [
+            {
+              "params": {
+                "siteVariant": 0,
+                "siteSeed": 9411,
+                "courtyardIndex": 0,
+                "stoneMaterial": 42,
+                "mortarMaterial": 45,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 1,
+                "siteSeed": 17029,
+                "courtyardIndex": 0,
+                "stoneMaterial": 42,
+                "mortarMaterial": 45,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "courtyardIndex": 0,
+                "stoneMaterial": 42,
+                "mortarMaterial": 45,
+                "detail": 1
+              },
+              "placements": 1
+            },
+            {
+              "params": {
+                "siteVariant": 2,
+                "siteSeed": 28303,
+                "courtyardIndex": 1,
+                "stoneMaterial": 42,
+                "mortarMaterial": 45,
+                "detail": 1
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "architecture-wrapper": 4
+          },
+          "placementsByCategory": {
+            "architecture-wrapper": 4
+          },
+          "parameterValues": {
+            "courtyardIndex": [
+              0,
+              1
+            ],
+            "detail": [
+              1
+            ],
+            "mortarMaterial": [
+              45
+            ],
+            "siteSeed": [
+              9411,
+              17029,
+              28303
+            ],
+            "siteVariant": [
+              0,
+              1,
+              2
+            ],
+            "stoneMaterial": [
+              42
+            ]
+          },
+          "uniqueIgnoringSeed": 4,
+          "uniqueIgnoringMaterials": 4,
+          "uniqueIgnoringSeedAndMaterials": 4,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 4,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "courtyardIndex": 1
+          }
+        },
+        {
+          "module": "CastleTable",
+          "category": "furnishing-or-other",
+          "unique": 4,
+          "placedUnique": 4,
+          "placements": 25,
+          "variants": [
+            {
+              "params": {
+                "boards": 3,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "height": 0.78,
+                "ironMaterial": 48,
+                "length": 2.4,
+                "material": 46,
+                "seed": 1,
+                "topThickness": 0.1,
+                "width": 0.85
+              },
+              "placements": 8
+            },
+            {
+              "params": {
+                "boards": 3,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "height": 0.78,
+                "ironMaterial": 48,
+                "length": 2.4,
+                "material": 46,
+                "seed": 0,
+                "topThickness": 0.1,
+                "width": 0.85
+              },
+              "placements": 10
+            },
+            {
+              "params": {
+                "boards": 3,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "height": 0.75,
+                "ironMaterial": 48,
+                "length": 1.4,
+                "material": 46,
+                "seed": 1,
+                "topThickness": 0.1,
+                "width": 0.65
+              },
+              "placements": 5
+            },
+            {
+              "params": {
+                "boards": 3,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "height": 0.75,
+                "ironMaterial": 48,
+                "length": 1.4,
+                "material": 46,
+                "seed": 0,
+                "topThickness": 0.1,
+                "width": 0.65
+              },
+              "placements": 2
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 4
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 25
+          },
+          "parameterValues": {
+            "boards": [
+              3
+            ],
+            "detail": [
+              1
+            ],
+            "endMaterial": [
+              47
+            ],
+            "gold": [
+              1
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "height": [
+              0.75,
+              0.78
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "length": [
+              1.4,
+              2.4
+            ],
+            "material": [
+              46
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "topThickness": [
+              0.1
+            ],
+            "width": [
+              0.65,
+              0.85
+            ]
+          },
+          "uniqueIgnoringSeed": 2,
+          "uniqueIgnoringMaterials": 4,
+          "uniqueIgnoringSeedAndMaterials": 2,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 2,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 2
+          }
+        },
+        {
+          "module": "CastleAltar",
+          "category": "furnishing-or-other",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 3,
+          "variants": [
+            {
+              "params": {
+                "candles": 1,
+                "castsShadow": 1,
+                "clothMaterial": 58,
+                "cross": 1,
+                "depth": 0.6,
+                "detail": 1,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "height": 0.95,
+                "ironMaterial": 48,
+                "lightIntensity": 2.5,
+                "lightRange": 5,
+                "mortarMaterial": 45,
+                "seed": 0,
+                "stoneMaterial": 41,
+                "waxMaterial": 56,
+                "width": 1.2
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "candles": 1,
+                "castsShadow": 1,
+                "clothMaterial": 58,
+                "cross": 1,
+                "depth": 0.6,
+                "detail": 1,
+                "flameMaterial": 57,
+                "goldMaterial": 49,
+                "height": 0.95,
+                "ironMaterial": 48,
+                "lightIntensity": 2.5,
+                "lightRange": 5,
+                "mortarMaterial": 45,
+                "seed": 1,
+                "stoneMaterial": 41,
+                "waxMaterial": 56,
+                "width": 1.2
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 2
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 3
+          },
+          "parameterValues": {
+            "candles": [
+              1
+            ],
+            "castsShadow": [
+              1
+            ],
+            "clothMaterial": [
+              58
+            ],
+            "cross": [
+              1
+            ],
+            "depth": [
+              0.6
+            ],
+            "detail": [
+              1
+            ],
+            "flameMaterial": [
+              57
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "height": [
+              0.95
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "lightIntensity": [
+              2.5
+            ],
+            "lightRange": [
+              5
+            ],
+            "mortarMaterial": [
+              45
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "stoneMaterial": [
+              41
+            ],
+            "waxMaterial": [
+              56
+            ],
+            "width": [
+              1.2
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 1
+          }
+        },
+        {
+          "module": "CastleBarrel",
+          "category": "furnishing-or-other",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 27,
+          "variants": [
+            {
+              "params": {
+                "detail": 1,
+                "diameter": 0.62,
+                "endMaterial": 47,
+                "goldMaterial": 49,
+                "height": 0.9,
+                "hoops": 4,
+                "ironMaterial": 48,
+                "material": 46,
+                "seed": 0,
+                "staves": 16
+              },
+              "placements": 13
+            },
+            {
+              "params": {
+                "detail": 1,
+                "diameter": 0.62,
+                "endMaterial": 47,
+                "goldMaterial": 49,
+                "height": 0.9,
+                "hoops": 4,
+                "ironMaterial": 48,
+                "material": 46,
+                "seed": 1,
+                "staves": 16
+              },
+              "placements": 14
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 2
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 27
+          },
+          "parameterValues": {
+            "detail": [
+              1
+            ],
+            "diameter": [
+              0.62
+            ],
+            "endMaterial": [
+              47
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "height": [
+              0.9
+            ],
+            "hoops": [
+              4
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "material": [
+              46
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "staves": [
+              16
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 1
+          }
+        },
+        {
+          "module": "CastleBed",
+          "category": "furnishing-or-other",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 7,
+          "variants": [
+            {
+              "params": {
+                "canopy": 1,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "length": 2.15,
+                "linenMaterial": 58,
+                "material": 46,
+                "postHeight": 2.05,
+                "railHeight": 0.46,
+                "seed": 0,
+                "width": 1.25,
+                "woolMaterial": 59
+              },
+              "placements": 5
+            },
+            {
+              "params": {
+                "canopy": 1,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "ironMaterial": 48,
+                "length": 2.15,
+                "linenMaterial": 58,
+                "material": 46,
+                "postHeight": 2.05,
+                "railHeight": 0.46,
+                "seed": 1,
+                "width": 1.25,
+                "woolMaterial": 59
+              },
+              "placements": 2
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 2
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 7
+          },
+          "parameterValues": {
+            "canopy": [
+              1
+            ],
+            "detail": [
+              1
+            ],
+            "endMaterial": [
+              47
+            ],
+            "gold": [
+              1
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "length": [
+              2.15
+            ],
+            "linenMaterial": [
+              58
+            ],
+            "material": [
+              46
+            ],
+            "postHeight": [
+              2.05
+            ],
+            "railHeight": [
+              0.46
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "width": [
+              1.25
+            ],
+            "woolMaterial": [
+              59
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 1
+          }
+        },
+        {
+          "module": "CastleBench",
+          "category": "furnishing-or-other",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 39,
+          "variants": [
+            {
+              "params": {
+                "detail": 1,
+                "endMaterial": 47,
+                "goldMaterial": 49,
+                "height": 0.46,
+                "ironMaterial": 48,
+                "length": 1.6,
+                "material": 46,
+                "seed": 1,
+                "width": 0.34
+              },
+              "placements": 18
+            },
+            {
+              "params": {
+                "detail": 1,
+                "endMaterial": 47,
+                "goldMaterial": 49,
+                "height": 0.46,
+                "ironMaterial": 48,
+                "length": 1.6,
+                "material": 46,
+                "seed": 0,
+                "width": 0.34
+              },
+              "placements": 21
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 2
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 39
+          },
+          "parameterValues": {
+            "detail": [
+              1
+            ],
+            "endMaterial": [
+              47
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "height": [
+              0.46
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "length": [
+              1.6
+            ],
+            "material": [
+              46
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "width": [
+              0.34
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 1
+          }
+        },
+        {
+          "module": "CastleChest",
+          "category": "furnishing-or-other",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 43,
+          "variants": [
+            {
+              "params": {
+                "depth": 0.5,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "height": 0.62,
+                "ironMaterial": 48,
+                "length": 1.05,
+                "material": 46,
+                "seed": 1
+              },
+              "placements": 23
+            },
+            {
+              "params": {
+                "depth": 0.5,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "height": 0.62,
+                "ironMaterial": 48,
+                "length": 1.05,
+                "material": 46,
+                "seed": 0
+              },
+              "placements": 20
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 2
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 43
+          },
+          "parameterValues": {
+            "depth": [
+              0.5
+            ],
+            "detail": [
+              1
+            ],
+            "endMaterial": [
+              47
+            ],
+            "gold": [
+              1
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "height": [
+              0.62
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "length": [
+              1.05
+            ],
+            "material": [
+              46
+            ],
+            "seed": [
+              0,
+              1
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 1
+          }
+        },
+        {
+          "module": "CastleClippedFlag",
+          "category": "boundary-cut-paving",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 521,
+          "variants": [
+            {
+              "params": {
+                "seed": 1,
+                "length": 1,
+                "depth": 1,
+                "height": 0.18,
+                "material": 42,
+                "detail": 1,
+                "planeCount": 3,
+                "nx0": 0,
+                "nz0": -1,
+                "c0": 0.5,
+                "nx1": 0.7071067811865475,
+                "nz1": 0.7071067811865475,
+                "c1": 0,
+                "nx2": -1,
+                "nz2": 0,
+                "c2": 0.5,
+                "nx3": 0,
+                "nz3": 0,
+                "c3": 0,
+                "nx4": 0,
+                "nz4": 0,
+                "c4": 0,
+                "nx5": 0,
+                "nz5": 0,
+                "c5": 0,
+                "nx6": 0,
+                "nz6": 0,
+                "c6": 0,
+                "nx7": 0,
+                "nz7": 0,
+                "c7": 0
+              },
+              "placements": 254
+            },
+            {
+              "params": {
+                "seed": 0,
+                "length": 1,
+                "depth": 1,
+                "height": 0.18,
+                "material": 42,
+                "detail": 1,
+                "planeCount": 3,
+                "nx0": 0,
+                "nz0": -1,
+                "c0": 0.5,
+                "nx1": 0.7071067811865475,
+                "nz1": 0.7071067811865475,
+                "c1": 0,
+                "nx2": -1,
+                "nz2": 0,
+                "c2": 0.5,
+                "nx3": 0,
+                "nz3": 0,
+                "c3": 0,
+                "nx4": 0,
+                "nz4": 0,
+                "c4": 0,
+                "nx5": 0,
+                "nz5": 0,
+                "c5": 0,
+                "nx6": 0,
+                "nz6": 0,
+                "c6": 0,
+                "nx7": 0,
+                "nz7": 0,
+                "c7": 0
+              },
+              "placements": 267
+            }
+          ],
+          "categories": {
+            "boundary-cut-paving": 2
+          },
+          "placementsByCategory": {
+            "boundary-cut-paving": 521
+          },
+          "parameterValues": {
+            "c0": [
+              0.5
+            ],
+            "c1": [
+              0
+            ],
+            "c2": [
+              0.5
+            ],
+            "c3": [
+              0
+            ],
+            "c4": [
+              0
+            ],
+            "c5": [
+              0
+            ],
+            "c6": [
+              0
+            ],
+            "c7": [
+              0
+            ],
+            "depth": [
+              1
+            ],
+            "detail": [
+              1
+            ],
+            "height": [
+              0.18
+            ],
+            "length": [
+              1
+            ],
+            "material": [
+              42
+            ],
+            "nx0": [
+              0
+            ],
+            "nx1": [
+              0.7071067811865475
+            ],
+            "nx2": [
+              -1
+            ],
+            "nx3": [
+              0
+            ],
+            "nx4": [
+              0
+            ],
+            "nx5": [
+              0
+            ],
+            "nx6": [
+              0
+            ],
+            "nx7": [
+              0
+            ],
+            "nz0": [
+              -1
+            ],
+            "nz1": [
+              0.7071067811865475
+            ],
+            "nz2": [
+              0
+            ],
+            "nz3": [
+              0
+            ],
+            "nz4": [
+              0
+            ],
+            "nz5": [
+              0
+            ],
+            "nz6": [
+              0
+            ],
+            "nz7": [
+              0
+            ],
+            "planeCount": [
+              3
+            ],
+            "seed": [
+              0,
+              1
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 1
+          }
+        },
+        {
+          "module": "CastleCupboard",
+          "category": "furnishing-or-other",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 35,
+          "variants": [
+            {
+              "params": {
+                "depth": 0.5,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "height": 1.8,
+                "ironMaterial": 48,
+                "material": 46,
+                "seed": 0,
+                "width": 1.15
+              },
+              "placements": 14
+            },
+            {
+              "params": {
+                "depth": 0.5,
+                "detail": 1,
+                "endMaterial": 47,
+                "gold": 1,
+                "goldMaterial": 49,
+                "height": 1.8,
+                "ironMaterial": 48,
+                "material": 46,
+                "seed": 1,
+                "width": 1.15
+              },
+              "placements": 21
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 2
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 35
+          },
+          "parameterValues": {
+            "depth": [
+              0.5
+            ],
+            "detail": [
+              1
+            ],
+            "endMaterial": [
+              47
+            ],
+            "gold": [
+              1
+            ],
+            "goldMaterial": [
+              49
+            ],
+            "height": [
+              1.8
+            ],
+            "ironMaterial": [
+              48
+            ],
+            "material": [
+              46
+            ],
+            "seed": [
+              0,
+              1
+            ],
+            "width": [
+              1.15
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 1
+          }
+        },
+        {
+          "module": "CastleEntranceApron",
+          "category": "architecture-wrapper",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 3,
+          "variants": [
+            {
+              "params": {
+                "x": 4,
+                "z": -2.5,
+                "width": 4,
+                "depth": 2.5,
+                "material": 41
+              },
+              "placements": 2
+            },
+            {
+              "params": {
+                "x": 0,
+                "z": -2.5,
+                "width": 4,
+                "depth": 2.5,
+                "material": 41
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "architecture-wrapper": 2
+          },
+          "placementsByCategory": {
+            "architecture-wrapper": 3
+          },
+          "parameterValues": {
+            "depth": [
+              2.5
+            ],
+            "material": [
+              41
+            ],
+            "width": [
+              4
+            ],
+            "x": [
+              0,
+              4
+            ],
+            "z": [
+              -2.5
+            ]
+          },
+          "uniqueIgnoringSeed": 2,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 2,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 2,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "x": 1
+          }
+        },
+        {
+          "module": "CastleTriangularStone",
+          "category": "furnishing-or-other",
+          "unique": 2,
+          "placedUnique": 2,
+          "placements": 816,
+          "variants": [
+            {
+              "params": {
+                "seed": 0,
+                "material": 41,
+                "detail": 1
+              },
+              "placements": 432
+            },
+            {
+              "params": {
+                "seed": 1,
+                "material": 41,
+                "detail": 1
+              },
+              "placements": 384
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 2
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 816
+          },
+          "parameterValues": {
+            "detail": [
+              1
+            ],
+            "material": [
+              41
+            ],
+            "seed": [
+              0,
+              1
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 2,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {
+            "seed": 1
+          }
+        },
+        {
+          "module": "CastleMortarCore",
+          "category": "furnishing-or-other",
+          "unique": 1,
+          "placedUnique": 1,
+          "placements": 2752,
+          "variants": [
+            {
+              "params": {
+                "material": 45
+              },
+              "placements": 2752
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 1
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 2752
+          },
+          "parameterValues": {
+            "material": [
+              45
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 1,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {}
+        },
+        {
+          "module": "CastlePlinth",
+          "category": "furnishing-or-other",
+          "unique": 1,
+          "placedUnique": 1,
+          "placements": 1,
+          "variants": [
+            {
+              "params": {
+                "x": -0.5,
+                "z": -0.5,
+                "width": 1,
+                "depth": 1,
+                "material": 44
+              },
+              "placements": 1
+            }
+          ],
+          "categories": {
+            "furnishing-or-other": 1
+          },
+          "placementsByCategory": {
+            "furnishing-or-other": 1
+          },
+          "parameterValues": {
+            "depth": [
+              1
+            ],
+            "material": [
+              44
+            ],
+            "width": [
+              1
+            ],
+            "x": [
+              -0.5
+            ],
+            "z": [
+              -0.5
+            ]
+          },
+          "uniqueIgnoringSeed": 1,
+          "uniqueIgnoringMaterials": 1,
+          "uniqueIgnoringSeedAndMaterials": 1,
+          "uniqueIgnoringSeedAndMaterialsRoundedMicrometre": 1,
+          "declaredButUnplaced": 0,
+          "parametersSplittingKeys": {}
+        }
+      ],
+      "materials": [
+        {
+          "id": 40,
+          "name": "CastleWingStudyLimestone0"
+        },
+        {
+          "id": 41,
+          "name": "CastleWingStudyLimestone1"
+        },
+        {
+          "id": 42,
+          "name": "CastleWingStudyLimestone2"
+        },
+        {
+          "id": 43,
+          "name": "CastleWingStudyLimestone3"
+        },
+        {
+          "id": 44,
+          "name": "CastleWingStudyFoundationStone"
+        },
+        {
+          "id": 45,
+          "name": "CastleWingStudyLimeMortar"
+        },
+        {
+          "id": 46,
+          "name": "CastleWingStudyWarmOak"
+        },
+        {
+          "id": 47,
+          "name": "CastleWingStudyOakEndGrain"
+        },
+        {
+          "id": 48,
+          "name": "CastleWingStudyForgedIron"
+        },
+        {
+          "id": 49,
+          "name": "CastleWingStudyPolishedGold"
+        },
+        {
+          "id": 50,
+          "name": "CastleWingStudyAgedGold"
+        },
+        {
+          "id": 51,
+          "name": "CastleWingStudyClearGlass"
+        },
+        {
+          "id": 52,
+          "name": "CastleWingStudyColoredGlass"
+        },
+        {
+          "id": 53,
+          "name": "CastleWingStudyRoofSlate"
+        },
+        {
+          "id": 54,
+          "name": "CastleWingStudyTerracotta"
+        },
+        {
+          "id": 55,
+          "name": "CastleWingStudyWarmPlaster"
+        },
+        {
+          "id": 56,
+          "name": "CastleWingStudyCandleWax"
+        },
+        {
+          "id": 57,
+          "name": "CastleWingStudyCandleFlame"
+        },
+        {
+          "id": 58,
+          "name": "CastleWingStudyLinen"
+        },
+        {
+          "id": 59,
+          "name": "CastleWingStudyMadderWool"
+        },
+        {
+          "id": 60,
+          "name": "CastleWingStudyVelvet"
+        },
+        {
+          "id": 61,
+          "name": "CastleWingStudyLeadCame"
+        },
+        {
+          "id": 62,
+          "name": "CastleWingStudyThinGlass"
+        },
+        {
+          "id": 63,
+          "name": "CastleWingStudyRubyGlass"
+        }
+      ],
+      "sourceHashes": {
+        "MatterEngine3/src/part_base.js.h": "b78f329808c252bc2cd7880ce814fe550baa0c63f7c72d396331d0f8c5726d39",
+        "projects/world_demo/scenes/CastleSiteGallery/CastleSiteGallery.js": "269c1d6a149614bc69e836598aa62712ef620fc19fa431b3fdd883f00a2380bc",
+        "projects/world_demo/shared-lib/castle_site_world.js": "68d0b77c67fa9b6bc80641fd776007ab836769450d1a4f1eb64fb00b83132a87",
+        "projects/world_demo/shared-lib/castle_site.js": "45c475351e4b2c390c839c06beace694ddcecec46ab20aba73ac72bdc575b50f",
+        "projects/world_demo/shared-lib/castle_frames.js": "6aabcfb6c57e4b8232ea542990dbe00fe9c7d18032d302472e3499f2b6829a4e",
+        "projects/world_demo/shared-lib/castle_site_catalog.js": "0dce4c90d223bc3765f84c17bcf942b0072f9bdeb0222c35db3218f2bcdcfb10",
+        "projects/world_demo/shared-lib/castle_world.js": "7d71422834e334e553f129acc0955a3129510ff57b92f951e746e9333a60955b",
+        "projects/world_demo/shared-lib/castle_furnishings.js": "e8c018ee9d73738fb794f5e5b7ef2f603728c8fea58f7bfbe71f979d6a824428",
+        "projects/world_demo/shared-lib/castle_furnishing_layout.js": "5694cf51b51e0f0bf244662d020a762f1465c66077a08aba4116c9106ea5be5e",
+        "projects/world_demo/shared-lib/castle_collision.js": "f41f50a412b91c8cbbb3b8245ec217dba681e4c26eff4631ba9708d76677310f",
+        "projects/world_demo/shared-lib/castle_structure_collision.js": "fa39e3db54719d6ca583ecdae2361ff731794bd1e6ce33dada42627f2b7bbad1",
+        "projects/world_demo/shared-lib/castle_connector_kit.js": "a01b2017b5f913603b78ef38f83d8be2075c2a51efe3e34c8476c005f7f76de9",
+        "projects/world_demo/shared-lib/castle_paving.js": "d897eee57822ba142869c5124d89ead6d349a8ded64cabcba76554ac071d3711",
+        "projects/world_demo/shared-lib/castle_plan.js": "7a35c6787fc5d0da25bb8a7fc2b286430e8462efbf720e19461bdcbf67d6ce78",
+        "projects/world_demo/shared-lib/castle_wing_interiors.js": "2ea0bd02207fa1e528a7cd4a69098e941ec6d95adb32adb93510f12faf018f2e",
+        "projects/world_demo/shared-lib/castle_site_programs.js": "f8aa5ba11af402a8ebcc5db8f8931cf79fb26fc982d7cde3e405c10d5cf1fd48",
+        "projects/world_demo/shared-lib/castle_variants.js": "d8429a7ea1c8edacc3ad77b1b64455857e86db981c5254d9703d5c773bb92449",
+        "projects/world_demo/shared-lib/castle_structure.js": "49aea5ce4f10cd818a5eb6fe9905ba2e299602e0b9b1c011fe1ecfcfab033e8a",
+        "projects/world_demo/shared-lib/castle_primitives.js": "3baa45c17cd0a6cebd5b77e3133974d830da3633a520d42de68e1b3ef4f2c6be",
+        "projects/world_demo/shared-lib/castle_stock.js": "e6f1b1f5bbc97ea29042bcdadaf1a6f7ea2aa4311149806274c304a6dfa63372",
+        "projects/world_demo/shared-lib/castle_materials.js": "be9e53fb2f965ad0d6f54093aaad3bc85b5c02e045fccff24ec15477d90ad560",
+        "projects/world_demo/shared-lib/castle_wing_programs.js": "ef5f6a9974d758b6cbc6255fd5ccc47193fc5146a626880a4bbad4fd1ece80b3",
+        "projects/world_demo/objects/CastleWingMasonry.js": "aafe3507c85ef3c9803d1c48b4f601a7b36bffab7c7068549e4ffd4712743420",
+        "projects/world_demo/shared-lib/castle_masonry.js": "dc2d2bcfbbcb857e90d51de6c5c00760b07711898048f3fe4d3894b1821a1a99",
+        "projects/world_demo/objects/CastleBeam.js": "fbb6e03f247f4f2315a4cf1c171418db2aff4c16fdefbbf28409d4ea3dd0d079",
+        "projects/world_demo/objects/CastleCutStone.js": "5fd35ef242a62ea47eb2e3392cbd47a61e0ca01e50df1740b655f958cb672d8a",
+        "projects/world_demo/objects/CastleMortarCore.js": "6ae9154738448d8ec207687d615b43a2acccff36ec337ea2235c60ab2e521841",
+        "projects/world_demo/objects/CastleStone.js": "fb3becc1dbc78e8e33a80428f158d1f34761dcb41cd8d8bed2d208e929450273",
+        "projects/world_demo/objects/CastleWingStructureAssembly.js": "59399f073289631e54cb9573f6c633183760dbcec5d2f999246c9dc176a83cca",
+        "projects/world_demo/shared-lib/castle_structure_catalog.js": "907a010b5d7eeed69e988d126e4c08afdc42489c5c51ae789349a2ebdcb266b8",
+        "projects/world_demo/objects/CastleWingStructure.js": "a2dd9fe47d16659dd95db41a2c36e3967dfd6cdd08cd0b4679dbe2a5e9b8f9bd",
+        "projects/world_demo/objects/CastlePlank.js": "3d64fb40fe222a009cff9b7ef87d7af3c391486e1772d1734ca44d3f85eb625b",
+        "projects/world_demo/objects/CastleSconce.js": "8007f8064bef2c8e3cd486f0c016b5f1b2739e40773420e8bfd7d2960975fc1f",
+        "projects/world_demo/objects/CastleFixtureGlow.js": "0c395c947bfc5142ba0e02381225b63912e7c9558ea43478def3117af6151fee",
+        "projects/world_demo/objects/CastleChandelier.js": "3e083e0c3a17582f708292416fe1d64d552c4ed4a164c02e4ebf9343d22b57b3",
+        "projects/world_demo/objects/CastleAltar.js": "a3517a402ae73d659c5b893dbc9dbc69ed319cd391ee63a8e04449eb9b546c23",
+        "projects/world_demo/objects/CastleBench.js": "3a0cc22ae0b684eb4a3be13d021c6b10b6c5fddd24775e019e8170aafb7b3bf7",
+        "projects/world_demo/objects/CastleChest.js": "e8e8f7025adab45090173d4874f2001293cc231e4e1e90065f5e190964696fe2",
+        "projects/world_demo/objects/CastleWindowGlazing.js": "8570b8212559124bf17c5606777162842e0d0185fbd15cdb2deff4406661e4b8",
+        "projects/world_demo/objects/CastleTable.js": "b31bd0a9632362f9f84d158c9338831ada2ad56a542babea7c8bb253c3647fb4",
+        "projects/world_demo/objects/CastleChair.js": "95218fd664cf7c436407b7586a7d41ab5051c2ae38c602cdd6c0895213b0999a",
+        "projects/world_demo/objects/CastleCupboard.js": "4a0b348d62575615880fe830ae8ae29c50ba375de62bb83d0a169d32d23553ba",
+        "projects/world_demo/objects/CastleBed.js": "b8160ab8eb8eff5b27a895a1b977bb8fa2a42ea6da3d57ff0083a591649d73e4",
+        "projects/world_demo/objects/CastleBarrel.js": "650c448b7d81c8f4bb9f89755a4ae819ee778815e9a5fe249f249377a747ce62",
+        "projects/world_demo/objects/CastleSiteConnector.js": "666003670cf9c28805f841af6454cdad5119708e0cc4172c300b73cca2116cfa",
+        "projects/world_demo/objects/CastleSiteConnectorAssembly.js": "c3c5901bb23e5e103b45a4e659f02eb460e0704f36651c125d91fd99f54d93c6",
+        "projects/world_demo/objects/CastleTriangularStone.js": "704256cda39db7625ee95563d95aec39cbb1bdab9d347350e8c5a3e4cb2239ed",
+        "projects/world_demo/objects/CastleSitePaving.js": "8ac8ed8c82da7aa4a0bc9bf96587e2de6299f26bf1fe2aa1307728e363140163",
+        "projects/world_demo/objects/CastlePavingSlab.js": "276c2a38fc87b4dc5a28c95543c66936957b0c2ec4683fa215ce6220121a6822",
+        "projects/world_demo/objects/CastleClippedFlag.js": "f1eae1ce88c4b3c09165759a01ec09cff33f59632f6957a2c418b50d11fb3452",
+        "projects/world_demo/objects/CastleEntranceApron.js": "b1eed26519f06390ef76e1acf3e6933a2be13eb1ac6b0e2d7b5301c452530fa0",
+        "projects/world_demo/objects/CastlePlinth.js": "c8ffe6ab90a3728cc19af5864ebb740839c2e70d843c06af9d0ab6ed520752ee"
+      },
+      "changedDuringCensus": []
+    }
+  ]
+}

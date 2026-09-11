@@ -1,0 +1,75 @@
+{
+  "schema": "matter.castle-stock-budget/v1",
+  "scene": "CastleSiteGallery",
+  "generatedAt": "2026-09-11T16:54:29.222Z",
+  "baseline": "/mnt/d/tmp/castle-bake-census-stock-progress.json",
+  "baselineGeneratedAt": "2026-09-11T15:16:36.586Z",
+  "census": "/mnt/d/tmp/castle-bake-census-final-stock.json",
+  "rows": [
+    {
+      "module": "CastleStone",
+      "limit": 10,
+      "beforeUnique": 8,
+      "afterUnique": 8,
+      "afterPlacedUnique": 8,
+      "placements": 58323,
+      "passed": true
+    },
+    {
+      "module": "CastleBeam",
+      "limit": 12,
+      "beforeUnique": 24,
+      "afterUnique": 12,
+      "afterPlacedUnique": 12,
+      "placements": 3420,
+      "passed": true
+    },
+    {
+      "module": "CastlePlank",
+      "limit": 4,
+      "beforeUnique": 4,
+      "afterUnique": 4,
+      "afterPlacedUnique": 4,
+      "placements": 2886,
+      "passed": true
+    },
+    {
+      "module": "CastleClippedFlag",
+      "limit": 2,
+      "beforeUnique": 2,
+      "afterUnique": 2,
+      "afterPlacedUnique": 2,
+      "placements": 521,
+      "passed": true
+    },
+    {
+      "module": "CastleTriangularStone",
+      "limit": 2,
+      "beforeUnique": 0,
+      "afterUnique": 2,
+      "afterPlacedUnique": 2,
+      "placements": 816,
+      "passed": true
+    },
+    {
+      "module": "CastleConnectorCutStone",
+      "limit": 0,
+      "beforeUnique": 0,
+      "afterUnique": 0,
+      "afterPlacedUnique": 0,
+      "placements": 0,
+      "passed": true
+    },
+    {
+      "module": "CastleWindowGlazing",
+      "limit": 8,
+      "beforeUnique": 8,
+      "afterUnique": 8,
+      "afterPlacedUnique": 8,
+      "placements": 246,
+      "passed": true
+    }
+  ],
+  "retainedProfileCuts": 18,
+  "note": "Counts include merged default parameters and every actual recursive requires/build recipe. Real arch/corner profiles are exempt from ordinary stock limits. No aggregate recipe cap is imposed."
+}
