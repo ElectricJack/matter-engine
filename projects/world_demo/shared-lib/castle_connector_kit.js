@@ -269,6 +269,8 @@ function normalizedRecord(input) {
   };
   const clearHeight = positive(input.clearHeight, 'clearHeight');
   if (clearHeight < 2.1) fail('clearHeight', 'must preserve at least 2.1m headroom');
+  const height = positive(input.height ?? clearHeight, 'height');
+  if (height + EPS < clearHeight) fail('height', 'must not be below clearHeight');
   const roof = {
     kind: requiredString(input.roof?.kind, 'roof.kind'),
     rise: positive(input.roof?.rise, 'roof.rise'),
@@ -315,7 +317,7 @@ function normalizedRecord(input) {
   const clearancePolygon = insetConvexPolygon(clearPolygon,
     CONNECTOR_MIN_CAPSULE_RADIUS + CONNECTOR_MIN_SIDE_CLEARANCE);
   return { id, level, baseY, clearPolygon, mouths, wallSpans, floor,
-    clearHeight, roof, routeWaypoints, clearancePolygon };
+    height, clearHeight, roof, routeWaypoints, clearancePolygon };
 }
 
 export function validateConnectorRecord(input) {
@@ -414,7 +416,7 @@ export function connectorSolidVolumes(input, params = {}) {
     }));
   for (const span of record.wallSpans) volumes.push({
     id: `${record.id}:wall:${span.id}`, kind: 'wall', polygon: spanFootprint(span),
-    bottomY: record.baseY, topY: record.baseY + record.clearHeight,
+    bottomY: record.baseY, topY: record.baseY + record.height,
     owner: span.cornerOwners.join('|'),
   });
   return volumes.map(volume => ({ ...volume,
@@ -760,8 +762,8 @@ function placeWallCourses(part, record, span, params) {
   const back = sectionRangeAtZ(local, span.thickness * 0.5 - 1e-7);
   const runMin = Math.min(front[0], back[0]), runMax = Math.max(front[1], back[1]);
   // Match castle_masonry's nominal 0.3m course grid at the shared base.
-  const courseCount = Math.max(1, Math.round(record.clearHeight / 0.3));
-  const courseHeight = record.clearHeight / courseCount;
+  const courseCount = Math.max(1, Math.round(record.height / 0.3));
+  const courseHeight = record.height / courseCount;
   const courseOrigin = localCoordinates(
     [span.courseOrigin[0], span.courseOrigin[2]], center, span.tangent, span.normal)[0];
   const bricks = [], cutStones = [];
@@ -843,7 +845,7 @@ function placeBeamBetween(part, a, b, params, seed) {
 
 function emitRoof(part, record, params, { mesh = true, children = true } = {}) {
   const polygon = outsetConvexPolygon(record.clearPolygon, record.roof.overhang);
-  const eaveY = record.baseY + record.clearHeight;
+  const eaveY = record.baseY + record.height;
   const centroid = polygon.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0])
     .map(value => value / polygon.length);
   const apex = [centroid[0], eaveY + record.roof.rise, centroid[1]];
@@ -927,7 +929,7 @@ export function emitConnectorMesh(part, input, params = {}) {
   for (const span of record.wallSpans) {
     const mortar = spanFootprint({ ...span, thickness: span.thickness * 0.86 });
     emitPolygonPrism(part, mortar, record.baseY + 0.012,
-      record.baseY + record.clearHeight - 0.012, p.mortarMaterial);
+      record.baseY + record.height - 0.012, p.mortarMaterial);
   }
   const roof = emitRoof(part, record, p, { mesh: true, children: false });
   return {
