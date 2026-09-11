@@ -10,9 +10,19 @@
 //   masonryOptions(p)                 canonical option object from flat scalars
 //   masonryOptionsFromMaterials(m)    same, from defineCastleMaterials() handles
 //   layoutMasonry(manifest, opts)     pure placement list for every masonry record
-//   layoutWallModule / layoutJunction / layoutOpenBoundary(record, manifest, opts)
+//   layoutWallModule / layoutJunction / layoutCurve / layoutOpenBoundary(record, manifest, opts)
 //   emitMasonry(part, manifest, opts) places every masonry record exactly once
-//   emitWallModule / emitJunction / emitOpenBoundary(part, record, manifest, opts)
+//   emitWallModule / emitJunction / emitCurve / emitOpenBoundary(part, record, manifest, opts)
+//   emitWedgeStone(part, p), wedgeParams(p)   CastleWedgeStone body/canonicalizer
+//   emitMortarCore(part, p)                   CastleMortarCore body
+//
+// Curves (quarter and ring) are laid in radial courses of CastleWedgeStone
+// plan wedges, with apertures cut on exact radial reveal planes, curved
+// lintels and sills. Straight masonry (module runs and junction volumes) has
+// priority: curve stones are fitted around it, so a tangent contact or a
+// radial throat never stamps mass twice. A radial throat is the curve
+// aperture plus the straight host aperture; a quarter-curve tangent
+// transition clips the endpoint junction volume to the wall side.
 //   masonryEmitters(part, opts)       object for castle_plan emitManifest()
 //   masonryChildVariants(manifest, opts)       exact `static requires` list for
 //                                              everything emitMasonry places
@@ -281,28 +291,36 @@ function stonePlacement(frame, options, palette, shapeName, seedKey, box, role, 
   });
   const length = box.a1 - box.a0, height = box.v1 - box.v0, depth = box.c1 - box.c0;
   const origin = frame.point((box.a0 + box.a1) / 2, box.v0, (box.c0 + box.c1) / 2);
+  const solid = boxCorners(frame, box);
   return {
     module: 'CastleStone', params, role, ownerId,
     matrix: frameMatrix(origin, frame.u, [0, 1, 0], frame.w,
       [length / shape.length, height / shape.height, depth / shape.depth]),
-    bounds: worldBounds(frame, box),
+    solid, bounds: boundsOf(solid),
   };
 }
 
 function mortarPlacement(frame, options, box, ownerId) {
   const origin = frame.point((box.a0 + box.a1) / 2, box.v0, (box.c0 + box.c1) / 2);
+  const solid = boxCorners(frame, box);
   return {
     module: 'CastleMortarCore', params: { material: options.mortar }, role: 'core', ownerId,
     matrix: frameMatrix(origin, frame.u, [0, 1, 0], frame.w,
       [box.a1 - box.a0, box.v1 - box.v0, box.c1 - box.c0]),
-    bounds: worldBounds(frame, box),
+    solid, bounds: boundsOf(solid),
   };
 }
 
-function worldBounds(frame, box) {
+// Solids are 8 vertices ordered (a/x, v/y, c/z) with c fastest: index =
+// ia*4 + iv*2 + ic. Tests use them for exact convex overlap checks.
+function boxCorners(frame, box) {
   const corners = [];
   for (const a of [box.a0, box.a1]) for (const v of [box.v0, box.v1]) for (const c of [box.c0, box.c1])
-    corners.push(frame.point(a, v, c));
+    corners.push(frame.point(a, v, c).map(round6));
+  return corners;
+}
+
+function boundsOf(corners) {
   const min = [0, 1, 2].map(i => Math.min(...corners.map(p => p[i])));
   const max = [0, 1, 2].map(i => Math.max(...corners.map(p => p[i])));
   return { min: min.map(round6), max: max.map(round6) };
@@ -485,7 +503,7 @@ export function layoutJunction(record, manifest, opts) {
   const level = levelOf(manifest, record.levelId);
   const walls = record.edgeIds.map(id => index.walls.get(id)).filter(Boolean);
   const palette = paletteFor(options, walls[0]?.section.material);
-  const volume = record.ownedVolume;
+  const volume = junctionVolume(record, manifest);
   const height = volume.maxY - volume.minY;
   const grid = courseGrid(height, options);
   const j = options.joint;
@@ -562,11 +580,576 @@ export function layoutOpenBoundary(record, manifest, opts) {
   return { recordId: record.id, placements, railHeight: height, profile: record.rail.profile };
 }
 
+// ---------------------------------------------------------------- junction clipping
+
+// A junction at a quarter-curve endpoint keeps only the half of its corner
+// volume on the straight-wall side of the endpoint's radial plane; the arc
+// owns everything beyond it, so arc and wall meet on one shared face.
+function junctionVolume(record, manifest) {
+  const volume = record.ownedVolume;
+  if (!volume) return null;
+  const clipped = { ...volume };
+  for (const transition of manifest.curveTransitions || []) {
+    if (transition.levelId !== record.levelId) continue;
+    if (transition.position[0] !== record.position[0] || transition.position[1] !== record.position[1]) continue;
+    const curve = (manifest.curves || []).find(candidate => candidate.id === transition.curveId);
+    const endpoint = curve?.endpoints.find(item => item.end === transition.curveEnd);
+    if (!endpoint) continue;
+    // Travel direction at 'start' points into the arc; at 'end' it points out.
+    const into = transition.curveEnd === 'start' ? endpoint.tangent : endpoint.tangent.map(v => -v);
+    const [px, pz] = record.position;
+    if (into[0] > 0) clipped.maxX = Math.min(clipped.maxX, px);
+    if (into[0] < 0) clipped.minX = Math.max(clipped.minX, px);
+    if (into[1] > 0) clipped.maxZ = Math.min(clipped.maxZ, pz);
+    if (into[1] < 0) clipped.minZ = Math.max(clipped.minZ, pz);
+  }
+  return clipped;
+}
+
+// Axis-aligned straight-masonry footprints per level (module runs + junction
+// volumes). Curved masonry yields to these so tangent contacts never overlap.
+function straightPrisms(manifest, levelId) {
+  const index = indexManifest(manifest);
+  if (!index.prisms) {
+    index.prisms = new Map();
+    for (const record of manifest.wallModules) {
+      const axis = record.from[1] === record.to[1] ? 'x' : 'z';
+      const ai = axis === 'x' ? 0 : 1;
+      const a0 = record.from[ai] + record.trim.start, a1 = record.to[ai] - record.trim.end;
+      const line = axis === 'x' ? record.from[1] : record.from[0];
+      const half = record.section.thickness / 2;
+      const rect = axis === 'x'
+        ? { minX: a0, maxX: a1, minZ: line - half, maxZ: line + half }
+        : { minX: line - half, maxX: line + half, minZ: a0, maxZ: a1 };
+      if (!index.prisms.has(record.levelId)) index.prisms.set(record.levelId, []);
+      if (a1 - a0 > EPS) index.prisms.get(record.levelId).push(rect);
+      // Window sills project past the faces; curves must clear them too.
+      for (const aperture of record.apertures) {
+        if (aperture.kind !== 'window' || aperture.bottom <= 1e-6) continue;
+        const s = Math.max(a0, aperture.segmentFrom[ai] + aperture.globalStart);
+        const e = Math.min(a1, aperture.segmentFrom[ai] + aperture.globalEnd);
+        if (e - s <= EPS) continue;
+        const across = half + DEFAULTS.sillProjection;
+        index.prisms.get(record.levelId).push(axis === 'x'
+          ? { minX: s, maxX: e, minZ: line - across, maxZ: line + across }
+          : { minX: line - across, maxX: line + across, minZ: s, maxZ: e });
+      }
+    }
+    for (const record of manifest.junctions) {
+      const volume = junctionVolume(record, manifest);
+      if (!volume) continue;
+      if (!index.prisms.has(record.levelId)) index.prisms.set(record.levelId, []);
+      index.prisms.get(record.levelId).push({ minX: volume.minX, maxX: volume.maxX, minZ: volume.minZ, maxZ: volume.maxZ });
+    }
+  }
+  return index.prisms.get(levelId) || [];
+}
+
+function segmentHitsRect(x0, z0, x1, z1, rect, pad) {
+  // Liang-Barsky clip of a segment against an expanded rectangle.
+  let t0 = 0, t1 = 1;
+  const dx = x1 - x0, dz = z1 - z0;
+  const checks = [
+    [-dx, x0 - (rect.minX - pad)], [dx, (rect.maxX + pad) - x0],
+    [-dz, z0 - (rect.minZ - pad)], [dz, (rect.maxZ + pad) - z0],
+  ];
+  for (const [p, q] of checks) {
+    if (Math.abs(p) < 1e-12) { if (q < 0) return false; continue; }
+    const r = q / p;
+    if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+    else { if (r < t0) return false; if (r < t1) t1 = r; }
+  }
+  return true;
+}
+
+// Plan footprint (x,z) of a vertical prism solid: its four distinct corners.
+function footprintXZ(solid) {
+  const quad = [solid[0], solid[1], solid[5], solid[4]].map(p => [p[0], p[2]]);
+  return quad;
+}
+
+function quadHitsRect(quad, rect, pad) {
+  const box = [[rect.minX - pad, rect.minZ - pad], [rect.maxX + pad, rect.minZ - pad],
+    [rect.maxX + pad, rect.maxZ + pad], [rect.minX - pad, rect.maxZ + pad]];
+  const axes = [[1, 0], [0, 1]];
+  for (let i = 0; i < 4; ++i) {
+    const a = quad[i], b = quad[(i + 1) % 4];
+    axes.push([b[1] - a[1], a[0] - b[0]]);
+  }
+  for (const axis of axes) {
+    const len = Math.hypot(axis[0], axis[1]);
+    if (len < 1e-12) continue;
+    const pq = quad.map(p => (p[0] * axis[0] + p[1] * axis[1]) / len);
+    const pb = box.map(p => (p[0] * axis[0] + p[1] * axis[1]) / len);
+    if (Math.max(...pq) <= Math.min(...pb) + 1e-9 || Math.max(...pb) <= Math.min(...pq) + 1e-9) return false;
+  }
+  return true;
+}
+
+// Fit a curve wedge spanning [a, b] degrees so its exact footprint clears all
+// straight prisms: shrink from whichever end keeps more length, or drop it.
+function fitArcPlacement(a, b, make, prisms, pad, minSpan) {
+  const clear = placement => !prisms.some(rect => quadHitsRect(footprintXZ(placement.solid), rect, pad));
+  const first = make(a, b);
+  if (clear(first)) return first;
+  const search = (fixed, moving, towards) => {
+    let good = null, lo = 0, hi = 1;
+    for (let i = 0; i < 24; ++i) {
+      const t = (lo + hi) / 2;
+      const end = moving + (towards - moving) * t;
+      const span = Math.abs(end - fixed);
+      if (span < minSpan) { hi = t; continue; }
+      const candidate = fixed < end ? make(fixed, end) : make(end, fixed);
+      if (clear(candidate)) { good = { candidate, span }; hi = t; } else lo = t;
+    }
+    return good;
+  };
+  const keepA = search(a, b, a), keepB = search(b, a, b);
+  const best = [keepA, keepB].filter(Boolean).sort((p, q) => q.span - p.span)[0];
+  return best ? best.candidate : null;
+}
+
+// ---------------------------------------------------------------- wedge stones
+
+export const MASONRY_WEDGE_SHAPES = Object.freeze({
+  wythe: Object.freeze({ length: 0.7, height: 0.3, depth: 0.3 }),
+  through: Object.freeze({ length: 0.7, height: 0.3, depth: 0.6 }),
+  lintel: Object.freeze({ length: 1.2, height: 0.34, depth: 0.6 }),
+});
+export const MASONRY_WEDGE_SEEDS = 6;
+
+function clampNumber(value, fallback, low, high) {
+  const v = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  return Math.min(high, Math.max(low, v));
+}
+
+// Canonical CastleWedgeStone params. taper = short/long face ratio, quantized
+// DOWN to 0.01 so the placed stone is never wider than its exact wedge.
+// axis 0: long face at +Z, short at -Z (plan wedge for curved courses).
+// axis 1: long face at y=height, short at the y=0 bed (arch voussoir).
+export function wedgeParams(p = {}) {
+  const seed = Math.floor(clampNumber(p.seed, 0, -1e9, 1e9)) % MASONRY_WEDGE_SEEDS;
+  return {
+    seed: seed < 0 ? seed + MASONRY_WEDGE_SEEDS : seed,
+    length: clampNumber(p.length, 0.7, 0.18, 4),
+    height: clampNumber(p.height, 0.3, 0.12, 2),
+    depth: clampNumber(p.depth, 0.3, 0.12, 2),
+    taper: Math.floor(clampNumber(p.taper, 1, 0.4, 1) * 100 + 1e-6) / 100,
+    axis: clampNumber(p.axis, 0, 0, 1) >= 0.5 ? 1 : 0,
+    material: Math.max(0, Math.floor(clampNumber(p.material, 8, 0, 1e9))),
+    detail: clampNumber(p.detail, 1, 0.5, 3),
+  };
+}
+
+function wedgeLocalCorners(p) {
+  const hl = p.length / 2, hs = p.length * p.taper / 2, hd = p.depth / 2;
+  const corners = [];
+  for (const sx of [-1, 1]) for (const y of [0, p.height]) for (const sz of [-1, 1]) {
+    const longSide = p.axis === 0 ? sz > 0 : y > 0;
+    corners.push([sx * (longSide ? hl : hs), y, sz * hd]);
+  }
+  return corners;
+}
+
+function wedgeGenerator(seed, salt) {
+  let state = (Math.imul(seed + 1, 0x9e3779b1) ^ salt) >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
+// CastleWedgeStone body: a dressed trapezoidal voxel stone with true planar
+// radial joint faces, softened arrises, chips, face relief and tool marks.
+export function emitWedgeStone(part, input = {}) {
+  const p = wedgeParams(input);
+  const random = wedgeGenerator(p.seed, 0x3e77a1 + p.axis);
+  const range = (lo, hi) => lo + (hi - lo) * random();
+  const hl = p.length / 2, hd = p.depth / 2, cut = 0.5 + Math.max(p.length, p.height, p.depth);
+  const minDim = Math.min(p.length * p.taper, p.height, p.depth);
+  part.beginModifier();
+  part.beginVoxels(0.08);
+  part.fill(p.material);
+  part.smoothing(Math.min(0.009, minDim * 0.05));
+  part.box([0, p.height / 2, 0], [hl, p.height / 2, hd]);
+  for (const side of [-1, 1]) {
+    // Side face through the short and long end corners; cutter lies outside.
+    let nx, ny, mid;
+    if (p.axis === 0) {
+      const dx = hl * (1 - p.taper), dz = p.depth;
+      const len = Math.hypot(dx, dz);
+      nx = dz / len; ny = -dx / len;
+      mid = [side * (hl + hl * p.taper) / 2, p.height / 2, 0];
+      part.pushMatrix();
+      part.translate(mid[0] + side * nx * cut, mid[1], mid[2] + ny * cut);
+      part.rotateY(Math.atan2(-ny, side * nx));
+      part.box([0, 0, 0], [cut, p.height, cut]);
+      part.popMatrix();
+    } else {
+      const dx = hl * (1 - p.taper), dy = p.height;
+      const len = Math.hypot(dx, dy);
+      nx = dy / len; ny = -dx / len;
+      mid = [side * (hl + hl * p.taper) / 2, p.height / 2, 0];
+      part.pushMatrix();
+      part.translate(mid[0] + side * nx * cut, mid[1] + ny * cut, 0);
+      part.rotateZ(Math.atan2(ny, side * nx));
+      part.box([0, 0, 0], [cut, cut, hd + 0.1]);
+      part.popMatrix();
+    }
+    part.difference();
+  }
+  part.endVoxels();
+
+  part.beginVoxels(Math.max(0.018, 0.03 / p.detail));
+  part.fill(p.material);
+  part.smoothing(Math.min(0.009, minDim * 0.05));
+  const halfAt = (y, z) => {
+    const t = p.axis === 0 ? (z + hd) / p.depth : y / p.height;
+    return hl * (p.taper + (1 - p.taper) * t);
+  };
+  // Shallow relief on the two exposed faces (the +/-Z faces), kept a margin
+  // inside the trapezoid so no bump re-grows material beyond a joint face.
+  for (const side of [-1, 1]) {
+    const faceHalf = halfAt(p.height / 2, side * hd);
+    for (let i = 0; i < 3 + (p.seed % 2); ++i) {
+      const y = range(p.height * 0.25, p.height * 0.75);
+      const half = Math.min(faceHalf, halfAt(y, side * hd));
+      const x = range(-half * 0.6, half * 0.6);
+      const rz = range(0.02, Math.min(0.04, p.depth * 0.12));
+      part.pushMatrix();
+      part.translate(x, y, side * (hd - rz * 0.45));
+      part.scale(range(half * 0.12, half * 0.25), range(p.height * 0.08, p.height * 0.17), rz);
+      part.sphere([0, 0, 0], 1);
+      part.popMatrix();
+      if (((i + p.seed + (side > 0 ? 1 : 0)) & 1) === 0) part.difference();
+    }
+  }
+  // Arris chips at real trapezoid corners.
+  const corners = wedgeLocalCorners(p);
+  for (let i = 0; i < 2 + (p.seed % 3); ++i) {
+    const corner = corners[(p.seed * 3 + i * 5) % corners.length];
+    part.sphere(corner, range(minDim * 0.12, minDim * 0.22));
+    part.difference();
+  }
+  // Chisel marks on one face.
+  const markSide = (p.seed & 1) ? 1 : -1;
+  const markHalf = halfAt(p.height / 2, markSide * hd);
+  const y = range(p.height * 0.3, p.height * 0.7), dy = p.height * 0.25;
+  const x = range(-markHalf * 0.5, markHalf * 0.5);
+  part.capsule([x - dy * 0.2, y - dy / 2, markSide * (hd + 0.004)],
+    [x + dy * 0.2, y + dy / 2, markSide * (hd + 0.004)], 0.017);
+  part.difference();
+  part.endVoxels();
+  part.endModifier([{ simplify: 0.34 }]);
+  return p;
+}
+
+function wedgePlacement(origin, ax, az, shapeName, taper, axis, size, options, palette, seedKey, role, ownerId) {
+  const shape = MASONRY_WEDGE_SHAPES[shapeName];
+  const seed = hash32(seedKey) % MASONRY_WEDGE_SEEDS;
+  const params = wedgeParams({ ...shape, seed, taper, axis,
+    material: palette[seed % palette.length], detail: options.detail });
+  const scale = [size.length / shape.length, size.height / shape.height, size.depth / shape.depth];
+  const matrix = frameMatrix(origin, ax, [0, 1, 0], az, scale);
+  const solid = wedgeLocalCorners(params).map(corner => [
+    matrix[0] * corner[0] + matrix[1] * corner[1] + matrix[2] * corner[2] + matrix[3],
+    matrix[4] * corner[0] + matrix[5] * corner[1] + matrix[6] * corner[2] + matrix[7],
+    matrix[8] * corner[0] + matrix[9] * corner[1] + matrix[10] * corner[2] + matrix[11],
+  ].map(round6));
+  return { module: 'CastleWedgeStone', params, role, ownerId, matrix, solid, bounds: boundsOf(solid) };
+}
+
+// ---------------------------------------------------------------- curves
+
+const DEG = Math.PI / 180;
+
+function curveDomain(record) {
+  if (record.kind === 'ring') return { lo: 0, hi: 360, closed: true };
+  const CARD = { E: 0, N: 90, W: 180, S: 270 };
+  const start = CARD[record.endpoints.find(e => e.end === 'start').cardinal];
+  const lo = record.clockwise ? start - 90 : start;
+  return { lo, hi: lo + 90, closed: false };
+}
+
+// Aperture angular interval inside the domain (ring apertures may wrap).
+function curveApertureIntervals(record, domain, aperture) {
+  let a = aperture.startAngle, b = aperture.endAngle;
+  if (domain.closed) {
+    a = ((a % 360) + 360) % 360; b = a + (aperture.endAngle - aperture.startAngle);
+    return b <= 360 ? [[a, b]] : [[a, 360], [0, b - 360]];
+  }
+  return [[a, b]];
+}
+
+function subtractAngles(base, cuts) {
+  let free = [base];
+  for (const cut of cuts.sort((p, q) => p.a - q.a)) {
+    const next = [];
+    for (const item of free) {
+      if (cut.b <= item.a + 1e-9 || cut.a >= item.b - 1e-9) { next.push(item); continue; }
+      if (cut.a > item.a + 1e-9) next.push({ a: item.a, b: cut.a, endA: item.endA, endB: cut.type });
+      if (cut.b < item.b - 1e-9) next.push({ a: cut.b, b: item.b, endA: cut.type, endB: item.endB });
+    }
+    free = next;
+  }
+  return free;
+}
+
+// Blocked angles where the radial band [r0, r1] (with chord allowance) meets
+// straight masonry in [y0, y1). Sampled finely, then merged into intervals.
+function prismBlockedAngles(center, r0, r1, domain, prisms, pad) {
+  if (!prisms.length) return [];
+  const reach = r1 + pad;
+  const near = prisms.filter(rect => {
+    const dx = Math.max(rect.minX - center[0], 0, center[0] - rect.maxX);
+    const dz = Math.max(rect.minZ - center[1], 0, center[1] - rect.maxZ);
+    return Math.hypot(dx, dz) <= reach;
+  });
+  if (!near.length) return [];
+  const step = 0.05;
+  const blocked = [];
+  let open = null;
+  for (let angle = domain.lo; angle <= domain.hi + 1e-9; angle += step) {
+    const c = Math.cos(angle * DEG), s = Math.sin(angle * DEG);
+    const hit = near.some(rect => segmentHitsRect(center[0] + c * r0, center[1] + s * r0,
+      center[0] + c * r1, center[1] + s * r1, rect, pad));
+    if (hit && open === null) open = angle;
+    if (!hit && open !== null) { blocked.push({ a: open - step, b: angle, type: 'joint' }); open = null; }
+  }
+  if (open !== null) blocked.push({ a: open - step, b: domain.hi, type: 'joint' });
+  return blocked;
+}
+
+// Aperture-relative division: n equal stones per free interval, half-stone
+// stagger on odd courses. A closed ring with no cuts divides the full circle.
+function divideAngles(interval, radius, course, closed) {
+  const span = interval.b - interval.a;
+  const arc = span * DEG * radius;
+  const n = Math.max(1, Math.round(arc / 0.67));
+  const step = span / n;
+  const cutsAt = [];
+  if (closed) {
+    const offset = (course & 1) ? step / 2 : 0;
+    for (let i = 0; i <= n; ++i) cutsAt.push(interval.a + offset + i * step);
+    return cutsAt.slice(0, -1).map((a, i) => ({ a, b: cutsAt[i + 1], endA: 'joint', endB: 'joint', first: i === 0, last: i === n - 1 }));
+  }
+  if ((course & 1) && n >= 2) {
+    cutsAt.push(interval.a, interval.a + step / 2);
+    for (let i = 1; i < n; ++i) cutsAt.push(interval.a + step / 2 + i * step);
+    cutsAt.push(interval.b);
+  } else for (let i = 0; i <= n; ++i) cutsAt.push(interval.a + i * step);
+  const unique = cutsAt.filter((value, i) => i === 0 || value - cutsAt[i - 1] > 1e-9);
+  return unique.slice(0, -1).map((a, i) => ({
+    a, b: unique[i + 1],
+    endA: i === 0 ? interval.endA : 'joint',
+    endB: i === unique.length - 2 ? interval.endB : 'joint',
+    first: i === 0, last: i === unique.length - 2,
+  }));
+}
+
+function planCurveAperture(aperture, grid, height) {
+  const window = aperture.kind === 'window';
+  const top = aperture.bottom + aperture.height;
+  const sillBottom = window ? lineAtOrBelow(grid, Math.max(0, aperture.bottom - 0.1)) : 0;
+  let headBottom = top >= height - 1e-6 ? height : lineAtOrAbove(grid, top);
+  if (headBottom > height - 0.1) headBottom = height;
+  let headTop = headBottom;
+  if (headBottom < height) headTop = Math.min(height, lineAtOrAbove(grid, headBottom + Math.max(0.24, grid.step * 0.8)));
+  return {
+    id: aperture.id, kind: aperture.kind, bottom: aperture.bottom, top,
+    voidBottom: window ? aperture.bottom : 0, sillBottom, headBottom, headTop,
+    hasSill: window && aperture.bottom > 1e-6, hasHead: headBottom < height - 1e-6,
+    radialThroatId: aperture.radialThroatId ?? null,
+  };
+}
+
+// Wedge between angles [a, b] (degrees) and radii [r0, r1] as a placement.
+function arcWedge(center, baseY, a, b, r0, r1, v0, v1, shapeName, options, palette, key, role, ownerId, outward = 0) {
+  const half = (b - a) / 2 * DEG, mid = (a + b) / 2 * DEG;
+  const cosH = Math.cos(half);
+  const long = 2 * r1 * Math.sin(half);
+  const depth = (r1 - r0) * cosH;
+  const radial = [Math.cos(mid), 0, Math.sin(mid)];
+  const tangent = [Math.sin(mid), 0, -Math.cos(mid)];
+  const c = (r0 + r1) / 2 * cosH + outward / 2;
+  const origin = [center[0] + radial[0] * c, baseY + v0, center[1] + radial[2] * c];
+  return wedgePlacement(origin, tangent, radial, shapeName, r0 / r1, 0,
+    { length: long, height: v1 - v0, depth: depth + outward }, options, palette, key, role, ownerId);
+}
+
+export function layoutCurve(record, manifest, opts) {
+  const options = resolveOptions(opts);
+  const level = levelOf(manifest, record.levelId);
+  const domain = curveDomain(record);
+  const t = record.section.thickness, h = record.section.height, R = record.radius;
+  const j = options.joint;
+  const grid = courseGrid(h, options);
+  const palette = paletteFor(options, record.section.material);
+  const prisms = straightPrisms(manifest, record.levelId);
+  const center = record.center;
+  const bands = {
+    inner: [R - t / 2, R - j / 2], outer: [R + j / 2, R + t / 2], through: [R - t / 2, R + t / 2],
+  };
+  const maxStep = 0.9 / (R - t / 2);
+  const chordPad = (R + t / 2) * (1 - Math.cos(maxStep / 2)) + j;
+  const blockedBy = {};
+  for (const [name, [r0, r1]] of Object.entries(bands))
+    blockedBy[name] = prismBlockedAngles(center, r0 * Math.cos(maxStep / 2) - j, r1, domain, prisms, j / 2);
+  const apertures = record.apertures.map(aperture => ({
+    ...planCurveAperture(aperture, grid, h), intervals: curveApertureIntervals(record, domain, aperture),
+  }));
+  const jInset = r => (j / 2) / r / DEG;
+  const placements = [];
+  const base = { a: domain.lo, b: domain.hi, endA: 'joint', endB: 'joint' };
+
+  for (let course = 0; course < grid.count; ++course) {
+    const y0 = grid.lines[course], y1 = grid.lines[course + 1];
+    const cuts = [];
+    for (const ap of apertures) {
+      const low = ap.hasSill ? ap.sillBottom : ap.voidBottom;
+      const voidHit = y1 > low + EPS && y0 < ap.headBottom - EPS;
+      const headHit = ap.hasHead && y1 > ap.headBottom + EPS && y0 < ap.headTop - EPS;
+      for (const [a, b] of ap.intervals) {
+        if (voidHit) cuts.push({ a, b, type: 'face' });
+        if (headHit) {
+          const bearing = DEFAULTS.lintelBearing / R / DEG;
+          cuts.push({ a: a - bearing, b: b + bearing, type: 'joint' });
+        }
+      }
+    }
+    const closedCourse = domain.closed && cuts.length === 0;
+    const header = course % 3 === 2;
+    const layWythe = (name, interval, pieces) => {
+      const [r0, r1] = bands[name];
+      for (const piece of pieces) {
+        const a = piece.a + (piece.endA === 'joint' ? jInset(r0) : 0);
+        const b = piece.b - (piece.endB === 'joint' ? jInset(r0) : 0);
+        if (b - a < 0.2) continue;
+        const key = `${record.id}:${course}:${name}:${Math.round(piece.a * 1000)}`;
+        const shape = name === 'through' ? 'through' : 'wythe';
+        const fitted = fitArcPlacement(a, b, (pa, pb) => arcWedge(center, level.baseY, pa, pb, r0, r1, y0, y1 - j,
+          shape, options, palette, key, name === 'through' ? (piece.jamb ? 'jamb' : 'through') : 'face', record.id),
+        prisms, j / 2, 0.2 / r0 / DEG);
+        if (fitted) placements.push(fitted);
+      }
+    };
+    const baseIntervals = closedCourse ? [base] : subtractAngles(base, cuts.map(cut => ({ ...cut })));
+    for (const interval of baseIntervals) {
+      // Division is shared by all wythes so radial joints align through the wall.
+      const pieces = divideAngles(interval, R, course, closedCourse).map(piece => ({
+        ...piece, jamb: (piece.first && interval.endA === 'face') || (piece.last && interval.endB === 'face'),
+      }));
+      for (const piece of pieces) {
+        const through = piece.jamb || (header && (hash32(record.id, course, Math.round(piece.a * 1000)) & 1) === 0);
+        const names = through ? ['through'] : ['inner', 'outer'];
+        for (const name of names) {
+          const free = subtractAngles({ a: piece.a, b: piece.b, endA: piece.endA, endB: piece.endB },
+            blockedBy[name].map(cut => ({ ...cut })));
+          layWythe(name, interval, free.map(item => ({ ...item, jamb: piece.jamb })));
+        }
+      }
+    }
+  }
+
+  // Sills, curved lintels and the recessed mortar core.
+  for (const ap of apertures) {
+    for (const [a, b] of ap.intervals) {
+      if (ap.hasSill) {
+        const free = subtractAngles({ a, b, endA: 'face', endB: 'face' }, blockedBy.through.map(cut => ({ ...cut })));
+        for (const item of free) {
+          const fitted = fitArcPlacement(item.a, item.b, (pa, pb) => arcWedge(center, level.baseY, pa, pb,
+            R - t / 2, R + t / 2, ap.sillBottom, ap.bottom, 'lintel', options, palette,
+            `${ap.id}:sill:${Math.round(item.a * 1000)}`, 'sill', record.id, DEFAULTS.sillProjection),
+          prisms, j / 2, 0.2 / R / DEG);
+          if (fitted) placements.push(fitted);
+        }
+      }
+      if (ap.hasHead) {
+        const bearing = DEFAULTS.lintelBearing / R / DEG;
+        const free = subtractAngles({ a: a - bearing, b: b + bearing, endA: 'joint', endB: 'joint' },
+          blockedBy.through.map(cut => ({ ...cut })));
+        for (const item of free) {
+          const n = Math.max(1, Math.ceil((item.b - item.a) * DEG * R / 1.3));
+          const step = (item.b - item.a) / n;
+          for (let i = 0; i < n; ++i) {
+            const pa = item.a + i * step + ((i > 0 || item.endA === 'joint') ? jInset(R - t / 2) : 0);
+            const pb = item.a + (i + 1) * step - ((i < n - 1 || item.endB === 'joint') ? jInset(R - t / 2) : 0);
+            if (pb - pa < 0.2) continue;
+            const fitted = fitArcPlacement(pa, pb, (qa, qb) => arcWedge(center, level.baseY, qa, qb,
+              R - t / 2, R + t / 2, ap.headBottom, ap.headTop - j, 'lintel', options, palette,
+              `${ap.id}:lintel:${i}`, 'lintel', record.id), prisms, j / 2, 0.2 / R / DEG);
+            if (fitted) placements.push(fitted);
+          }
+        }
+      }
+    }
+  }
+  const recess = DEFAULTS.mortarRecess;
+  const coreR0 = R - t / 2 + recess, coreR1 = R + t / 2 - recess;
+  const coreBlocked = prismBlockedAngles(center, coreR0, coreR1, domain, prisms, 0);
+  const segmentSpan = 4;
+  for (let a = domain.lo; a < domain.hi - 1e-9; a += segmentSpan) {
+    const b = Math.min(domain.hi, a + segmentSpan);
+    const free = subtractAngles({ a, b, endA: 'joint', endB: 'joint' }, coreBlocked.map(cut => ({ ...cut })));
+    for (const item of free) {
+      // Vertical core pieces skip each aperture's void span.
+      const spans = [[0, h - j]];
+      for (const ap of apertures)
+        for (const [pa, pb] of ap.intervals)
+          if (item.b > pa + 1e-9 && item.a < pb - 1e-9) {
+            const next = [];
+            for (const [s0, s1] of spans) {
+              if (ap.voidBottom > s0 + EPS) next.push([s0, Math.min(s1, ap.voidBottom)]);
+              if (ap.headBottom < s1 - EPS) next.push([Math.max(s0, ap.headBottom), s1]);
+            }
+            spans.length = 0; spans.push(...next);
+          }
+      for (const [s0, s1] of spans) {
+        // Chord box sized to the outer core radius, clipped to the aperture edge.
+        let ia = item.a, ib = item.b;
+        for (const ap of apertures)
+          for (const [pa, pb] of ap.intervals) {
+            if (!(s1 > ap.voidBottom + EPS && s0 < ap.headBottom - EPS)) continue;
+            if (ia < pb && ib > pa) { if (ia < pa) ib = Math.min(ib, pa); else ia = Math.max(ia, pb); }
+          }
+        if (ib - ia < 0.05 || s1 - s0 < EPS) continue;
+        const mid = (ia + ib) / 2 * DEG, half = (ib - ia) / 2 * DEG;
+        const radial = [Math.cos(mid), 0, Math.sin(mid)], tangent = [Math.sin(mid), 0, -Math.cos(mid)];
+        const c = (coreR0 * Math.cos(half) + coreR1) / 2;
+        const frame = {
+          u: tangent, w: radial,
+          point: (u, v, w) => [center[0] + radial[0] * (c + w) + tangent[0] * u, level.baseY + v,
+            center[1] + radial[2] * (c + w) + tangent[2] * u],
+        };
+        const halfLen = coreR0 * Math.sin(half);
+        placements.push(mortarPlacement(frame, options,
+          { a0: -halfLen, a1: halfLen, v0: s0, v1: s1, c0: -(coreR1 - coreR0 * Math.cos(half)) / 2,
+            c1: (coreR1 - coreR0 * Math.cos(half)) / 2 }, record.id));
+      }
+    }
+  }
+  return {
+    recordId: record.id, placements,
+    arc: { levelId: record.levelId, center: [...center], radius: R, thickness: t, baseY: level.baseY, height: h,
+      lo: domain.lo, hi: domain.hi, closed: domain.closed },
+    apertures: apertures.map(ap => ({ id: ap.id, kind: ap.kind, intervals: ap.intervals,
+      voidBottom: ap.voidBottom, voidTop: ap.headBottom, radialThroatId: ap.radialThroatId })),
+  };
+}
+
+export function emitCurve(part, record, manifest, opts) {
+  return emitPlacements(part, layoutCurve(record, manifest, opts).placements);
+}
+
 // ---------------------------------------------------------------- manifest-wide
 
+// Radial throats and curve transitions need no placements of their own: the
+// throat passage is the curve aperture plus the straight host aperture, and a
+// tangent transition is realised by junctionVolume() clipping at the endpoint.
 const LAYOUTS = Object.freeze([
   ['wallModules', 'wallModule', layoutWallModule],
   ['junctions', 'junction', layoutJunction],
+  ['curves', 'curve', layoutCurve],
   ['openBoundaries', 'openBoundary', layoutOpenBoundary],
 ]);
 
@@ -613,6 +1196,7 @@ export function masonryEmitters(part, opts) {
   return {
     wallModule: (record, manifest) => emitWallModule(part, record, manifest, options),
     junction: (record, manifest) => emitJunction(part, record, manifest, options),
+    curve: (record, manifest) => emitCurve(part, record, manifest, options),
     openBoundary: (record, manifest) => emitOpenBoundary(part, record, manifest, options),
   };
 }

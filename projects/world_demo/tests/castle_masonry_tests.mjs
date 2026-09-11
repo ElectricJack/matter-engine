@@ -51,6 +51,47 @@ function overlap(a, b, eps = 1e-6) {
   return true;
 }
 
+// Convex hexahedra from placement solids: vertex index = ia*4 + iv*2 + ic.
+const FACES = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
+const EDGES = [[0, 4], [1, 5], [2, 6], [3, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 1], [2, 3], [4, 5], [6, 7]];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+function faceNormal(solid, face) {
+  const [p0, p1, p2, p3] = face.map(i => solid[i]);
+  return cross(sub(p2, p0), sub(p3, p1));
+}
+function axisAligned(solid) {
+  return EDGES.every(([a, b]) => sub(solid[a], solid[b]).filter(v => Math.abs(v) > 1e-9).length <= 1);
+}
+function solidsOverlap(a, b, eps = 1e-5) {
+  if (!overlap(a.bounds, b.bounds, eps)) return false;
+  if (axisAligned(a.solid) && axisAligned(b.solid)) return true;
+  const axes = [...FACES.map(f => faceNormal(a.solid, f)), ...FACES.map(f => faceNormal(b.solid, f))];
+  for (const [i, k] of EDGES) for (const [m, n] of EDGES)
+    axes.push(cross(sub(a.solid[k], a.solid[i]), sub(b.solid[n], b.solid[m])));
+  for (const axis of axes) {
+    const len = Math.hypot(...axis);
+    if (len < 1e-9) continue;
+    const u = axis.map(v => v / len);
+    const pa = a.solid.map(p => dot(p, u)), pb = b.solid.map(p => dot(p, u));
+    if (Math.max(...pa) <= Math.min(...pb) + eps || Math.max(...pb) <= Math.min(...pa) + eps) return false;
+  }
+  return true;
+}
+function insideSolid(item, p, eps = 1e-6) {
+  if (p.some((v, i) => v < item.bounds.min[i] - eps || v > item.bounds.max[i] + eps)) return false;
+  const centroid = [0, 1, 2].map(i => item.solid.reduce((s, q) => s + q[i], 0) / 8);
+  for (const face of FACES) {
+    let n = faceNormal(item.solid, face);
+    const origin = item.solid[face[0]];
+    if (dot(n, sub(centroid, origin)) > 0) n = n.map(v => -v);
+    const len = Math.hypot(...n);
+    if (dot(n, sub(p, origin)) / len > eps) return false;
+  }
+  return true;
+}
+
 function spatialPairs(items, cell = 1.0) {
   const grid = new Map();
   const pairs = [];
@@ -86,13 +127,16 @@ function assertMasonry(manifest, label) {
       assert.deepEqual(placement.params, P.stoneParams(placement.params), 'canonical stone params');
     if (placement.module === 'CastleBeam')
       assert.deepEqual(placement.params, P.beamParams(placement.params), 'canonical beam params');
+    if (placement.module === 'CastleWedgeStone')
+      assert.deepEqual(placement.params, M.wedgeParams(placement.params), 'canonical wedge params');
   }
 
-  // Masonry units never overlap (junction ownership, module trims, apertures).
-  const stones = placements.filter(item => item.module === 'CastleStone');
+  // Masonry units never overlap (junction ownership, module trims, apertures,
+  // tangent curve contacts).
+  const stones = placements.filter(item => item.module === 'CastleStone' || item.module === 'CastleWedgeStone');
   let overlaps = 0;
   for (const [a, b] of spatialPairs(stones))
-    if (overlap(stones[a].bounds, stones[b].bounds)) {
+    if (solidsOverlap(stones[a], stones[b])) {
       if (overlaps < 5) console.error('overlap', stones[a].role, stones[a].ownerId, stones[b].role, stones[b].ownerId);
       ++overlaps;
     }
@@ -112,9 +156,64 @@ function assertMasonry(manifest, label) {
         ? { min: [ap.a0, y0, run.line - half], max: [ap.a1, y1, run.line + half] }
         : { min: [run.line - half, y0, ap.a0], max: [run.line + half, y1, ap.a1] };
       for (const solid of solids)
-        assert.ok(!overlap(box, solid.bounds, 1e-5), `${label}: aperture ${ap.id} is empty (hit ${solid.role})`);
+        assert.ok(!overlap(box, solid.bounds, 1e-5) || !solidsOverlap({ bounds: box, solid: [
+          [box.min[0], box.min[1], box.min[2]], [box.min[0], box.min[1], box.max[2]],
+          [box.min[0], box.max[1], box.min[2]], [box.min[0], box.max[1], box.max[2]],
+          [box.max[0], box.min[1], box.min[2]], [box.max[0], box.min[1], box.max[2]],
+          [box.max[0], box.max[1], box.min[2]], [box.max[0], box.max[1], box.max[2]]] }, solid),
+        `${label}: aperture ${ap.id} is empty (hit ${solid.role} ${solid.ownerId})`);
       assert.ok(ap.voidTop - ap.voidBottom >= 1.0, `${label}: aperture ${ap.id} has real height`);
     }
+  }
+
+  // Curve apertures: exact radial reveals leave the angular void empty.
+  const pointGrid = new Map();
+  for (const solid of solids) {
+    const key = `${Math.floor(solid.bounds.min[0])},${Math.floor(solid.bounds.min[2])}`;
+    for (let x = Math.floor(solid.bounds.min[0]); x <= Math.floor(solid.bounds.max[0]); ++x)
+      for (let z = Math.floor(solid.bounds.min[2]); z <= Math.floor(solid.bounds.max[2]); ++z) {
+        const cell = `${x},${z}`;
+        if (!pointGrid.has(cell)) pointGrid.set(cell, []);
+        pointGrid.get(cell).push(solid);
+      }
+    void key;
+  }
+  const solidAt = (p, filter = () => true) => (pointGrid.get(`${Math.floor(p[0])},${Math.floor(p[2])}`) || [])
+    .find(item => filter(item) && insideSolid(item, p));
+  let curveApertures = 0;
+  for (const layout of layouts.filter(item => item.kind === 'curve')) {
+    const arc = layout.arc;
+    for (const ap of layout.apertures) {
+      ++curveApertures;
+      for (const [a0, a1] of ap.intervals)
+        for (let angle = a0 + 0.3; angle < a1 - 0.3; angle += (a1 - a0) / 9)
+          for (let r = arc.radius - arc.thickness / 2 + 0.01; r < arc.radius + arc.thickness / 2; r += arc.thickness / 5)
+            for (let v = ap.voidBottom + 0.02; v < ap.voidTop - 0.02; v += 0.23) {
+              const p = [arc.center[0] + r * Math.cos(angle * Math.PI / 180), arc.baseY + v,
+                arc.center[1] + r * Math.sin(angle * Math.PI / 180)];
+              const hit = solidAt(p, item => item.ownerId === layout.recordId);
+              assert.ok(!hit, `${label}: curve aperture ${ap.id} is empty (hit ${hit?.role})`);
+            }
+    }
+  }
+  for (const throat of manifest.radialThroats || []) {
+    const box = throat.clearanceVolume;
+    for (let x = box.minX + 0.02; x < box.maxX; x += (box.maxX - box.minX) / 7)
+      for (let z = box.minZ + 0.02; z < box.maxZ; z += (box.maxZ - box.minZ) / 7)
+        for (let y = box.minY + 0.02; y < box.maxY; y += 0.2) {
+          const hit = solidAt([x, y, z]);
+          assert.ok(!hit, `${label}: radial throat ${throat.id} clearance is empty (hit ${hit?.role} ${hit?.ownerId})`);
+        }
+  }
+  // Tangent transitions: solid material continues across the shared endpoint.
+  for (const transition of manifest.curveTransitions || []) {
+    const baseY = levels.get(transition.levelId).baseY;
+    for (const s of [-0.15, -0.05, 0.05, 0.15])
+      for (const v of [0.4, 1.7, 3.1]) {
+        const p = [transition.position[0] + transition.tangent[0] * s, baseY + v,
+          transition.position[1] + transition.tangent[1] * s];
+        assert.ok(solidAt(p), `${label}: ${transition.id} is closed at offset ${s}, height ${v}`);
+      }
   }
 
   // Exact edge coverage: every non-open straight wall edge is covered by
@@ -177,6 +276,26 @@ function assertMasonry(manifest, label) {
   assert.ok(faceSamples > 0 && faceHits / faceSamples > 0.9,
     `${label}: both wall faces are stone (${faceHits}/${faceSamples})`);
 
+  // Curved walls: both faces are wedge stone away from apertures and from
+  // straight masonry that owns tangent contacts.
+  let curveSamples = 0, curveHits = 0;
+  for (const layout of layouts.filter(item => item.kind === 'curve')) {
+    const arc = layout.arc;
+    for (let angle = arc.lo + 0.7; angle < arc.hi - 0.7; angle += 1.9) {
+      if (layout.apertures.some(ap => ap.intervals.some(([a0, a1]) => angle > a0 - 4 && angle < a1 + 4))) continue;
+      for (let v = 0.07; v < arc.height - 0.05; v += 0.21)
+        for (const r of [arc.radius - arc.thickness / 2 + 0.03, arc.radius + arc.thickness / 2 - 0.03]) {
+          const p = [arc.center[0] + r * Math.cos(angle * Math.PI / 180), arc.baseY + v,
+            arc.center[1] + r * Math.sin(angle * Math.PI / 180)];
+          if (solidAt(p, item => item.ownerId !== layout.recordId)) continue;
+          ++curveSamples;
+          if (solidAt(p, item => item.ownerId === layout.recordId && item.role !== 'core')) ++curveHits;
+        }
+    }
+  }
+  if (curveSamples) assert.ok(curveHits / curveSamples > 0.85,
+    `${label}: curved faces are stone (${curveHits}/${curveSamples})`);
+
   // Emission reproduces the layout exactly, deterministically.
   const part = new RecordingPart();
   const count = M.emitMasonry(part, manifest, OPTIONS);
@@ -204,6 +323,38 @@ for (const role of ['face', 'through', 'jamb', 'sill', 'lintel', 'quoin', 'core'
   assert.ok(roles.has(role), `fixture emits ${role} masonry`);
 const kinds = new Set(manifest.wallModules.filter(m => m.apertures.length).map(m => m.kind));
 for (const kind of ['window', 'door', 'arch']) assert.ok(kinds.has(kind), `fixture has ${kind} openings`);
+assert.ok(manifest.curves.some(curve => curve.kind === 'quarter') && manifest.curves.some(curve => curve.kind === 'ring'),
+  'fixture has quarter and ring curves');
+assert.ok(manifest.curveTransitions.length >= 2 && manifest.radialThroats.length >= 1,
+  'fixture has arc-to-straight transitions and a radial throat');
+const wedges = fixture.placements.filter(item => item.module === 'CastleWedgeStone');
+assert.ok(wedges.length > 200, 'curved walls are laid in radial wedge courses');
+assert.ok(wedges.every(item => item.params.taper < 1), 'curve stones are true wedges, not boxes');
+for (const curve of manifest.curves) {
+  const layout = fixture.layouts.find(item => item.recordId === curve.id);
+  for (const ap of curve.apertures)
+    assert.ok(layout.apertures.some(item => item.id === ap.id), `curve aperture ${ap.id} laid out`);
+}
+// Wedge bodies are balanced voxel CSG with real taper cutters.
+{
+  const ops = [];
+  let depth = 0, voxels = 0, modifiers = 0;
+  const part = new Proxy({}, { get: (_, name) => (...args) => {
+    ops.push({ name, args });
+    if (name === 'pushMatrix') ++depth; if (name === 'popMatrix') --depth;
+    if (name === 'beginVoxels') ++voxels; if (name === 'endVoxels') --voxels;
+    if (name === 'beginModifier') ++modifiers; if (name === 'endModifier') --modifiers;
+  } });
+  const p = M.emitWedgeStone(part, { seed: 3, length: 0.7, height: 0.3, depth: 0.3, taper: 0.9, axis: 0, material: 41 });
+  assert.equal(depth, 0); assert.equal(voxels, 0); assert.equal(modifiers, 0);
+  assert.equal(p.taper, 0.9);
+  assert.ok(ops.filter(op => op.name === 'difference').length >= 4, 'wedge cutters and chips are CSG');
+  assert.ok(ops.some(op => op.name === 'rotateY'), 'plan wedge cutters are rotated half-spaces');
+  const ops1 = [];
+  M.emitWedgeStone(new Proxy({}, { get: (_, name) => (...args) => ops1.push({ name, args }) }),
+    { seed: 3, length: 0.7, height: 0.3, depth: 0.6, taper: 0.7, axis: 1, material: 41 });
+  assert.ok(ops1.some(op => op.name === 'rotateZ'), 'voussoir cutters rotate in the wall plane');
+}
 
 // Canonical transforms are row-major with translation in m[3], m[7], m[11].
 const sample = fixture.placements.find(item => item.module === 'CastleStone');
