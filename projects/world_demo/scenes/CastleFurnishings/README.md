@@ -23,6 +23,10 @@ body, a `rayTraced(false)` flame glow, and analytic lights, all from one
 placement transform. The backdrop walls (`objects/CastleFurnishingsRoom.js`)
 cut the same window openings using `glazingSpringY`/`glazingHalfWidthAt`.
 
-The Vulkan renderer only shades analytic local lights once the lighting
-tasks land. Until then the fixture shows the emissive flame proxies and the
-dusk sun/sky; the light records are still published through the provider.
+The daytime shots use a warm sun so joinery, gold and glass read clearly.
+The capture ends with a night raster pass (`night-raster-*.png`: sun and ambient
+at zero, sky at 4 %). There the deferred raster composite shades the
+analytic candle points and the lantern spot alone. Each pool of light
+centres on its flame proxy, and the lantern spot follows its rotated
+placement. Native RT does not own local direct light yet (the RT follow-up in
+`MatterEngine3/docs/local-lighting.md`), so RT shots show the proxies only.
