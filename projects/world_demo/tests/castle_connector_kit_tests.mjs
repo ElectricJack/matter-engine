@@ -294,6 +294,22 @@ foreignJamb.wallSpans[0].jambOwners[0] = 'wing:core:owns-this-jamb';
 assert.equal(validateConnectorRecord(foreignJamb).valid, false,
   'connector refuses to emit an endpoint assigned to a foreign owner');
 
+const rectangularEnds = clone(canonical);
+rectangularEnds.id = 'rectangular-end-stock';
+for (const span of rectangularEnds.wallSpans) {
+  const [a, b] = span.segment, tangent = span.tangent;
+  span.trimPlanes = [
+    { normal: tangent, offset: a[0] * tangent[0] + a[1] * tangent[1], keepSign: 1 },
+    { normal: tangent, offset: b[0] * tangent[0] + b[1] * tangent[1], keepSign: -1 },
+  ];
+}
+const rectangularChildren = emitConnectorChildren(
+  new RecordingPart(), rectangularEnds, params);
+assert.equal(rectangularChildren.cutStones.length, 0,
+  'orthogonally trimmed endpoint bricks reuse ordinary stock, not cut wrappers');
+assert.ok(rectangularChildren.wallBricks.every(brick =>
+  brick.module === 'CastleStone' && brick.cut === false));
+
 const reused = clone(canonical);
 reused.id = 'same-sockets-twice';
 const duplicateValidation = validateConnectorRecords([canonical, reused]);
