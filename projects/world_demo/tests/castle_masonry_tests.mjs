@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { compilePlan } from '../shared-lib/castle_plan.js';
 import { CASTLE_MASONRY_FIXTURE_PLAN } from '../shared-lib/castle_masonry_fixture.js';
+import { castleWingPlan } from '../shared-lib/castle_wing_programs.js';
 
 // castle_masonry.js uses the engine's bare `shared-lib/...` specifiers; rewrite
 // them to data: URLs so Node loads the exact same source the QuickJS host does.
@@ -456,6 +457,28 @@ for (const curve of manifest.curves) {
   assert.ok(additive > 0, 'cut stones carry additive face relief');
 }
 
+// Cut-stone canonicalization is idempotent. Quantized normals are never exactly
+// unit length; renormalizing one again used to step it to a neighbouring 1e-4
+// grid point, so params oscillated (c2y -0.9794 -> -0.9795 -> -0.9794) and the
+// declared, emitted and baked variants disagreed.
+{
+  const reported = { seed: 5, length: 0.62, height: 0.41, depth: 0.9, material: 40,
+    c0x: 0.5, c0y: 0.25, c0d: 0.2, c2x: -0.2017, c2y: -0.9794, c2d: -0.05 };
+  const once = M.cutStoneParams(reported);
+  assert.deepEqual(M.cutStoneParams(once), once, 'reported c2 normal is a fixed point');
+  assert.deepEqual([once.c2x, once.c2y], [-0.2017, -0.9794], 'already-quantized normal is kept');
+  for (let step = 0; step < 3600; ++step) {
+    const angle = step * Math.PI / 1800 + 1e-3;
+    for (const scale of [1, 0.37, 1.00007]) {
+      const input = { c0x: Math.cos(angle) * scale, c0y: Math.sin(angle) * scale, c0d: 0.123456,
+        c1x: -Math.sin(angle), c1y: Math.cos(angle), c1d: -0.3 };
+      const p = M.cutStoneParams(input);
+      assert.deepEqual(M.cutStoneParams(p), p, `cut-stone params idempotent at ${step / 10} deg x${scale}`);
+      assert.ok(Math.abs(Math.hypot(p.c0x, p.c0y) - 1) <= 1e-4, 'canonical cut normal is unit to 1e-4');
+    }
+  }
+}
+
 // A window authored flush against a wall corner: the compiler accepts it, so
 // masonry narrows the opening to the corner face and keeps the corner solid.
 {
@@ -558,5 +581,20 @@ for (const name of ['courtyard', 'roundkeep', 'cloister']) {
     variants: result.variants, faceCoverage: Number(result.faceCoverage.toFixed(3)) };
 }
 
+// ------------------------------------------------------------ wing programs
+
+// Every reusable walkable wing configuration the angled-site drafts use. Their
+// arch heads are where non-idempotent cut-stone normals first showed up.
+const wings = {};
+for (const [kind, storeys] of [['keep', 1], ['keep', 3], ['keep', 4], ['hall', 2], ['chapel', 2],
+  ['service', 1], ['service', 2]]) {
+  const label = `${kind}${storeys}`;
+  const wing = compilePlan(castleWingPlan(kind, { id: `masonry-${label}`, storeys }));
+  const result = assertMasonry(wing, label);
+  wings[label] = { stones: result.stones, apertures: result.apertures, arches: result.arches,
+    cutStones: result.placements.filter(item => item.module === 'CastleCutStone').length };
+}
+
 console.log(`castle masonry: PASS - fixture ${fixture.stones} stones, ${fixture.apertures} aperture spans, ` +
-  `${fixture.edges} edges, ${fixture.variants} child variants; real ${JSON.stringify(real)}`);
+  `${fixture.edges} edges, ${fixture.variants} child variants; real ${JSON.stringify(real)}; ` +
+  `wings ${JSON.stringify(wings)}`);
