@@ -15,6 +15,10 @@ globalThis.defineCastleMaterials = () => ({
   plaster: 1, limestone: [2, 3, 4, 5], foundation: 6, terracotta: 7,
   iron: 8, gold: 9, clearGlass: 10,
 });
+globalThis.defineMaterial = (_name, definition) => {
+  assert.equal(definition.detail, 'ForestFloor');
+  return 11;
+};
 let source = await readFile(sceneUrl, 'utf8');
 source = source.replace(
   /^import \{ defineCastleMaterials \} from 'shared-lib\/castle_materials';$/m,
@@ -54,6 +58,7 @@ assert.match(proxySource, /this\.rayTraced\(false\)/);
 assert.doesNotMatch(fixtureSource, /this\.rayTraced\(false\)/);
 assert.match(fixtureSource, /this\.fill\(p\.gold\)/);
 assert.match(fixtureSource, /this\.fill\(p\.clearGlass\)/);
+assert.match(fixtureSource, /this\.fill\(p\.pomGround\)/);
 
 const finiteVector = (value, size) =>
   Array.isArray(value) && value.length === size && value.every(Number.isFinite);
@@ -83,6 +88,7 @@ const fixture = new fixtureModule.LocalLightRtGalleryFixture();
 fixture.build({
   plaster: 1, limestone: 2, foundation: 6, terracotta: 7,
   iron: 8, gold: 9, clearGlass: 10,
+  pomGround: 11,
 });
 assert.ok(fixture.geometryCalls >= 35);
 assert.equal(fixture.rt, true);

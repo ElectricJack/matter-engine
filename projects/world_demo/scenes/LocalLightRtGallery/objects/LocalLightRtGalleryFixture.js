@@ -16,7 +16,7 @@ const LOCAL_LIGHT_RT_CORNER_FIXTURE = Object.freeze({
 class LocalLightRtGalleryFixture extends Part {
   static params = {
     plaster: 0, limestone: 0, foundation: 0, terracotta: 0,
-    iron: 0, gold: 0, clearGlass: 0,
+    iron: 0, gold: 0, clearGlass: 0, pomGround: 0,
   };
 
   build(p) {
@@ -75,6 +75,12 @@ class LocalLightRtGalleryFixture extends Part {
     // C. Spotlight footprint plus reflective/transmissive secondary hits.
     this.fill(p.plaster);
     this.box([12.6, 0.04, 0], [6.4, 0.04, 5.0]);
+    // Closed-world POM witness: a thin raised slab under the unobstructed warm
+    // point at [10.2, 3.35, 3.1].  A grazing fixed camera resolves the relief;
+    // native RT must retain the same local illumination as raster instead of
+    // self-shadowing from the recessed POM shading point below this geometry.
+    this.fill(p.pomGround);
+    this.box([6.2, 0.16, 3.4], [2.15, 0.12, 1.25]);
     // Thin fins cut visibly into the blue spot cone and provide hard/soft
     // source-radius shadow boundaries.
     this.fill(p.iron);

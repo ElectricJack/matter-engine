@@ -16,6 +16,9 @@ The scene is laid out west to east:
 - A blue spot, two fins, polished gold, a closed clear-glass volume, and a pale
   transmission target occupy the east station. A green-lit card outside the
   tight material camera checks local-light lookup at off-screen secondary hits.
+- A thin `ForestFloor` detail slab beside the east station is the closed-world
+  POM witness. Its warm point-light path is unobstructed, so native RT going
+  dark while raster remains lit is a POM-origin self-intersection failure.
 
 The small glowing source meshes are a separate
 `LocalLightRtGlowProxy` Part. It calls `rayTraced(false)`; analytic lights own
@@ -185,7 +188,28 @@ analytic and the glow Part never entered the TLAS. This live emission control
 also affects unrelated authored emissive materials; this scene intentionally
 contains none.
 
-### 6. True zero-light source control
+### 6. Closed-world POM local-direct origin
+
+```text
+render_path native_rt
+set render.gi.enabled false
+set render.pom.enabled true
+cam 2.8 0.75 3.4 7.3 0.20 3.4
+history_reset
+wait_frames 96
+shot C:/tmp/local-light-rt/pom-native-rt.png
+render_path raster
+history_reset
+wait_frames 96
+shot C:/tmp/local-light-rt/pom-raster.png
+```
+
+Expected: both fixed-camera shots retain warm illumination over the visibly
+parallaxed relief. Native RT may add traced shadows/noise, but the slab must not
+self-shadow wholesale. The fixture is a closed Part world with no streamed
+terrain or sector-cache dependency.
+
+### 7. True zero-light source control
 
 The zero-list state is an authoring fixture rather than a live render property.
 Keep the raw-FIFO editor running with the normal defaults and first append:
