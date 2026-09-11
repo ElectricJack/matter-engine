@@ -1,0 +1,284 @@
+{
+  "generatedBy": "castle_structure.js validateStructure()",
+  "date": "2026-09-11",
+  "manifests": [
+    {
+      "name": "two-room-two-level (tests/fixtures)",
+      "planId": "two-room-two-level",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 31,
+      "recipes": {
+        "floor": 4,
+        "stair": 2,
+        "frame": 2
+      },
+      "childVariants": 48,
+      "stats": {
+        "records": 5,
+        "children": 90,
+        "meshTriangles": 288,
+        "members": 17,
+        "nodes": 20,
+        "joints": 20,
+        "aliases": 0,
+        "supportedEnds": 6,
+        "solids": 188,
+        "clearances": 24
+      },
+      "roofKinds": []
+    },
+    {
+      "name": "castle-structure-fixture (shared-lib)",
+      "planId": "castle-structure-fixture",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 266,
+      "recipes": {
+        "floor": 9,
+        "stair": 2,
+        "roof": 6,
+        "frame": 4
+      },
+      "childVariants": 353,
+      "stats": {
+        "records": 11,
+        "children": 647,
+        "meshTriangles": 38456,
+        "members": 246,
+        "nodes": 272,
+        "joints": 272,
+        "aliases": 0,
+        "supportedEnds": 76,
+        "solids": 6393,
+        "clearances": 39
+      },
+      "roofKinds": [
+        "roof:chamber-roof:gable",
+        "roof:store-roof:hip",
+        "roof:tower-roof:conical"
+      ]
+    },
+    {
+      "name": "build/qa/castle-grid/courtyard-detailed-manifest.json",
+      "planId": "courtyard",
+      "valid": true,
+      "errors": 0,
+      "warnings": {
+        "guard-narrows-route": 82
+      },
+      "elapsedMs": 1115,
+      "recipes": {
+        "floor": 36,
+        "stair": 2,
+        "roof": 12
+      },
+      "childVariants": 1358,
+      "stats": {
+        "records": 27,
+        "children": 5392,
+        "meshTriangles": 185352,
+        "members": 825,
+        "nodes": 636,
+        "joints": 636,
+        "aliases": 0,
+        "supportedEnds": 512,
+        "solids": 28676,
+        "clearances": 166
+      },
+      "roofKinds": [
+        "roof:chapel-wing:gable",
+        "roof:east-solar:gable",
+        "roof:gatehouse:hip",
+        "roof:great-hall-wing:gable",
+        "roof:west-solar:gable",
+        "roof:west-wing:gable"
+      ]
+    },
+    {
+      "name": "build/qa/castle-grid/roundkeep-detailed-manifest.json",
+      "planId": "roundkeep",
+      "valid": true,
+      "errors": 0,
+      "warnings": {
+        "guard-narrows-route": 70
+      },
+      "elapsedMs": 726,
+      "recipes": {
+        "floor": 35,
+        "stair": 2,
+        "roof": 12
+      },
+      "childVariants": 1071,
+      "stats": {
+        "records": 25,
+        "children": 2964,
+        "meshTriangles": 142984,
+        "members": 784,
+        "nodes": 667,
+        "joints": 667,
+        "aliases": 0,
+        "supportedEnds": 360,
+        "solids": 22174,
+        "clearances": 211
+      },
+      "roofKinds": [
+        "roof:east-service:gable",
+        "roof:hall:hip",
+        "roof:north-wing:gable",
+        "roof:private-chambers:gable",
+        "roof:stair-tower:conical",
+        "roof:west-service:gable"
+      ]
+    },
+    {
+      "name": "build/qa/castle-grid/cloister-detailed-manifest.json",
+      "planId": "cloister",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 1008,
+      "recipes": {
+        "floor": 55,
+        "stair": 4,
+        "roof": 16
+      },
+      "childVariants": 1702,
+      "stats": {
+        "records": 39,
+        "children": 5666,
+        "meshTriangles": 225628,
+        "members": 1299,
+        "nodes": 995,
+        "joints": 995,
+        "aliases": 0,
+        "supportedEnds": 714,
+        "solids": 33189,
+        "clearances": 339
+      },
+      "roofKinds": [
+        "roof:chapel:gable",
+        "roof:east-cloister:gable",
+        "roof:north-cloister:gable",
+        "roof:north-range:gable",
+        "roof:south-cloister:gable",
+        "roof:south-range:gable",
+        "roof:west-cloister:gable",
+        "roof:west-range:gable"
+      ]
+    },
+    {
+      "name": "castle_variants.castleManifest(courtyard,9411)",
+      "planId": "courtyard",
+      "valid": true,
+      "errors": 0,
+      "warnings": {
+        "guard-narrows-route": 82
+      },
+      "elapsedMs": 935,
+      "recipes": {
+        "floor": 36,
+        "stair": 2,
+        "roof": 12
+      },
+      "childVariants": 1358,
+      "stats": {
+        "records": 27,
+        "children": 5392,
+        "meshTriangles": 185304,
+        "members": 825,
+        "nodes": 636,
+        "joints": 636,
+        "aliases": 0,
+        "supportedEnds": 512,
+        "solids": 28684,
+        "clearances": 166
+      },
+      "roofKinds": [
+        "roof:chapel-wing:gable",
+        "roof:east-solar:gable",
+        "roof:gatehouse:hip",
+        "roof:great-hall-wing:gable",
+        "roof:west-solar:gable",
+        "roof:west-wing:gable"
+      ]
+    },
+    {
+      "name": "castle_variants.castleManifest(roundkeep,17029)",
+      "planId": "roundkeep",
+      "valid": true,
+      "errors": 0,
+      "warnings": {
+        "structure-above-open-boundary": 1,
+        "guard-narrows-route": 70
+      },
+      "elapsedMs": 623,
+      "recipes": {
+        "floor": 35,
+        "stair": 2,
+        "roof": 12
+      },
+      "childVariants": 1071,
+      "stats": {
+        "records": 25,
+        "children": 2964,
+        "meshTriangles": 142864,
+        "members": 784,
+        "nodes": 662,
+        "joints": 662,
+        "aliases": 0,
+        "supportedEnds": 360,
+        "solids": 22144,
+        "clearances": 211
+      },
+      "roofKinds": [
+        "roof:east-service:gable",
+        "roof:hall:hip",
+        "roof:north-wing:gable",
+        "roof:private-chambers:gable",
+        "roof:stair-tower:conical",
+        "roof:west-service:gable"
+      ]
+    },
+    {
+      "name": "castle_variants.castleManifest(cloister,28303)",
+      "planId": "cloister",
+      "valid": true,
+      "errors": 0,
+      "warnings": {
+        "structure-above-open-boundary": 221
+      },
+      "elapsedMs": 1105,
+      "recipes": {
+        "floor": 55,
+        "stair": 4,
+        "roof": 16
+      },
+      "childVariants": 1692,
+      "stats": {
+        "records": 39,
+        "children": 5652,
+        "meshTriangles": 226468,
+        "members": 1299,
+        "nodes": 995,
+        "joints": 995,
+        "aliases": 0,
+        "supportedEnds": 714,
+        "solids": 33319,
+        "clearances": 339
+      },
+      "roofKinds": [
+        "roof:chapel:gable",
+        "roof:east-cloister:gable",
+        "roof:north-cloister:gable",
+        "roof:north-range:gable",
+        "roof:south-cloister:gable",
+        "roof:south-range:gable",
+        "roof:west-cloister:gable",
+        "roof:west-range:gable"
+      ]
+    }
+  ]
+}

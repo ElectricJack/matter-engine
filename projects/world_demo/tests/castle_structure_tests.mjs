@@ -566,6 +566,49 @@ function section7() {
     assert.throws(() => S.emitStructure(new RecordingPart(), manifest, { ...sample.params, manifestId: 'not-a-real-manifest' }),
       name + ': emitStructure did not throw on a mismatched manifestId');
   }
+  // Layers: each record yields a mesh root and an expand:true children root;
+  // the children root places only children and the mesh root none.
+  for (const [name, manifest] of MANIFESTS) {
+    for (const recipe of S.structureRecipes(manifest, { module: 'CastleStructureFixturePart' })) {
+      const calls = { child: 0, geometry: 0 };
+      const probe = new Proxy({}, { get: (_, key) => (...args) => {
+        if (key === 'placeChild') calls.child++;
+        else if (['box', 'cylinder', 'vertex'].includes(key)) calls.geometry++;
+      } });
+      S.emitStructure(probe, manifest, recipe.params);
+      if (recipe.params.layer === S.STRUCTURE_LAYER.children) {
+        assert.equal(recipe.expand, true, name + ': children root must expand');
+        assert.ok(calls.child > 0 && calls.geometry === 0, name + ': children root ' + recipe.params.recordId + ' emits geometry');
+      } else {
+        assert.equal(recipe.params.layer, S.STRUCTURE_LAYER.mesh, name + ': unexpected layer');
+        assert.ok(!recipe.expand && calls.child === 0 && calls.geometry > 0, name + ': mesh root ' + recipe.params.recordId + ' places children');
+        assert.deepEqual(S.structureChildVariants(manifest, recipe.params), [], name + ': mesh root declares children');
+      }
+    }
+  }
+  // Flat placements: a rigid base transform composes onto every primitive's
+  // own frame exactly (checked on each child's local +-X ends).
+  {
+    const yaw = 0.52, c = Math.cos(yaw), sn = Math.sin(yaw);
+    const base = [c, 0, sn, 5, 0, 1, 0, 0.5, -sn, 0, c, -3, 0, 0, 0, 1];
+    const placements = S.structurePlacements(M2, { module: 'CastleStructureFixturePart', transform: base });
+    const layout2 = S.structureLayout(M2);
+    const childOps = layout2.records.flatMap((r) => r.ops.filter((op) => op.op === 'child'));
+    const meshRecords = layout2.records.filter((r) => r.ops.some((op) => op.op !== 'child')).length;
+    assert.equal(placements.length, childOps.length + meshRecords, 'placements = children + mesh records');
+    const apply = (m, p) => [0, 1, 2].map((i) => m[i * 4] * p[0] + m[i * 4 + 1] * p[1] + m[i * 4 + 2] * p[2] + m[i * 4 + 3]);
+    const prims = placements.filter((p) => p.module !== 'CastleStructureFixturePart');
+    childOps.forEach((op, i) => {
+      for (const x of [-0.5, 0.5]) {
+        const want = apply(base, S.applyFrame(op.frame, [x, 0.1, 0.05]));
+        const got = apply(prims[i].transform, [x, 0.1, 0.05]);
+        assert.ok(want.every((v, k) => Math.abs(v - got[k]) < 1e-5), 'placement transform mismatch for child ' + i);
+      }
+    });
+    const req = S.structureAssemblyRequires(M2, { module: 'CastleStructureFixturePart' });
+    const keys = new Set(req.map((r) => r.module + JSON.stringify(Object.keys(r.params).sort().map((k) => [k, r.params[k]]))));
+    assert.equal(keys.size, req.length, 'assembly requires are unique');
+  }
   console.log('  section 7 (emission): OK');
 }
 
