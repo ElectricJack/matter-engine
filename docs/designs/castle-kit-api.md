@@ -518,8 +518,11 @@ and aggregate `sweptBounds`. It uses 1.2m width, checks width-offset samples
 remain in the shared room and do not enter a floor hole, and rejects headroom
 overlap with beam bounds or fixture clearance. On a stair's lower level, every
 rising flight footprint is a routing obstacle expanded by half the 1.2m route
-width; a low intermediate landing is also blocked when its underside does not
-leave 2.1m clearance. The declared lower landing remains the only flat-route
+width. Every intermediate landing is blocked the same way at any elevation:
+the structure carries it from the lower floor on corner posts or a solid base,
+so a flat route may never pass beneath it. An upper landing hangs from the
+upper floor and is blocked only when its elevation leaves less than 2.1m above
+the lower floor. The declared lower landing remains the only flat-route
 handoff into `stair.route`; upper landings with sufficient under-clearance do
 not seal a return stair's approach. Each room-segment ID is also in
 `sweptVolumeIds`. The top-level `waypoints` form one ordered polyline by

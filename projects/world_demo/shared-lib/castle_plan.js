@@ -1454,8 +1454,11 @@ function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, flo
         id: `route-obstacle:${flight.id}`, footprint: flight.footprint,
         replacementLandingId: null,
       })),
-      ...stair.landings.filter(landing => landing.kind !== 'lower' &&
-        landing.elevation < floor.elevation + MIN_PORTAL_HEIGHT - 1e-9).map(landing => ({
+      // An intermediate landing is carried from the lower floor (corner posts or a
+      // solid base) at any elevation; an upper landing hangs from the upper floor.
+      ...stair.landings.filter(landing => landing.kind === 'intermediate' ||
+        (landing.kind === 'upper' &&
+          landing.elevation < floor.elevation + MIN_PORTAL_HEIGHT - 1e-9)).map(landing => ({
         id: `route-obstacle:${landing.id}`, footprint: landing.bounds,
         replacementLandingId: null,
       })),

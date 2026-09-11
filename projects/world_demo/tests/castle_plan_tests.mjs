@@ -72,6 +72,47 @@ function stairApproachPlan({ entryAtUpper = false } = {}) {
   };
 }
 
+// A straight two-flight stair whose turn landing sits above 2.1m, crossing the
+// hall between its entry door and an annex door. The direct hall route runs
+// underneath the landing, which the structure carries on posts or a solid base.
+function raisedLandingPlan() {
+  return {
+    schema: CASTLE_PLAN_SCHEMA, id: 'raised-landing-route', seed: 23, entryRoomId: 'hall',
+    levels: [
+      { id: 'ground', baseY: 0, height: 4, rooms: [
+        { id: 'hall', use: 'hall', rect: { x: 0, z: 0, width: 10, depth: 6 } },
+        { id: 'annex', use: 'pantry', rect: { x: 0, z: 6, width: 10, depth: 3 } },
+      ], edgeOverrides: [
+        { id: 'entry', from: [4, 0], to: [6, 0], kind: 'door', connects: ['outside', 'hall'],
+          opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 } },
+        { id: 'annex-door', from: [4, 6], to: [6, 6], kind: 'door', connects: ['hall', 'annex'],
+          opening: { offset: 0.4, width: 1.2, bottom: 0, height: 2.2 } },
+      ] },
+      { id: 'upper', baseY: 4, height: 4, rooms: [
+        { id: 'gallery', use: 'gallery', rect: { x: 0, z: 0, width: 10, depth: 6 } },
+      ], edgeOverrides: [] },
+    ],
+    stairs: [{
+      id: 'straight-stair', lowerLevelId: 'ground', upperLevelId: 'upper',
+      lowerRoomId: 'hall', upperRoomId: 'gallery',
+      width: 1.2, maxRiser: 0.2, tread: 0.25, headroom: 2.2,
+      flights: [
+        { id: 'lower-flight', direction: 'E', stepCount: 11,
+          footprint: { x: 1.65, z: 2.4, width: 2.75, depth: 1.2 } },
+        { id: 'upper-flight', direction: 'E', stepCount: 9,
+          footprint: { x: 5.6, z: 2.4, width: 2.25, depth: 1.2 } },
+      ],
+      landings: [
+        { id: 'lower', kind: 'lower', bounds: { x: 0.45, z: 2.4, width: 1.2, depth: 1.2 } },
+        { id: 'turn', kind: 'intermediate', elevation: 2.2,
+          bounds: { x: 4.4, z: 2.4, width: 1.2, depth: 1.2 } },
+        { id: 'upper', kind: 'upper', bounds: { x: 7.85, z: 2.4, width: 1.2, depth: 1.2 } },
+      ],
+    }],
+    beams: [], curves: [], fixtures: [], roofs: [], localLights: [],
+  };
+}
+
 function samePoint(a, b) {
   return a.length === b.length && a.every((value, index) => Math.abs(value - b[index]) < 1e-9);
 }
@@ -367,6 +408,19 @@ blockedApproach.beams.push({
   section: [0.2, 0.2], jointFamily: 'mortise-tenon', role: 'blocked-stair-approach',
 });
 expectInvalid(blockedApproach, /walkRoute.*(headroom|clearance)|approach.*headroom/i);
+
+// An intermediate landing stands on the lower floor at any elevation, so a flat
+// hall route detours around it and the flights instead of passing beneath.
+const raisedLandingManifest = compilePlan(raisedLandingPlan());
+const raisedStair = raisedLandingManifest.stairs[0];
+const raisedTurn = raisedStair.landings.find(landing => landing.kind === 'intermediate');
+assert.ok(raisedTurn.elevation >= 2.1, 'fixture turn landing clears the 2.1m walk headroom');
+const annexHallSegment = raisedLandingManifest.walkRoute.find(route => route.roomId === 'annex')
+  .roomSegments.find(segment => segment.roomId === 'hall');
+for (const footprint of [raisedTurn.bounds, ...raisedStair.flights.map(flight => flight.footprint)])
+  assert.ok(annexHallSegment.segments.every(segment => !segmentEntersExpandedRect(
+    segment.from, segment.to, footprint, annexHallSegment.width / 2)),
+    'flat hall route stays outside the capsule-expanded posted landing and flights');
 
 for (const [field, value, pattern] of [
   ['headroom', 2.09, /headroom.*at least 2\.1m/],
