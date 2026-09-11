@@ -22,9 +22,14 @@ also used `MATTER_VK_VALIDATION=1` and `MATTER_TEST_RESIZE=1`.
 - Candidate debug: debug-view index 7 rendered the sparse cell candidate heat
   map for the multi-bucket gallery.
 
-The validation run emitted only existing loader/unused-interface warnings; it
-reported no Vulkan error or VUID attributable to local-light descriptors,
-resource lifetime, reload, or resize.
+The validation run emitted the machine's existing missing EOS-overlay JSON
+diagnostics and unused-interface warnings; it reported no Vulkan validation
+error or VUID attributable to local-light descriptors, resource lifetime,
+reload, or resize.
+
+Raw stdout is retained in `native-validation.log` for the validation/resize/
+reload/point/spot timeline and `native-zero-debug.log` for the candidate-view
+and nonempty -> empty -> nonempty timeline.
 
 ## Compiled ABI check
 
