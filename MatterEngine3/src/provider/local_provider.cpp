@@ -3362,7 +3362,11 @@ bool LocalProvider::load_authored_world(std::string& err) {
             err += " [" + load_error.property_path + "]";
         return false;
     }
-    ProviderWorldDefinition adapted = adapt_world_definition(definition);
+    ProviderWorldDefinition adapted;
+    if (!adapt_world_definition(definition, adapted, err)) {
+        err = "resolve local lights: " + err;
+        return false;
+    }
     roots_ = std::move(adapted.roots);
     root_transforms_ = std::move(adapted.root_transforms);
     expand_flags_ = std::move(adapted.expand_flags);

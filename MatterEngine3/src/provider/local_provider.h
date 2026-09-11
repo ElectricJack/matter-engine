@@ -73,6 +73,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -430,15 +431,18 @@ inline ProceduralWorldProfile select_procedural_world_profile(
 }
 
 // Convert a loaded matter::WorldDefinition into the provider's view of it.
-// Three conversions worth knowing, all of them one-way:
+// Four conversions worth knowing, all of them one-way:
 //   - spot cone angles arrive in DEGREES and are stored as the COSINE of the
 //     half-angle (cos_inner / cos_outer);
 //   - light intensity is folded into the colour rather than kept separately;
-//   - light directions are normalized here, except a direction shorter than
-//     1e-8 which is passed through untouched.
-inline ProviderWorldDefinition adapt_world_definition(
-    const matter::WorldDefinition& definition) {
-    ProviderWorldDefinition out;
+//   - spot directions are normalized here;
+//   - the renderer-neutral spatial index and content revision are built before
+//     the result can be published.
+inline bool adapt_world_definition(const matter::WorldDefinition& definition,
+                                   ProviderWorldDefinition& out,
+                                   std::string& error) {
+    out = ProviderWorldDefinition{};
+    error.clear();
     out.roots.reserve(definition.roots.size());
     out.root_transforms.reserve(definition.roots.size());
     out.expand_flags.reserve(definition.roots.size());
@@ -474,32 +478,61 @@ inline ProviderWorldDefinition adapt_world_definition(
     out.lights.sky_color[0] = definition.settings.sky_color.x;
     out.lights.sky_color[1] = definition.settings.sky_color.y;
     out.lights.sky_color[2] = definition.settings.sky_color.z;
-    out.lights.spots.reserve(definition.lights.size());
+    out.lights.local.records.reserve(definition.lights.size());
     constexpr float kPiOver180 = 3.14159265358979323846f / 180.0f;
     for (const matter::WorldLight& light : definition.lights) {
-        world_lights::SpotLight runtime{};
-        runtime.pos[0] = light.position.x;
-        runtime.pos[1] = light.position.y;
-        runtime.pos[2] = light.position.z;
-        runtime.dir[0] = light.direction.x;
-        runtime.dir[1] = light.direction.y;
-        runtime.dir[2] = light.direction.z;
-        const float length = std::sqrt(runtime.dir[0] * runtime.dir[0] +
-                                       runtime.dir[1] * runtime.dir[1] +
-                                       runtime.dir[2] * runtime.dir[2]);
-        if (length > 1e-8f) {
-            runtime.dir[0] /= length;
-            runtime.dir[1] /= length;
-            runtime.dir[2] /= length;
+        world_lights::LocalLight runtime{};
+        runtime.position[0] = light.position.x;
+        runtime.position[1] = light.position.y;
+        runtime.position[2] = light.position.z;
+        runtime.range = light.range;
+        runtime.source_radius = light.source_radius;
+        runtime.kind = light.kind == matter::WorldLightKind::Spot
+            ? static_cast<std::uint32_t>(world_lights::LocalLightKind::Spot)
+            : static_cast<std::uint32_t>(world_lights::LocalLightKind::Point);
+        runtime.flags = light.casts_shadow
+            ? world_lights::kLocalLightCastsShadow : 0u;
+        if (light.kind == matter::WorldLightKind::Spot) {
+            runtime.direction[0] = light.direction.x;
+            runtime.direction[1] = light.direction.y;
+            runtime.direction[2] = light.direction.z;
+            const float length = std::sqrt(
+                runtime.direction[0] * runtime.direction[0] +
+                runtime.direction[1] * runtime.direction[1] +
+                runtime.direction[2] * runtime.direction[2]);
+            if (length > 0.0f) {
+                runtime.direction[0] /= length;
+                runtime.direction[1] /= length;
+                runtime.direction[2] /= length;
+            }
+            runtime.cos_inner =
+                std::cos(light.inner_cone_degrees * kPiOver180);
+            runtime.cos_outer =
+                std::cos(light.outer_cone_degrees * kPiOver180);
+        } else {
+            runtime.cos_inner = -1.0f;
+            runtime.cos_outer = -1.0f;
         }
         runtime.color[0] = light.color.x * light.intensity;
         runtime.color[1] = light.color.y * light.intensity;
         runtime.color[2] = light.color.z * light.intensity;
-        runtime.range = light.range;
-        runtime.cos_inner = std::cos(light.inner_cone_degrees * kPiOver180);
-        runtime.cos_outer = std::cos(light.outer_cone_degrees * kPiOver180);
-        out.lights.spots.push_back(runtime);
+        out.lights.local.records.push_back(runtime);
     }
+    if (!world_lights::rebuild_local_light_publication(out.lights.local,
+                                                        error))
+        return false;
+    return true;
+}
+
+// Convenience overload retained for existing tools/tests. Runtime callers use
+// the error-returning overload above so an index allocation failure is reported
+// rather than publishing a partial or empty list.
+inline ProviderWorldDefinition adapt_world_definition(
+    const matter::WorldDefinition& definition) {
+    ProviderWorldDefinition out;
+    std::string error;
+    if (!adapt_world_definition(definition, out, error))
+        throw std::runtime_error(error);
     return out;
 }
 
@@ -696,6 +729,9 @@ public:
     }
     const matter::WorldSettings& world_settings() const {
         return world_settings_;
+    }
+    const world_lights::WorldLights& authored_lights() const {
+        return authored_lights_;
     }
     const std::optional<matter::HydrologyWorldSettings>& hydrology_settings() const {
         return hydrology_settings_;

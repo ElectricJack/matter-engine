@@ -46,6 +46,8 @@ namespace resolve_cache {
 struct ResolveCachePayload {
     // WorldManifest fields.
     std::vector<viewer::WorldManifestEntry> instances;
+    // Local-light records are serialized; load reconstructs their index and
+    // content revision before returning a usable payload.
     world_lights::WorldLights               lights;
 
     // LocalProvider graph_snapshot_ (needed by RefineController build path).

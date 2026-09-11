@@ -307,6 +307,8 @@ class FixtureWorld extends World {
     }
     CHECK(definition.lights.size() == 1, "one light extracted");
     if (definition.lights.size() == 1) {
+        CHECK(definition.lights[0].kind == matter::WorldLightKind::Point,
+              "legacy World.lights array remains a point-light form");
         CHECK(definition.lights[0].position.x == 1.0f &&
                   definition.lights[0].position.y == 2.0f &&
                   definition.lights[0].position.z == 3.0f,
@@ -332,6 +334,108 @@ class FixtureWorld extends World {
                   "{\"SeedProbe\":{\"difficulty\":3,\"seed\":77}}",
               "seed and canonical parameters are explicit build bindings");
     }
+}
+
+void test_local_light_object_forms_and_runtime_publication() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LocalLights.js", R"JS(
+class LocalLights extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = {
+    points: [
+      { position: [-8, 2, 4], color: [1, 0.5, 0.25], intensity: 12,
+        range: 9, sourceRadius: 0.15, castsShadow: true },
+      { pos: [16, 3, -2] },
+    ],
+    spots: [
+      { pos: [1, 5, 2], dir: [0, -4, 0], color: [0.25, 0.5, 1],
+        intensity: 20, range: 18, sourceRadius: 0.25,
+        castsShadow: false, inner: 15, outer: 32 },
+    ],
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.lights.size() == 3u,
+          "object points and spots share one deterministic ordered list");
+    if (definition.lights.size() != 3u) return;
+    CHECK(definition.lights[0].kind == matter::WorldLightKind::Point &&
+              definition.lights[1].kind == matter::WorldLightKind::Point &&
+              definition.lights[2].kind == matter::WorldLightKind::Spot,
+          "object points precede spots independent of object property order");
+    CHECK(definition.lights[0].source_radius == 0.15f &&
+              definition.lights[0].casts_shadow,
+          "point sourceRadius and castsShadow survive authoring");
+    CHECK(definition.lights[1].color.x == 1.0f &&
+              definition.lights[1].intensity == 1.0f &&
+              definition.lights[1].range == 10.0f,
+          "object points retain legacy defaults and accept pos alias");
+
+    const viewer::ProviderWorldDefinition adapted =
+        viewer::adapt_world_definition(definition);
+    CHECK(adapted.lights.local.records.size() == 3u,
+          "resolved local records reach the provider publication");
+    CHECK(adapted.lights.local.revision != 0u &&
+              !adapted.lights.local.index.cells.empty(),
+          "provider publishes a versioned spatial index");
+    if (adapted.lights.local.records.size() == 3u) {
+        const auto& point = adapted.lights.local.records[0];
+        const auto& spot = adapted.lights.local.records[2];
+        CHECK(point.color[0] == 12.0f && point.range == 9.0f &&
+                  point.source_radius == 0.15f &&
+                  point.flags == world_lights::kLocalLightCastsShadow,
+              "point record folds intensity and packs radius/flags");
+        CHECK(spot.kind == static_cast<std::uint32_t>(
+                               world_lights::LocalLightKind::Spot) &&
+                  spot.direction[0] == 0.0f && spot.direction[1] == -1.0f &&
+                  spot.direction[2] == 0.0f &&
+                  spot.cos_inner > spot.cos_outer,
+              "spot record normalizes direction and resolves cone cosines");
+    }
+}
+
+void test_local_light_validation_rejects_invalid_values() {
+    const auto rejects = [](const char* name, const std::string& lights,
+                            const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            name, "class InvalidLight extends World { static lights = " +
+                      lights + "; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition,
+                                             error),
+              "invalid local light authoring is rejected");
+        CHECK(error.property_path.find(expected_path) != std::string::npos,
+              "local light error identifies the authored list entry");
+    };
+
+    rejects("NonFinitePosition.js",
+            "{ points: [{ position: [0, 0/0, 0] }] }", "lights.points[0]");
+    rejects("ZeroRange.js",
+            "[{ position: [0, 0, 0], range: 0 }]", "lights[0]");
+    rejects("NegativeIntensity.js",
+            "{ points: [{ position: [0, 0, 0], intensity: -1 }] }",
+            "lights.points[0]");
+    rejects("NegativeRadius.js",
+            "{ points: [{ position: [0, 0, 0], sourceRadius: -0.1 }] }",
+            "lights.points[0]");
+    rejects("NonBooleanShadow.js",
+            "{ points: [{ position: [0, 0, 0], castsShadow: 1 }] }",
+            "lights.points[0]");
+    rejects("ZeroSpotDirection.js",
+            "{ spots: [{ position: [0, 0, 0], direction: [0, 0, 0] }] }",
+            "lights.spots[0]");
+    rejects("UnorderedCone.js",
+            "{ spots: [{ position: [0, 0, 0], direction: [0, -1, 0], inner: 50, outer: 20 }] }",
+            "lights.spots[0]");
+    rejects("InvalidCone.js",
+            "{ spots: [{ position: [0, 0, 0], direction: [0, -1, 0], inner: 10, outer: 181 }] }",
+            "lights.spots[0]");
 }
 
 void test_world_loader_preserves_root_fluid_colliders() {
@@ -3041,6 +3145,8 @@ int main() {
     test_example_worlds_preserve_manifest_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
+    test_local_light_object_forms_and_runtime_publication();
+    test_local_light_validation_rejects_invalid_values();
     test_world_loader_preserves_root_fluid_colliders();
     test_world_loader_rejects_invalid_root_fluid_colliders();
     test_engine_shared_fallback_and_no_entity_world();

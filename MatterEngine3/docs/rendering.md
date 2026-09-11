@@ -105,14 +105,18 @@ is not used and there is no VAO churn per frame.
 
 ### World light list
 
-World definitions declare lights via `static lights` in the World class JS source.
-The `WorldLights` struct is uploaded to the raster shader each frame (`sunDir`, `sunColor`,
-`ambientColor`) and to the ray-tracer (`wlSunDir`, `wlSunColor`, `wlSkyColor`).
+World definitions declare sun, sky, points and spots via `static lights` in the
+World class JS source. The provider publishes sun/sky plus a resolved local-light
+record list, deterministic world-space sparse index, oversized-light fallback,
+and content revision. Current Vulkan code consumes sun/sky; local-light GPU
+upload and shading consume the frozen [local-light contract](local-lighting.md)
+in the next renderer stages.
 
 ### Lighting model (`shaders/raster.vs`, `shaders/raster.fs`)
 
-Lighting in the raster path is the Vulkan+RTX path for offline/reference rendering
-(`shaders_vk`); the GL raster forward shader applies sun and ambient from `WorldLights`:
+The active renderer is Vulkan. Its existing composite applies sun and ambient;
+local direct lighting is added at that G-buffer composite stage and shared with
+RT hit shading through the publication above:
 
 - Sun: `sunColor * max(dot(N, -sunDir), 0)`.
 - Ambient: `ambientColor * ao`, where `ao` is the per-vertex baked ambient occlusion

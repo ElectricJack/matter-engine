@@ -26,7 +26,8 @@ part_asset_v2: parts/<resolved_hash>.part        content-addressed artifact
    ▼  per-cluster ε-ladder (decimate_to_error per cluster)
 parts/<resolved_hash>.flat.part                  v3 format: cluster table + per-cluster LOD
    │
-   ▼  world_lights: `light sun/sky/spot` lines in world.manifest → WorldLights
+   ▼  world_definition_loader: World.lights JS → validated WorldLight records
+   ▼  world_lights: resolved LocalLight publication + world-space sparse index
    │
    ▼
 viewer: PartStore flat-preferred load (v3 cluster ladders or v2 whole-part)
@@ -48,7 +49,7 @@ viewer: PartStore flat-preferred load (v3 cluster ladders or v2 whole-part)
 | Asset v2/v3 | `src/part_asset_v2.cpp:86` | Atomic serialize: materials, BLAS table, `ChildInstance[]` (hash + 4x4, 72 B), LOD levels. v3 extends this with a cluster table: each cluster carries its own AABB, radius, and per-level LOD indices |
 | Flatten | `src/part_flatten.cpp` | Merge a root's whole subtree (transforms applied, TriEx carried, LOD0 of each part) into ONE mesh; build ε ladder (ε = radius/{256,64,16,4}, stop < 2000 tris); then invoke `split_clusters` to spatially partition into ~16k-tri clusters, bake a per-cluster ladder, and save as `<root>.flat.part` (v3) |
 | Clusters | `src/part_cluster.cpp` | k-d median spatial split of a flat merged mesh → `ClusterSet` (cluster AABB, mesh slice, per-cluster ε-ladder); basis for per-cluster frustum cull + projected-size LOD in the raster path |
-| World lights | `src/world_lights.cpp` | Parse `light sun/sky/spot` lines from `world.manifest`; produce `WorldLights` (sun dir/color, sky color, spot list). Defaults reproduce the Phase-1 hardcoded look for worlds without light lines |
+| World lights | `src/script/world_definition_loader.cpp`, `src/world_lights.cpp` | Validate World JavaScript sun/sky/points/spots; resolve one 64-byte `LocalLight` ABI; build the shared sparse world-space index and publication revision. See `docs/local-lighting.md` |
 | PartGraph | `src/part_graph.cpp:96` | Dependency DAG: `static requires` discovery → memoized DFS with cycle detection → topo sort → children-first bake with cache hits |
 | Live edit | `src/live_edit.cpp`, `src/inotify_watcher.cpp` | Debounced file watch → changed parts → upward ancestor cone → topo re-bake → re-flatten roots. Fail-closed with last-good artifact |
 

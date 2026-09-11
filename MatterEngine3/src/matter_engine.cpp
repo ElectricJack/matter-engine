@@ -3672,8 +3672,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         set_authored_sun(provider->world_settings());
         run_authored_fluid_bake_after_world_load(token);
 
-        // World-kind sessions use an empty manifest; sectors are streamed.
+        // World-kind sessions use an instance-empty manifest because sectors
+        // are streamed, but authored lighting is still world state. Dropping it
+        // here used to make every streamed scene silently lose local lights.
         viewer::WorldManifest empty_manifest;
+        empty_manifest.lights = provider->authored_lights();
         auto t_publish_start = clk_t::now();
         PublishPipelineParams pp;
         pp.job_prefix            = "bake";

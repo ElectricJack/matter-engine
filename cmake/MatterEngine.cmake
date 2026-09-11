@@ -269,6 +269,10 @@ if(BUILD_TESTING)
 
     matter_add_engine_cpu_test(world_definition_tests
         MatterEngine3/tests/world_definition_tests.cpp)
+    matter_add_engine_cpu_test(local_light_index_tests
+        MatterEngine3/tests/local_light_index_tests.cpp)
+    matter_add_engine_cpu_test(resolve_cache_tests
+        MatterEngine3/tests/resolve_cache_tests.cpp)
     matter_add_engine_cpu_test(material_registry_tests
         libs/MatterSurfaceLib/tests/material_registry_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_definition_tests
