@@ -53,7 +53,7 @@ function point2(value, path) {
 
 function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 function stableSort(values, key) { return [...values].sort((a, b) => cmp(key(a), key(b))); }
-function idToken(value) { return encodeURIComponent(String(value)).replace(/%/g, '~'); }
+function idToken(value) { return encodeURIComponent(String(value)); }
 function near(a, b) { return Math.abs(a - b) <= EPSILON; }
 function samePoint(a, b) {
   return a.length === b.length && a.every((component, index) => near(component, b[index]));
@@ -150,6 +150,40 @@ function convexPolygonsOverlap(a, b, positiveOnly = true) {
   return true;
 }
 
+function pointSegmentDistanceSquared(point, a, b) {
+  const edge = subtract2(b, a);
+  const denominator = dot2(edge, edge);
+  const amount = denominator <= EPSILON ? 0 : Math.max(0, Math.min(1,
+    dot2(subtract2(point, a), edge) / denominator));
+  const nearest = add2(a, scale2(edge, amount));
+  return dot2(subtract2(point, nearest), subtract2(point, nearest));
+}
+
+function circlePolygonOverlap(circle, polygon) {
+  if (polygon.length < 3) return false;
+  if (pointInConvex(circle.center, polygon)) return true;
+  const radiusSquared = circle.radius ** 2;
+  return polygon.some(point => dot2(subtract2(point, circle.center),
+    subtract2(point, circle.center)) < radiusSquared - EPSILON) ||
+    polygon.some((point, index) => pointSegmentDistanceSquared(circle.center, point,
+      polygon[(index + 1) % polygon.length]) < radiusSquared - EPSILON);
+}
+
+function roomVolumesOverlap(a, b) {
+  if (a.shape === 'circle' && b.shape === 'circle')
+    return length2(subtract2(a.center, b.center)) < a.radius + b.radius - EPSILON;
+  if (a.shape === 'circle') return circlePolygonOverlap(a, b.polygon);
+  if (b.shape === 'circle') return circlePolygonOverlap(b, a.polygon);
+  return convexPolygonsOverlap(a.polygon, b.polygon, true);
+}
+
+function footprintOverlapsRoom(footprint, roomVolume) {
+  return roomVolume.shape === 'circle'
+    ? circlePolygonOverlap(roomVolume, footprint)
+    : positivePolygonArea(convexIntersection(footprint, roomVolume.polygon)) >
+      COLLISION_AREA_EPSILON;
+}
+
 function convexIntersection(subject, clipper) {
   let result = subject.map(point => [...point]);
   for (let edgeIndex = 0; edgeIndex < clipper.length && result.length; ++edgeIndex) {
@@ -191,13 +225,6 @@ function clipPolygonHalfPlane(polygon, signedDistance) {
     }
   }
   return result;
-}
-
-function polygonProjectionSlab(polygon, origin, axis, minimum, maximum) {
-  const projected = point => dot2(subtract2(point, origin), axis);
-  const aboveMinimum = clipPolygonHalfPlane(polygon,
-    point => projected(point) - minimum);
-  return clipPolygonHalfPlane(aboveMinimum, point => maximum - projected(point));
 }
 
 function transformPolygon(frame, polygon) {
@@ -365,7 +392,7 @@ function wingRoomVolumes(wing) {
       const b = volume.bounds;
       result.push({
         id: `${wing.id}:${volume.id}`, wing: wing.id, levelId: volume.levelId,
-        roomId: volume.roomId,
+        roomId: volume.roomId, shape: 'polygon',
         minY: b.minY + wing.frame.origin[1], maxY: b.maxY + wing.frame.origin[1],
         polygon: transformPolygon(wing.frame,
           [[b.minX, b.minZ], [b.maxX, b.minZ], [b.maxX, b.maxZ], [b.minX, b.maxZ]]),
@@ -376,8 +403,9 @@ function wingRoomVolumes(wing) {
         return [volume.center[0] + Math.cos(angle) * volume.radius,
           volume.center[1] + Math.sin(angle) * volume.radius];
       });
+      const center = transformPointXZ(wing.frame, volume.center);
       result.push({ id: `${wing.id}:${volume.id}`, wing: wing.id, levelId: volume.levelId,
-        roomId: volume.roomId,
+        roomId: volume.roomId, shape: 'circle', center, radius: volume.radius,
         minY: volume.minY + wing.frame.origin[1], maxY: volume.maxY + wing.frame.origin[1],
         polygon: transformPolygon(wing.frame, local) });
     }
@@ -394,7 +422,7 @@ function validateWingOverlap(wings) {
   for (let i = 0; i < volumes.length; ++i) for (let j = i + 1; j < volumes.length; ++j) {
     const a = volumes[i], b = volumes[j];
     if (a.wing === b.wing || !yRangesOverlap(a, b)) continue;
-    if (convexPolygonsOverlap(a.polygon, b.polygon, true))
+    if (roomVolumesOverlap(a, b))
       fail('wings', `positive-area overlap between ${a.id} and ${b.id}`);
   }
   return volumes;
@@ -453,6 +481,23 @@ function buildWallSpans(id, polygon, mouthGroups, thickness, baseY, height, mate
 function publicMouth(mouth, connectorId, side) {
   const { portal, ...record } = mouth;
   return { ...record, jambOwner: `connector:${connectorId}:mouth:${side}:jambs` };
+}
+
+function validateConnectorRouteWaypoints(routeWaypoints, wallSpans, path) {
+  const requiredClearance = CASTLE_SITE_CAPSULE_RADIUS + CASTLE_SITE_CLEARANCE;
+  for (let pointIndex = 0; pointIndex < routeWaypoints.length; ++pointIndex) {
+    const point = [routeWaypoints[pointIndex][0], routeWaypoints[pointIndex][2]];
+    for (const span of wallSpans) {
+      const edge = subtract2(span.segment[1], span.segment[0]);
+      const edgeLengthSquared = dot2(edge, edge);
+      const projection = dot2(subtract2(point, span.segment[0]), edge) / edgeLengthSquared;
+      if (projection < -EPSILON || projection > 1 + EPSILON) continue;
+      const inwardDistance = -dot2(subtract2(point, span.segment[0]), span.normal);
+      if (inwardDistance + EPSILON < requiredClearance)
+        fail(`${path}.routeWaypoints[${pointIndex}]`,
+          `lacks ${requiredClearance.toFixed(1)}m side clearance from wall ${span.id}`);
+    }
+  }
 }
 
 function buildConnector(connection, index, byId) {
@@ -524,6 +569,7 @@ function buildConnector(connection, index, byId) {
   // swept capsule against an oblique side wall even though the convex passage
   // itself is wide enough.
   const routeWaypoints = [a.inside, a.center, b.center, b.inside].map(point => [...point]);
+  validateConnectorRouteWaypoints(routeWaypoints, wallSpans, path);
   return {
     id, level: aRef.level === bRef.level ? aRef.level : `${aRef.level}|${bRef.level}`,
     baseY: aBaseY, clearPolygon, minimumWidth,
@@ -538,38 +584,37 @@ function validateConnectorIntrusion(connectors, wingVolumes) {
   for (const connector of connectors) {
     const participantMouths = new Map(connector.mouths.map(mouth => [mouth.wing, mouth]));
     const volume = { minY: connector.baseY, maxY: connector.baseY + connector.height };
-    const clearIntrusionArea = (footprint, wingVolume) => {
-      let overlap = convexIntersection(footprint, wingVolume.polygon);
+    const clearIntrudes = (footprint, wingVolume) => {
+      let candidate = footprint;
       const mouth = participantMouths.get(wingVolume.wing);
       if (mouth?.roomId === wingVolume.roomId) {
         // room-cell footprints include the inner half of their perimeter wall.
         // Ignore that host-wall slab, but reject any connector geometry that
         // crosses the authored inside face into the actual room interior.
         const inside = [mouth.inside[0], mouth.inside[2]];
-        overlap = clipPolygonHalfPlane(overlap,
+        candidate = clipPolygonHalfPlane(candidate,
           point => -dot2(subtract2(point, inside), mouth.outward));
       }
-      return positivePolygonArea(overlap);
+      return footprintOverlapsRoom(candidate, wingVolume);
     };
-    const wallIntrusionArea = (footprint, wingVolume) => {
-      const overlap = convexIntersection(footprint, wingVolume.polygon);
-      const overlapArea = positivePolygonArea(overlap);
+    const wallIntrudes = (footprint, wingVolume) => {
       const mouth = participantMouths.get(wingVolume.wing);
-      if (overlapArea <= EPSILON || !mouth) return overlapArea;
+      if (!mouth) return footprintOverlapsRoom(footprint, wingVolume);
       const inside = [mouth.inside[0], mouth.inside[2]];
       // The exact allowed interface is this finite wall solid clipped to the
       // authored host-wall slab. Connector length and requested wall thickness
       // cannot expand that longitudinal allowance.
-      const jambEnvelope = polygonProjectionSlab(footprint, inside,
-        mouth.outward, 0, mouth.wallThickness);
-      const permittedArea = positivePolygonArea(convexIntersection(overlap, jambEnvelope));
-      return Math.max(0, overlapArea - permittedArea);
+      const projection = point => dot2(subtract2(point, inside), mouth.outward);
+      const roomSide = clipPolygonHalfPlane(footprint, point => -projection(point));
+      const beyondWall = clipPolygonHalfPlane(footprint,
+        point => projection(point) - mouth.wallThickness);
+      return footprintOverlapsRoom(roomSide, wingVolume) ||
+        footprintOverlapsRoom(beyondWall, wingVolume);
     };
     for (const wingVolume of wingVolumes) {
       if (!yRangesOverlap(volume, wingVolume)) continue;
-      const area = clearIntrusionArea(connector.clearPolygon, wingVolume);
-      if (area > COLLISION_AREA_EPSILON)
-        fail(`connections.${connector.id}`, `intrudes into wing volume ${wingVolume.id} (${area}m2)`);
+      if (clearIntrudes(connector.clearPolygon, wingVolume))
+        fail(`connections.${connector.id}`, `intrudes into wing volume ${wingVolume.id}`);
     }
     // The clear floor is not the full physical footprint: each side wall is
     // extruded along its outward normal. Those solids may meet their two host
@@ -587,10 +632,9 @@ function validateConnectorIntrusion(connectors, wingVolumes) {
         fail(`connections.${connector.id}.wallSpans.${span.id}`, 'trim planes remove the solid');
       for (const wingVolume of wingVolumes) {
         if (!yRangesOverlap(volume, wingVolume)) continue;
-        const area = wallIntrusionArea(footprint, wingVolume);
-        if (area > COLLISION_AREA_EPSILON)
+        if (wallIntrudes(footprint, wingVolume))
           fail(`connections.${connector.id}.wallSpans.${span.id}`,
-            `solid intrudes into wing volume ${wingVolume.id} (${area}m2)`);
+            `solid intrudes into wing volume ${wingVolume.id}`);
       }
     }
   }
@@ -663,18 +707,16 @@ function validateCourtyardIntrusion(courtyards, wingVolumes) {
       maxY: courtyard.baseY + EPSILON * 2 };
     for (const wingVolume of wingVolumes) {
       if (!yRangesOverlap(floorVolume, wingVolume)) continue;
-      let overlap = convexIntersection(courtyard.clearPolygon, wingVolume.polygon);
+      let candidate = courtyard.clearPolygon;
       const mouth = participantMouths.get(wingVolume.wing)
         ?.find(candidate => candidate.roomId === wingVolume.roomId);
       if (mouth?.roomId === wingVolume.roomId) {
         const inside = [mouth.inside[0], mouth.inside[2]];
-        overlap = clipPolygonHalfPlane(overlap,
+        candidate = clipPolygonHalfPlane(candidate,
           point => -dot2(subtract2(point, inside), mouth.outward));
       }
-      const overlapArea = positivePolygonArea(overlap);
-      if (overlapArea <= COLLISION_AREA_EPSILON) continue;
-      fail(`courtyards.${courtyard.id}`,
-        `intrudes into wing volume ${wingVolume.id} (${overlapArea}m2)`);
+      if (footprintOverlapsRoom(candidate, wingVolume))
+        fail(`courtyards.${courtyard.id}`, `intrudes into wing volume ${wingVolume.id}`);
     }
   }
 }
