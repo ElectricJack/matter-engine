@@ -155,7 +155,23 @@ function selfTest(){
 }
 
 async function main(){
- const args=process.argv.slice(2);if(args.includes('--self-test')){selfTest();return;}
+ const args=process.argv.slice(2),booleanFlags=new Set(['--help','--self-test','--declarations-only']),valueFlags=new Set(['--scene','--output']);
+ const seen=new Set();
+ for(let i=0;i<args.length;i++){
+  const flag=args[i];assert.ok(booleanFlags.has(flag)||valueFlags.has(flag),'unknown argument '+flag);
+  assert.ok(!seen.has(flag),'duplicate argument '+flag);seen.add(flag);
+  if(valueFlags.has(flag)){assert.ok(args[i+1]&&!args[i+1].startsWith('--'),flag+' requires a value');i++;}
+ }
+ if(seen.has('--help')){console.log(`Usage: node --experimental-vm-modules tools/castle_bake_census.mjs [options]
+  --scene NAME            Count one scene (default: all four below)
+  --output FILE           Write complete JSON report (default: stdout)
+  --declarations-only     Read requires() without executing build(); no placement proof
+  --self-test             Run synthetic checks only; no VM flag required
+  --help                  Print usage without counting or loading worlds
+Scenes: ${SCENES.join(', ')}
+Exit codes: 0 success, 1 invalid input/authoring, 2 sources changed during counting.
+No native bake, renderer, or GPU is launched.`);return;}
+ if(seen.has('--self-test')){selfTest();return;}
  assert.equal(typeof vm.SourceTextModule,'function','Run Node with --experimental-vm-modules');
  const value=flag=>{const i=args.indexOf(flag);return i<0?null:args[i+1];};
  const selected=value('--scene')?[value('--scene')]:SCENES;for(const scene of selected)assert.ok(SCENES.includes(scene),'unknown scene '+scene);

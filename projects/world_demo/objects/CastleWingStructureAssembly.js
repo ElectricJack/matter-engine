@@ -1,12 +1,11 @@
-import { castleSiteWingManifest } from 'shared-lib/castle_site_catalog';
 import { castleMaterialsFromParams, CASTLE_PART_DEFAULTS } from 'shared-lib/castle_world';
-import { structurePlacements } from 'shared-lib/castle_structure';
+import { castleWingStructurePlacements } from 'shared-lib/castle_structure_catalog';
 
 function placements(p) {
- const lookup={siteVariant:p.siteVariant,wingIndex:p.wingIndex,siteSeed:p.siteSeed};
- return structurePlacements(castleSiteWingManifest(p.siteVariant,p.wingIndex,p.siteSeed),{
-  module:'CastleWingStructure',materials:castleMaterialsFromParams(p),detail:p.detail,
- }).map(r=>r.module==='CastleWingStructure'?{...r,params:{...r.params,...lookup}}:r);
+ return castleWingStructurePlacements({
+  siteVariant:p.siteVariant,wingIndex:p.wingIndex,siteSeed:p.siteSeed,
+  materials:castleMaterialsFromParams(p),detail:p.detail,
+ });
 }
 class CastleWingStructureAssembly extends Part {
  static noImpostor=true;

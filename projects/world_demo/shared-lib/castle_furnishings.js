@@ -1310,7 +1310,8 @@ export function glowParams(kindOrInput, maybeInput) {
     kind = FIXTURE_KINDS[clamp(Math.floor(finite(raw.fixture, 0)), 0, 2)];
   }
   if (FIXTURE_CODES[kind] === undefined) throw new TypeError('no glow proxy for furnishing kind ' + kind);
-  return { ...KINDS[kind].params(input), fixture: FIXTURE_CODES[kind] };
+  // Flame positions depend on fixture dimensions, not its wood/metal wear seed.
+  return { ...KINDS[kind].params(input), seed: 0, fixture: FIXTURE_CODES[kind] };
 }
 
 export function emitFixtureGlow(part, input) {
