@@ -98,7 +98,7 @@ export function castleSiteWorldDefinition(name='clustered-court') {
  // walking areas. One canonical slab is reused at any site/gallery size.
  const groundWidth=hi[0]-lo[0]+40,groundDepth=hi[1]-lo[1]+40;
  roots.push({module:'CastlePlinth',params:{x:-.5,z:-.5,width:1,depth:1,material:mat.foundation},
-  transform:[groundWidth,0,0,0,0,1,0,0,0,0,groundDepth,0,cx,0,cz,1]});
+  transform:[groundWidth,0,0,cx,0,1,0,0,0,0,groundDepth,cz,0,0,0,1]});
  entities.push({id:'castle-site-footing',components:{
   LocalTransform:{translation:[cx,-.7,cz],rotation:[0,0,0,1],scale:[1,1,1]},
   RigidBody:{type:'static'},BoxCollider:{halfExtents:[groundWidth/2,.45,groundDepth/2]},
