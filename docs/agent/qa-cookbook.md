@@ -539,14 +539,19 @@ lives there, not in this Makefile.
 ## 11. JS world-script tests
 
 ```bash
-node --experimental-default-type=module projects/world_demo/tests/alpine_ecology_tests.mjs
+node projects/world_demo/tests/alpine_ecology_tests.mjs
 ```
 
 There is no `package.json` anywhere in the repo (deliberately — see
 `CLAUDE.md`: the same `.js` modules are loaded by the engine's QuickJS host,
-which has its own module resolution and wouldn't see one), so a plain
-`node file.mjs` dies with "is a CommonJS module" — the `--experimental-default-type=module`
-flag (or `--experimental-detect-module` on Node ≥ 20.10) is required every time.
+which has its own module resolution and wouldn't see one), so the imported
+`.js` files have no declared module type. Node ≥ 22.7 detects their ES module
+syntax by default, so plain `node` works; on Node 20.10–22.6 add
+`--experimental-detect-module`, or the import dies with "is a CommonJS module".
+Do not use `--experimental-default-type=module` — Node 24 rejects it with
+`bad option` (exit 9), and a loop such as
+`node … ; echo "$(basename f) exit=$?"` then prints `exit=0` because the
+command substitution resets `$?`. Capture the exit code right after `node`.
 
 ## 12. RiverFloatLab visual playtest
 
