@@ -8,13 +8,20 @@
       "valid": true,
       "errors": 0,
       "warnings": {},
-      "elapsedMs": 31,
+      "elapsedMs": 37,
       "recipes": {
         "floor": 4,
         "stair": 2,
         "frame": 2
       },
-      "childVariants": 48,
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 5
+        },
+        "primitivePlacements": 90
+      },
       "stats": {
         "records": 5,
         "children": 90,
@@ -35,24 +42,31 @@
       "valid": true,
       "errors": 0,
       "warnings": {},
-      "elapsedMs": 266,
+      "elapsedMs": 205,
       "recipes": {
         "floor": 9,
         "stair": 2,
         "roof": 6,
         "frame": 4
       },
-      "childVariants": 353,
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 8
+        },
+        "primitivePlacements": 647
+      },
       "stats": {
         "records": 11,
         "children": 647,
-        "meshTriangles": 38456,
+        "meshTriangles": 37928,
         "members": 246,
         "nodes": 272,
         "joints": 272,
         "aliases": 0,
         "supportedEnds": 76,
-        "solids": 6393,
+        "solids": 6305,
         "clearances": 39
       },
       "roofKinds": [
@@ -67,25 +81,32 @@
       "valid": true,
       "errors": 0,
       "warnings": {
-        "guard-narrows-route": 82
+        "guard-narrows-route": 42
       },
-      "elapsedMs": 1115,
+      "elapsedMs": 774,
       "recipes": {
         "floor": 36,
         "stair": 2,
         "roof": 12
       },
-      "childVariants": 1358,
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 7
+        },
+        "primitivePlacements": 5392
+      },
       "stats": {
         "records": 27,
         "children": 5392,
-        "meshTriangles": 185352,
+        "meshTriangles": 184872,
         "members": 825,
         "nodes": 636,
         "joints": 636,
         "aliases": 0,
         "supportedEnds": 512,
-        "solids": 28676,
+        "solids": 28596,
         "clearances": 166
       },
       "roofKinds": [
@@ -105,23 +126,30 @@
       "warnings": {
         "guard-narrows-route": 70
       },
-      "elapsedMs": 726,
+      "elapsedMs": 469,
       "recipes": {
         "floor": 35,
         "stair": 2,
         "roof": 12
       },
-      "childVariants": 1071,
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 8
+        },
+        "primitivePlacements": 2964
+      },
       "stats": {
         "records": 25,
         "children": 2964,
-        "meshTriangles": 142984,
+        "meshTriangles": 142792,
         "members": 784,
         "nodes": 667,
         "joints": 667,
         "aliases": 0,
         "supportedEnds": 360,
-        "solids": 22174,
+        "solids": 22142,
         "clearances": 211
       },
       "roofKinds": [
@@ -139,23 +167,30 @@
       "valid": true,
       "errors": 0,
       "warnings": {},
-      "elapsedMs": 1008,
+      "elapsedMs": 723,
       "recipes": {
         "floor": 55,
         "stair": 4,
         "roof": 16
       },
-      "childVariants": 1702,
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 8
+        },
+        "primitivePlacements": 5666
+      },
       "stats": {
         "records": 39,
         "children": 5666,
-        "meshTriangles": 225628,
+        "meshTriangles": 224476,
         "members": 1299,
         "nodes": 995,
         "joints": 995,
         "aliases": 0,
         "supportedEnds": 714,
-        "solids": 33189,
+        "solids": 32997,
         "clearances": 339
       },
       "roofKinds": [
@@ -175,25 +210,32 @@
       "valid": true,
       "errors": 0,
       "warnings": {
-        "guard-narrows-route": 82
+        "guard-narrows-route": 42
       },
-      "elapsedMs": 935,
+      "elapsedMs": 597,
       "recipes": {
         "floor": 36,
         "stair": 2,
         "roof": 12
       },
-      "childVariants": 1358,
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 7
+        },
+        "primitivePlacements": 5392
+      },
       "stats": {
         "records": 27,
         "children": 5392,
-        "meshTriangles": 185304,
+        "meshTriangles": 184824,
         "members": 825,
         "nodes": 636,
         "joints": 636,
         "aliases": 0,
         "supportedEnds": 512,
-        "solids": 28684,
+        "solids": 28604,
         "clearances": 166
       },
       "roofKinds": [
@@ -214,23 +256,30 @@
         "structure-above-open-boundary": 1,
         "guard-narrows-route": 70
       },
-      "elapsedMs": 623,
+      "elapsedMs": 412,
       "recipes": {
         "floor": 35,
         "stair": 2,
         "roof": 12
       },
-      "childVariants": 1071,
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 8
+        },
+        "primitivePlacements": 2964
+      },
       "stats": {
         "records": 25,
         "children": 2964,
-        "meshTriangles": 142864,
+        "meshTriangles": 142672,
         "members": 784,
         "nodes": 662,
         "joints": 662,
         "aliases": 0,
         "supportedEnds": 360,
-        "solids": 22144,
+        "solids": 22112,
         "clearances": 211
       },
       "roofKinds": [
@@ -250,23 +299,30 @@
       "warnings": {
         "structure-above-open-boundary": 221
       },
-      "elapsedMs": 1105,
+      "elapsedMs": 742,
       "recipes": {
         "floor": 55,
         "stair": 4,
         "roof": 16
       },
-      "childVariants": 1692,
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 8
+        },
+        "primitivePlacements": 5652
+      },
       "stats": {
         "records": 39,
         "children": 5652,
-        "meshTriangles": 226468,
+        "meshTriangles": 225316,
         "members": 1299,
         "nodes": 995,
         "joints": 995,
         "aliases": 0,
         "supportedEnds": 714,
-        "solids": 33319,
+        "solids": 33127,
         "clearances": 339
       },
       "roofKinds": [
@@ -278,6 +334,256 @@
         "roof:south-range:gable",
         "roof:west-cloister:gable",
         "roof:west-range:gable"
+      ]
+    },
+    {
+      "name": "castle_wing_programs.castleWingPlan(keep,{storeys:1})",
+      "planId": "keep-1",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 57,
+      "recipes": {
+        "floor": 6,
+        "roof": 2
+      },
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastleBeam": 7
+        },
+        "primitivePlacements": 431
+      },
+      "stats": {
+        "records": 4,
+        "children": 431,
+        "meshTriangles": 25616,
+        "members": 104,
+        "nodes": 100,
+        "joints": 100,
+        "aliases": 0,
+        "supportedEnds": 0,
+        "solids": 3761,
+        "clearances": 11
+      },
+      "roofKinds": [
+        "roof:keep-roof:hip"
+      ]
+    },
+    {
+      "name": "castle_wing_programs.castleWingPlan(keep,{storeys:3})",
+      "planId": "keep-3",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 99,
+      "recipes": {
+        "floor": 16,
+        "stair": 4,
+        "roof": 2
+      },
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 7
+        },
+        "primitivePlacements": 1097
+      },
+      "stats": {
+        "records": 12,
+        "children": 1097,
+        "meshTriangles": 26744,
+        "members": 278,
+        "nodes": 281,
+        "joints": 281,
+        "aliases": 0,
+        "supportedEnds": 220,
+        "solids": 4950,
+        "clearances": 108
+      },
+      "roofKinds": [
+        "roof:keep-roof:hip"
+      ]
+    },
+    {
+      "name": "castle_wing_programs.castleWingPlan(keep,{storeys:4})",
+      "planId": "keep-4",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 127,
+      "recipes": {
+        "floor": 21,
+        "stair": 6,
+        "roof": 2
+      },
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 8
+        },
+        "primitivePlacements": 1426
+      },
+      "stats": {
+        "records": 16,
+        "children": 1426,
+        "meshTriangles": 27308,
+        "members": 361,
+        "nodes": 369,
+        "joints": 369,
+        "aliases": 0,
+        "supportedEnds": 330,
+        "solids": 5537,
+        "clearances": 161
+      },
+      "roofKinds": [
+        "roof:keep-roof:hip"
+      ]
+    },
+    {
+      "name": "castle_wing_programs.castleWingPlan(hall,{storeys:2})",
+      "planId": "hall-2",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 66,
+      "recipes": {
+        "floor": 12,
+        "stair": 2,
+        "roof": 2,
+        "frame": 2
+      },
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 7
+        },
+        "primitivePlacements": 596
+      },
+      "stats": {
+        "records": 9,
+        "children": 596,
+        "meshTriangles": 22628,
+        "members": 168,
+        "nodes": 158,
+        "joints": 158,
+        "aliases": 0,
+        "supportedEnds": 136,
+        "solids": 3539,
+        "clearances": 63
+      },
+      "roofKinds": [
+        "roof:hall-roof:gable"
+      ]
+    },
+    {
+      "name": "castle_wing_programs.castleWingPlan(chapel,{storeys:2})",
+      "planId": "chapel-2",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 49,
+      "recipes": {
+        "floor": 10,
+        "stair": 2,
+        "roof": 2,
+        "frame": 2
+      },
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 7
+        },
+        "primitivePlacements": 293
+      },
+      "stats": {
+        "records": 8,
+        "children": 293,
+        "meshTriangles": 18404,
+        "members": 78,
+        "nodes": 47,
+        "joints": 47,
+        "aliases": 0,
+        "supportedEnds": 24,
+        "solids": 2489,
+        "clearances": 48
+      },
+      "roofKinds": [
+        "roof:chapel-roof:gable"
+      ]
+    },
+    {
+      "name": "castle_wing_programs.castleWingPlan(service,{storeys:1})",
+      "planId": "service-1",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 31,
+      "recipes": {
+        "floor": 6,
+        "roof": 2
+      },
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastleBeam": 6
+        },
+        "primitivePlacements": 165
+      },
+      "stats": {
+        "records": 4,
+        "children": 165,
+        "meshTriangles": 14816,
+        "members": 45,
+        "nodes": 18,
+        "joints": 18,
+        "aliases": 0,
+        "supportedEnds": 0,
+        "solids": 1771,
+        "clearances": 10
+      },
+      "roofKinds": [
+        "roof:service-roof:gable"
+      ]
+    },
+    {
+      "name": "castle_wing_programs.castleWingPlan(service,{storeys:2})",
+      "planId": "service-2",
+      "valid": true,
+      "errors": 0,
+      "warnings": {},
+      "elapsedMs": 38,
+      "recipes": {
+        "floor": 11,
+        "stair": 2,
+        "roof": 2
+      },
+      "childVariants": {
+        "stockAssets": {
+          "CastleStone": 3,
+          "CastlePlank": 2,
+          "CastleBeam": 6
+        },
+        "primitivePlacements": 353
+      },
+      "stats": {
+        "records": 8,
+        "children": 353,
+        "meshTriangles": 14984,
+        "members": 101,
+        "nodes": 72,
+        "joints": 72,
+        "aliases": 0,
+        "supportedEnds": 48,
+        "solids": 2081,
+        "clearances": 58
+      },
+      "roofKinds": [
+        "roof:service-roof:gable"
       ]
     }
   ]

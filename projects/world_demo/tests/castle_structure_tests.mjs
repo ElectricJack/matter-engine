@@ -84,6 +84,7 @@ class RecordingPart {
   pushMatrix() { ++this.matrixDepth; }
   popMatrix() { assert.ok(this.matrixDepth-- > 0, 'popMatrix without matching pushMatrix'); }
   translate(x, y, z) { RecordingPart.assertFinite([x, y, z], 'translate'); }
+  scale(x, y, z) { RecordingPart.assertFinite([x, y, z], 'scale'); }
   rotateX(r) { RecordingPart.assertFinite([r], 'rotateX'); }
   rotateY(r) { RecordingPart.assertFinite([r], 'rotateY'); }
   rotateZ(r) { RecordingPart.assertFinite([r], 'rotateZ'); }
@@ -598,11 +599,16 @@ function section7() {
     assert.equal(placements.length, childOps.length + meshRecords, 'placements = children + mesh records');
     const apply = (m, p) => [0, 1, 2].map((i) => m[i * 4] * p[0] + m[i * 4 + 1] * p[1] + m[i * 4 + 2] * p[2] + m[i * 4 + 3]);
     const prims = placements.filter((p) => p.module !== 'CastleStructureFixturePart');
+    // Stock fit scales the child's local axes after its frame: the origin is
+    // unchanged and every local axis keeps its direction.
     childOps.forEach((op, i) => {
-      for (const x of [-0.5, 0.5]) {
-        const want = apply(base, S.applyFrame(op.frame, [x, 0.1, 0.05]));
-        const got = apply(prims[i].transform, [x, 0.1, 0.05]);
-        assert.ok(want.every((v, k) => Math.abs(v - got[k]) < 1e-5), 'placement transform mismatch for child ' + i);
+      const o = apply(base, S.applyFrame(op.frame, [0, 0, 0])), g = apply(prims[i].transform, [0, 0, 0]);
+      assert.ok(o.every((v, k) => Math.abs(v - g[k]) < 1e-5), 'placement origin mismatch for child ' + i);
+      for (const axis of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) {
+        const w = apply(base, S.applyFrame(op.frame, axis)).map((v, k) => v - o[k]);
+        const d = apply(prims[i].transform, axis).map((v, k) => v - g[k]);
+        const dl = Math.hypot(...d), wl = Math.hypot(...w);
+        assert.ok(Math.abs((w[0] * d[0] + w[1] * d[1] + w[2] * d[2]) / (dl * wl) - 1) < 1e-6, 'placement axis mismatch for child ' + i);
       }
     });
     const req = S.structureAssemblyRequires(M2, { module: 'CastleStructureFixturePart' });
