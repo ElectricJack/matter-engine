@@ -37,11 +37,17 @@
 //   { op:'box', material, center, half, frame }  closed mesh box
 //   { op:'cyl', material, a, b, r }              closed mesh cylinder
 //   { op:'tris', material, verts }               closed, outward-wound shell
+// Children are baked from the shared bounded stock (shared-lib/castle_stock):
+// each authored child maps to a fixed-dimension stock asset plus a local fit
+// scale composed after its frame, identically in emitStructure(),
+// structureChildVariants() and structurePlacements(). Op params keep the
+// authored dimensions, which remain the collision/clearance contract.
 // Materials inside ops are palette keys (STRUCTURE_MATERIAL_KEYS); handles are
 // substituted from the recipe params only at emit/requires time. A frame is
 // { t:[x,y,z], ry, rz, rx } applied as translate, rotateY, rotateZ, rotateX
 // (the engine's row-major, right-handed matrix stack).
 import { beamParams, plankParams, stoneParams } from 'shared-lib/castle_primitives';
+import { primitiveStock, fitStockTransform } from 'shared-lib/castle_stock';
 
 export const CASTLE_STRUCTURE_SCHEMA = 'matter.castle-structure/v1';
 
@@ -690,6 +696,18 @@ function layJoists(ctx, floor, region, jAxis, joistTop, h) {
       members.push({ id: floor.id + ':joist:' + i + ':' + k, role: 'joist', from, to, section: [w, h] });
     });
   }
+  // Trimmer/header stubs clipped short between holes and walls, with an end
+  // that bears on nothing, carry nothing: drop them.
+  const lowerLevels = ctx.manifest.levels.filter((l) => l.baseY < ctx.levelBase(floor.levelId) - EPS).map((l) => l.id);
+  for (let pass = 0; pass < 2; ++pass) {
+    const beared = (m, p) => wallFootprintContains(ctx.manifest, lowerLevels, p[0], p[2]) ||
+      members.some((o) => o !== m && segmentDistance(p, o.from, o.to).distance <= 0.5 * Math.max(...o.section) + 0.02);
+    for (let i = members.length - 1; i >= 0; --i) {
+      const m = members[i];
+      if ((m.role === 'trimmer' || m.role === 'header') && len(sub(m.to, m.from)) < 1.0 && !(beared(m, m.from) && beared(m, m.to)))
+        members.splice(i, 1);
+    }
+  }
   for (const m of members) ctx.member({ ...m, owner: floor.id, levelId: floor.levelId, source: 'floor',
     joint: m.role === 'joist' ? 2 : 1, strap: m.role === 'header' || m.role === 'edge-beam' ? 1 : 0, material: 'oak' });
   // Joists crossing an intermediate support beam are joined where they cross.
@@ -889,6 +907,8 @@ function jointOps(node, byId) {
   const ops = [];
   const tag = { jointId: 'joint:' + node.id.slice(5) };
   const strapRoles = /king-post|ridge|hip|roof-tie|header|floor-beam/;
+  // Stair and guard members sit on clearance edges: pegs only, no plates/bolts.
+  const noHardware = inc.some((i) => i.m.source === 'stair' || /guard|rail|newel|baluster|stringer/.test(i.m.role));
   for (const i of inc) {
     if (i === recv) continue;
     const B = i.m, dirB = memberDir(B);
@@ -902,7 +922,7 @@ function jointOps(node, byId) {
     if (body && B.joint === 2) centres.push(add(node.position, mul(body, reach + 0.09)));
     for (const c of centres)
       ops.push(cylOp('joint-peg', 'oakEnd', sub(c, mul(axis, pegLen * 0.5)), add(c, mul(axis, pegLen * 0.5)), 0.017, tag));
-    if (body && (B.strap || R.strap || strapRoles.test(B.role) || strapRoles.test(R.role))) {
+    if (body && !noHardware && (B.strap || R.strap || strapRoles.test(B.role) || strapRoles.test(R.role))) {
       const v = norm(cross(axis, body));
       const half = Math.min(0.24, len(sub(B.to, B.from)) * 0.3);
       for (const side of [-1, 1]) {
@@ -1156,8 +1176,17 @@ function layoutLanding(ctx, stair, style, landing, geoms, member) {
   member('landing:' + id + ':bearer-w', 'bearer', [x0, cy, z0], [x0, cy, z1], [w, h]);
   member('landing:' + id + ':bearer-e', 'bearer', [x1, cy, z0], [x1, cy, z1], [w, h]);
   if (landing.kind === 'intermediate') {
-    for (const [px, pz] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]])
+    // A post stands only where the stair's lower floor exists beneath it (not
+    // over a hole such as a stair well below) and blocks no stair envelope.
+    const baseFloors = (ctx.manifest.floors || []).filter((f) => f.levelId === stair.lowerLevelId);
+    const clear = (ctx.manifest.stairs || []).flatMap((s2) => stairClearanceVolumes(ctx.manifest, s2));
+    for (const [px, pz] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]) {
+      if (!baseFloors.some((f) => pointInRegion(floorRegion(ctx.manifest, f), px, pz, false))) continue;
+      const h2 = D.postSection * 0.5;
+      const column = { minX: px - h2, maxX: px + h2, minZ: pz - h2, maxZ: pz + h2, minY: lowerBase, maxY: cy };
+      if (clear.some((c) => overlaps(column, c))) continue;
       member('landing:' + id + ':post:' + round6(px) + ',' + round6(pz), 'landing-post', [px, lowerBase, pz], [px, cy, pz], [D.postSection, D.postSection]);
+    }
     // Guard any landing edge that is neither a flight connection nor a wall.
     for (const e of rectUnionEdges([rect])) {
       let spans = [[e.a0, e.a1]];
@@ -1198,8 +1227,18 @@ function layoutStairwellRails(ctx, stair, member) {
       const l = stair.landings.find((x) => x.id === h.replacementLandingId);
       return l && l.kind === 'upper' ? [rectFromBounds(l.bounds)] : [];
     });
+    // Another stair starting on this floor (a stacked stair) is entered here:
+    // its lower landing and first flight must not be railed off.
+    const entries = (ctx.manifest.stairs || []).filter((s2) => s2.id !== stair.id && s2.lowerLevelId === floor.levelId)
+      .flatMap((s2) => s2.landings.filter((l) => l.kind === 'lower').map((l) => rectFromBounds(l.bounds))
+        .concat(s2.flights.length ? [rectFromBounds(s2.flights[0].footprint)] : []));
     for (const e of rectUnionEdges(rects)) {
       let spans = [[e.a0, e.a1]];
+      const railC = e.pos + e.normal * (D.postSection * 0.5 + 0.02);
+      for (const r of entries) {
+        const [c0, c1] = e.dir === 'x' ? [r.z0, r.z1] : [r.x0, r.x1];
+        if (railC > c0 - 0.35 && railC < c1 + 0.35) spans = subtractIntervals(spans, [e.dir === 'x' ? [r.x0 - 0.2, r.x1 + 0.2] : [r.z0 - 0.2, r.z1 + 0.2]]);
+      }
       for (const r of landingRects) {
         const pos = e.dir === 'x' ? [r.z0, r.z1] : [r.x0, r.x1];
         if (pos.some((v) => Math.abs(v - e.pos) < 1e-4)) spans = subtractIntervals(spans, [e.dir === 'x' ? [r.x0, r.x1] : [r.z0, r.z1]]);
@@ -1474,8 +1513,10 @@ export function structurePlacements(manifest, options = {}) {
       out.push({ module, params: { manifestId: manifest.planId, recordKind: r.kind, recordId: r.id, recordIndex: r.index,
         seed: manifest.seed || 0, detail: childParams.detail, stairStyle: STAIR_STYLE_CODE[layout.stairStyle], layer: STRUCTURE_LAYER.mesh, ...mats },
         transform: mul16(base, [1, 0, 0, r.anchor[0], 0, 1, 0, r.anchor[1], 0, 0, 1, r.anchor[2], 0, 0, 0, 1]) });
-    for (const op of r.ops) if (op.op === 'child')
-      out.push({ module: op.module, params: canonicalChild(op, childParams), transform: mul16(base, mat16(op.frame)) });
+    for (const op of r.ops) if (op.op === 'child') {
+      const stock = primitiveStock(op.module, canonicalChild(op, childParams));
+      out.push({ module: stock.module, params: stock.params, transform: fitStockTransform(mul16(base, mat16(op.frame)), stock.scale) });
+    }
   }
   return out;
 }
@@ -1503,9 +1544,9 @@ export function structureChildVariants(manifest, params) {
   const seen = new Map();
   for (const op of record.ops) {
     if (op.op !== 'child') continue;
-    const canonical = canonicalChild(op, params);
-    const key = childKey(op.module, canonical);
-    if (!seen.has(key)) seen.set(key, { module: op.module, params: canonical });
+    const stock = primitiveStock(op.module, canonicalChild(op, params));
+    const key = childKey(stock.module, stock.params);
+    if (!seen.has(key)) seen.set(key, { module: stock.module, params: stock.params });
   }
   return [...seen.values()];
 }
@@ -1524,9 +1565,11 @@ export function emitStructure(part, manifest, params) {
   for (const op of record.ops) {
     if (op.op === 'child' ? layer === STRUCTURE_LAYER.mesh : layer === STRUCTURE_LAYER.children) continue;
     if (op.op === 'child') {
+      const stock = primitiveStock(op.module, canonicalChild(op, params));
       part.pushMatrix();
       applyOpFrame(part, op.frame);
-      part.placeChild(op.module, canonicalChild(op, params));
+      part.scale(stock.scale[0], stock.scale[1], stock.scale[2]);
+      part.placeChild(stock.module, stock.params);
       part.popMatrix();
     } else if (op.op === 'box') {
       part.fill(materialHandle(params, op.material));
