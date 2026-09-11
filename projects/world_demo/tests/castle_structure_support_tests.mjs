@@ -181,6 +181,14 @@ for (const storeys of [3, 4]) {
   assert.ok(probe([{ from: [3, 5.5, 9], to: [3, 7.5, 9], section: [0.2, 0.2] }]).has('beam:test:0'), 'post in the air reported');
   // Wall to wall at the same height is carried.
   assert.ok(!probe([{ from: [0, high, 6.5], to: [8, high, 6.5] }]).has('beam:test:0'), 'wall-to-wall beam is supported');
+  // Contact along a parallel member carries only a member stacked on it, and
+  // only where the shared stretch spans its midpoint.
+  const lower = [{ from: [2, 6.6, 2], to: [5, 6.6, 2] }, { from: [2, 4, 2], to: [2, 6.6, 2], section: [0.2, 0.2] },
+    { from: [5, 4, 2], to: [5, 6.6, 2], section: [0.2, 0.2] }];
+  assert.ok(!probe(lower).has('beam:test:0'), 'beam on two posts is supported');
+  assert.ok(!probe(lower.concat([{ from: [2.2, 6.84, 2], to: [4.8, 6.84, 2] }])).has('beam:test:3'), 'beam stacked along a carried beam is supported');
+  assert.ok(probe(lower.concat([{ from: [2.5, 6.63, 2.2], to: [4.5, 6.63, 2.2] }])).has('beam:test:3'), 'side-by-side contact reported');
+  assert.ok(probe(lower.concat([{ from: [4.6, 6.84, 2], to: [6.6, 6.84, 2] }])).has('beam:test:3'), 'end lap cantilever reported');
   // The frame gains a load path once real posts stand under its corners.
   const posted = probe(frame.concat(sq.map(([x, z]) => ({ from: [x, 4, z], to: [x, y, z], section: [0.2, 0.2] }))));
   assert.equal(posted.size, 0, 'frame on posts standing on the floor is supported');
