@@ -90,14 +90,24 @@ struct WorldRoot {
                              // provider's tileset phase (detail-atlas bake)
 };
 
-// Point-light contract used by World JavaScript. Directional sun and sky values
-// remain settings because the existing renderer owns one of each, while points
-// are an ordered collection.
+enum class WorldLightKind : std::uint32_t {
+    Point = 0,
+    Spot = 1,
+};
+
+// Local-light contract used by World JavaScript. Directional sun and sky values
+// remain settings because the existing renderer owns one of each, while local
+// lights are an ordered collection. All distances are world metres. intensity
+// is a candela-equivalent scene-linear multiplier which the provider folds into
+// color when it creates the resolved GPU record.
 struct WorldLight {
+    WorldLightKind kind = WorldLightKind::Point;
     Float3 position{};
     Float3 color{1.0f, 1.0f, 1.0f};
     float intensity = 1.0f;
     float range = 10.0f;
+    float source_radius = 0.0f;
+    bool casts_shadow = false;
     // Optional spotlight shape. Defaults describe an omnidirectional point;
     // authored spot entries preserve the established renderer light contract.
     Float3 direction{};

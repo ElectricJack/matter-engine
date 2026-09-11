@@ -132,14 +132,30 @@ static resolve_cache::ResolveCachePayload make_payload() {
         p.lights.sun_color[0] =  2.2f;  p.lights.sun_color[1] =  2.05f; p.lights.sun_color[2] =  1.8f;
         p.lights.sky_color[0] =  0.38f; p.lights.sky_color[1] =  0.43f; p.lights.sky_color[2] =  0.52f;
 
-        world_lights::SpotLight s;
-        s.pos[0] = 1.f; s.pos[1] = 10.f; s.pos[2] = 2.f;
-        s.dir[0] = 0.f; s.dir[1] = -1.f; s.dir[2] = 0.f;
-        s.color[0] = 5.f; s.color[1] = 4.5f; s.color[2] = 4.f;
-        s.range = 20.f;
-        s.cos_inner = 0.9f;
-        s.cos_outer = 0.7f;
-        p.lights.spots.push_back(s);
+        world_lights::LocalLight spot{};
+        spot.position[0] = 1.f; spot.position[1] = 10.f; spot.position[2] = 2.f;
+        spot.range = 20.f;
+        spot.direction[0] = 0.f; spot.direction[1] = -1.f; spot.direction[2] = 0.f;
+        spot.cos_outer = 0.7f;
+        spot.color[0] = 5.f; spot.color[1] = 4.5f; spot.color[2] = 4.f;
+        spot.source_radius = 0.2f;
+        spot.cos_inner = 0.9f;
+        spot.kind = static_cast<uint32_t>(world_lights::LocalLightKind::Spot);
+        spot.flags = world_lights::kLocalLightCastsShadow;
+        p.lights.local.records.push_back(spot);
+
+        world_lights::LocalLight point{};
+        point.position[0] = -12.f; point.position[1] = 2.f;
+        point.position[2] = 4.f; point.range = 8.f;
+        point.cos_outer = point.cos_inner = -1.f;
+        point.color[0] = 2.f; point.color[1] = 1.f; point.color[2] = 0.5f;
+        point.source_radius = 0.05f;
+        point.kind = static_cast<uint32_t>(world_lights::LocalLightKind::Point);
+        p.lights.local.records.push_back(point);
+        std::string light_error;
+        const bool indexed = world_lights::rebuild_local_light_publication(
+            p.lights.local, light_error);
+        assert(indexed && light_error.empty());
     }
 
     // Snapshot.
@@ -250,19 +266,30 @@ static void test_round_trip_basic() {
         CHECK(out.lights.sun_color[i] == p.lights.sun_color[i]);
         CHECK(out.lights.sky_color[i] == p.lights.sky_color[i]);
     }
-    REQUIRE(out.lights.spots.size() == p.lights.spots.size());
-    for (size_t i = 0; i < p.lights.spots.size(); ++i) {
-        const auto& sp  = p.lights.spots[i];
-        const auto& so  = out.lights.spots[i];
+    REQUIRE(out.lights.local.records.size() ==
+            p.lights.local.records.size());
+    for (size_t i = 0; i < p.lights.local.records.size(); ++i) {
+        const auto& source = p.lights.local.records[i];
+        const auto& loaded = out.lights.local.records[i];
         for (int j = 0; j < 3; ++j) {
-            CHECK(so.pos[j]   == sp.pos[j]);
-            CHECK(so.dir[j]   == sp.dir[j]);
-            CHECK(so.color[j] == sp.color[j]);
+            CHECK(loaded.position[j] == source.position[j]);
+            CHECK(loaded.direction[j] == source.direction[j]);
+            CHECK(loaded.color[j] == source.color[j]);
         }
-        CHECK(so.range     == sp.range);
-        CHECK(so.cos_inner == sp.cos_inner);
-        CHECK(so.cos_outer == sp.cos_outer);
+        CHECK(loaded.range == source.range);
+        CHECK(loaded.cos_outer == source.cos_outer);
+        CHECK(loaded.source_radius == source.source_radius);
+        CHECK(loaded.cos_inner == source.cos_inner);
+        CHECK(loaded.kind == source.kind);
+        CHECK(loaded.flags == source.flags);
+        CHECK(loaded.reserved == source.reserved);
     }
+    CHECK(out.lights.local.revision == p.lights.local.revision);
+    CHECK(!out.lights.local.index.cells.empty());
+    CHECK(out.lights.local.index.light_indices ==
+          p.lights.local.index.light_indices);
+    CHECK(out.lights.local.index.oversized_light_indices ==
+          p.lights.local.index.oversized_light_indices);
 
     // snapshot nodes
     CHECK(out.snapshot.nodes.size() == p.snapshot.nodes.size());
@@ -482,6 +509,8 @@ static void test_world_definition_adapter_preserves_runtime_semantics() {
     light.color = {0.5f, 0.6f, 0.7f};
     light.intensity = 2.5f;
     light.range = 42.0f;
+    light.source_radius = 0.2f;
+    light.casts_shadow = true;
     definition.lights.push_back(light);
     definition.settings.sector_size = 32.0f;
 
@@ -497,12 +526,46 @@ static void test_world_definition_adapter_preserves_runtime_semantics() {
           adapted.root_transforms[0].m[11] == 6.0f);
     CHECK(adapted.expand_flags == std::vector<bool>({true, false}) &&
           adapted.tileset_flags == std::vector<bool>({false, true}));
-    CHECK(adapted.lights.spots.size() == 1 &&
-          adapted.lights.spots[0].color[0] == 1.25f &&
-          adapted.lights.spots[0].color[1] == 1.5f &&
-          adapted.lights.spots[0].color[2] == 1.75f &&
-          adapted.lights.spots[0].range == 42.0f);
+    CHECK(adapted.lights.local.records.size() == 1 &&
+          adapted.lights.local.records[0].color[0] == 1.25f &&
+          adapted.lights.local.records[0].color[1] == 1.5f &&
+          adapted.lights.local.records[0].color[2] == 1.75f &&
+          adapted.lights.local.records[0].range == 42.0f &&
+          adapted.lights.local.records[0].source_radius == 0.2f &&
+          adapted.lights.local.records[0].flags ==
+              world_lights::kLocalLightCastsShadow &&
+          adapted.lights.local.revision != 0u);
+    matter::WorldDefinition light_only_edit = definition;
+    light_only_edit.lights[0].intensity = 3.5f;
+    const viewer::ProviderWorldDefinition reloaded =
+        viewer::adapt_world_definition(light_only_edit);
+    CHECK(reloaded.roots.size() == adapted.roots.size() &&
+          part_graph::params_to_json(reloaded.roots[0].params) ==
+              part_graph::params_to_json(adapted.roots[0].params));
+    CHECK(reloaded.lights.local.revision != adapted.lights.local.revision);
     CHECK(adapted.settings.sector_size == 32.0f);
+}
+
+static void test_old_light_record_cache_version_is_rejected() {
+    printf("[resolve_cache] old_light_record_version_rejected\n");
+    const std::string root = sandbox_root("rc_test_old_light_version");
+    reset_dir(root);
+    fs::create_directories(root + "/cache");
+    const uint64_t KEY = 0x7A7A7A7A7A7A7A7Aull;
+    auto payload = make_payload();
+    REQUIRE(resolve_cache::save(root, "TestWorld", KEY, payload));
+
+    const std::string path = root + "/cache/TestWorld.resolve";
+    {
+        std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(file.good());
+        const uint32_t old_version = 6u;
+        file.seekp(4);
+        file.write(reinterpret_cast<const char*>(&old_version), 4);
+    }
+    resolve_cache::ResolveCachePayload out;
+    CHECK(!resolve_cache::load(root, "TestWorld", KEY, out));
+    remove_dir(root);
 }
 
 static void test_project_procedural_settings_drive_profile_and_binding() {
@@ -680,6 +743,7 @@ int main() {
     test_key_changes_on_seed();
     test_truncated_load();
     test_bad_magic_rejected();
+    test_old_light_record_cache_version_is_rejected();
     test_bad_key_rejected();
     test_multi_source_dedup();
 

@@ -25,14 +25,13 @@
 //     f32[3] sun_dir
 //     f32[3] sun_color
 //     f32[3] sky_color
-//     u32    spot_count
-//     for each spot:
-//       f32[3] pos
-//       f32[3] dir
-//       f32[3] color
-//       f32    range
-//       f32    cos_inner
-//       f32    cos_outer
+//     u32    local_light_count
+//     for each local light (same 64-byte field order as LocalLight):
+//       f32[3] position; f32 range
+//       f32[3] direction; f32 cos_outer
+//       f32[3] color; f32 source_radius
+//       f32 cos_inner; u32 kind; u32 flags; u32 reserved
+//     The spatial index and revision are derived and rebuilt after load.
 //
 //     === part_graph_snapshot::Snapshot ===
 //     u32  node_count
@@ -124,6 +123,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <system_error>
 #include <vector>
@@ -152,7 +152,9 @@ static constexpr uint32_t kResolveCacheMagic   = 0x00314352u;
 // params are empty, and every parameter surface would then fall back to the
 // placement params -- i.e. a cache hit would silently reproduce the empty
 // `procedural.parameters` set this field exists to fix.
-static constexpr uint32_t kResolveCacheVersion = 6u;  // + Node::effective_params_json
+// Version 7 replaces the ambiguous SpotLight record with the fixed 64-byte
+// LocalLight record and reconstructs its spatial publication on load.
+static constexpr uint32_t kResolveCacheVersion = 7u;  // LocalLight ABI + rebuild
 
 // ---------------------------------------------------------------------------
 // Low-level binary read/write helpers (little-endian)
@@ -427,6 +429,10 @@ bool save(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           cache_key,
           const ResolveCachePayload& p) {
+    if (p.lights.local.records.size() >
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
+        return false;
+
     const std::string cache_dir = cache_root + "/cache";
     fs_mkdir_rc(cache_dir.c_str());
 
@@ -467,15 +473,23 @@ bool save(const std::string& cache_root,
         for (int i = 0; i < 3; ++i) if (!write_le(f, l.sun_dir[i]))   return false;
         for (int i = 0; i < 3; ++i) if (!write_le(f, l.sun_color[i])) return false;
         for (int i = 0; i < 3; ++i) if (!write_le(f, l.sky_color[i])) return false;
-        uint32_t sc = (uint32_t)l.spots.size();
-        if (!write_le(f, sc)) return false;
-        for (const auto& s : l.spots) {
-            for (int i = 0; i < 3; ++i) if (!write_le(f, s.pos[i]))   return false;
-            for (int i = 0; i < 3; ++i) if (!write_le(f, s.dir[i]))   return false;
-            for (int i = 0; i < 3; ++i) if (!write_le(f, s.color[i])) return false;
-            if (!write_le(f, s.range))     return false;
-            if (!write_le(f, s.cos_inner)) return false;
-            if (!write_le(f, s.cos_outer)) return false;
+        const uint32_t count =
+            static_cast<uint32_t>(l.local.records.size());
+        if (!write_le(f, count)) return false;
+        for (const auto& light : l.local.records) {
+            for (int i = 0; i < 3; ++i)
+                if (!write_le(f, light.position[i])) return false;
+            if (!write_le(f, light.range)) return false;
+            for (int i = 0; i < 3; ++i)
+                if (!write_le(f, light.direction[i])) return false;
+            if (!write_le(f, light.cos_outer)) return false;
+            for (int i = 0; i < 3; ++i)
+                if (!write_le(f, light.color[i])) return false;
+            if (!write_le(f, light.source_radius)) return false;
+            if (!write_le(f, light.cos_inner)) return false;
+            if (!write_le(f, light.kind)) return false;
+            if (!write_le(f, light.flags)) return false;
+            if (!write_le(f, light.reserved)) return false;
         }
     }
 
@@ -671,18 +685,30 @@ bool load(const std::string& cache_root,
         for (int i = 0; i < 3; ++i) if (!read_le(f, l.sun_dir[i]))   return false;
         for (int i = 0; i < 3; ++i) if (!read_le(f, l.sun_color[i])) return false;
         for (int i = 0; i < 3; ++i) if (!read_le(f, l.sky_color[i])) return false;
-        uint32_t sc = 0;
-        if (!read_le(f, sc)) return false;
-        l.spots.resize(sc);
-        for (uint32_t i = 0; i < sc; ++i) {
-            auto& s = l.spots[i];
-            for (int j = 0; j < 3; ++j) if (!read_le(f, s.pos[j]))   return false;
-            for (int j = 0; j < 3; ++j) if (!read_le(f, s.dir[j]))   return false;
-            for (int j = 0; j < 3; ++j) if (!read_le(f, s.color[j])) return false;
-            if (!read_le(f, s.range))     return false;
-            if (!read_le(f, s.cos_inner)) return false;
-            if (!read_le(f, s.cos_outer)) return false;
+        uint32_t count = 0;
+        if (!read_le(f, count)) return false;
+        if (count > 1024u * 1024u) return false;  // 64 MiB record sanity cap
+        l.local.records.resize(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            auto& light = l.local.records[i];
+            for (int j = 0; j < 3; ++j)
+                if (!read_le(f, light.position[j])) return false;
+            if (!read_le(f, light.range)) return false;
+            for (int j = 0; j < 3; ++j)
+                if (!read_le(f, light.direction[j])) return false;
+            if (!read_le(f, light.cos_outer)) return false;
+            for (int j = 0; j < 3; ++j)
+                if (!read_le(f, light.color[j])) return false;
+            if (!read_le(f, light.source_radius)) return false;
+            if (!read_le(f, light.cos_inner)) return false;
+            if (!read_le(f, light.kind)) return false;
+            if (!read_le(f, light.flags)) return false;
+            if (!read_le(f, light.reserved)) return false;
         }
+        std::string light_error;
+        if (!world_lights::rebuild_local_light_publication(l.local,
+                                                            light_error))
+            return false;
     }
 
     // === snapshot ===

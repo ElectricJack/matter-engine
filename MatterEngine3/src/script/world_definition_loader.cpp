@@ -398,6 +398,18 @@ bool optional_number(JSContext* context,
     return ok;
 }
 
+bool optional_bool(JSContext* context,
+                   JSValueConst object,
+                   const char* name,
+                   bool& output) {
+    JSValue value = JS_GetPropertyStr(context, object, name);
+    const bool absent = JS_IsUndefined(value);
+    const bool ok = absent || JS_IsBool(value);
+    if (ok && !absent) output = JS_ToBool(context, value) != 0;
+    JS_FreeValue(context, value);
+    return ok;
+}
+
 // The `entity(record)` binding handed to buildEntities(). Appends the record to
 // the __matter_entities global array at its current length; extract_entities()
 // reads that array afterwards. It is defined on the instance as own,
@@ -2113,10 +2125,9 @@ bool extract_roots(JSContext* context,
 }
 
 // World.lights, which accepts TWO shapes:
-//   * an array of point lights, appended to definition.lights; or
-//   * an object with optional `sun` / `sky` / `spots` members, where sun and sky
-//     write renderer SETTINGS (definition.settings.sun_* / sky_color) rather
-//     than list entries, and only `spots` appends lights.
+//   * a legacy array of point lights, appended to definition.lights; or
+//   * an object with optional `sun` / `sky` / `points` / `spots` members, where
+//     sun and sky write renderer SETTINGS and points/spots append local lights.
 // The array form returns early, so a world using it gets no sun/sky authoring
 // at all. Absent means "keep the compiled defaults".
 bool extract_lights(JSContext* context,
@@ -2130,42 +2141,111 @@ bool extract_lights(JSContext* context,
         return true;
     }
 
-    std::uint32_t count = 0;
-    if (array_length(context, lights, count)) {
+    const auto extract_local_array =
+        [&](JSValueConst array, const std::string& array_path,
+            WorldLightKind kind) -> bool {
+        std::uint32_t count = 0;
+        if (!array_length(context, array, count))
+            return fail(desc, error, array_path, array_path + " must be an array");
+
         for (std::uint32_t index = 0; index < count; ++index) {
-            const std::string path = "lights[" + std::to_string(index) + "]";
-            JSValue entry = JS_GetPropertyUint32(context, lights, index);
+            const std::string path =
+                array_path + "[" + std::to_string(index) + "]";
+            JSValue entry = JS_GetPropertyUint32(context, array, index);
             WorldLight light;
+            light.kind = kind;
+
             JSValue position = JS_GetPropertyStr(context, entry, "position");
-            if (!float3_value(context, position, light.position)) {
+            if (JS_IsUndefined(position)) {
                 JS_FreeValue(context, position);
-                JS_FreeValue(context, entry);
-                JS_FreeValue(context, lights);
-                return fail(desc, error, path + ".position",
-                            "light position must contain 3 numbers");
+                position = JS_GetPropertyStr(context, entry, "pos");
             }
+            const bool position_ok =
+                float3_value(context, position, light.position);
             JS_FreeValue(context, position);
+
             JSValue color = JS_GetPropertyStr(context, entry, "color");
-            if (!JS_IsUndefined(color) && !float3_value(context, color, light.color)) {
-                JS_FreeValue(context, color);
-                JS_FreeValue(context, entry);
-                JS_FreeValue(context, lights);
-                return fail(desc, error, path + ".color",
-                            "light color must contain 3 numbers");
-            }
+            const bool color_ok = JS_IsUndefined(color) ||
+                                  float3_value(context, color, light.color);
             JS_FreeValue(context, color);
-            if (!optional_number(context, entry, "intensity", light.intensity) ||
-                !optional_number(context, entry, "range", light.range)) {
-                JS_FreeValue(context, entry);
-                JS_FreeValue(context, lights);
-                return fail(desc, error, path,
-                            "light intensity and range must be numeric");
+
+            bool direction_ok = true;
+            if (kind == WorldLightKind::Spot) {
+                JSValue direction =
+                    JS_GetPropertyStr(context, entry, "direction");
+                if (JS_IsUndefined(direction)) {
+                    JS_FreeValue(context, direction);
+                    direction = JS_GetPropertyStr(context, entry, "dir");
+                }
+                direction_ok =
+                    float3_value(context, direction, light.direction);
+                JS_FreeValue(context, direction);
+            }
+
+            const bool scalars_ok =
+                optional_number(context, entry, "intensity", light.intensity) &&
+                optional_number(context, entry, "range", light.range) &&
+                optional_number(context, entry, "sourceRadius",
+                                light.source_radius) &&
+                optional_bool(context, entry, "castsShadow",
+                              light.casts_shadow) &&
+                (kind != WorldLightKind::Spot ||
+                 (optional_number(context, entry, "inner",
+                                  light.inner_cone_degrees) &&
+                  optional_number(context, entry, "outer",
+                                  light.outer_cone_degrees)));
+            JS_FreeValue(context, entry);
+
+            const bool finite_vectors =
+                std::isfinite(light.position.x) &&
+                std::isfinite(light.position.y) &&
+                std::isfinite(light.position.z) &&
+                std::isfinite(light.color.x) &&
+                std::isfinite(light.color.y) &&
+                std::isfinite(light.color.z) &&
+                (kind != WorldLightKind::Spot ||
+                 (std::isfinite(light.direction.x) &&
+                  std::isfinite(light.direction.y) &&
+                  std::isfinite(light.direction.z)));
+            const bool finite_scalars =
+                std::isfinite(light.intensity) && std::isfinite(light.range) &&
+                std::isfinite(light.source_radius) &&
+                std::isfinite(light.inner_cone_degrees) &&
+                std::isfinite(light.outer_cone_degrees);
+            const float direction_length2 =
+                light.direction.x * light.direction.x +
+                light.direction.y * light.direction.y +
+                light.direction.z * light.direction.z;
+            const bool valid_values =
+                finite_vectors && finite_scalars && light.range > 0.0f &&
+                light.intensity >= 0.0f && light.source_radius >= 0.0f &&
+                light.color.x >= 0.0f && light.color.y >= 0.0f &&
+                light.color.z >= 0.0f &&
+                (kind != WorldLightKind::Spot ||
+                 (direction_length2 > 1.0e-16f &&
+                  light.inner_cone_degrees >= 0.0f &&
+                  light.inner_cone_degrees <= light.outer_cone_degrees &&
+                  light.outer_cone_degrees <= 180.0f));
+
+            if (!position_ok || !color_ok || !direction_ok || !scalars_ok ||
+                !valid_values) {
+                return fail(
+                    desc, error, path,
+                    kind == WorldLightKind::Spot
+                        ? "spot requires finite position/direction/color, positive range, nonnegative intensity/sourceRadius, boolean castsShadow, nonzero direction, and 0 <= inner <= outer <= 180 degrees"
+                        : "point requires finite position/color, positive range, nonnegative intensity/sourceRadius, and boolean castsShadow");
             }
             definition.lights.push_back(light);
-            JS_FreeValue(context, entry);
         }
-        JS_FreeValue(context, lights);
         return true;
+    };
+
+    std::uint32_t legacy_count = 0;
+    if (array_length(context, lights, legacy_count)) {
+        const bool ok =
+            extract_local_array(lights, "lights", WorldLightKind::Point);
+        JS_FreeValue(context, lights);
+        return ok;
     }
 
     // Compatibility with the approved World-as-JS sun/sky object. These map
@@ -2253,49 +2333,21 @@ bool extract_lights(JSContext* context,
     }
     JS_FreeValue(context, sky);
 
+    JSValue points = JS_GetPropertyStr(context, lights, "points");
+    if (!JS_IsUndefined(points) &&
+        !extract_local_array(points, "lights.points", WorldLightKind::Point)) {
+        JS_FreeValue(context, points);
+        JS_FreeValue(context, lights);
+        return false;
+    }
+    JS_FreeValue(context, points);
+
     JSValue spots = JS_GetPropertyStr(context, lights, "spots");
-    if (!JS_IsUndefined(spots)) {
-        std::uint32_t spot_count = 0;
-        if (!array_length(context, spots, spot_count)) {
-            JS_FreeValue(context, spots);
-            JS_FreeValue(context, lights);
-            return fail(desc, error, "lights.spots", "lights.spots must be an array");
-        }
-        for (std::uint32_t index = 0; index < spot_count; ++index) {
-            const std::string path = "lights.spots[" + std::to_string(index) + "]";
-            JSValue entry = JS_GetPropertyUint32(context, spots, index);
-            WorldLight light;
-            JSValue position = JS_GetPropertyStr(context, entry, "position");
-            if (JS_IsUndefined(position)) {
-                JS_FreeValue(context, position);
-                position = JS_GetPropertyStr(context, entry, "pos");
-            }
-            JSValue direction = JS_GetPropertyStr(context, entry, "direction");
-            if (JS_IsUndefined(direction)) {
-                JS_FreeValue(context, direction);
-                direction = JS_GetPropertyStr(context, entry, "dir");
-            }
-            JSValue color = JS_GetPropertyStr(context, entry, "color");
-            const bool vectors_ok = float3_value(context, position, light.position) &&
-                                    float3_value(context, direction, light.direction) &&
-                                    float3_value(context, color, light.color);
-            JS_FreeValue(context, position);
-            JS_FreeValue(context, direction);
-            JS_FreeValue(context, color);
-            const bool numbers_ok =
-                optional_number(context, entry, "intensity", light.intensity) &&
-                optional_number(context, entry, "range", light.range) &&
-                optional_number(context, entry, "inner", light.inner_cone_degrees) &&
-                optional_number(context, entry, "outer", light.outer_cone_degrees);
-            JS_FreeValue(context, entry);
-            if (!vectors_ok || !numbers_ok) {
-                JS_FreeValue(context, spots);
-                JS_FreeValue(context, lights);
-                return fail(desc, error, path,
-                            "spot position/direction/color and numeric range/cones are required");
-            }
-            definition.lights.push_back(light);
-        }
+    if (!JS_IsUndefined(spots) &&
+        !extract_local_array(spots, "lights.spots", WorldLightKind::Spot)) {
+        JS_FreeValue(context, spots);
+        JS_FreeValue(context, lights);
+        return false;
     }
     JS_FreeValue(context, spots);
     JS_FreeValue(context, lights);
