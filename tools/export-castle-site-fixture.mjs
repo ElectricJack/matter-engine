@@ -1,8 +1,9 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compileSite, siteToJSON, siteToSVG } from '../projects/world_demo/shared-lib/castle_site.js';
-import { CASTLE_SITE_ANGLED_STUDY } from '../projects/world_demo/tests/fixtures/castle_site_angled_study.js';
+await import('../projects/world_demo/tests/castle_shared_lib_hooks.mjs');
+const { compileSite, siteToJSON, siteToSVG } = await import('../projects/world_demo/shared-lib/castle_site.js');
+const { CASTLE_SITE_ANGLED_STUDY } = await import('../projects/world_demo/tests/fixtures/castle_site_angled_study.js');
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, process.argv[2] ?? 'docs/designs/examples');

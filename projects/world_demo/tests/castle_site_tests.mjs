@@ -1,23 +1,24 @@
 import assert from 'node:assert/strict';
-import {
+await import('./castle_shared_lib_hooks.mjs');
+const {
   CASTLE_SITE_CAPSULE_RADIUS,
   CASTLE_SITE_CLEARANCE,
   CASTLE_SITE_MANIFEST_SCHEMA,
   compileSite,
   siteToJSON,
   siteToSVG,
-} from '../shared-lib/castle_site.js';
+} = await import('../shared-lib/castle_site.js');
 import {
   transformPoint,
   transformVector,
   yawDegToQuaternion,
 } from '../shared-lib/castle_frames.js';
-import {
+const {
   ANGLED_STUDY_CORE_PLAN,
   ANGLED_STUDY_HALL_PLAN,
   CASTLE_SITE_ANGLED_STUDY,
   angledStudySite,
-} from './fixtures/castle_site_angled_study.js';
+} = await import('./fixtures/castle_site_angled_study.js');
 
 const EPSILON = 1e-8;
 const clone = value => structuredClone(value);

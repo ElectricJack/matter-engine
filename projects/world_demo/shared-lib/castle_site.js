@@ -1,7 +1,7 @@
 // Deterministic composition of complete castle-plan manifests in independent
 // rigid frames. Detailed connector meshes/colliders deliberately belong to
 // castle_connector_kit.js; this module publishes their validated geometry.
-import { compilePlan, routeManifestRoomSegment } from './castle_plan.js';
+import { compilePlan, routeManifestRoomSegment } from 'shared-lib/castle_plan';
 import {
   inverseTransformPoint,
   makePlanarFrame,
@@ -14,7 +14,7 @@ import {
   transformSpotLight,
   transformVector,
   transformYawDeg,
-} from './castle_frames.js';
+} from 'shared-lib/castle_frames';
 
 export const CASTLE_SITE_SCHEMA = 'matter.castle-site/v1';
 export const CASTLE_SITE_MANIFEST_SCHEMA = 'matter.castle-site-manifest/v1';

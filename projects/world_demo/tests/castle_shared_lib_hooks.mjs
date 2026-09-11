@@ -19,6 +19,9 @@ import fs from 'node:fs';
 let roots = [];
 export async function initialize(data) { roots = data.roots; }
 export async function resolve(specifier, context, next) {
+  if (context.parentURL && roots.some(root => context.parentURL.startsWith(root)) &&
+      !specifier.startsWith('shared-lib/'))
+    throw new Error('engine shared modules require shared-lib/ imports: ' + specifier);
   if (!specifier.startsWith('shared-lib/')) return next(specifier, context);
   const leaf = specifier.slice('shared-lib/'.length);
   if (!leaf || leaf.includes('/') || leaf.includes('..'))
