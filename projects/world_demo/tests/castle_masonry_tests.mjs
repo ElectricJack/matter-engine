@@ -51,25 +51,54 @@ function overlap(a, b, eps = 1e-6) {
   return true;
 }
 
-// Convex hexahedra from placement solids: vertex index = ia*4 + iv*2 + ic.
-const FACES = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
-const EDGES = [[0, 4], [1, 5], [2, 6], [3, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 1], [2, 3], [4, 5], [6, 7]];
+// Convex solids from placements: hexahedra (8 vertices, index = ia*4 + iv*2 +
+// ic) or prisms (solidKind 'prism': k front vertices then k back vertices).
+const HEX_FACES = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
+const HEX_EDGES = [[0, 4], [1, 5], [2, 6], [3, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 1], [2, 3], [4, 5], [6, 7]];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-function faceNormal(solid, face) {
-  const [p0, p1, p2, p3] = face.map(i => solid[i]);
-  return cross(sub(p2, p0), sub(p3, p1));
+const TOPOLOGY = new WeakMap();
+function topology(item) {
+  if (TOPOLOGY.has(item)) return TOPOLOGY.get(item);
+  let faces = HEX_FACES, edges = HEX_EDGES;
+  if (item.solidKind === 'prism') {
+    const k = item.solid.length / 2;
+    faces = [[...Array(k).keys()], [...Array(k).keys()].map(i => k + i)];
+    edges = [];
+    for (let i = 0; i < k; ++i) {
+      const n = (i + 1) % k;
+      faces.push([i, n, k + n, k + i]);
+      edges.push([i, n], [k + i, k + n], [i, k + i]);
+    }
+  }
+  const centroid = [0, 1, 2].map(i => item.solid.reduce((s, q) => s + q[i], 0) / item.solid.length);
+  const planes = faces.map(face => {
+    // Newell normal, oriented outward.
+    let n = [0, 0, 0];
+    for (let i = 0; i < face.length; ++i) {
+      const a = item.solid[face[i]], b = item.solid[face[(i + 1) % face.length]];
+      n = [n[0] + (a[1] - b[1]) * (a[2] + b[2]), n[1] + (a[2] - b[2]) * (a[0] + b[0]), n[2] + (a[0] - b[0]) * (a[1] + b[1])];
+    }
+    const origin = item.solid[face[0]];
+    if (dot(n, sub(centroid, origin)) > 0) n = n.map(v => -v);
+    const len = Math.hypot(...n) || 1;
+    return { n: n.map(v => v / len), origin };
+  });
+  const dirs = edges.map(([a, b]) => sub(item.solid[b], item.solid[a]));
+  TOPOLOGY.set(item, { planes, dirs });
+  return TOPOLOGY.get(item);
 }
-function axisAligned(solid) {
-  return EDGES.every(([a, b]) => sub(solid[a], solid[b]).filter(v => Math.abs(v) > 1e-9).length <= 1);
+function axisAligned(item) {
+  return item.solidKind !== 'prism' &&
+    HEX_EDGES.every(([a, b]) => sub(item.solid[a], item.solid[b]).filter(v => Math.abs(v) > 1e-9).length <= 1);
 }
 function solidsOverlap(a, b, eps = 1e-5) {
   if (!overlap(a.bounds, b.bounds, eps)) return false;
-  if (axisAligned(a.solid) && axisAligned(b.solid)) return true;
-  const axes = [...FACES.map(f => faceNormal(a.solid, f)), ...FACES.map(f => faceNormal(b.solid, f))];
-  for (const [i, k] of EDGES) for (const [m, n] of EDGES)
-    axes.push(cross(sub(a.solid[k], a.solid[i]), sub(b.solid[n], b.solid[m])));
+  if (axisAligned(a) && axisAligned(b)) return true;
+  const ta = topology(a), tb = topology(b);
+  const axes = [...ta.planes.map(p => p.n), ...tb.planes.map(p => p.n)];
+  for (const da of ta.dirs) for (const db of tb.dirs) axes.push(cross(da, db));
   for (const axis of axes) {
     const len = Math.hypot(...axis);
     if (len < 1e-9) continue;
@@ -81,15 +110,7 @@ function solidsOverlap(a, b, eps = 1e-5) {
 }
 function insideSolid(item, p, eps = 1e-6) {
   if (p.some((v, i) => v < item.bounds.min[i] - eps || v > item.bounds.max[i] + eps)) return false;
-  const centroid = [0, 1, 2].map(i => item.solid.reduce((s, q) => s + q[i], 0) / 8);
-  for (const face of FACES) {
-    let n = faceNormal(item.solid, face);
-    const origin = item.solid[face[0]];
-    if (dot(n, sub(centroid, origin)) > 0) n = n.map(v => -v);
-    const len = Math.hypot(...n);
-    if (dot(n, sub(p, origin)) / len > eps) return false;
-  }
-  return true;
+  return topology(item).planes.every(plane => dot(plane.n, sub(p, plane.origin)) <= eps);
 }
 
 function spatialPairs(items, cell = 1.0) {
@@ -129,6 +150,8 @@ function assertMasonry(manifest, label) {
       assert.deepEqual(placement.params, P.beamParams(placement.params), 'canonical beam params');
     if (placement.module === 'CastleWedgeStone')
       assert.deepEqual(placement.params, M.wedgeParams(placement.params), 'canonical wedge params');
+    if (placement.module === 'CastleCutStone')
+      assert.deepEqual(placement.params, M.cutStoneParams(placement.params), 'canonical cut-stone params');
   }
 
   // Masonry units never overlap (junction ownership, module trims, apertures,
@@ -180,6 +203,33 @@ function assertMasonry(manifest, label) {
   }
   const solidAt = (p, filter = () => true) => (pointGrid.get(`${Math.floor(p[0])},${Math.floor(p[2])}`) || [])
     .find(item => filter(item) && insideSolid(item, p));
+  // Arch heads: the soffit (inside every intrados chord) is empty, and the
+  // voussoir ring reaches the declared springing on both sides.
+  let arches = 0;
+  for (const layout of layouts.filter(item => item.kind === 'wallModule' && item.run)) {
+    const run = layout.run;
+    for (const ap of layout.apertures.filter(item => item.arch)) {
+      ++arches;
+      const { cx, cy, a, phi0, n, springY } = ap.arch;
+      const inner = a * Math.cos((180 - 2 * phi0) / n / 2 * Math.PI / 180) - 0.01;
+      for (let angle = phi0 + 1; angle < 180 - phi0 - 1; angle += 7)
+        for (let r = 0.05; r < inner; r += 0.09)
+          for (const c of [-run.thickness / 2 + 0.01, 0, run.thickness / 2 - 0.01]) {
+            const u = cx + r * Math.cos(angle * Math.PI / 180), v = cy + r * Math.sin(angle * Math.PI / 180);
+            if (v <= springY + 1e-6) continue;
+            const p = run.axis === 'x' ? [u, run.baseY + v, run.line + c] : [run.line - c, run.baseY + v, u];
+            const hit = solidAt(p);
+            assert.ok(!hit, `${label}: arch soffit of ${ap.id} is empty (hit ${hit?.role})`);
+          }
+      if (!ap.archOwner) continue;
+      const ring = placements.filter(item => item.ownerId === layout.recordId &&
+        (item.role === 'voussoir' || item.role === 'keystone') &&
+        Math.abs((item.bounds.min[run.axis === 'x' ? 0 : 2] + item.bounds.max[run.axis === 'x' ? 0 : 2]) / 2 - cx) < a + 1.5);
+      assert.equal(ring.length, n, `${label}: ${ap.id} has ${n} voussoirs`);
+      assert.equal(ring.filter(item => item.role === 'keystone').length, 1, `${label}: ${ap.id} keystone`);
+    }
+  }
+
   let curveApertures = 0;
   for (const layout of layouts.filter(item => item.kind === 'curve')) {
     const arc = layout.arc;
@@ -259,17 +309,20 @@ function assertMasonry(manifest, label) {
   }
   const inside = (list, p) => list.some(item =>
     p.every((value, i) => value >= item.bounds.min[i] - 1e-6 && value <= item.bounds.max[i] + 1e-6));
+  void inside;
   for (const layout of layouts.filter(item => item.kind === 'wallModule' && item.run)) {
-    const run = layout.run, list = byOwner.get(layout.recordId) || [];
+    const run = layout.run;
     for (let a = run.a0 + 0.05; a < run.a1 - 0.05; a += 0.137)
       for (let v = 0.07; v < run.height - 0.05; v += 0.113) {
         if (layout.apertures.some(ap => a > ap.a0 - 1e-6 && a < ap.a1 + 1e-6 &&
           v > Math.min(ap.voidBottom, ap.sillBottom) - 1e-6 && v < ap.voidTop + 1e-6)) continue;
+        if (layout.apertures.some(ap => ap.arch && v > ap.arch.springY - 1e-6 &&
+          Math.hypot(a - ap.arch.cx, v - ap.arch.cy) < ap.arch.a + 0.02)) continue;
         const at = c => run.axis === 'x' ? [a, run.baseY + v, run.line + c] : [run.line - c, run.baseY + v, a];
-        assert.ok(inside(list, at(0)), `${label}: ${layout.recordId} closed through thickness at ${a.toFixed(2)},${v.toFixed(2)}`);
+        assert.ok(solidAt(at(0)), `${label}: ${layout.recordId} closed through thickness at ${a.toFixed(2)},${v.toFixed(2)}`);
         for (const c of [run.thickness / 2 - 0.004, -run.thickness / 2 + 0.004]) {
           ++faceSamples;
-          if (inside(list, at(c))) ++faceHits;
+          if (solidAt(at(c), item => item.role !== 'core')) ++faceHits;
         }
       }
   }
@@ -307,7 +360,7 @@ function assertMasonry(manifest, label) {
     emitted.matrix.forEach((value, k) => assert.ok(Math.abs(value - placements[i].matrix[k]) < 1e-9));
   });
   assert.equal(JSON.stringify(M.layoutMasonry(manifest, OPTIONS)), JSON.stringify(layouts), `${label}: deterministic`);
-  return { layouts, placements, stones: stones.length, apertures: apertureCount, edges,
+  return { layouts, placements, stones: stones.length, apertures: apertureCount, edges, arches,
     variants: declared.size, faceCoverage: faceHits / faceSamples };
 }
 
@@ -319,8 +372,10 @@ for (const kind of ['L', 'T', 'cross', 'end']) assert.ok(junctionKinds.has(kind)
 const fixture = assertMasonry(manifest, 'fixture');
 
 const roles = new Set(fixture.placements.map(item => item.role));
-for (const role of ['face', 'through', 'jamb', 'sill', 'lintel', 'quoin', 'core'])
+for (const role of ['face', 'through', 'jamb', 'sill', 'lintel', 'quoin', 'core', 'voussoir', 'keystone'])
   assert.ok(roles.has(role), `fixture emits ${role} masonry`);
+assert.ok(fixture.arches >= 1, 'fixture arch apertures get voussoir heads');
+assert.ok(fixture.placements.some(item => item.module === 'CastleCutStone'), 'voussoirs are CastleCutStone children');
 const kinds = new Set(manifest.wallModules.filter(m => m.apertures.length).map(m => m.kind));
 for (const kind of ['window', 'door', 'arch']) assert.ok(kinds.has(kind), `fixture has ${kind} openings`);
 assert.ok(manifest.curves.some(curve => curve.kind === 'quarter') && manifest.curves.some(curve => curve.kind === 'ring'),

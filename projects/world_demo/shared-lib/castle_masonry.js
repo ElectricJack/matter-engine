@@ -328,8 +328,13 @@ function boundsOf(corners) {
 
 // ---------------------------------------------------------------- apertures
 
+const ARCH_RING_DEPTH = 0.36;
+export const MASONRY_CUT_SEEDS = 3;
+
 // Plans a straight aperture's void, sill and head in wall-local coordinates.
-function planAperture(aperture, axisIndex, grid, height, runA, runB, options) {
+// Every quantity is global along the wall line, so all modules sharing the
+// line agree on it (see lineAperturePlans).
+function planAperture(aperture, axisIndex, grid, height) {
   const s = aperture.segmentFrom[axisIndex] + aperture.globalStart;
   const e = aperture.segmentFrom[axisIndex] + aperture.globalEnd;
   const window = aperture.kind === 'window';
@@ -348,10 +353,262 @@ function planAperture(aperture, axisIndex, grid, height, runA, runB, options) {
     voidBottom: window ? bottom : 0, sillBottom, headBottom, headTop,
     hasSill: window && bottom > 1e-6,
     hasHead: headBottom < height - 1e-6,
-    runA, runB,
     bearing: DEFAULTS.lintelBearing,
     ownerEdgeId: aperture.ownerEdgeId,
+    segA: Math.min(aperture.segmentFrom[axisIndex], aperture.segmentTo[axisIndex]),
+    segB: Math.max(aperture.segmentFrom[axisIndex], aperture.segmentTo[axisIndex]),
+    arch: null,
   };
+}
+
+// Arch head for an 'arch' aperture: springing on the course line at or above
+// the declared top (so the declared rectangle stays empty), semicircular when
+// the ring fits below the wall top, otherwise segmental.
+function planArch(ap, grid, height, j) {
+  const w = ap.e - ap.s, cx = (ap.s + ap.e) / 2, vs = ap.headBottom, d = ARCH_RING_DEPTH;
+  let a, cy;
+  if (vs + w / 2 + d + j + 0.18 <= height + 1e-9) { a = w / 2; cy = vs; }
+  else {
+    const rise = height - vs - d - j - 0.18;
+    if (rise < Math.max(0.12, w * 0.08)) return null;
+    a = (w * w / 4 + rise * rise) / (2 * rise); cy = vs + rise - a;
+  }
+  const phi0 = Math.asin(Math.max(-1, Math.min(1, (vs - cy) / a))) * 180 / Math.PI;
+  const crown = cy + a;
+  const zoneTop = Math.min(height, lineAtOrAbove(grid, crown + d));
+  if (zoneTop - crown < 0.18) return null;
+  let n = Math.max(3, Math.round((180 - 2 * phi0) * Math.PI / 180 * (a + d / 2) / 0.34));
+  if (n % 2 === 0) n += 1;
+  const reach = Math.sqrt(Math.max(0, (a + d) ** 2 - (vs - cy) ** 2)) + 0.12;
+  return { cx, cy, a, phi0, crown, zoneTop, n, rise: crown - vs, reach };
+}
+
+function junctionAt(manifest, levelId, x, z) {
+  const index = indexManifest(manifest);
+  if (!index.junctionAt) index.junctionAt = new Map(manifest.junctions.map(junction =>
+    [`${junction.levelId}:${junction.position[0]},${junction.position[1]}`, junction]));
+  return index.junctionAt.get(`${levelId}:${x},${z}`) ?? null;
+}
+
+// All aperture plans on one wall line (level/axis/fixed coordinate), with
+// lintel/arch head extents clamped to neighbours and owned junction volumes.
+function lineAperturePlans(manifest, levelId, axis, line, grid, height, options) {
+  const index = indexManifest(manifest);
+  if (!index.linePlans) index.linePlans = new Map();
+  const key = `${levelId}:${axis}:${line}:${height}:${options.courseHeight}:${options.joint}`;
+  if (index.linePlans.has(key)) return index.linePlans.get(key);
+  const axisIndex = axis === 'x' ? 0 : 1;
+  const byId = new Map();
+  for (const module of manifest.wallModules) {
+    if (module.levelId !== levelId) continue;
+    const mAxis = module.from[1] === module.to[1] ? 'x' : 'z';
+    const mLine = mAxis === 'x' ? module.from[1] : module.from[0];
+    if (mAxis !== axis || mLine !== line) continue;
+    for (const aperture of module.apertures)
+      if (!byId.has(aperture.apertureId))
+        byId.set(aperture.apertureId, planAperture(aperture, axisIndex, grid, height));
+  }
+  const plans = [...byId.values()].sort((p, q) => p.s - q.s || (p.id < q.id ? -1 : 1));
+  // Owned corner volumes on this line bound every head zone; a head may
+  // spread over neighbouring edges of the same continuous wall line.
+  const corners = [];
+  for (const junction of manifest.junctions) {
+    if (junction.levelId !== levelId) continue;
+    if ((axis === 'x' ? junction.position[1] : junction.position[0]) !== line) continue;
+    const volume = junctionVolume(junction, manifest);
+    if (!volume) continue;
+    corners.push(axis === 'x' ? [volume.minX, volume.maxX] : [volume.minZ, volume.maxZ]);
+  }
+  for (let i = 0; i < plans.length; ++i) {
+    const ap = plans[i];
+    const left = i > 0 ? (plans[i - 1].e + ap.s) / 2 : -Infinity;
+    const right = i + 1 < plans.length ? (ap.e + plans[i + 1].s) / 2 : Infinity;
+    let lo = left, hi = right;
+    for (const [c0, c1] of corners) {
+      if (c1 <= ap.s + 1e-9) lo = Math.max(lo, c1);
+      if (c0 >= ap.e - 1e-9) hi = Math.min(hi, c0);
+    }
+    ap.headA = Math.max(ap.s - ap.bearing, lo);
+    ap.headB = Math.min(ap.e + ap.bearing, hi);
+    if (ap.kind === 'arch' && ap.hasHead) {
+      const arch = planArch(ap, grid, height, options.joint);
+      if (arch && arch.cx - arch.reach >= lo - 1e-9 && arch.cx + arch.reach <= hi + 1e-9) {
+        ap.arch = arch;
+        ap.headA = arch.cx - arch.reach; ap.headB = arch.cx + arch.reach;
+        ap.headTop = arch.zoneTop;
+      }
+    }
+  }
+  index.linePlans.set(key, plans);
+  return plans;
+}
+
+// ---------------------------------------------------------------- cut stones
+
+// Canonical CastleCutStone params: a convex prism = bounding box (length +X
+// centred, height +Y from the y=0 bed, depth +Z centred) minus up to three
+// half-planes n.(x,y) > d in the XY profile. Quantized so identical arch
+// geometries share bakes.
+export function cutStoneParams(p = {}) {
+  const q = value => Math.round(value * 1e4) / 1e4;
+  const seed = Math.floor(clampNumber(p.seed, 0, -1e9, 1e9)) % MASONRY_CUT_SEEDS;
+  const out = {
+    seed: seed < 0 ? seed + MASONRY_CUT_SEEDS : seed,
+    length: q(clampNumber(p.length, 0.7, 0.05, 6)),
+    height: q(clampNumber(p.height, 0.3, 0.05, 4)),
+    depth: q(clampNumber(p.depth, 0.6, 0.1, 3)),
+    material: Math.max(0, Math.floor(clampNumber(p.material, 8, 0, 1e9))),
+    detail: clampNumber(p.detail, 1, 0.5, 3),
+  };
+  for (let i = 0; i < 3; ++i) {
+    const nx = clampNumber(p[`c${i}x`], 0, -1, 1), ny = clampNumber(p[`c${i}y`], 0, -1, 1);
+    const len = Math.hypot(nx, ny);
+    out[`c${i}x`] = len > 1e-9 ? q(nx / len) : 0;
+    out[`c${i}y`] = len > 1e-9 ? q(ny / len) : 0;
+    out[`c${i}d`] = len > 1e-9 ? q(clampNumber(p[`c${i}d`], 0, -10, 10)) : 0;
+  }
+  return out;
+}
+
+function cutList(p) {
+  const cuts = [];
+  for (let i = 0; i < 3; ++i)
+    if (p[`c${i}x`] !== 0 || p[`c${i}y`] !== 0) cuts.push({ nx: p[`c${i}x`], ny: p[`c${i}y`], d: p[`c${i}d`] });
+  return cuts;
+}
+
+// Sutherland-Hodgman clip of a CCW polygon by n.p <= d.
+function clipPolygon(polygon, nx, ny, d) {
+  const out = [];
+  for (let i = 0; i < polygon.length; ++i) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+    const da = nx * a[0] + ny * a[1] - d, db = nx * b[0] + ny * b[1] - d;
+    if (da <= 0) out.push(a);
+    if ((da < 0 && db > 0) || (da > 0 && db < 0)) {
+      const t = da / (da - db);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return out;
+}
+
+export function cutStonePolygon(input) {
+  const p = cutStoneParams(input);
+  let polygon = [[-p.length / 2, 0], [p.length / 2, 0], [p.length / 2, p.height], [-p.length / 2, p.height]];
+  for (const cut of cutList(p)) polygon = clipPolygon(polygon, cut.nx, cut.ny, cut.d);
+  return polygon;
+}
+
+// CastleCutStone body: dressed voxel cut stone (voussoirs, springers, arch
+// spandrels) with planar half-space joint faces, face relief, chips, marks.
+export function emitCutStone(part, input = {}) {
+  const p = cutStoneParams(input);
+  const polygon = cutStonePolygon(p);
+  const random = wedgeGenerator(p.seed, 0x6c075d);
+  const range = (lo, hi) => lo + (hi - lo) * random();
+  const hd = p.depth / 2, big = p.length + p.height + 0.2;
+  const minDim = Math.min(p.length, p.height, p.depth);
+  part.beginModifier();
+  part.beginVoxels(0.08);
+  part.fill(p.material);
+  part.smoothing(Math.min(0.009, minDim * 0.05));
+  part.box([0, p.height / 2, 0], [p.length / 2, p.height / 2, hd]);
+  for (const cut of cutList(p)) {
+    part.pushMatrix();
+    part.translate(cut.nx * (cut.d + big), cut.ny * (cut.d + big), 0);
+    part.rotateZ(Math.atan2(cut.ny, cut.nx));
+    part.box([0, 0, 0], [big, big, hd + 0.1]);
+    part.popMatrix();
+    part.difference();
+  }
+  part.endVoxels();
+
+  part.beginVoxels(Math.max(0.018, 0.03 / p.detail));
+  part.fill(p.material);
+  part.smoothing(Math.min(0.009, minDim * 0.05));
+  const inset = (x, y, margin) => polygon.every((a, i) => {
+    const b = polygon[(i + 1) % polygon.length];
+    const ex = b[0] - a[0], ey = b[1] - a[1], len = Math.hypot(ex, ey);
+    return len < 1e-9 || (ex * (y - a[1]) - ey * (x - a[0])) / len >= margin;
+  });
+  const xs = polygon.map(v => v[0]), ys = polygon.map(v => v[1]);
+  for (const side of [-1, 1])
+    for (let i = 0, placed = 0; i < 24 && placed < 3; ++i) {
+      const x = range(Math.min(...xs), Math.max(...xs)), y = range(Math.min(...ys), Math.max(...ys));
+      if (!inset(x, y, 0.07)) continue;
+      const rz = range(0.02, Math.min(0.04, p.depth * 0.1));
+      part.pushMatrix();
+      part.translate(x, y, side * (hd - rz * 0.45));
+      part.scale(range(0.04, 0.09), range(0.03, 0.07), rz);
+      part.sphere([0, 0, 0], 1);
+      part.popMatrix();
+      if (((placed + p.seed + (side > 0 ? 1 : 0)) & 1) === 0) part.difference();
+      ++placed;
+    }
+  for (let i = 0; i < 2 + (p.seed % 2); ++i) {
+    const v = polygon[(p.seed * 2 + i * 3) % polygon.length];
+    part.sphere([v[0], v[1], (i & 1 ? 1 : -1) * hd], range(minDim * 0.1, minDim * 0.2));
+    part.difference();
+  }
+  part.endVoxels();
+  part.endModifier([{ simplify: 0.34 }]);
+  return p;
+}
+
+// Place a wall-plane convex polygon (u,v) through the full wall thickness.
+function cutPlacement(frame, options, palette, polygon, cuts, thickness, key, role, ownerId) {
+  const us = polygon.map(v => v[0]), vs = polygon.map(v => v[1]);
+  const u0 = Math.min(...us), u1 = Math.max(...us), v0 = Math.min(...vs), v1 = Math.max(...vs);
+  const uc = (u0 + u1) / 2;
+  const seed = hash32(key) % MASONRY_CUT_SEEDS;
+  const raw = { seed, length: u1 - u0, height: v1 - v0, depth: thickness,
+    material: palette[seed % palette.length], detail: options.detail };
+  cuts.forEach((cut, i) => {
+    raw[`c${i}x`] = cut.nx; raw[`c${i}y`] = cut.ny;
+    raw[`c${i}d`] = cut.d - (cut.nx * uc + cut.ny * v0);
+  });
+  const params = cutStoneParams(raw);
+  const local = cutStonePolygon(params);
+  const solid = [
+    ...local.map(([x, y]) => frame.point(x + uc, y + v0, -thickness / 2).map(round6)),
+    ...local.map(([x, y]) => frame.point(x + uc, y + v0, thickness / 2).map(round6)),
+  ];
+  return {
+    module: 'CastleCutStone', params, role, ownerId, solidKind: 'prism',
+    matrix: frameMatrix(frame.point(uc, v0, 0), frame.u, [0, 1, 0], frame.w, [1, 1, 1]),
+    solid, bounds: boundsOf(solid),
+  };
+}
+
+// Voussoir pieces: the head zone split by rays from the arch centre, each
+// clipped by its joint rays and its intrados chord. Pieces meet the coursing
+// on straight zone edges, so there are no curved spandrel gaps.
+function archPieces(ap, j) {
+  const { cx, cy, a, phi0, n } = ap.arch;
+  const rect = [[ap.headA + j / 2, ap.headBottom], [ap.headB - j / 2, ap.headBottom],
+    [ap.headB - j / 2, ap.headTop - j], [ap.headA + j / 2, ap.headTop - j]];
+  const ray = k => (phi0 + k * (180 - 2 * phi0) / n) * Math.PI / 180;
+  const pieces = [];
+  for (let k = 0; k < n; ++k) {
+    const cuts = [];
+    const lo = ray(k), hi = ray(k + 1);
+    if (k > 0) {
+      const nx = Math.sin(lo), ny = -Math.cos(lo);
+      cuts.push({ nx, ny, d: nx * cx + ny * cy - j / 2 });
+    }
+    if (k < n - 1) {
+      const nx = -Math.sin(hi), ny = Math.cos(hi);
+      cuts.push({ nx, ny, d: nx * cx + ny * cy - j / 2 });
+    }
+    const P = [cx + a * Math.cos(lo), cy + a * Math.sin(lo)], Q = [cx + a * Math.cos(hi), cy + a * Math.sin(hi)];
+    const mid = (lo + hi) / 2, mx = -Math.cos(mid), my = -Math.sin(mid);
+    cuts.push({ nx: mx, ny: my, d: mx * P[0] + my * P[1] });
+    void Q;
+    let polygon = rect;
+    for (const cut of cuts) polygon = clipPolygon(polygon, cut.nx, cut.ny, cut.d);
+    if (polygon.length >= 3) pieces.push({ polygon, cuts, k, keystone: k === (n - 1) / 2 });
+  }
+  return pieces;
 }
 
 // ---------------------------------------------------------------- wall modules
@@ -369,20 +626,12 @@ function moduleGeometry(record, manifest, options) {
   const index = indexManifest(manifest);
   const sourceWall = index.walls.get(record.sourceEdgeIds[0]);
   const frame = wallFrame(axis, line, level.baseY);
-  const apertures = record.apertures
-    .map(aperture => planAperture(aperture, axisIndex, grid, height, runA, runB, options))
-    .filter(ap => ap.e > runA + EPS && ap.s < runB - EPS)
-    .sort((p, q) => p.s - q.s);
-  // Lintel bearings stop halfway to a neighbouring aperture and at the run.
-  for (let i = 0; i < apertures.length; ++i) {
-    const ap = apertures[i];
-    const left = i > 0 ? (apertures[i - 1].e + ap.s) / 2 : -Infinity;
-    const right = i + 1 < apertures.length ? (ap.e + apertures[i + 1].s) / 2 : Infinity;
-    ap.headA = Math.max(ap.s - ap.bearing, left);
-    ap.headB = Math.min(ap.e + ap.bearing, right);
-  }
+  const plans = lineAperturePlans(manifest, record.levelId, axis, line, grid, height, options)
+    .filter(ap => Math.max(ap.e, ap.hasHead ? ap.headB : ap.e) > runA + EPS &&
+      Math.min(ap.s, ap.hasHead ? ap.headA : ap.s) < runB - EPS);
   return {
-    level, axis, axisIndex, line, runA, runB, height, thickness, grid, frame, apertures,
+    level, axis, axisIndex, line, runA, runB, height, thickness, grid, frame, plans,
+    apertures: plans.filter(ap => ap.e > runA + EPS && ap.s < runB - EPS),
     lineKey: `${record.levelId}:${axis}:${line}`,
     palette: paletteFor(options, record.section.material),
     exterior: exteriorSide(sourceWall, index),
@@ -399,7 +648,7 @@ export function layoutWallModule(record, manifest, opts) {
   for (let course = 0; course < g.grid.count; ++course) {
     const y0 = g.grid.lines[course], y1 = g.grid.lines[course + 1];
     const blocked = [];
-    for (const ap of g.apertures) {
+    for (const ap of g.plans) {
       const voidLow = ap.hasSill ? ap.sillBottom : ap.voidBottom;
       if (y1 > voidLow + EPS && y0 < ap.headBottom - EPS)
         blocked.push({ a: ap.s, b: ap.e, face: true });
@@ -429,8 +678,9 @@ export function layoutWallModule(record, manifest, opts) {
       }
   }
 
-  // Sills, lintels and the recessed mortar core. Aperture parts are emitted by
-  // the module that contains their centre so split apertures stay unique.
+  // Sills, heads and the recessed mortar core. Split sills/lintels are clipped
+  // to each module's run; an arch head is emitted whole by the module owning
+  // the aperture (every module on the line blocks the same zone).
   const coreDepth = half - DEFAULTS.mortarRecess;
   const columns = [];
   let cursor = g.runA;
@@ -438,7 +688,8 @@ export function layoutWallModule(record, manifest, opts) {
     const s = Math.max(g.runA, ap.s), e = Math.min(g.runB, ap.e);
     if (s > cursor + EPS) columns.push({ a0: cursor, a1: s, v0: 0, v1: g.height });
     if (ap.voidBottom > EPS) columns.push({ a0: s, a1: e, v0: 0, v1: ap.voidBottom });
-    if (ap.headBottom < g.height - EPS) columns.push({ a0: s, a1: e, v0: ap.headBottom, v1: g.height });
+    const coreFrom = ap.arch ? ap.headTop : ap.headBottom;
+    if (coreFrom < g.height - EPS) columns.push({ a0: s, a1: e, v0: coreFrom, v1: g.height });
     cursor = Math.max(cursor, e);
     if (ap.hasSill) {
       const outward = g.exterior * DEFAULTS.sillProjection;
@@ -446,12 +697,53 @@ export function layoutWallModule(record, manifest, opts) {
         { a0: s, a1: e, v0: ap.sillBottom, v1: ap.bottom,
           c0: -half + Math.min(0, outward), c1: half + Math.max(0, outward) }, 'sill', record.id));
     }
-    if (ap.hasHead) {
+  }
+  for (const ap of g.plans) {
+    if (!ap.hasHead) continue;
+    if (!ap.arch) {
       const a0 = Math.max(g.runA, ap.headA) + j / 2, a1 = Math.min(g.runB, ap.headB) - j / 2;
       if (a1 - a0 > 0.05)
         placements.push(stonePlacement(g.frame, options, g.palette, 'lintel', `${ap.id}:lintel:${Math.round(a0 * 1000)}`,
           { a0, a1, v0: ap.headBottom, v1: ap.headTop - j, c0: -half, c1: half }, 'lintel', record.id));
+      continue;
     }
+    if (!record.sourceEdgeIds.includes(ap.ownerEdgeId)) continue;
+    for (const piece of archPieces(ap, j))
+      placements.push(cutPlacement(g.frame, options, g.palette, piece.polygon, piece.cuts, t,
+        `${ap.id}:voussoir:${piece.k}`, piece.keystone ? 'keystone' : 'voussoir', record.id));
+    // Mortar strips straddling every ray joint and the zone edges close the
+    // through-wall joints of full-depth voussoirs without entering the void.
+    const { cx, cy, a, phi0, n } = ap.arch;
+    const strip = 0.06;
+    for (let k = 1; k < n; ++k) {
+      const angle = (phi0 + k * (180 - 2 * phi0) / n) * Math.PI / 180;
+      const dir = [Math.cos(angle), Math.sin(angle)];
+      let far = Infinity;
+      for (const [bound, component, origin] of [[ap.headA, 0, cx], [ap.headB, 0, cx], [ap.headTop - j, 1, cy]]) {
+        const dv = dir[component];
+        if (Math.abs(dv) > 1e-9) { const r = (bound - origin) / dv; if (r > 0) far = Math.min(far, r); }
+      }
+      const r0 = a + 0.004, r1 = far - 0.01;
+      if (r1 - r0 < 0.05) continue;
+      const along = [g.frame.u[0] * dir[0], dir[1], g.frame.u[2] * dir[0]];
+      const across = [-g.frame.u[0] * dir[1], dir[0], -g.frame.u[2] * dir[1]];
+      const mid = g.frame.point(cx + dir[0] * (r0 + r1) / 2 + dir[1] * strip / 2,
+        cy + dir[1] * (r0 + r1) / 2 - dir[0] * strip / 2, 0);
+      const matrix = frameMatrix(mid, along, across, g.frame.w, [r1 - r0, strip, 2 * coreDepth]);
+      const corners = [];
+      for (const x of [-0.5, 0.5]) for (const y of [0, 1]) for (const z of [-0.5, 0.5])
+        corners.push([0, 1, 2].map(i => round6(matrix[i * 4] * x + matrix[i * 4 + 1] * y + matrix[i * 4 + 2] * z + matrix[i * 4 + 3])));
+      placements.push({ module: 'CastleMortarCore', params: { material: options.mortar }, role: 'core',
+        ownerId: record.id, matrix, solid: corners, bounds: boundsOf(corners) });
+    }
+    const edge = (a0, a1, v0, v1) => {
+      if (a1 - a0 > EPS && v1 - v0 > EPS)
+        placements.push(mortarPlacement(g.frame, options, { a0, a1, v0, v1, c0: -coreDepth, c1: coreDepth }, record.id));
+    };
+    edge(ap.headA - strip / 2, ap.headA + strip / 2, ap.headBottom, ap.headTop - j);
+    edge(ap.headB - strip / 2, ap.headB + strip / 2, ap.headBottom, ap.headTop - j);
+    edge(ap.headA, ap.s, ap.headBottom - strip / 2, ap.headBottom + strip / 2);
+    edge(ap.e, ap.headB, ap.headBottom - strip / 2, ap.headBottom + strip / 2);
   }
   if (g.runB > cursor + EPS) columns.push({ a0: cursor, a1: g.runB, v0: 0, v1: g.height });
   for (const column of columns)
@@ -468,6 +760,10 @@ export function layoutWallModule(record, manifest, opts) {
     apertures: g.apertures.map(ap => ({
       id: ap.id, kind: ap.kind, a0: Math.max(g.runA, ap.s), a1: Math.min(g.runB, ap.e),
       voidBottom: ap.voidBottom, voidTop: ap.headBottom, sillBottom: ap.sillBottom,
+      arch: ap.arch
+        ? { cx: ap.arch.cx, cy: ap.arch.cy, a: ap.arch.a, phi0: ap.arch.phi0, n: ap.arch.n, springY: ap.headBottom }
+        : null,
+      archOwner: Boolean(ap.arch) && record.sourceEdgeIds.includes(ap.ownerEdgeId),
     })),
   };
 }
@@ -488,7 +784,12 @@ export function wallModuleSockets(record, manifest, opts) {
         u: g.frame.u, up: [0, 1, 0], w: g.frame.w,
         width: round6(ap.e - ap.s), clearBottom: ap.voidBottom, clearTop: round6(ap.headBottom),
         declaredTop: ap.top, thickness: g.thickness, exteriorSide: g.exterior,
-        head: ap.hasHead ? 'lintel' : 'open',
+        head: ap.arch ? 'arch' : ap.hasHead ? 'lintel' : 'open',
+        arch: ap.arch ? {
+          springY: ap.headBottom, centre: g.frame.point(ap.arch.cx, ap.arch.cy, 0).map(round6),
+          radius: round6(ap.arch.a), rise: round6(ap.arch.rise), crownY: round6(ap.arch.crown),
+          voussoirs: ap.arch.n, ringDepth: ARCH_RING_DEPTH,
+        } : null,
       };
     });
 }
