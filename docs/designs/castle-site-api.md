@@ -109,7 +109,10 @@ socket arrays are sorted by their semantic wing/level/portal tuple, and a court
 floor that cuts through a wing beyond its host wall interface is rejected.
 At overlapping elevations, positive-area court/court, court/connector-floor
 and court/connector-wall intersections are also rejected; shared edges remain
-valid.
+valid. Elevation tests use the complete floor slab interval
+`[baseY - floor.thickness, baseY]`, not only the walking surface, so a raised
+court cannot descend into the top of a connector wall. Solids that only meet
+at one elevation boundary are permitted.
 
 ## Compiled site
 
