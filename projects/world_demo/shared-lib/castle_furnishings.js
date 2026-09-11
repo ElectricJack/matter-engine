@@ -1447,7 +1447,14 @@ export function glazingRows(input) {
         glazingHalfWidthAt(p, y) - glazingHalfWidthAt(p, next) > p.barWidth * 0.8)
         next = y + (next - y) * 0.5;
       const half = glazingHalfWidthAt(p, next);
-      if (half < 0.03) break;
+      if (half < 0.03) {
+        // Apex pane: from the last row to the apex at that row's width. What
+        // rises above the curve sits under the converging rim bars (and in
+        // the masonry), so the tip is glazed instead of left open.
+        const base = glazingHalfWidthAt(p, y);
+        if (base > 0.005) rows.push([y, p.height, base]);
+        break;
+      }
       rows.push([y, next, half]);
       y = next;
     }
