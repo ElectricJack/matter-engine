@@ -185,5 +185,52 @@ for (const storeys of [3, 4]) {
   const posted = probe(frame.concat(sq.map(([x, z]) => ({ from: [x, 4, z], to: [x, y, z], section: [0.2, 0.2] }))));
   assert.equal(posted.size, 0, 'frame on posts standing on the floor is supported');
 }
+
+// --- 5: seeded castle roofs -------------------------------------------------
+// Eaves stopped at an abutting wall's face stand on pole plates (the gatehouse
+// and hall hips), a short hip ridge is carried by trusses at both ends, and
+// roof ties over the cloister's open garth side stand on arcade posts. With
+// the assembly's finite gallery portals (a masonry head 0.5 m deep under the
+// wall top) every seeded castle validates; main's full-storey gallery portals
+// leave only the walk roofs' gable-borne ridge and rafters without a path.
+const { castlePlan } = await import('../shared-lib/castle_variants.js');
+const seeded = (name, seed, finitePortals) => {
+  const plan = castlePlan(name, seed);
+  if (finitePortals) for (const level of plan.levels) for (const o of level.edgeOverrides)
+    if (o.kind === 'open' && o.connects && o.opening.height >= level.height) o.opening = { ...o.opening, height: level.height - 0.5 };
+  return compilePlan(plan);
+};
+let arcadePosts = 0;
+for (const [name, seed] of [['courtyard', 9411], ['roundkeep', 17029], ['cloister', 28303]]) for (const finite of [false, true]) {
+  const tag = `${name}${finite ? ' (finite gallery portals)' : ''}`;
+  const manifest = seeded(name, seed, finite);
+  const v = S.validateStructure(manifest);
+  const bad = v.errors.filter((e) => !(name === 'cloister' && !finite && e.kind === 'unsupported-member' &&
+    /^roof:(east|west)-cloister$/.test(e.recordId) && ['ridge-beam', 'purlin', 'rafter', 'strut'].includes(e.role)));
+  if (bad.length) console.error(tag, JSON.stringify(bad.slice(0, 5), null, 1));
+  assert.equal(bad.length, 0, `${tag}: validateStructure errors`);
+  const layout = S.structureLayout(manifest);
+  const members = layout.graph.members;
+  for (const roofId of { courtyard: ['roof:gatehouse'], roundkeep: ['roof:hall'], cloister: [] }[name]) {
+    assert.ok(members.some((m) => m.owner === roofId && m.role === 'pole-plate'), `${tag} ${roofId}: abutting eaves stand on pole plates`);
+    const ridge = members.find((m) => m.id === roofId + ':ridge');
+    for (const p of ridge ? [ridge.from, ridge.to] : [])
+      assert.ok(members.some((m) => m.owner === roofId && m.role === 'king-post' && Math.hypot(m.from[0] - p[0], m.from[2] - p[2]) < 1e-6),
+        `${tag} ${roofId}: a truss carries each ridge end`);
+  }
+  const clear = S.structureClearanceVolumes(manifest);
+  for (const post of members.filter((m) => m.role === 'arcade-post')) {
+    const level = manifest.levels.find((l) => l.id === post.levelId), [x, , z] = post.from, h = post.section[0] * 0.5;
+    assert.ok(Math.abs(Math.min(post.from[1], post.to[1]) - level.baseY) < 1e-6, `${tag} ${post.id}: foot on its storey's base`);
+    assert.ok(wallAt(manifest, x, z, level.baseY) || [[-1, -1], [1, -1], [1, 1], [-1, 1]].every(([sx, sz]) => onFloor(manifest, level.id, x + sx * h, z + sz * h)),
+      `${tag} ${post.id}: stands on a wall top or wholly on floor`);
+    const op = layout.byId.get(post.owner).ops.find((o) => o.memberId === post.id);
+    for (const c of clear) assert.ok(!overlaps(opBounds(op), c), `${tag} ${post.id} enters clear envelope ${c.id}`);
+    arcadePosts++;
+  }
+}
+assert.ok(arcadePosts >= 20, `coverage: ${arcadePosts} arcade posts`);
+
 console.log(`castle_structure_support_tests: ${CONFIGS.length * 3} wing configs valid; ${posts} landing posts on real floor, ` +
-  `${pockets} wall pockets checked; stacked keep turn landings wall/post-borne; floating structure rejected`);
+  `${pockets} wall pockets checked; stacked keep turn landings wall/post-borne; floating structure rejected; ` +
+  `seeded castle roofs grounded (${arcadePosts} arcade posts)`);
