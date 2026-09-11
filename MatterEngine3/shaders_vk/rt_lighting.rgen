@@ -367,6 +367,7 @@ vec3 sample_local_light_position(LocalLightGpu light, vec3 receiver_position,
 }
 
 vec3 local_light_visibility(LocalLightGpu light, vec3 receiver_position,
+                            vec3 ray_origin_position,
                             vec3 receiver_normal, inout uint seed) {
     const uint LOCAL_LIGHT_CASTS_SHADOW = 1u << 0u;
     if ((light.flags & LOCAL_LIGHT_CASTS_SHADOW) == 0u)
@@ -380,7 +381,10 @@ vec3 local_light_visibility(LocalLightGpu light, vec3 receiver_position,
     vec3 direction = to_sample / distance_to_sample;
     float ray_max = max(constants.bias,
                         distance_to_sample - constants.bias);
-    vec3 origin = receiver_position + receiver_normal * constants.bias;
+    // Keep light sampling tied to the actual shading point, but allow primary
+    // POM surfaces to launch above the undisplaced mesh that remains in TLAS.
+    // Secondary hits pass the same position for both arguments.
+    vec3 origin = ray_origin_position + receiver_normal * constants.bias;
     to_sample = sampled_source - origin;
     distance_to_sample = length(to_sample);
     if (!(distance_to_sample > constants.bias))
@@ -402,6 +406,7 @@ vec3 local_light_visibility(LocalLightGpu light, vec3 receiver_position,
 }
 
 vec3 evaluate_rt_local_light(uint light_index, vec3 receiver_position,
+                             vec3 ray_origin_position,
                              vec3 receiver_normal, vec3 geometric_normal,
                              vec3 view_direction,
                              vec3 albedo, float roughness, float metallic,
@@ -419,14 +424,17 @@ vec3 evaluate_rt_local_light(uint light_index, vec3 receiver_position,
     for (uint sample_index = 0u; sample_index < visibility_samples;
          ++sample_index) {
         visibility += local_light_visibility(
-            light, receiver_position, geometric_normal, seed);
+            light, receiver_position, ray_origin_position, geometric_normal,
+            seed);
     }
     visibility /= float(visibility_samples);
     return (brdf.diffuse * (1.0 - clamp(transmission_weight, 0.0, 1.0)) +
             brdf.specular) * visibility;
 }
 
-vec3 evaluate_rt_local_lighting(vec3 receiver_position, vec3 receiver_normal,
+vec3 evaluate_rt_local_lighting(vec3 receiver_position,
+                                vec3 ray_origin_position,
+                                vec3 receiver_normal,
                                 vec3 geometric_normal, vec3 view_direction,
                                 vec3 albedo,
                                 float roughness, float metallic,
@@ -438,15 +446,17 @@ vec3 evaluate_rt_local_lighting(vec3 receiver_position, vec3 receiver_normal,
         for (uint candidate = 0u; candidate < count; ++candidate) {
             result += evaluate_rt_local_light(
                 local_light_indices[offset + candidate], receiver_position,
-                receiver_normal, geometric_normal, view_direction, albedo,
-                roughness, metallic, transmission_weight, seed);
+                ray_origin_position, receiver_normal, geometric_normal,
+                view_direction, albedo, roughness, metallic,
+                transmission_weight, seed);
         }
     }
     for (uint candidate = 0u; candidate < local_light_counts.z; ++candidate) {
         result += evaluate_rt_local_light(
             local_light_oversized_indices[candidate], receiver_position,
-            receiver_normal, geometric_normal, view_direction, albedo,
-            roughness, metallic, transmission_weight, seed);
+            ray_origin_position, receiver_normal, geometric_normal,
+            view_direction, albedo, roughness, metallic,
+            transmission_weight, seed);
     }
     return result;
 }
@@ -479,7 +489,7 @@ vec3 hit_radiance(RtSurface surface, vec3 view_direction, inout uint seed,
     vec3 local = vec3(0.0);
     if (surface.material_index < rt_materials.length()) {
         local = evaluate_rt_local_lighting(
-            surface.position, shading_normal, surface.normal,
+            surface.position, surface.position, shading_normal, surface.normal,
             normalize(view_direction), base, roughness, metallic,
             transmission_weight, seed);
     }
@@ -595,9 +605,14 @@ void trace_walk_ray(vec3 origin, vec3 direction, float cone_width,
 
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
-    const bool gi_enabled = (constants.shadow_samples & 0x80000000u) != 0u;
+    // Dispatch ownership and scene settings are independent. The full-rate
+    // local-direct dispatch still needs to know whether the scene's GI lanes
+    // will provide transmission coverage later in composite.
+    const bool gi_dispatch = (constants.shadow_samples & 0x80000000u) != 0u;
     const bool local_direct_enabled =
         (constants.shadow_samples & 0x40000000u) != 0u;
+    const bool scene_gi_enabled =
+        (constants.shadow_samples & 0x20000000u) != 0u;
     float depth;
     vec4 albedo;
     ivec2 source_extent = textureSize(depth_texture, 0);
@@ -622,7 +637,7 @@ void main() {
     const uint material_id = impostor_identity_material(identity.x);
     // Reversed-Z: far/cleared background is now 0.0 (was 1.0 under standard-Z).
     if (depth <= 0.0 || albedo.a <= 0.0 || normal_length_squared < 0.5) {
-        if (gi_enabled) {
+        if (gi_dispatch) {
             imageStore(raw_diffuse_image, pixel, vec4(0.0));
             imageStore(raw_specular_image, pixel, vec4(0.0));
             imageStore(raw_specular_aux_image, pixel, vec4(0.0));
@@ -708,7 +723,7 @@ void main() {
         // With GI off the transmission lane stays empty and composite uses its
         // Fresnel fallback coverage. Match that exact weighting here because
         // this image stores final direct radiance, not separate BRDF lobes.
-        if (!gi_enabled && primary_transmission > 0.0) {
+        if (!scene_gi_enabled && primary_transmission > 0.0) {
             float ior = max(primary_material.transmission.y, 1.001);
             float r0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
             vec3 primary_view = normalize(unproject(source_uv, 1.0) -
@@ -721,7 +736,7 @@ void main() {
     }
     if (local_direct_enabled) {
         vec3 primary_local_direct = evaluate_rt_local_lighting(
-            shading_world, direct_normal, direct_normal,
+            shading_world, world, direct_normal, direct_normal,
             normalize(unproject(source_uv, 1.0) - shading_world), albedo.rgb,
             clamp(orm.x, 0.02, 1.0), clamp(orm.y, 0.0, 1.0),
             primary_transmission, direct_seed);
@@ -732,7 +747,7 @@ void main() {
                    vec4(primary_local_direct, 1.0));
     }
 
-    if (!gi_enabled) {
+    if (!gi_dispatch) {
         return;
     }
     // WP-G: spawn the path's ray cone from the traced-pixel footprint at this
@@ -828,7 +843,8 @@ void main() {
                 hit_transmission);
             if (hit.surface.material_index < rt_materials.length()) {
                 hit_outgoing += evaluate_rt_local_lighting(
-                    hit.surface.position, hit_shading_normal,
+                    hit.surface.position, hit.surface.position,
+                    hit_shading_normal,
                     hit.surface.normal, -direction, hit_base, hit_roughness,
                     hit_metallic, hit_transmission, seed);
             }

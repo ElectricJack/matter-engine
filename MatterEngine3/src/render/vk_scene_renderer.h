@@ -854,6 +854,9 @@ struct VkRasterPixel {
     matter::Float4 raw_transmission{};
     matter::Float4 accumulated_transmission{};
     matter::Float3 transmission_aux{};
+    // Full-resolution, BRDF/transmission-weighted local direct written by the
+    // native-RT ownership pass. Exposed only to the Vulkan smoke suite.
+    matter::Float4 raw_local_direct{};
 };
 
 struct WaterForwardObservation {
