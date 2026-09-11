@@ -345,25 +345,27 @@ function validateWingOverlap(wings) {
   return volumes;
 }
 
-function insideFaceSegment(mouth) {
+function shiftedMouthSegment(mouth, threshold) {
   const center = [mouth.center[0], mouth.center[2]];
-  const inside = [mouth.inside[0], mouth.inside[2]];
-  const offset = subtract2(inside, center);
+  const face = [threshold[0], threshold[2]];
+  const offset = subtract2(face, center);
   return mouth.segment.map(point => add2(point, offset));
 }
 
-function segmentMatches(edge, segment) {
-  return (samePoint(edge[0], segment[0]) && samePoint(edge[1], segment[1])) ||
-    (samePoint(edge[0], segment[1]) && samePoint(edge[1], segment[0]));
+function belongsToMouthEdge(edge, mouthPointGroups) {
+  return mouthPointGroups.some(points => edge.every(endpoint =>
+    points.some(point => samePoint(point, endpoint))));
 }
 
-function buildWallSpans(id, polygon, mouthSegments, thickness, baseY, height, material) {
+function buildWallSpans(id, polygon, mouthPointGroups, thickness, baseY, height, material) {
   const spans = [];
   for (let index = 0; index < polygon.length; ++index) {
     const segment = [polygon[index], polygon[(index + 1) % polygon.length]];
-    if (mouthSegments.some(mouth => segmentMatches(segment, mouth))) continue;
+    if (belongsToMouthEdge(segment, mouthPointGroups)) continue;
     const tangent = normalize2(subtract2(segment[1], segment[0]), `connections.${id}.wallSpans`);
-    const normal = [-tangent[1], tangent[0]];
+    // clearPolygon is counter-clockwise, so its exterior is to the right of
+    // each directed boundary edge.
+    const normal = [tangent[1], -tangent[0]];
     const spanId = `connector:${id}:wall:${spans.length}`;
     spans.push({
       id: spanId, segment: segment.map(point => [...point]), tangent, normal,
@@ -406,8 +408,12 @@ function buildConnector(connection, index, byId) {
   if (length2(centerDelta) <= EPSILON) fail(path, 'portal mouths coincide');
   if (dot2(centerDelta, a.outward) <= EPSILON || dot2(scale2(centerDelta, -1), b.outward) <= EPSILON)
     fail(path, 'portal mouths do not face the connector without intruding through a wing');
-  const aFace = insideFaceSegment(a), bFace = insideFaceSegment(b);
-  const clearPolygon = convexHull([...aFace, ...bFace], `${path}.clearPolygon`);
+  const aFaces = [shiftedMouthSegment(a, a.inside), a.segment,
+    shiftedMouthSegment(a, a.outside)];
+  const bFaces = [shiftedMouthSegment(b, b.inside), b.segment,
+    shiftedMouthSegment(b, b.outside)];
+  const aPoints = aFaces.flat(), bPoints = bFaces.flat();
+  const clearPolygon = convexHull([...aPoints, ...bPoints], `${path}.clearPolygon`);
   if (!isConvexPolygon(clearPolygon)) fail(`${path}.clearPolygon`, 'must be convex');
   const minimumWidth = polygonMinimumWidth(clearPolygon);
   if (minimumWidth + EPSILON < CASTLE_SITE_MIN_CLEAR_WIDTH)
@@ -418,7 +424,7 @@ function buildConnector(connection, index, byId) {
   const wallThickness = positive(connection.wallThickness ?? Math.max(a.wallThickness, b.wallThickness),
     `${path}.wallThickness`);
   const wallMaterial = connection.wallMaterial ?? 'castle.stone';
-  const wallSpans = buildWallSpans(id, clearPolygon, [aFace, bFace], wallThickness,
+  const wallSpans = buildWallSpans(id, clearPolygon, [aPoints, bPoints], wallThickness,
     aBaseY, clearHeight, wallMaterial);
   const floorMaterial = connection.floor ?? 'stone';
   const floorThickness = positive(connection.floorThickness ?? 0.25, `${path}.floorThickness`);
@@ -613,9 +619,9 @@ function compile(site) {
   const roomGraph = buildGlobalGraph(wings, connectors, entryRef);
   const entrySocket = worldSocket(byId.get(entryRef.wing), entryRef, 'entry');
   const spawn = [
-    entrySocket.inside[0] - entrySocket.outward[0] * 0.5,
+    entrySocket.inside[0] + entrySocket.outward[0] * 0.5,
     entrySocket.inside[1],
-    entrySocket.inside[2] - entrySocket.outward[1] * 0.5,
+    entrySocket.inside[2] + entrySocket.outward[1] * 0.5,
   ];
   return {
     schema: CASTLE_SITE_MANIFEST_SCHEMA, siteId, seed, grid, angleStep,
