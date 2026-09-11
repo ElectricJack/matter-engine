@@ -466,7 +466,10 @@ function lineAperturePlans(manifest, levelId, axis, line, grid, height, options)
 // Canonical CastleCutStone params: a convex prism = bounding box (length +X
 // centred, height +Y from the y=0 bed, depth +Z centred) minus up to three
 // half-planes n.(x,y) > d in the XY profile. Quantized so identical arch
-// geometries share bakes.
+// geometries share bakes. Idempotent: a quantized normal is unit only to
+// ~7.1e-5, and renormalizing it again can step it to a neighbouring 1e-4 grid
+// point (c2y -0.9794 -> -0.9795 -> -0.9794), so an on-grid normal already
+// within 1e-4 of unit length is kept as it is.
 export function cutStoneParams(p = {}) {
   const q = value => Math.round(value * 1e4) / 1e4;
   const seed = Math.floor(clampNumber(p.seed, 0, -1e9, 1e9)) % MASONRY_CUT_SEEDS;
@@ -481,8 +484,13 @@ export function cutStoneParams(p = {}) {
   for (let i = 0; i < 3; ++i) {
     const nx = clampNumber(p[`c${i}x`], 0, -1, 1), ny = clampNumber(p[`c${i}y`], 0, -1, 1);
     const len = Math.hypot(nx, ny);
-    out[`c${i}x`] = len > 1e-9 ? q(nx / len) : 0;
-    out[`c${i}y`] = len > 1e-9 ? q(ny / len) : 0;
+    let cx = 0, cy = 0;
+    if (len > 1e-9) {
+      cx = q(nx); cy = q(ny);
+      if (Math.abs(Math.hypot(cx, cy) - 1) > 1e-4) { cx = q(nx / len); cy = q(ny / len); }
+    }
+    out[`c${i}x`] = cx;
+    out[`c${i}y`] = cy;
     out[`c${i}d`] = len > 1e-9 ? q(clampNumber(p[`c${i}d`], 0, -10, 10)) : 0;
   }
   return out;
@@ -532,9 +540,13 @@ export function emitCutStone(part, input = {}) {
   part.smoothing(Math.min(0.009, minDim * 0.05));
   part.box([0, p.height / 2, 0], [p.length / 2, p.height / 2, hd]);
   for (const cut of cutList(p)) {
+    // Canonical normals are unit only to 1e-4: put the cutter face exactly on
+    // the profile's clip line n.(x,y) = d, at distance d/|n| along n/|n|.
+    const len = Math.hypot(cut.nx, cut.ny), ux = cut.nx / len, uy = cut.ny / len;
+    const offset = cut.d / len + big;
     part.pushMatrix();
-    part.translate(cut.nx * (cut.d + big), cut.ny * (cut.d + big), 0);
-    part.rotateZ(Math.atan2(cut.ny, cut.nx));
+    part.translate(ux * offset, uy * offset, 0);
+    part.rotateZ(Math.atan2(uy, ux));
     part.box([0, 0, 0], [big, big, hd + 0.1]);
     part.popMatrix();
     part.difference();
