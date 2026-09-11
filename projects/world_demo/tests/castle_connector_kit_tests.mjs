@@ -46,14 +46,6 @@ globalThis.SHAPE = Object.freeze({ polygon: 3, triangles: 0 });
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
-function roundedStructure(value) {
-  if (typeof value === 'number') return Number(value.toFixed(12));
-  if (Array.isArray(value)) return value.map(roundedStructure);
-  if (value && typeof value === 'object') return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [key, roundedStructure(item)]));
-  return value;
-}
-
 function polygonArea(polygon) {
   let twiceArea = 0;
   for (let index = 0; index < polygon.length; ++index) {
@@ -178,9 +170,8 @@ assert.deepEqual(records.map(record => record.id),
   ['core-hall-30', 'core-hall-15', 'core-hall-45', 'core-hall-neg-30']);
 assert.deepEqual(fixtureModule.CASTLE_CONNECTOR_FIXTURE.hall.origin,
   [16, 0, 2.5358983849]);
-assert.deepEqual(roundedStructure(records),
-  roundedStructure(fixtureModule.CASTLE_CONNECTOR_FIXTURE.records),
-  'JSON contract fixture and executable/native fixture are the same records');
+assert.deepEqual(records, fixtureModule.CASTLE_CONNECTOR_FIXTURE.records,
+  'JSON contract fixture and executable/native fixture are byte-exact records');
 for (const record of fixtureModule.CASTLE_CONNECTOR_FIXTURE.records) {
   assert.equal(validateConnectorRecord(record).valid, true,
     record.id + ' executable native fixture record validates');
@@ -413,6 +404,11 @@ assert.ok(meshOnly.inlineFloorPieces.length > 0,
 assert.ok(meshOnly.roofFacets.flatMap(facet => facet.slice(0, 2)).some(point =>
   !insideConvex(canonical.clearPolygon, [point[0], point[2]])),
   'roof facets honor the authored overhang beyond the clear support polygon');
+const roofEavePolygon = meshOnly.roofFacets.map(facet =>
+  [facet[1][0], facet[1][2]]);
+assert.ok(volumes.filter(volume => volume.kind === 'wall').every(volume =>
+  volume.polygon.every(point => insideConvex(roofEavePolygon, point))),
+  'roof eaves cover the complete masonry shell before adding overhang');
 assert.ok(meshOnly.roofFacets.every(facet => triangleNormalY(facet) > EPSILON),
   'hip facets are wound upward');
 assert.ok(meshOnly.roofTiles.every(tile => Math.max(

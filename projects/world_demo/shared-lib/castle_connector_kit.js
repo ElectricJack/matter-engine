@@ -101,6 +101,27 @@ function canonicalPolygon(input, path = 'clearPolygon') {
   return polygon.slice(first).concat(polygon.slice(0, first));
 }
 
+function convexHull(points, path) {
+  const sorted = points.map((point, index) => point2(point, `${path}[${index}]`))
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    .filter((point, index, values) => index === 0 ||
+      Math.hypot(point[0] - values[index - 1][0], point[1] - values[index - 1][1]) > EPS);
+  if (sorted.length < 3) fail(path, 'must contain at least three distinct points');
+  const cross = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) -
+    (b[1] - a[1]) * (c[0] - a[0]);
+  const half = values => {
+    const result = [];
+    for (const point of values) {
+      while (result.length >= 2 && cross(result.at(-2), result.at(-1), point) <= EPS)
+        result.pop();
+      result.push(point);
+    }
+    return result;
+  };
+  return canonicalPolygon(half(sorted).slice(0, -1)
+    .concat(half([...sorted].reverse()).slice(0, -1)), path);
+}
+
 function normalize2(value, path) {
   const v = point2(value, path);
   const length = Math.hypot(v[0], v[1]);
@@ -844,7 +865,11 @@ function placeBeamBetween(part, a, b, params, seed) {
 }
 
 function emitRoof(part, record, params, { mesh = true, children = true } = {}) {
-  const polygon = outsetConvexPolygon(record.clearPolygon, record.roof.overhang);
+  const shellPolygon = convexHull([
+    ...record.clearPolygon,
+    ...record.wallSpans.flatMap(span => spanFootprint(span)),
+  ], 'roof.shellPolygon');
+  const polygon = outsetConvexPolygon(shellPolygon, record.roof.overhang);
   const eaveY = record.baseY + record.height;
   const centroid = polygon.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0])
     .map(value => value / polygon.length);
