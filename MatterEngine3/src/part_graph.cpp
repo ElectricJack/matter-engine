@@ -690,6 +690,8 @@ uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params
 // this hash, scratch is the ONLY root consulted — a transient artifact is never
 // silently satisfied from the persistent cache.
 bool HostBaker::cached(uint64_t resolved_hash) {
+    // A later hit must revalidate/repair metadata, never trust a prior bake flag.
+    last_leaf_metadata_hash_ = 0;
     // A scratch PART selects scratch as the artifact root for this hash.  This
     // intentionally mirrors PartStore's scratch-first root choice: a linked
     // scratch PART with a torn MANM/MACM sibling set must be rebuilt in scratch,
@@ -760,6 +762,7 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     // W5: invalidate the fast-path cache up-front so a failed bake below never
     // leaves a stale prior part's data readable as if it were current.
     last_baked_hash_ = 0;
+    last_leaf_metadata_hash_ = 0;
     last_child_modules_placed_.clear();
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
     if (!r.error.ok) {
@@ -774,12 +777,14 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     }
     last_child_modules_placed_ = r.child_modules_placed;
     last_baked_hash_ = resolved_hash;
+    last_leaf_metadata_hash_ = r.leaf_metadata_published ? resolved_hash : 0;
     return true;
 }
 
 bool HostBaker::bake_lod_variants(const std::string& source, const Params& params,
                                   const std::vector<uint64_t>& child_hashes,
                                   uint64_t resolved_hash) {
+    if (resolved_hash && last_leaf_metadata_hash_ == resolved_hash) return true;
     script_host::ScriptHost::LodBudgetSpec spec = host_.eval_lod_budgets(source);
     if (spec.budgets.empty()) return true;                    // not opted in
     if (!child_hashes.empty()) {
@@ -837,6 +842,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
                                  const std::vector<std::string>& child_modules,
                                  const std::vector<std::string>& child_params,
                                  uint64_t resolved_hash) {
+    if (resolved_hash && last_leaf_metadata_hash_ == resolved_hash) return true;
     script_host::ScriptHost::LodAuthoring lods = host_.eval_lods(source);
 
     // Per-part impostor opt-out (`static noImpostor = true`, kRepresentation

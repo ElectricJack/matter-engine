@@ -86,6 +86,7 @@ public:
     // trailing vertices that do not complete a primitive rather than reporting
     // them -- an odd vertex count is a quiet no-op, not an error.
     void vertex(float3 position);   // local-space; transformed at endShape()
+    void surfaceVertex(float3 position, float3 normal, float2 uv);
     void endShape();                // assembles pending vertices into Tri/TriEx
 
     // Append a radius-skinned segment as a swept tube: a ring of `segments`
@@ -161,6 +162,7 @@ private:
                             float3 n0, float3 n1, float3 n2,
                             int material_id, const mat4& transform,
                             float4 tint = make_float4(1,1,1,0));
+    void emitPendingTriangle(size_t a, size_t b, size_t c);
 
     std::vector<Tri>   tris_;
     std::vector<TriEx> triex_;
@@ -171,6 +173,10 @@ private:
     float4             cur_tint_  = make_float4(1,1,1,0);
     bool               open_      = false;
     std::vector<float3> verts_;   // local-space pending vertices
+    struct SurfaceAttribute { float3 normal{}; float2 uv{}; bool present = false; };
+    // Allocated only for explicitly attributed shapes; legacy vertices keep
+    // their existing storage and face-normal behavior.
+    std::vector<SurfaceAttribute> surface_attrs_;
 };
 
 // Variation binding. SP-1 (part_asset_v2.h) is implemented at execution time, so

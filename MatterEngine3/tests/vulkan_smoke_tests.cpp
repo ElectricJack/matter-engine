@@ -1,5 +1,6 @@
 #include "check.h"
 #include "gpu_visual_mesher_vk_tests.h"
+#include "gpu_solid_mesher_tests.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -1419,9 +1420,23 @@ void test_atmosphere_timing_contract() {
           "atmosphere timings append five exact GPU zones");
     CHECK(Renderer::kGpuZoneWaterDecode == 17 &&
               Renderer::kGpuZoneWaterDraw == 18 &&
-              Renderer::kGpuZoneWaterDirectDraw == 19 &&
-              Renderer::kGpuZoneCount == 20,
+              Renderer::kGpuZoneWaterDirectDraw == 19,
           "water animation timings append direct draw without renumbering existing GPU zones");
+    CHECK(Renderer::kGpuZoneRtLocalDirect == 20 &&
+              std::string(matter::kGpuTimingNames[20]) == "rt_local_direct",
+          "primary local-light timing retains its GPU zone and public sample slot");
+    CHECK(Renderer::kGpuZoneHdrLighting == 21 &&
+              Renderer::kGpuZoneRtGiDiffuse == 22 &&
+              Renderer::kGpuZoneRtGiReflectionTransmission == 23 &&
+              Renderer::kGpuZonePrimaryLightCull == 24 &&
+              Renderer::kGpuZoneCount == 25 &&
+              matter::kGpuTimingNames.size() == Renderer::kGpuZoneCount,
+          "lighting detail timings append GPU zones without renumbering");
+    CHECK(std::string(matter::kGpuTimingNames[21]) == "hdr_lighting" &&
+              std::string(matter::kGpuTimingNames[22]) == "rt_gi_diffuse" &&
+              std::string(matter::kGpuTimingNames[23]) == "rt_gi_reflection_transmission" &&
+              std::string(matter::kGpuTimingNames[24]) == "primary_light_cull",
+          "lighting detail timings expose exact public sample names");
 
     std::array<uint32_t, 3> boundaries{};
     viewer::VolumetricPassBoundary boundary =
@@ -1958,6 +1973,7 @@ void run_vulkan_gi_math_tests() {
     const matter::VulkanGiSettings defaults{};
     CHECK(defaults.enabled && defaults.max_bounces == 1u &&
               defaults.samples_per_pixel == 1u && defaults.trace_scale == 1.0f &&
+              defaults.reflection_trace_scale == 1.0f &&
               defaults.diffuse_multiplier == 1.0f &&
               defaults.reflection_multiplier == 1.0f &&
               defaults.max_reflection_roughness == 1.0f &&
@@ -3208,10 +3224,10 @@ void run_vulkan_temporal_tests() {
           "without a global reset");
 
     // 288 is the historical block; + 16 (water animation), + 16 (vis_params),
-    // and + 64 (cull_world_to_clip) form the appended presentation/occlusion
-    // tail. The shared cull and visibility declarations keep this exact order.
+    // + 64 (cull_world_to_clip), and + 16 (surface_detail_sampling) form the
+    // appended tail. Existing shader prefixes retain their original offsets.
     CHECK(viewer::vk_scene_detail::frame_constants_size_for_test() ==
-              288 + 16 + 16 + 64,
+              288 + 16 + 16 + 64 + 16,
           "C++ FrameConstants matches final std140 uvec4 padding and size");
 }
 
@@ -3727,7 +3743,7 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "albedo attachment format");
     CHECK(attachments.normal.format == VK_FORMAT_R16G16B16A16_SFLOAT,
           "normal attachment format");
-    CHECK(attachments.orm.format == VK_FORMAT_R8G8B8A8_UNORM,
+    CHECK(attachments.orm.format == VK_FORMAT_R16G16B16A16_SFLOAT,
           "ORM attachment format");
     CHECK(attachments.velocity.format == VK_FORMAT_R16G16_SFLOAT,
           "sampled velocity attachment format");
@@ -3747,6 +3763,9 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(attachments.extent.width == width &&
               attachments.extent.height == height,
           "raster attachment extent");
+    CHECK(renderer.test_raw_reflection_extent().width == width &&
+              renderer.test_raw_reflection_extent().height == height,
+          "half-resolution diffuse preserves full-resolution reflections/glass");
 
     scaled_gi.trace_scale = 0.75f;
     renderer.set_gi_settings(scaled_gi);
@@ -3766,6 +3785,31 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               renderer.test_opaque_depth_image() ==
                   opaque_depth_at_initial_extent,
           "preserved opaque images survive trace-scale round trip");
+
+    scaled_gi.trace_scale = 0.128f;
+    renderer.set_gi_settings(scaled_gi);
+    CHECK(renderer.render_gbuffer_and_composite(321, 201, error),
+          error.empty() ? "odd-size eighth-resolution diffuse targets" : error.c_str());
+    CHECK(renderer.test_raw_diffuse_extent().width == 42 &&
+              renderer.test_raw_diffuse_extent().height == 26 &&
+              renderer.test_raw_reflection_extent().width == 321 &&
+              renderer.test_raw_reflection_extent().height == 201,
+          "odd-size diffuse rounds up independently of full-rate glass");
+    scaled_gi.trace_scale = 1.0f;
+    scaled_gi.reflection_trace_scale = 0.5f;
+    renderer.set_gi_settings(scaled_gi);
+    CHECK(renderer.render_gbuffer_and_composite(321, 201, error),
+          error.empty() ? "reverse diffuse/reflection resolution split" : error.c_str());
+    CHECK(renderer.test_raw_diffuse_extent().width == 321 &&
+              renderer.test_raw_diffuse_extent().height == 201 &&
+              renderer.test_raw_reflection_extent().width == 161 &&
+              renderer.test_raw_reflection_extent().height == 101,
+          "reflection scale does not resize diffuse lighting");
+    scaled_gi.trace_scale = 0.5f;
+    scaled_gi.reflection_trace_scale = 1.0f;
+    renderer.set_gi_settings(scaled_gi);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "restore original raster fixture after independent resizes" : error.c_str());
 
     viewer::VkRasterPixel center{};
     viewer::VkRasterPixel lower_right_inside{};
@@ -6129,7 +6173,8 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
 //       monotonically coarser virtual mips, and the cone footprint at the
 //       hit grows with distance. This is the property the deleted
 //       RT_TILESET_CONE_SPREAD constant could only fake.
-void run_vt_rt_path(matter::VulkanDevice& vulkan) {
+void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = false,
+                    bool surface_parallax_fixture = false) {
     if (!vulkan.ray_tracing_available()) {
         std::printf("vt-rt: ray tracing unavailable, skipping\n");
         return;
@@ -6169,6 +6214,43 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan) {
     materials[kMaterialB].base_roughness[2] = albedo_b.z;
     materials[kMaterialB].base_roughness[3] = 0.40f;
     materials[kMaterialB].metal_opacity_spec_coat[1] = 1.0f;
+    if (normal_frame_fixture) {
+        // Constant directional texture: no sampling/layout ambiguity. The
+        // compositor's +Z tap yields normalize((172/255*2-1,102/255*2-1,1)).
+        constexpr int px = 32;
+        std::vector<uint8_t> alb(px * px * 3, 160), nrm(px * px * 2);
+        std::vector<uint8_t> orm(px * px * 3, 180);
+        std::vector<uint16_t> hgt(px * px, 0);
+        for (int i = 0; i < px * px; ++i) {
+            nrm[2*i] = 172; nrm[2*i+1] = 102;
+            orm[3*i] = 255; orm[3*i+2] = 0;
+        }
+        tileset::GTexHeader header{};
+        header.tile_size_m = 1.0f; header.texels_per_meter = 8;
+        header.height_min = 0; header.height_max = .01f;
+        header.content_hash = 0x56544e4652414d45ull;
+        const char* temp = std::getenv("TEMP");
+        const std::string path = std::string(temp ? temp : ".") +
+                                 "/me3_vt_normal_frame.gtex";
+        CHECK(tileset::save_gtex(path, header, px, px, alb.data(), nrm.data(),
+                                orm.data(), hgt.data(), error), error.c_str());
+        CHECK(renderer.load_tileset_slot(0, path, error), error.c_str());
+        std::remove(path.c_str());
+        materials[kMaterialA].flags_misc[1] = 1u;
+        materials[kMaterialB].flags_misc[1] = 1u;
+        if (surface_parallax_fixture) {
+            materials[kMaterialA].flags_misc[0] |= 32u;
+            materials[kMaterialB].flags_misc[0] |= 32u;
+        }
+        matter::VtNearBandSettings near_settings{};
+        near_settings.near_band_m = 0; near_settings.near_fade_m = .01f;
+        renderer.set_vt_near_band_settings(near_settings);
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(vulkan.physical_device(), &props);
+        std::printf("vt-normal-frame interface: vertex=%u fragment=%u required=88 (local-position POM interface)\n",
+                    props.limits.maxVertexOutputComponents,
+                    props.limits.maxFragmentInputComponents);
+    }
     CHECK(renderer.update_materials(materials, 1, 1, error),
           error.empty() ? "vt-rt: stage materials" : error.c_str());
 
@@ -6302,6 +6384,223 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan) {
                                                      local),
                   local.empty() ? "vt-rt: readback probe" : local.c_str());
     };
+
+    if (surface_parallax_fixture) {
+        std::printf("surface-parallax: constant-height analytic oracle; yaw0/30/90, on/off, zero height, grazing\n");
+        matter::TilesetPomSettings pom{};
+        pom.steps=64; pom.relief_cap_m=.02f; pom.max_march_m=.08f;
+        // Retain the nonzero legacy ground datum: finished surfaces must use
+        // max-height datum independently, never inherit ground's .168m bias.
+        const auto settle_pixel = [&](bool enabled, bool rt) {
+            pom.enabled=enabled; renderer.set_tileset_pom_settings(pom);
+            rt_settings.enabled=rt; renderer.set_ray_tracing_settings(rt_settings);
+            for(int i=0;i<8;++i){glfwPollEvents();frame_with_probe(false,{},{},0,0);}
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(160,100,pixel,error),error.c_str());
+            CHECK(pixel.material_index==kMaterialA,"surface-parallax: raster probe owns left chart");
+            return pixel;
+        };
+        const auto world_at_depth = [&](float depth) {
+            return viewer::unproject_ndc(matrices.clip_to_world,
+                {(160.5f/width)*2-1,1-(100.5f/height)*2,depth});
+        };
+        const auto length = [](matter::Float3 v) {return std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);};
+        const auto subtract = [](matter::Float3 a,matter::Float3 b){return matter::Float3{a.x-b.x,a.y-b.y,a.z-b.z};};
+        for(float degrees:{0.f,30.f,90.f}) {
+            const float a=degrees*3.14159265359f/180.f,c=std::cos(a),sn=std::sin(a);
+            const auto rotate=[&](matter::Float3 v){return matter::Float3{c*v.x+sn*v.z,v.y,-sn*v.x+c*v.z};};
+            matter::Mat4f transform=identity_matrix();
+            transform.m[0]=c;transform.m[2]=sn;transform.m[8]=-sn;transform.m[10]=c;
+            CHECK(renderer.update_instances({{0x7611,transform,1}},error),error.c_str());
+            camera.position=rotate({-3,0,0});camera.target=rotate({-.4f,0,-2});camera.up={0,1,0};
+            CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+            const auto flat=settle_pixel(false,false),displaced=settle_pixel(true,false);
+            const auto p0=world_at_depth(flat.depth),p1=world_at_depth(displaced.depth);
+            const auto v=subtract(p0,camera.position);const float len=length(v);
+            const matter::Float3 d{v.x/len,v.y/len,v.z/len},n=rotate({0,0,1});
+            const float cosine=-(n.x*d.x+n.y*d.y+n.z*d.z);
+            const float expected_t=.01f/cosine; // constant R16=0, header min0/max.01
+            const matter::Float3 expected{p0.x+d.x*expected_t,p0.y+d.y*expected_t,p0.z+d.z*expected_t};
+            const float expected_depth=viewer::project_ndc(matrices.world_to_clip,expected).z;
+            const float actual_t=length(subtract(p1,p0));
+            CHECK(displaced.depth<flat.depth,"surface-parallax: recessed hit decreases reversed-Z depth");
+            CHECK(std::fabs(actual_t-expected_t)<.0005f,"surface-parallax: world ray distance equals height/cosine");
+            CHECK(std::fabs(displaced.depth-expected_depth)<1e-5f,"surface-parallax: projected depth matches analytic plane");
+            CHECK(flat.orm.w==0.f,"surface-parallax: disabled march transports zero world-ray distance");
+            CHECK(std::fabs(displaced.orm.w-expected_t)<.000025f,
+                  "surface-parallax: ORM alpha transports analytic world-ray distance at half precision");
+            const matter::Float3 restored{p1.x-d.x*displaced.orm.w,
+                                         p1.y-d.y*displaced.orm.w,
+                                         p1.z-d.z*displaced.orm.w};
+            CHECK(length(subtract(restored,p0))<.00003f,
+                  "surface-parallax: transported distance restores original proxy under rigid rotation");
+            const auto primary_rt=settle_pixel(true,true);
+            CHECK(std::fabs(primary_rt.depth-displaced.depth)<1e-6f,"surface-parallax: raster/RT primary depth parity");
+            CHECK(close4(primary_rt.albedo,displaced.albedo,.015f),"surface-parallax: raster/RT primary color parity");
+            CHECK(close4(primary_rt.normal,displaced.normal,.015f),"surface-parallax: raster/RT primary normal parity");
+            CHECK(primary_rt.orm.w==displaced.orm.w,"surface-parallax: raster/RT primary proxy transport parity");
+            // Neighboring restored samples must lie on the same ORIGINAL
+            // planar wall even though their relief normals are perturbed.
+            // This is the input required for stable proxy-normal derivatives.
+            const matter::Float3 plane=rotate({0,0,-2});
+            for(const auto xy:std::array<std::array<uint32_t,2>,3>{{{{160,100}},{{161,100}},{{160,101}}}}) {
+                viewer::VkRasterPixel neighbor{};
+                CHECK(renderer.readback_raster_pixel(xy[0],xy[1],neighbor,error),error.c_str());
+                const auto q=viewer::unproject_ndc(matrices.clip_to_world,
+                    {(float(xy[0])+.5f)/width*2-1,1-(float(xy[1])+.5f)/height*2,neighbor.depth});
+                const auto ray=subtract(q,camera.position);const float ray_length=length(ray);
+                const matter::Float3 proxy{q.x-ray.x/ray_length*neighbor.orm.w,
+                                          q.y-ray.y/ray_length*neighbor.orm.w,
+                                          q.z-ray.z/ray_length*neighbor.orm.w};
+                const auto offset=subtract(proxy,plane);
+                CHECK(std::fabs(offset.x*n.x+offset.y*n.y+offset.z*n.z)<.00005f,
+                      "surface-parallax: neighboring proxy recovery preserves original wall plane");
+            }
+            frame_with_probe(true,camera.position,subtract(expected,camera.position),0,0);
+            CHECK(probe_hit.valid&&probe_hit.vt_applied&&probe_invalid==0,"surface-parallax: secondary hit returns finished detail");
+            CHECK(length(subtract(probe_hit.position,expected))<.001f,"surface-parallax: secondary displaced position matches analytic plane");
+            CHECK(std::fabs(probe_hit.vt_albedo.x-displaced.albedo.x)<.02f&&
+                  std::fabs(probe_hit.vt_albedo.y-displaced.albedo.y)<.02f&&
+                  std::fabs(probe_hit.vt_albedo.z-displaced.albedo.z)<.02f,
+                  "surface-parallax: secondary color matches primary");
+            CHECK(std::fabs(probe_hit.vt_normal.x-displaced.normal.x)<.02f&&
+                  std::fabs(probe_hit.vt_normal.y-displaced.normal.y)<.02f&&
+                  std::fabs(probe_hit.vt_normal.z-displaced.normal.z)<.02f,
+                  "surface-parallax: secondary normal matches primary");
+            std::printf("surface-parallax yaw=%g cosine=%.6f t=%.6f expected=%.6f depthoff=%.8f depthon=%.8f\n",
+                        degrees,cosine,actual_t,expected_t,flat.depth,displaced.depth);
+            std::fflush(stdout);
+        }
+        // Registration gate: a linear color/normal marker and constant5cm
+        // depth. Its expected channel values follow from the DEPTH-readback
+        // local hit coordinate, so this fails if shading samples the old UV.
+        {
+            constexpr int px=256,tile=64;
+            std::vector<uint8_t> alb(px*px*3,160),nrm(px*px*2,128),orm(px*px*3,180);
+            std::vector<uint16_t> hgt(px*px,0);
+            for(int y=0;y<px;++y)for(int x=0;x<px;++x) {
+                const float u=(float(x%tile)+.5f)/tile;const size_t i=size_t(y)*px+x;
+                alb[3*i]=static_cast<uint8_t>(std::lround(32+192*u));
+                nrm[2*i]=static_cast<uint8_t>(std::lround(255*u));
+                orm[3*i]=255;orm[3*i+2]=0;
+            }
+            tileset::GTexHeader header{};header.tile_size_m=1;header.texels_per_meter=tile;
+            header.height_min=0;header.height_max=.05f;header.content_hash=0x504f4d5556524547ull;
+            const auto path=std::filesystem::temp_directory_path()/"me3_surface_parallax_registration.gtex";
+            CHECK(tileset::save_gtex(path.string(),header,px,px,alb.data(),nrm.data(),orm.data(),hgt.data(),error),error.c_str());
+            CHECK(renderer.load_tileset_slot(0,path.string(),error),error.c_str());std::filesystem::remove(path);
+            CHECK(renderer.update_instances({{0x7611,identity_matrix(),1}},error),error.c_str());
+            camera.position={-3,0,0};camera.target={-.4f,0,-2};camera.up={0,1,0};
+            CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+            pom.relief_cap_m=.06f;pom.max_march_m=.15f;
+            const auto before=settle_pixel(false,false),after=settle_pixel(true,false);
+            const auto hit=world_at_depth(after.depth);
+            const float u=hit.x-std::floor(hit.x),rg=2*u-1;
+            const float expected_red=(32+192*u)/255.f;
+            const float expected_nx=rg/std::sqrt(1+rg*rg+(1.f/255)*(1.f/255));
+            CHECK(std::fabs(after.albedo.x-expected_red)<.02f,"surface-parallax: color samples displaced local UV");
+            CHECK(std::fabs(after.normal.x-expected_nx)<.025f,"surface-parallax: normal samples same displaced local UV");
+            CHECK(after.albedo.x-before.albedo.x>.025f,"surface-parallax: marker color visibly moves with relief");
+            CHECK(after.normal.x-before.normal.x>.04f,"surface-parallax: marker normal visibly moves with relief");
+            const auto marker_base=world_at_depth(before.depth);
+            CHECK(before.orm.w==0.f&&std::fabs(after.orm.w-length(subtract(hit,marker_base)))<.0001f,
+                  "surface-parallax: larger marker recess transports actual world-ray distance");
+            rt_settings.enabled=true;renderer.set_ray_tracing_settings(rt_settings);
+            frame_with_probe(true,camera.position,subtract(hit,camera.position),0,0);
+            CHECK(probe_hit.valid&&probe_hit.vt_applied&&std::fabs(probe_hit.vt_albedo.x-after.albedo.x)<.025f,
+                  "surface-parallax: secondary marker color uses same displaced coordinate");
+            CHECK(std::fabs(probe_hit.vt_normal.x-after.normal.x)<.03f,
+                  "surface-parallax: secondary marker normal uses same displaced coordinate");
+            std::printf("surface-parallax registration u=%.6f color=%.5f expected=%.5f nx=%.5f expected=%.5f\n",
+                        u,after.albedo.x,expected_red,after.normal.x,expected_nx);
+            pom.relief_cap_m=.02f;pom.max_march_m=.08f;
+        }
+        // A grazing hit is either bracketed within the ray cap or unchanged;
+        // it must never manufacture an unbounded UV/depth excursion.
+        CHECK(renderer.update_instances({{0x7611,identity_matrix(),1}},error),error.c_str());
+        camera.position={-20,0,0};camera.target={-.4f,0,-2};camera.up={0,1,0};
+        camera.vertical_fov_radians=.1745329252f; // keep edge-on quad wider than a pixel
+        CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+        const auto grazing_flat=settle_pixel(false,false),grazing=settle_pixel(true,false);
+        const float travel=length(subtract(world_at_depth(grazing.depth),world_at_depth(grazing_flat.depth)));
+        CHECK(std::isfinite(travel)&&travel<=pom.max_march_m+.001f,"surface-parallax: bounded grazing travel");
+        CHECK(grazing.depth<=grazing_flat.depth+1e-7f,"surface-parallax: grazing never pulls depth forward");
+        // Reload a zero-height field through the actual existing gtex loader.
+        constexpr int px=32;std::vector<uint8_t> alb(px*px*3,160),nrm(px*px*2,128),orm(px*px*3,180);
+        std::vector<uint16_t> hgt(px*px,65535);
+        tileset::GTexHeader header{};header.tile_size_m=1;header.texels_per_meter=8;
+        header.height_min=0;header.height_max=.01f;header.content_hash=0x504f4d5a45524full;
+        const auto path=std::filesystem::temp_directory_path()/"me3_surface_parallax_zero.gtex";
+        CHECK(tileset::save_gtex(path.string(),header,px,px,alb.data(),nrm.data(),orm.data(),hgt.data(),error),error.c_str());
+        CHECK(renderer.load_tileset_slot(0,path.string(),error),error.c_str());std::filesystem::remove(path);
+        camera.position={-3,0,0};camera.target={-.4f,0,-2};camera.vertical_fov_radians=1.57079632679f;
+        CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+        const auto zero_off=settle_pixel(false,false),zero_on=settle_pixel(true,false);
+        CHECK(std::fabs(zero_off.depth-zero_on.depth)<1e-7f,"surface-parallax: max-height texel stays exactly on shell datum");
+        CHECK(zero_off.orm.w==0.f&&zero_on.orm.w==0.f,
+              "surface-parallax: zero-height and disabled surfaces transport zero offset");
+        CHECK(grazing_flat.orm.w==0.f&&std::fabs(grazing.orm.w-travel)<.001f,
+              "surface-parallax: grazing fallback transports only actual bounded travel");
+        std::printf("surface-parallax zero delta=%.9f grazing travel=%.6f validation=%u\n",
+                    zero_on.depth-zero_off.depth,travel,vulkan.validation_error_count());
+        CHECK(vulkan.validation_error_count()==0,"surface-parallax: zero Vulkan validation errors");
+        renderer.release_part(0x7611);return;
+    }
+
+    if (normal_frame_fixture) {
+        const float dx = 172.0f / 255.0f * 2.0f - 1.0f;
+        const float dy = 102.0f / 255.0f * 2.0f - 1.0f;
+        const float inv = 1.0f / std::sqrt(dx*dx + dy*dy + 1.0f);
+        for (const bool roll : {false, true})
+        for (const float degrees : {0.0f, 15.0f, 45.0f, 90.0f}) {
+            const float angle = degrees * 3.14159265359f / 180.0f;
+            const float c = std::cos(angle), sn = std::sin(angle);
+            const auto rotate = [&](matter::Float3 v) {
+                return roll ? matter::Float3{c*v.x-sn*v.y, sn*v.x+c*v.y, v.z}
+                            : matter::Float3{c*v.x+sn*v.z, v.y, -sn*v.x+c*v.z};
+            };
+            matter::Mat4f transform = identity_matrix();
+            if (roll) {
+                transform.m[0]=c; transform.m[1]=-sn;
+                transform.m[4]=sn; transform.m[5]=c;
+            } else {
+                transform.m[0]=c; transform.m[2]=sn;
+                transform.m[8]=-sn; transform.m[10]=c;
+            }
+            CHECK(renderer.update_instances({{0x7611, transform, 1}}, error), error.c_str());
+            camera.target = rotate({0, 0, -1});
+            camera.up = rotate({0, 1, 0});
+            CHECK(viewer::build_frame_matrices(camera, width, height, matrices, error), error.c_str());
+            // The window presents every frame; poll events while the user
+            // watches the fixture rotate. No hidden/offscreen launch.
+            for (int i = 0; i < 12; ++i) {
+                glfwPollEvents();
+                frame_with_probe(false, {}, {}, 0, 0);
+            }
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(140, 100, pixel, error), error.c_str());
+            frame_with_probe(true, {0,0,0}, rotate({-.4f,0,-2}), 0, 0);
+            const matter::Float3 expected = rotate({dx*inv,dy*inv,inv});
+            const float raster_cos = pixel.normal.x*expected.x +
+                pixel.normal.y*expected.y + pixel.normal.z*expected.z;
+            const float ray_cos = probe_hit.vt_normal.x*expected.x +
+                probe_hit.vt_normal.y*expected.y + probe_hit.vt_normal.z*expected.z;
+            const float parity = pixel.normal.x*probe_hit.vt_normal.x +
+                pixel.normal.y*probe_hit.vt_normal.y + pixel.normal.z*probe_hit.vt_normal.z;
+            CHECK(pixel.material_index == kMaterialA, "normal-frame: raster fixture owns probe");
+            CHECK(probe_hit.valid && probe_hit.vt_applied && probe_invalid == 0,
+                  "normal-frame: traced hit resolves page without invalid records");
+            CHECK(raster_cos > .995f, "normal-frame: raster matches transformed directional oracle");
+            CHECK(ray_cos > .995f, "normal-frame: RT matches transformed directional oracle");
+            CHECK(parity > .998f, "normal-frame: raster and RT agree");
+            std::printf("vt-normal-frame axis=%s degrees=%g rasterCos=%.6f rayCos=%.6f parity=%.6f normal=(%.4f %.4f %.4f)\n",
+                        roll ? "roll" : "yaw", degrees, raster_cos, ray_cos, parity,
+                        pixel.normal.x, pixel.normal.y, pixel.normal.z);
+            std::fflush(stdout);
+        }
+        renderer.release_part(0x7611);
+        return;
+    }
 
     // Settle: frame 1 fills the pinned tail, the feedback loop then drains the
     // finest pages under the on-screen probes.
@@ -6798,9 +7097,346 @@ static viewer::VkScenePart rt_horizontal_part(uint64_t hash, float y,
     return part;
 }
 
+// Native exhaustive lighting is the oracle: no CPU reservoir implementation.
+// A sharp primary mirror isolates one secondary hit and raw_specular bypasses
+// temporal/spatial denoising. Intensities stay below the shader's firefly cap.
+static void rt_scenario_secondary_local_ris(
+    matter::VulkanDevice& vulkan, std::string& error) {
+    constexpr uint32_t kWidth = 32, kHeight = 32, kSamples = 256;
+    constexpr uint64_t kMirror = 0x52495301, kCeiling = 0x52495302, kBlocker = 0x52495303;
+    const char* setting = std::getenv("MATTER_RT_SECONDARY_LIGHT_SAMPLING");
+    const bool had_setting = setting != nullptr;
+    const std::string requested = setting ? setting : "0";
+    CHECK(requested == "0" || requested == "1", "RIS fixture requires sampling mode 0 or 1");
+    if (requested != "0" && requested != "1") return;
+    const char* budget = std::getenv("MATTER_RT_LOCAL_SECONDARY_BUDGET");
+    const bool exhaustive = !budget || !*budget || std::string(budget)=="0";
+    CHECK(exhaustive,"RIS oracle requires unlimited secondary light budget (unset or 0)");
+    if (!exhaustive) return;
+    const auto set_mode = [](const char* value) {
+#ifdef _WIN32
+        _putenv_s("MATTER_RT_SECONDARY_LIGHT_SAMPLING", value ? value : "");
+#else
+        if (value) setenv("MATTER_RT_SECONDARY_LIGHT_SAMPLING", value, 1);
+        else unsetenv("MATTER_RT_SECONDARY_LIGHT_SAMPLING");
+#endif
+    };
+    struct Moments {
+        double sum[3]{}, square[3]{};
+        uint32_t count = 0;
+        void add(matter::Float4 v) {
+            const double rgb[3]{v.x,v.y,v.z};
+            for (int c=0;c<3;++c) { sum[c]+=rgb[c]; square[c]+=rgb[c]*rgb[c]; }
+            ++count;
+        }
+        double mean(int c) const { return sum[c]/std::max(count,1u); }
+        double variance(int c) const {
+            return count>1 ? std::max(0.0,(square[c]-sum[c]*sum[c]/count)/(count-1)) : 0.0;
+        }
+    } observed[2];
+    bool runs_ok = true;
+    for (uint32_t run=0;run<2 && runs_ok;++run) {
+        set_mode(run == 0 ? "0" : requested.c_str());
+        viewer::VkSceneRenderer renderer(vulkan);
+        bool ok = renderer.init(error);
+        std::vector<MaterialGpuRecord> materials(3);
+        for (auto& material : materials) {
+            material.base_roughness[3] = 0.8f;
+            material.metal_opacity_spec_coat[1] = 1.0f;
+            material.scattering_shape[3] = 1.0f;
+        }
+        for (uint32_t c=0;c<3;++c) {
+            materials[0].base_roughness[c] = 1.0f;
+            materials[0].specular_tint_coat_roughness[c] = 1.0f;
+            materials[1].base_roughness[c] = 0.5f;
+        }
+        materials[0].metal_opacity_spec_coat[0] = 1.0f;
+        materials[0].base_roughness[3] = 0.02f;
+        const auto triangle = [](uint64_t hash, float y, float cx, float radius,
+                                 float normal_y, uint32_t material) {
+            auto part = fixed_part(hash,{cx-radius,y-0.01f,-2*radius},
+                                  {cx+radius,y+0.01f,radius},0);
+            const matter::Float3 n{0,normal_y,0};
+            const matter::Float4 tint{1,1,1,0}, orm{material==0 ? 0.02f:0.8f,
+                                                       material==0 ? 1.0f:0.0f,1,1};
+            part.vertices = {{{cx-radius,y,radius},n,tint,orm,material,{}},
+                             {{cx+radius,y,radius},n,tint,orm,material,{}},
+                             {{cx,y,-2*radius},n,tint,orm,material,{}}};
+            part.indices = normal_y>0 ? std::vector<uint32_t>{0,1,2}
+                                      : std::vector<uint32_t>{0,2,1};
+            return part;
+        };
+        ok = ok && renderer.update_materials(materials,1,1,error) &&
+            renderer.ensure_part(triangle(kMirror,0,0,20,1,0),error)>=0 &&
+            renderer.ensure_part(triangle(kCeiling,3,0,20,-1,1),error)>=0 &&
+            renderer.ensure_part(triangle(kBlocker,2.5f,-1.5f,0.8f,1,2),error)>=0;
+        world_lights::LocalLightPublication all;
+        all.records.resize(4);
+        const float positions[4][3]{{-3,2,0},{3,2,0},{0,2,-3},{0,2,3}};
+        const float colors[4][3]{{18,6,3},{3,9,4},{4,3,12},{2,3,5}};
+        for (uint32_t i=0;i<4;++i) {
+            auto& light=all.records[i];
+            for (uint32_t c=0;c<3;++c) {
+                light.position[c]=positions[i][c]; light.color[c]=colors[i][c];
+            }
+            light.range=12; light.source_radius=0; light.cos_inner=1; light.cos_outer=-1;
+            light.kind=static_cast<uint32_t>(world_lights::LocalLightKind::Point);
+            light.flags=i==3 ? 0u:1u;
+        }
+        matter::VulkanRayTracingSettings rt{};
+        rt.enabled=true; rt.max_distance=100; rt.bias=0.001f; rt.samples=1;
+        renderer.set_ray_tracing_settings(rt);
+        matter::VulkanGiSettings gi{};
+        gi.enabled=1; gi.trace_scale=1; gi.diffuse_multiplier=0; gi.reflection_multiplier=1;
+        renderer.set_gi_settings(gi);
+        viewer::VkSceneLighting lighting{};
+        lighting.sun_intensity=0; lighting.authored_sun_rgb={};
+        lighting.atmosphere_sources.authored_display_sky_chroma_rgb={};
+        lighting.atmosphere_sources.authored_irradiance_chroma_rgb={};
+        renderer.set_lighting(lighting);
+        matter::CameraDesc camera{};
+        camera.position={0,1,0}; camera.target={0,0,0}; camera.up={0,0,-1};
+        camera.vertical_fov_radians=0.5f; camera.near_plane=0.1f; camera.far_plane=100;
+        viewer::FrameMatrices matrices{};
+        ok=ok && viewer::build_frame_matrices(camera,kWidth,kHeight,matrices,error);
+        viewer::TemporalFrame temporal{};
+        temporal.current_unjittered=temporal.previous_unjittered=matrices;
+        temporal.current_jittered=temporal.previous_jittered=matrices;
+        temporal.internal_extent={kWidth,kHeight}; temporal.output_extent={kWidth,kHeight};
+        uint64_t token=40000;
+        uint32_t active_mask=UINT32_MAX;
+        bool active_blocker=false;
+        const auto render = [&](uint32_t mask, bool blocked, uint32_t seed,
+                                matter::Float4& raw) {
+            if (mask!=active_mask) {
+                world_lights::LocalLightPublication publication;
+                for (uint32_t i=0;i<4;++i) if (mask&(1u<<i)) publication.records.push_back(all.records[i]);
+                if (!world_lights::rebuild_local_light_publication(publication,error) ||
+                    !renderer.update_local_lights(publication,error)) return false;
+                active_mask=mask;
+            }
+            if (token==40000 || blocked!=active_blocker) {
+                std::vector<viewer::VkSceneInstance> instances{{kMirror,identity_matrix()},
+                                                             {kCeiling,identity_matrix()}};
+                if (blocked) instances.push_back({kBlocker,identity_matrix()});
+                if (!renderer.update_instances(instances,error)) return false;
+                active_blocker=blocked;
+            }
+            temporal.reset=true; temporal.attempt_token=++token;
+            // Explicit seed changes; resetting history must not freeze RNG.
+            temporal.presented_frame_index=seed;
+            renderer.set_temporal_frame(temporal);
+            matter::VulkanFrame frame{};
+            const bool rendered=vulkan.begin_frame(frame,error) &&
+                renderer.prepare_frame(frame,matrices,camera.position,1,error) &&
+                renderer.record_cull_and_render(frame,matrices,camera.position,1,error) &&
+                renderer.record_composite_to_swapchain(frame,error) && vulkan.end_frame(frame,error);
+            renderer.finish_ray_tracing_frame(frame.serial,rendered);
+            if (!rendered) return false;
+            viewer::VkRasterPixel pixel{};
+            if (!renderer.readback_raster_pixel(kWidth/2,kHeight/2,pixel,error) || pixel.material_index!=0) return false;
+            raw=pixel.raw_specular;
+            return std::isfinite(raw.x) && std::isfinite(raw.y) && std::isfinite(raw.z) &&
+                raw.x>=0 && raw.y>=0 && raw.z>=0 &&
+                (0.2126f*raw.x+0.7152f*raw.y+0.0722f*raw.z)<4.0f;
+        };
+        // Establish blocker and additive-light controls on actual RT queries.
+        matter::Float4 dark{},blocked{},open{},unshadowed{},shadowed{},combined{};
+        ok=ok && render(0,true,17,dark) && render(1,true,17,blocked) &&
+            render(1,false,17,open) && render(8,true,17,unshadowed) &&
+            render(7,true,17,shadowed) && render(15,true,17,combined);
+        bool controls=ok;
+        const float d[3]{dark.x,dark.y,dark.z}, b[3]{blocked.x,blocked.y,blocked.z},
+                    o[3]{open.x,open.y,open.z}, u[3]{unshadowed.x,unshadowed.y,unshadowed.z},
+                    s[3]{shadowed.x,shadowed.y,shadowed.z}, a[3]{combined.x,combined.y,combined.z};
+        for (int c=0;c<3;++c) controls=controls && o[c]-d[c]>0.001f &&
+            std::fabs(b[c]-d[c])<0.002f && u[c]-d[c]>0.001f &&
+            std::fabs((a[c]-s[c])-(u[c]-d[c]))<0.003f;
+        CHECK(controls,"RIS native controls: strongest blocked, open restores RGB, nonshadow light remains additive");
+        for (uint32_t i=0;i<kSamples && ok;++i) {
+            matter::Float4 raw{};
+            ok=render(15,true,1000+i,raw);
+            if (ok) observed[run].add(raw);
+        }
+        CHECK(ok && observed[run].count==kSamples,
+              error.empty() ? "RIS raw reflection samples finite, unclipped, on mirror" : error.c_str());
+        runs_ok=ok && controls;
+        vulkan.wait_idle();
+    }
+    set_mode(had_setting ? requested.c_str():nullptr);
+    if (!runs_ok) return;
+    bool energy=true;
+    double reference_variance=0, candidate_variance=0;
+    for (int c=0;c<3;++c) {
+        const double reference=observed[0].mean(c), actual=observed[1].mean(c);
+        const double vr=observed[0].variance(c), va=observed[1].variance(c);
+        const double standard_error=std::sqrt((vr+va)/kSamples);
+        // Five measured standard errors plus a small FP16/storage floor.
+        const double tolerance=5*standard_error+0.002+0.01*reference;
+        energy=energy && reference>0.001 && std::fabs(actual-reference)<=tolerance;
+        reference_variance+=vr; candidate_variance+=va;
+        std::printf("secondary RIS mode=%s channel=%d samples=%u reference=%.8f mean=%.8f variance=%.8f reference_variance=%.8f stderr=%.8f tolerance=%.8f\n",
+                    requested.c_str(),c,kSamples,reference,actual,va,vr,standard_error,tolerance);
+    }
+    CHECK(energy,"secondary RIS preserves each RGB mean against native exhaustive lighting within measured uncertainty");
+    CHECK(requested=="0" || candidate_variance>reference_variance*2+1e-8,
+          "RIS opt-in produces independently seeded visibility variance on blocked strongest-light fixture");
+}
+
 // Behavioral regression for the primary local-direct glass contract. The
 // local-direct raygen is dispatched separately from GI, so it must receive the
 // scene GI state explicitly to match composite's transmission coverage.
+static void scenario_primary_light_culling(
+    matter::VulkanDevice& vulkan, std::string& error) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    if (!renderer.init(error)) { CHECK(false, error.c_str()); return; }
+    renderer.test_skip_volumetrics(true);
+    MaterialGpuRecord material{};
+    material.base_roughness[0] = material.base_roughness[1] = material.base_roughness[2] = 0.8f;
+    material.base_roughness[3] = 0.65f;
+    material.metal_opacity_spec_coat[1] = 1.0f;
+    material.scattering_shape[3] = 1.0f;
+    constexpr uint64_t hash = UINT64_C(0x5052494d43554c4c);
+    auto part = fixed_part(hash, {-100,-100,-2.01f}, {100,100,-1.99f}, 0u);
+    const matter::Float3 normal{0,0,1};
+    const matter::Float4 color{0.8f,0.8f,0.8f,0};
+    const matter::Float4 orm{0.65f,0,1,1};
+    part.vertices = {{{-100,-100,-2},normal,color,orm,0u,{}},
+                     {{100,-100,-2},normal,color,orm,0u,{}},
+                     {{0,100,-2},normal,color,orm,0u,{}}};
+    part.indices = {0,1,2};
+    if (!renderer.update_materials({material},1,1,error) ||
+        renderer.ensure_part(part,error) < 0 ||
+        !renderer.update_instances({{hash,identity_matrix()}},error)) {
+        CHECK(false,error.c_str()); return;
+    }
+    world_lights::LocalLightPublication publication;
+    publication.records.resize(65);
+    for (uint32_t i=0; i<65; ++i) {
+        auto& light=publication.records[i];
+        light.position[0]=20.0f+0.1f*i; light.position[2]=-1.0f;
+        light.range=1; light.color[0]=2; light.color[1]=1; light.color[2]=0.5f;
+        light.kind=static_cast<uint32_t>(world_lights::LocalLightKind::Point);
+        light.cos_outer=-1; light.cos_inner=1; light.flags=0;
+    }
+    for (uint32_t i : {0u,1u,32u,64u}) {
+        publication.records[i].position[0]=0;
+        // Also cover the corner of the wide 65x17 resize fixture.
+        publication.records[i].range=8;
+    }
+    publication.records[1].range=1000; // deliberately oversized world-index entry
+    auto& away=publication.records[32];
+    away.kind=static_cast<uint32_t>(world_lights::LocalLightKind::Spot);
+    away.direction[2]=1; away.cos_outer=0.8f; away.cos_inner=0.95f;
+    world_lights::LocalLightIndexConfig index_config{};
+    // Positive-X receivers see many zero-contribution world-cell candidates;
+    // negative-X receivers keep short lists. Exercise both iterator policies.
+    index_config.cell_size=64;
+    if (!world_lights::rebuild_local_light_publication(publication,index_config,error) ||
+        !renderer.update_local_lights(publication,error)) {
+        CHECK(false,error.c_str()); return;
+    }
+    CHECK(!publication.index.oversized_light_indices.empty(),
+          "primary culling fixture includes oversized lights");
+    CHECK(publication.index.stats.max_candidates_per_cell >= 60,
+          "primary culling fixture exercises a dense world-cell candidate list");
+    viewer::VkSceneLighting lighting{};
+    lighting.sun_intensity=0; lighting.authored_sun_rgb={};
+    lighting.atmosphere_sources.authored_display_sky_chroma_rgb={};
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb={};
+    renderer.set_lighting(lighting);
+    matter::VulkanGiSettings gi{}; gi.enabled=false; renderer.set_gi_settings(gi);
+    matter::CameraDesc camera{};
+    camera.position={0,0,0}; camera.target={0,0,-1}; camera.up={0,1,0};
+    camera.vertical_fov_radians=1; camera.near_plane=0.1f; camera.far_plane=10;
+    uint64_t token=9000;
+    uint32_t slot=0;
+    const auto render = [&](bool traced, bool fallback, uint32_t width, uint32_t height,
+                            matter::Float4& sample) {
+        renderer.test_force_primary_light_fallback(fallback);
+        matter::VulkanRayTracingSettings rt{}; rt.enabled=traced;
+        rt.max_distance=100; rt.bias=0.001f; renderer.set_ray_tracing_settings(rt);
+        viewer::FrameMatrices matrices{};
+        if (!viewer::build_frame_matrices(camera,width,height,matrices,error)) return false;
+        viewer::TemporalFrame temporal{};
+        temporal.current_unjittered=temporal.previous_unjittered=matrices;
+        temporal.current_jittered=temporal.previous_jittered=matrices;
+        temporal.internal_extent={width,height}; temporal.output_extent={width,height};
+        temporal.reset=true; temporal.attempt_token=token++;
+        renderer.set_temporal_frame(temporal);
+        matter::VulkanFrame frame{};
+        const bool ok=vulkan.begin_frame(frame,error) &&
+            renderer.prepare_frame(frame,matrices,camera.position,1,error) &&
+            renderer.record_cull_and_render(frame,matrices,camera.position,1,error) &&
+            renderer.record_composite_to_swapchain(frame,error) && vulkan.end_frame(frame,error);
+        renderer.finish_ray_tracing_frame(frame.serial,ok);
+        if (!ok) return false;
+        slot=frame.frame_slot;
+        vulkan.wait_idle();
+        if (traced) return renderer.readback_local_direct_pixel(width/2,height/2,sample,error);
+        viewer::VkRasterPixel pixel{};
+        if (!renderer.readback_raster_pixel(width/2,height/2,pixel,error)) return false;
+        sample=pixel.hdr; return true;
+    };
+    const auto inspect = [&](uint32_t tile_x,uint32_t tile_y,uint32_t tiles_x,uint32_t tiles_y) {
+        viewer::LocalLightGpuMeta meta{}; std::vector<uint32_t> words;
+        if (!renderer.readback_primary_light_mask(slot,tile_x,tile_y,meta,words,error)) {
+            CHECK(false,error.c_str()); return;
+        }
+        CHECK(meta.primary_culling_enabled==1 && meta.primary_tiles_x==tiles_x &&
+              meta.primary_tiles_y==tiles_y && meta.primary_words_per_tile==3 && words.size()==3,
+              "GPU tile mask covers partial tiles and more than64 lights");
+        if (words.size()!=3) return;
+        const auto kept=[&](uint32_t id){return (words[id/32]&(1u<<(id%32)))!=0;};
+        CHECK(kept(0)&&kept(1)&&kept(64),"ordinary and oversized contributing lights survive");
+        CHECK(!kept(31)&&!kept(32)&&!kept(63),"GPU rejects distant and away-facing spot lights");
+        std::vector<uint32_t> actual_ids, expected_ids;
+        const auto& oversized = publication.index.oversized_light_indices;
+        for (uint32_t id=0; id<publication.records.size(); ++id)
+            if (kept(id) && std::find(oversized.begin(),oversized.end(),id)==oversized.end())
+                expected_ids.push_back(id);
+        for (uint32_t id : oversized)
+            if (kept(id)) expected_ids.push_back(id);
+        CHECK(renderer.readback_primary_light_list(slot,tile_x,tile_y,actual_ids,error),
+              error.empty() ? "read compact GPU light list" : error.c_str());
+        CHECK(actual_ids==expected_ids,
+              "GPU list exactly matches mask with ordinary-then-oversized ordering");
+    };
+    for (bool traced : {false,true}) {
+        if (traced && !vulkan.ray_tracing_available()) continue;
+        matter::Float4 reference{},culled{};
+        if (!render(traced,true,37,29,reference) || !render(traced,false,37,29,culled)) {
+            CHECK(false,error.c_str()); return;
+        }
+        CHECK(reference.x>0.01f && std::fabs(reference.x-culled.x)<0.002f &&
+              std::fabs(reference.y-culled.y)<0.002f && std::fabs(reference.z-culled.z)<0.002f,
+              traced ? "culled raw RT direct matches exact world-list reference" :
+                       "culled raster HDR matches exact world-list reference");
+        inspect(0,0,3,2); inspect(2,1,3,2);
+    }
+    matter::Float4 sample{};
+    CHECK(render(false,false,65,17,sample),"primary masks rebuild after internal extent resize");
+    inspect(4,1,5,2);
+    publication.records[0].position[0]=100;
+    CHECK(world_lights::rebuild_local_light_publication(publication,index_config,error) &&
+          renderer.update_local_lights(publication,error) && render(false,false,65,17,sample),
+          "same-size light revision refreshes compact lists");
+    std::vector<uint32_t> moved_ids;
+    CHECK(renderer.readback_primary_light_list(slot,0,0,moved_ids,error) &&
+          moved_ids==std::vector<uint32_t>({64u,1u}),
+          "moving an ordinary light removes its ID without reordering oversized lights");
+    publication.records.clear();
+    CHECK(world_lights::rebuild_local_light_publication(publication,index_config,error) &&
+          renderer.update_local_lights(publication,error) && render(false,false,65,17,sample),
+          "zero-light publication replaces prior GPU masks");
+    viewer::LocalLightGpuMeta empty{}; std::vector<uint32_t> words;
+    CHECK(renderer.readback_primary_light_mask(slot,0,0,empty,words,error) &&
+          empty.light_count==0 && empty.primary_culling_enabled==0,
+          "zero lights select metadata-only exact fallback");
+    CHECK(renderer.readback_primary_light_list(slot,0,0,moved_ids,error) && moved_ids.empty(),
+          "zero-light publication does not expose stale compact IDs");
+}
+
 static void rt_scenario_local_direct_transmission_weighting(
     matter::VulkanDevice& vulkan, std::string& error) {
     constexpr uint32_t kOpaqueWhite = 0u;
@@ -7920,9 +8556,9 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
               "ray generation records sample and debug settings");
         CHECK(renderer.rt_available_observed() &&
                   renderer.rt_effective_observed() &&
-                  renderer.rt_trace_dispatches_observed() == 2 &&
+                  renderer.rt_trace_dispatches_observed() == 3 &&
                   renderer.rt_fallback_reason_observed().empty(),
-              "native RT frame observes direct-shadow and diffuse-GI dispatches");
+              "native RT frame observes shadows, reduced diffuse and full-rate reflections");
         CHECK(renderer.test_composite_uses_gi_temporal(),
               "same-frame composite descriptor samples accumulated GI output");
         CHECK(matter::immediate_submit_count() == immediate_before_record,
@@ -8120,8 +8756,33 @@ static void rt_scenario_froxel_resize(
     matter::FogSettings fog{};
     matter::VulkanVolumetricsSettings settings{};
     settings.enabled = true;
-    std::ifstream renderer_source("../MatterEngine3/src/render/vk_scene_renderer.cpp",
-                                  std::ios::binary);
+    // Native CTest/manual launches may start at the repo, editor, engine or
+    // build directory. Anchor to the compiled test source's checkout first;
+    // relative __FILE__ toolchains fall back to the working-directory ancestry.
+    const auto contract_source_path = [](const char* relative) {
+        const auto locate = [&](std::filesystem::path directory) {
+            while (!directory.empty()) {
+                const auto candidate = directory / relative;
+                std::error_code ec;
+                if (std::filesystem::is_regular_file(candidate,ec)) return candidate;
+                const auto parent = directory.parent_path();
+                if (parent==directory) break;
+                directory=parent;
+            }
+            return std::filesystem::path{};
+        };
+        const std::filesystem::path compiled_source(__FILE__);
+        if (compiled_source.is_absolute()) {
+            const auto source = locate(compiled_source.parent_path());
+            if (!source.empty()) return source;
+        }
+        std::error_code ec;
+        const auto cwd = std::filesystem::current_path(ec);
+        return ec ? std::filesystem::path{} : locate(cwd);
+    };
+    const auto renderer_path = contract_source_path("MatterEngine3/src/render/vk_scene_renderer.cpp");
+    std::ifstream renderer_source(renderer_path,std::ios::binary);
+    CHECK(renderer_source.is_open(),"froxel source contract can read renderer source from its checkout");
     const std::string renderer_implementation(
         (std::istreambuf_iterator<char>(renderer_source)),
         std::istreambuf_iterator<char>());
@@ -8149,8 +8810,9 @@ static void rt_scenario_froxel_resize(
               composite_selection.find("rt_effective_observed()") ==
               std::string::npos,
           "composite selects live froxels from pre-record RT eligibility, not the reset per-frame observation");
-    std::ifstream editor_props_source("src/editor_props.cpp",
-                                      std::ios::binary);
+    const auto props_path = contract_source_path("MatterEditor/src/editor_props.cpp");
+    std::ifstream editor_props_source(props_path,std::ios::binary);
+    CHECK(editor_props_source.is_open(),"froxel source contract can read editor property source from its checkout");
     const std::string editor_props_implementation(
         (std::istreambuf_iterator<char>(editor_props_source)),
         std::istreambuf_iterator<char>());
@@ -10386,6 +11048,12 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
     viewer::TemporalFrame& gi_temporal               = ctx.gi_temporal;
     std::vector<MaterialGpuRecord>& gi_materials     = ctx.gi_materials;
     std::string& error                               = ctx.error;
+    // Keep this fixed-seed, eight-probe lobe fixture at its established trace
+    // grid. Full-rate reflections select different primary texels/RNG seeds;
+    // that is covered by the separate full-resolution transmission fixtures.
+    const float saved_reflection_scale = ctx.gi.reflection_trace_scale;
+    ctx.gi.reflection_trace_scale = 0.5f;
+    renderer.set_gi_settings(ctx.gi);
     const auto render_temporal_control = [&](uint64_t attempt_token,
                                              bool reset = false,
                                              bool presented = true) {
@@ -10674,6 +11342,8 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
               error.empty()
                   ? "restoring RT instances resets stale reflection history once"
                   : error.c_str());
+    ctx.gi.reflection_trace_scale = saved_reflection_scale;
+    renderer.set_gi_settings(ctx.gi);
 }
 
 // ---------------------------------------------------------------------------
@@ -10691,6 +11361,10 @@ static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
     float& minimum_visibility         = ctx.minimum_visibility;
     float& maximum_visibility         = ctx.maximum_visibility;
     std::string& error                = ctx.error;
+        // This diagnostic checks the full-rate raw RADIANCE contract. Reduced
+        // diffuse stores incident light and applies AO at final reconstruction.
+        gi.trace_scale = 1.0f;
+        renderer.set_gi_settings(gi);
         renderer.release_part(925);
         CHECK(renderer.ensure_part(rt_horizontal_part(921, 0.0f, 0.55f,
                                               {0.0f, -1.0f, 0.0f}, 1, 1.0f),
@@ -11063,7 +11737,8 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t kRowX0 = 64;
     constexpr uint32_t kRowX1 = 256;
     const auto sample_row = [&](viewer::VkSceneRenderer& renderer,
-                                uint32_t step, bool accumulated) {
+                                uint32_t step, bool accumulated,
+                                bool require_finite_hit = false) {
         std::vector<matter::Float4> row;
         for (uint32_t x = kRowX0; x <= kRowX1; x += step) {
             viewer::VkRasterPixel pixel{};
@@ -11072,6 +11747,11 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
                                 : error.c_str());
             CHECK(pixel.material_index == kGlass,
                   "rt-transmission: row probe lands on the glass slab");
+            if (require_finite_hit)
+                CHECK(std::isfinite(pixel.transmission_aux.x) &&
+                          pixel.transmission_aux.x > 0.0f &&
+                          pixel.transmission_aux.x < rt_enabled.max_distance,
+                      "rt-transmission: enclosed energy sample resolves a surface");
             row.push_back(accumulated ? pixel.accumulated_transmission
                                       : pixel.raw_transmission);
         }
@@ -11183,13 +11863,55 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
     CHECK(contrast[3] < 0.25 * contrast[0],
           "rt-transmission: the roughest slab collapses stripe contrast");
 
-    // --- (2) transmitted energy within 2% of the smooth slab (uniform wall).
-    // hit_radiance is direction-independent, so any perturbed exit ray sees
-    // the same wall radiance; a deviation here is an energy bug in the
-    // perturbation itself, not Monte Carlo noise.
+    // --- (2) transmitted energy within 2% of the smooth slab.
+    // A finite wall does not provide constant incident radiance: rough exit
+    // rays can miss it and sample the directional sky. Enclose the actual
+    // slab in an inward-facing, constant-emission receiver instead. Its
+    // diagonal is <42m, safely below the 100m trace bound. Zero diffuse albedo
+    // eliminates orientation-dependent sky/sun lighting on the receiver.
+    auto enclosure = fixed_part(7806, {-12.0f, -12.0f, -14.0f},
+                                 {12.0f, 12.0f, 10.0f}, 0);
+    enclosure.vertices.clear();
+    enclosure.indices.clear();
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        for (float sign : {-1.0f, 1.0f}) {
+            const uint32_t u = (axis + 1u) % 3u;
+            const uint32_t v = (axis + 2u) % 3u;
+            const uint32_t base = static_cast<uint32_t>(enclosure.vertices.size());
+            for (const auto& corner : std::array<std::array<float, 2>, 4>{{
+                     {{-1, -1}}, {{1, -1}}, {{1, 1}}, {{-1, 1}}}}) {
+                float position[3] = {0, 0, -2};
+                float normal[3] = {};
+                position[axis] += sign * 12.0f;
+                position[u] += corner[0] * 12.0f;
+                position[v] += corner[1] * 12.0f;
+                normal[axis] = -sign;
+                enclosure.vertices.push_back({
+                    {position[0], position[1], position[2]},
+                    {normal[0], normal[1], normal[2]}, {1, 1, 1, 0},
+                    {0, 0, 1, 1}, kWhite, {}});
+            }
+            // Cyclic (u,v) has outward +axis winding; orient toward interior.
+            for (uint32_t index : (sign < 0.0f
+                     ? std::array<uint32_t, 6>{0, 1, 2, 0, 2, 3}
+                     : std::array<uint32_t, 6>{0, 2, 1, 0, 3, 2}))
+                enclosure.indices.push_back(base + index);
+        }
+    }
+    enclosure.clusters[0].lods[0] = {0, 36, 0.0f};
+    CHECK(renderer.ensure_part(enclosure, error) >= 0, error.c_str());
+    CHECK(renderer.update_instances({{7801, identity_matrix()},
+                                      {7802, identity_matrix()},
+                                      {7806, identity_matrix()}}, error),
+          error.c_str());
     double energy[4] = {0.0, 0.0, 0.0, 0.0};
     for (int i = 0; i < 4; ++i) {
         author(ladder[i], 0.85f, {1.0f, 1.0f, 1.0f});
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            materials[kWhite].base_roughness[channel] = 0.0f;
+            materials[kWhite].emission_strength[channel] = 1.0f;
+        }
+        materials[kWhite].emission_strength[3] = 1.0f;
         CHECK(renderer.update_materials(materials, shading_revision++, 1,
                                         error),
               error.empty() ? "rt-transmission: energy materials"
@@ -11200,7 +11922,28 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
         for (int f = 0; f < 4; ++f) {
             render_frame(renderer, false, presented_index++);
             vulkan.wait_idle();
-            sum += mean_luminance(sample_row(renderer, 16, false));
+            const auto energy_row = sample_row(renderer, 16, false, true);
+            sum += mean_luminance(energy_row);
+            if (i > 0) {
+                for (size_t p = 0; p < energy_row.size(); ++p) {
+                    const double luminance = rt_trans_luminance(energy_row[p]);
+                    if (std::fabs(luminance - energy[0]) <= 0.02 * energy[0])
+                        continue;
+                    const uint32_t x = kRowX0 + static_cast<uint32_t>(p) * 16u;
+                    viewer::VkRasterPixel pixel{};
+                    CHECK(renderer.readback_raster_pixel(x, kRowY, pixel, error),
+                          error.c_str());
+                    std::printf("rt-transmission energy outlier: roughness=%.2f "
+                                "frame=%llu xy=%u,%u luminance=%.7f "
+                                "raw=(%.7f %.7f %.7f %.7f) aux=(%.7f %.7f)\n",
+                                ladder[i],
+                                static_cast<unsigned long long>(presented_index - 1u),
+                                x, kRowY, luminance, pixel.raw_transmission.x,
+                                pixel.raw_transmission.y, pixel.raw_transmission.z,
+                                pixel.raw_transmission.w, pixel.transmission_aux.x,
+                                pixel.transmission_aux.y);
+                }
+            }
             ++frames;
         }
         energy[i] = sum / frames;
@@ -11209,14 +11952,12 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
                 "%.5f %.5f %.5f %.5f\n",
                 ladder[0], ladder[3], energy[0], energy[1], energy[2],
                 energy[3]);
-    // 2% integration-sanity bound across the ladder. (For reference: at
-    // r = 0.8, well past the authored range, real extra TIR bounces from
-    // steep sampled microfacets cost ~2.7% -- genuine frost transport, not
-    // an estimator bug.)
+    // Keep the original 2% bound; bounded-walk losses remain test failures.
     for (int i = 1; i < 4; ++i)
         CHECK(std::fabs(energy[i] - energy[0]) <= 0.02 * energy[0],
               "rt-transmission: rough transmission conserves energy within 2%");
 
+    build_scene(renderer, false);
     // --- (3) determinism + smooth byte-parity (uniform wall) ---------------
     const uint64_t fixed_index = presented_index + 100;
     author(0.0f, 0.85f, {1.0f, 1.0f, 1.0f});
@@ -14293,6 +15034,371 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 
 }  // namespace
 
+// Bounded production-shader probes. Uniform clears supply independent peers;
+// sparse uploads create genuine current/previous outliers and receiver edges.
+static void run_gi_firefly_path(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::string error;
+    matter::VulkanGiSettings settings{};
+    settings.trace_scale = 0.128f;
+    renderer.set_gi_settings(settings);
+    std::vector<MaterialGpuRecord> materials(8);
+    materials[7].base_roughness[0] = 0.5f;
+    materials[7].base_roughness[3] = 0.5f;
+    materials[7].metal_opacity_spec_coat[1] = 1.0f;
+    matter::CameraDesc camera{};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    const bool initialized = renderer.init(error) &&
+        renderer.update_materials(materials, 1, 1, error) &&
+        renderer.ensure_part(known_raster_triangle(0xf1f1u), error) >= 0 &&
+        renderer.update_instances({{0xf1f1u, identity_matrix(), 1}}, error) &&
+        viewer::build_frame_matrices(camera, 65, 49, matrices, error) &&
+        renderer.dispatch_culling(matrices, camera.position, 1.0f, error) &&
+        renderer.render_gbuffer_and_composite(65, 49, error);
+    CHECK(initialized, error.empty() ? "firefly: initialize real temporal targets" : error.c_str());
+    if (!initialized) return;
+    CHECK(renderer.test_raw_diffuse_extent().width == 9 &&
+              renderer.test_raw_diffuse_extent().height == 7,
+          "firefly: odd 65x49 extent at .128 produces 9x7 diffuse targets");
+    viewer::GiTemporalGpuFixture base{};
+    base.raw = {0.1f, 0.1f, 0.1f, 1.0f};
+    base.previous_radiance = base.raw;
+    base.previous_moments = {0.1f, 0.01f, 0.0f};
+    viewer::GiTemporalGpuTexelPatch hot{};
+    hot.pixel = base.output_pixel;
+    unsigned probes = 0;
+    const auto dispatch = [&](const viewer::GiTemporalGpuFixture& fixture,
+                               const char* label) {
+        viewer::GiTemporalGpuResult result{};
+        error.clear();
+        const bool ok = renderer.test_dispatch_gi_temporal_fixture(fixture, result, error);
+        CHECK(ok, error.empty() ? label : error.c_str());
+        ++probes;
+        return result;
+    };
+    const auto finite = [](const viewer::GiTemporalGpuResult& result) {
+        return std::isfinite(result.radiance.x) && std::isfinite(result.radiance.y) &&
+            std::isfinite(result.radiance.z) && std::isfinite(result.moments.x) &&
+            std::isfinite(result.moments.y);
+    };
+    auto fixture = base;
+    fixture.reset = true;
+    fixture.current_patches = {hot};
+    auto result = dispatch(fixture, "firefly: first-frame outlier dispatch");
+    CHECK(result.history_length == 1 && result.rejection_bits == viewer::kGiRejectReset &&
+              std::fabs(result.radiance.x - 0.4f) < 0.003f &&
+              std::fabs(result.moments.x - 0.4f) < 0.003f &&
+              std::fabs(result.moments.y - 0.16f) < 0.003f,
+          "firefly: cap current sample before reset radiance and moments");
+    fixture.current_patches[0].raw = {200.0f, 100.0f, 50.0f, 1.0f};
+    result = dispatch(fixture, "firefly: chroma dispatch");
+    CHECK(result.radiance.x > 0.1f && result.radiance.x < 1.0f &&
+              std::fabs(result.radiance.x - 2.0f * result.radiance.y) < 0.003f &&
+              std::fabs(result.radiance.x - 4.0f * result.radiance.z) < 0.003f,
+          "firefly: luminance cap preserves saturated RGB ratios");
+    fixture.current_patches.clear();
+    fixture.raw = {200.0f, 200.0f, 200.0f, 1.0f};
+    result = dispatch(fixture, "firefly: coherent bright field dispatch");
+    CHECK(close4(result.radiance, fixture.raw, 0.01f) &&
+              std::fabs(result.moments.x - 200.0f) < 0.01f &&
+              std::fabs(result.moments.y - 40000.0f) < 32.0f,
+          "firefly: coherent bright field survives without clipping");
+    fixture = base;
+    fixture.reset = true;
+    fixture.current_patches = {hot};
+    fixture.current_patches[0].raw.x = std::numeric_limits<float>::infinity();
+    result = dispatch(fixture, "firefly: nonfinite raw dispatch");
+    CHECK(finite(result), "firefly: nonfinite current radiance cannot poison half moments");
+    fixture.current_patches[0].raw.x = std::numeric_limits<float>::quiet_NaN();
+    result = dispatch(fixture, "firefly: NaN raw dispatch");
+    CHECK(finite(result), "firefly: NaN current radiance produces finite history");
+    // Unsupported receivers use a nonzero seed ceiling. Each geometry gate
+    // must prevent another surface from raising that ceiling with its peers.
+    for (unsigned gate = 0; gate < 4; ++gate) {
+        fixture = base;
+        fixture.reset = true;
+        fixture.current_patches = {hot};
+        auto& patch = fixture.current_patches[0];
+        patch.patch_geometry = true;
+        if (gate == 0) ++patch.material_index;
+        if (gate == 1) ++patch.instance_token;
+        if (gate == 2) patch.depth = 0.6f;
+        if (gate == 3) patch.normal = {1.0f, 0.0f, 0.0f, 0.0f};
+        result = dispatch(fixture, "firefly: isolated receiver gate dispatch");
+        CHECK(result.radiance.x > 0.0f && result.radiance.x <= 0.251f &&
+                  result.history_length == 1,
+              "firefly: unsupported material/instance/depth/normal seeds are bounded and nonzero");
+    }
+    fixture = base;
+    fixture.reset = true;
+    fixture.current_patches = {hot};
+    fixture.current_patches[0].patch_geometry = true;
+    ++fixture.current_patches[0].material_index;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            if (std::max(std::abs(x), std::abs(y)) != 2) continue;
+            auto peer = fixture.current_patches[0];
+            peer.pixel = {base.output_pixel.x + x, base.output_pixel.y + y};
+            peer.raw = base.raw;
+            fixture.current_patches.push_back(peer);
+        }
+    }
+    result = dispatch(fixture, "firefly: five-by-five receiver support dispatch");
+    CHECK(std::fabs(result.radiance.x - 0.4f) < 0.003f,
+          "firefly: matching outer-ring peers support a receiver with no inner-ring peers");
+    const auto supported_ring = fixture;
+    for (unsigned gate = 0; gate < 4; ++gate) {
+        fixture = supported_ring;
+        for (size_t i = 1; i < fixture.current_patches.size(); ++i) {
+            auto& peer = fixture.current_patches[i];
+            if (gate == 0) ++peer.material_index;
+            if (gate == 1) ++peer.instance_token;
+            if (gate == 2) peer.depth = 0.6f;
+            if (gate == 3) peer.normal = {1,0,0,0};
+        }
+        result = dispatch(fixture, "firefly: outer-ring geometry rejection dispatch");
+        CHECK(result.radiance.x > 0.0f && result.radiance.x <= 0.251f,
+              "firefly: outer-ring material/instance/depth/normal mismatches cannot supply support");
+    }
+    fixture = base;
+    fixture.reset = true;
+    fixture.output_pixel = {0, 0};
+    fixture.current_patches = {hot};
+    fixture.current_patches[0].pixel = fixture.output_pixel;
+    result = dispatch(fixture, "firefly: corner quorum dispatch");
+    CHECK(std::fabs(result.radiance.x - 0.4f) < 0.003f,
+          "firefly: corner has exactly three independent in-bounds peers");
+    auto missing_peer = hot;
+    missing_peer.pixel = {1, 1};
+    missing_peer.raw = base.raw;
+    missing_peer.patch_geometry = true;
+    ++missing_peer.material_index;
+    fixture.current_patches.push_back(missing_peer);
+    result = dispatch(fixture, "firefly: two-peer corner dispatch");
+    CHECK(std::fabs(result.radiance.x - 0.4f) < 0.003f,
+          "firefly: a corner with two inner peers can obtain unique outer-ring support");
+    for (int y = 0; y <= 2; ++y) {
+        for (int x = 0; x <= 2; ++x) {
+            if (std::max(x, y) != 2) continue;
+            missing_peer.pixel = {x, y};
+            fixture.current_patches.push_back(missing_peer);
+        }
+    }
+    result = dispatch(fixture, "firefly: unsupported two-peer corner dispatch");
+    CHECK(result.radiance.x > 0.0f && result.radiance.x <= 0.251f,
+          "firefly: two corner peers cannot become a quorum through repeated edge texels");
+    fixture = base;
+    fixture.previous_history_length = 16;
+    fixture.previous_history_background_length = 16;
+    fixture.patch_previous_radiance = true;
+    fixture.previous_moments = {200.0f, 40000.0f, 0.0f};
+    result = dispatch(fixture, "firefly: poisoned previous center dispatch");
+    CHECK(finite(result) && result.rejection_bits == 0 &&
+              result.radiance.x < 0.41f && result.moments.x < 0.41f &&
+              result.moments.y < 0.33f,
+          "firefly: supported history bounds old isolated radiance and poisoned moments");
+    fixture = base;
+    fixture.raw = {};
+    fixture.previous_radiance = {0.5f, 0.25f, 0.125f, 1.0f};
+    fixture.previous_moments = {0.3f, 0.09f, 0.0f};
+    fixture.previous_history_length = 32;
+    fixture.previous_history_background_length = 32;
+    result = dispatch(fixture, "firefly: coherent historical fill dispatch");
+    CHECK(result.rejection_bits == 0 && result.radiance.x > 0.45f &&
+              result.radiance.y > 0.22f && result.radiance.z > 0.11f,
+          "firefly: a fresh all-miss neighborhood preserves established colored fill");
+    fixture = base;
+    fixture.previous_history_length = 95;
+    result = dispatch(fixture, "firefly: stable history 96 dispatch");
+    CHECK(result.history_length == 96 && close4(result.radiance, base.raw, 0.002f),
+          "firefly: stable reduced diffuse history grows to 96 samples");
+    fixture.previous_history_length = 96;
+    fixture.raw = {0.2f, 0.2f, 0.2f, 1.0f};
+    result = dispatch(fixture, "firefly: history alpha dispatch");
+    CHECK(result.history_length == 96 &&
+              std::fabs(result.radiance.x - (0.1f + 0.1f / 96.0f)) < 0.0003f,
+          "firefly: mature history uses 1/96 alpha rather than a five-percent floor");
+    fixture.reactivity = 1.0f;
+    fixture.raw = {1.0f, 0.5f, 0.25f, 1.0f};
+    result = dispatch(fixture, "firefly: reactive lighting change dispatch");
+    CHECK(result.history_length <= 2 && close4(result.radiance, fixture.raw, 0.003f),
+          "firefly: reactivity immediately accepts coherent changed lighting");
+    fixture = base;
+    fixture.current_patches = {hot};
+    fixture.current_patches[0].patch_geometry = true;
+    ++fixture.current_patches[0].material_index;
+    ++fixture.previous_material_index;
+    fixture.previous_history_length = 16;
+    result = dispatch(fixture, "firefly: mature isolated receiver dispatch");
+    CHECK(result.rejection_bits == 0 && result.radiance.x > 0.1f &&
+              result.radiance.x < 0.4f,
+          "firefly: mature isolated receiver may bound a new spike from its own history");
+    fixture.previous_history_length = 1;
+    fixture.previous_aux = {};
+    result = dispatch(fixture, "firefly: one-frame isolated receiver history dispatch");
+    CHECK(result.rejection_bits == 0 && result.history_length == 2 &&
+              result.radiance.x > 0.1f && result.radiance.x <= 0.251f,
+          "firefly: one valid isolated history sample bounds a spike before mature history");
+    for (unsigned gate = 0; gate < 4; ++gate) {
+        fixture = base;
+        fixture.previous_history_length = 96;
+        fixture.previous_radiance = {50.0f, 50.0f, 50.0f, 1.0f};
+        uint32_t expected = 0;
+        if (gate == 0) { fixture.previous_depth = 0.8f; expected = viewer::kGiRejectDepth; }
+        if (gate == 1) { fixture.previous_normal = {1,0,0,0}; expected = viewer::kGiRejectNormal; }
+        if (gate == 2) { ++fixture.previous_material_index; expected = viewer::kGiRejectMaterial; }
+        if (gate == 3) { ++fixture.previous_instance_token; expected = viewer::kGiRejectInstance; }
+        result = dispatch(fixture, "firefly: historical geometry rejection dispatch");
+        CHECK(result.history_length == 1 && result.rejection_bits == expected &&
+                  close4(result.radiance, base.raw, 0.003f),
+              "firefly: disocclusion rejects stale depth/normal/material/instance history");
+    }
+    // Carry the entire GPU history field (not a uniform CPU approximation)
+    // through a rotating one-in-nine hit pattern. Recurring legitimate samples
+    // must bootstrap from black without a pre-seeded bright historical field.
+    double sparse_energy = 0.0;
+    bool sparse_finite = true;
+    for (unsigned frame = 0; frame < 216; ++frame) {
+        fixture = base;
+        fixture.raw = {};
+        fixture.previous_radiance = {};
+        fixture.previous_moments = {};
+        fixture.previous_history_length = 0;
+        fixture.reset = frame == 0;
+        fixture.reuse_previous_output = frame != 0;
+        fixture.current_patches = {hot};
+        fixture.current_patches[0].pixel = {
+            2 + static_cast<int>(frame % 3),
+            2 + static_cast<int>((frame / 3) % 3)};
+        fixture.current_patches[0].raw = {4.0f, 4.0f, 4.0f, 1.0f};
+        result = dispatch(fixture, "firefly: sparse cold-start sequence dispatch");
+        sparse_finite = sparse_finite && finite(result);
+        if (frame >= 189) sparse_energy += result.radiance.x / 27.0;
+    }
+    CHECK(sparse_finite && result.history_length == 96,
+          "firefly: sparse cold-start sequence maintains finite mature GPU history");
+    CHECK(sparse_energy >= 0.75 * (4.0 / 9.0) &&
+              sparse_energy <= 1.25 * (4.0 / 9.0),
+          "firefly: recurring sparse lighting recovers its mean energy from a cold start");
+    std::printf("GI_FIREFLY_SPARSE measured=%.8f reference=%.8f ratio=%.8f frames=216\n",
+                sparse_energy, 4.0 / 9.0, sparse_energy / (4.0 / 9.0));
+    // A single flash followed by misses cannot establish recurring evidence.
+    // Nor can widely separated magnitudes repeatedly replace the candidate
+    // and combine their unrelated observations into confirmed illumination.
+    for (unsigned scenario = 0; scenario < 2; ++scenario) {
+        float peak = 0.0f;
+        float peak_confidence = 0.0f;
+        bool sequence_finite = true;
+        for (unsigned frame = 0; frame < 108; ++frame) {
+            fixture = base;
+            fixture.raw = {};
+            fixture.previous_radiance = {};
+            fixture.previous_moments = {};
+            fixture.previous_aux = {};
+            fixture.previous_history_length = 0;
+            fixture.reset = frame == 0;
+            fixture.reuse_previous_output = frame != 0;
+            if (scenario == 0 ? frame == 0 : frame % 9 == 0) {
+                fixture.current_patches = {hot};
+                constexpr float magnitudes[] = {4.0f, 32.0f, 200.0f};
+                const float magnitude = scenario == 0 ? 200.0f
+                    : magnitudes[(frame / 9) % 3];
+                fixture.current_patches[0].raw =
+                    {magnitude, magnitude, magnitude, 1.0f};
+            }
+            result = dispatch(fixture, "firefly: unconfirmed spike sequence dispatch");
+            sequence_finite = sequence_finite && finite(result) &&
+                std::isfinite(result.aux.x) && std::isfinite(result.aux.y);
+            peak = std::max(peak, result.radiance.x);
+            peak_confidence = std::max(peak_confidence, result.aux.y);
+        }
+        CHECK(sequence_finite && peak <= 0.251f && peak_confidence < 3.0f &&
+                  result.history_length == 96,
+              "firefly: isolated or inconsistent spikes never gain radiance permission");
+        if (scenario == 0)
+            CHECK(result.radiance.x <= 0.003f,
+                  "firefly: a single flash decays instead of establishing persistent light");
+        std::printf("GI_FIREFLY_UNCONFIRMED scenario=%u peak=%.8f final=%.8f confidence=%.8f\n",
+                    scenario, peak, result.radiance.x, result.aux.y);
+    }
+    // A receiver with no matching neighbors in either spatial ring must not
+    // leak a first-sample flash, but repeated real illumination must still
+    // establish its own temporal support from black.
+    for (unsigned scenario = 0; scenario < 2; ++scenario) {
+        const unsigned frames = scenario == 0 ? 108u : 216u;
+        float peak = 0.0f;
+        float peak_confidence = 0.0f;
+        bool sequence_finite = true;
+        for (unsigned frame = 0; frame < frames; ++frame) {
+            fixture = base;
+            fixture.raw = {};
+            fixture.previous_radiance = {};
+            fixture.previous_moments = {};
+            fixture.previous_aux = {};
+            fixture.previous_history_length = 0;
+            fixture.reset = frame == 0;
+            fixture.reuse_previous_output = frame != 0;
+            fixture.current_patches = {hot};
+            auto& patch = fixture.current_patches[0];
+            patch.patch_geometry = true;
+            ++patch.material_index;
+            const float raw = scenario == 0 ? (frame == 0 ? 200.0f : 0.0f) : 4.0f;
+            patch.raw = {raw, raw, raw, 1.0f};
+            result = dispatch(fixture, "firefly: unsupported thin receiver sequence dispatch");
+            sequence_finite = sequence_finite && finite(result) &&
+                std::isfinite(result.aux.x) && std::isfinite(result.aux.y);
+            peak = std::max(peak, result.radiance.x);
+            peak_confidence = std::max(peak_confidence, result.aux.y);
+        }
+        CHECK(sequence_finite && result.history_length == 96,
+              "firefly: thin receiver sequences retain finite mature history");
+        if (scenario == 0) {
+            CHECK(peak > 0.0f && peak <= 0.251f && result.radiance.x <= 0.003f &&
+                      peak_confidence < 3.0f,
+                  "firefly: unsupported one-frame flash stays bounded and never confirms");
+        } else {
+            CHECK(result.radiance.x >= 3.0f && result.radiance.x <= 5.0f,
+                  "firefly: repeated thin-receiver illumination establishes its own energy");
+        }
+        std::printf("GI_FIREFLY_THIN scenario=%u peak=%.8f final=%.8f confidence=%.8f frames=%u\n",
+                    scenario, peak, result.radiance.x, result.aux.y, frames);
+    }
+    // Other signal modes must retain their existing unclipped first sample.
+    for (uint32_t mode = 1; mode <= 3; ++mode) {
+        fixture = base;
+        fixture.signal_mode = mode;
+        fixture.reset = true;
+        fixture.current_patches = {hot};
+        fixture.current_patches[0].raw.w = mode == 2 ? 0.375f : 1.0f;
+        result = dispatch(fixture, "firefly: other signal compatibility dispatch");
+        CHECK(close4(result.radiance, fixture.current_patches[0].raw, 0.01f),
+              "firefly: reflection/transmission/direct first samples remain untouched");
+    }
+    settings.trace_scale = 1.0f;
+    renderer.set_gi_settings(settings);
+    const bool full_rate = renderer.render_gbuffer_and_composite(65, 49, error);
+    CHECK(full_rate, error.empty() ? "firefly: initialize full-rate compatibility target" : error.c_str());
+    if (full_rate) {
+        fixture = base;
+        fixture.reset = true;
+        fixture.current_patches = {hot};
+        result = dispatch(fixture, "firefly: full-rate diffuse compatibility dispatch");
+        CHECK(close4(result.radiance, hot.raw, 0.01f),
+              "firefly: full-rate diffuse first sample remains untouched");
+        fixture = base;
+        fixture.previous_history_length = 96;
+        result = dispatch(fixture, "firefly: full-rate history compatibility dispatch");
+        CHECK(result.history_length == 32 && close4(result.radiance, base.raw, 0.003f),
+              "firefly: full-rate diffuse retains its 32-frame history contract");
+    }
+    std::printf("GI_FIREFLY_GPU probes=%u reduced_extent=9x7 full_extent=65x49\n", probes);
+}
+
 int main() {
     test_atmosphere_timing_contract();
     test_water_forward_perf_evidence_contract();
@@ -14328,10 +15434,10 @@ int main() {
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     GLFWwindow* window =
         glfwCreateWindow(320, 200, "vk-smoke", nullptr, nullptr);
-    CHECK(window != nullptr, "create hidden GLFW window");
+    CHECK(window != nullptr, "create visible GLFW window");
 
     const char* requested_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     if (requested_smoke_mode &&
@@ -14385,6 +15491,24 @@ int main() {
         CHECK(vulkan->multi_draw_indirect_enabled(),
               "multiDrawIndirect is enabled on the logical device");
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        if (smoke_mode && std::string(smoke_mode) == "gi-firefly") {
+            run_gi_firefly_path(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "gpu-solid-mesh") {
+            g_failures += run_gpu_solid_mesher_tests(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "waterfall-mesher") {
             const char* report =
                 std::getenv("MATTER_WATERFALL_QUALITY_REPORT");
@@ -14582,8 +15706,11 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
-        if (smoke_mode && std::string(smoke_mode) == "vt-rt") {
-            run_vt_rt_path(*vulkan);
+        if (smoke_mode && (std::string(smoke_mode) == "vt-rt" ||
+                           std::string(smoke_mode) == "vt-normal-frame" ||
+                           std::string(smoke_mode) == "surface-parallax")) {
+            run_vt_rt_path(*vulkan, std::string(smoke_mode) != "vt-rt",
+                          std::string(smoke_mode) == "surface-parallax");
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
@@ -14613,6 +15740,26 @@ int main() {
             if (window) glfwDestroyWindow(window);
             glfwTerminate();
             return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "rt-local-ris") {
+            std::string ris_error;
+            rt_scenario_secondary_local_ris(*vulkan,ris_error);
+            CHECK(vulkan->validation_error_count()==0,"secondary RIS fixture has no Vulkan validation errors");
+            std::printf("validation errors: %u\n",vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "primary-light-cull") {
+            std::string cull_error;
+            scenario_primary_light_culling(*vulkan,cull_error);
+            CHECK(vulkan->validation_error_count()==0,"primary light culling has no validation errors");
+            std::printf("validation errors: %u\n",vulkan->validation_error_count());
+            vulkan->wait_idle(); finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate(); return check_summary();
         }
         if (smoke_mode && std::string(smoke_mode) == "rt-local-direct") {
             std::string local_direct_error;

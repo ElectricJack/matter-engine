@@ -6,6 +6,6 @@ import { emitFurnishing, FURNISHING_DEFAULTS } from 'shared-lib/castle_furnishin
 class CastleBarrel extends Part {
   static lodBudgets = [1];
   static noImpostor = true;
-  static params = { ...FURNISHING_DEFAULTS.barrel };
+  static params = { surfaceMembers: 0, ...FURNISHING_DEFAULTS.barrel };
   build(p) { emitFurnishing(this, 'barrel', p); }
 }

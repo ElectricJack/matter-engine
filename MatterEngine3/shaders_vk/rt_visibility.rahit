@@ -17,8 +17,14 @@ const uint MATERIAL_ALPHA_TESTED = 1u << 2u;
 const uint MATERIAL_THIN_WALLED = 1u << 0u;
 const uint WATER_SURFACE_MATERIAL_FLAG = 1u << 4u;
 
+// Production leaves globally contended telemetry off. Fixture pipelines may
+// specialize ID 2 to one; ray-local layer counting and error handling always
+// remain active, independently of this diagnostic switch.
+layout(constant_id = 2) const uint count_visibility_diagnostics = 0u;
+
 void main() {
-    atomicAdd(any_hit_invocations, 1u);
+    if (count_visibility_diagnostics != 0u)
+        atomicAdd(any_hit_invocations, 1u);
     RtSurface surface = load_rt_surface(hit_barycentrics);
     if ((surface.flags & RT_SURFACE_VALID) == 0u) {
         payload.visibility = vec3(0.0);
@@ -69,10 +75,12 @@ void main() {
         payload.visibility *= mix(vec3(1.0), transmission_tint,
                                   shadow_opacity);
     }
-    atomicAdd(any_hit_layers, 1u);
+    if (count_visibility_diagnostics != 0u)
+        atomicAdd(any_hit_layers, 1u);
     ++payload.layers;
     if (payload.layers >= 32u) {
-        atomicAdd(capped_rays, 1u);
+        if (count_visibility_diagnostics != 0u)
+            atomicAdd(capped_rays, 1u);
         terminateRayEXT;
     } else if (max(payload.visibility.r,
                    max(payload.visibility.g, payload.visibility.b)) < 0.01)

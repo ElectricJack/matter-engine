@@ -629,6 +629,30 @@ static void test_key_changes_on_seed() {
     remove_dir(root);
 }
 
+static void test_authored_world_size_rejected_before_allocation() {
+    printf("[resolve_cache] authored_world_size_limit\n");
+    const std::string root = sandbox_root("rc_test_authored_limit");
+    reset_dir(root);
+    auto payload = make_payload();
+    payload.authored_world.clear();
+    constexpr uint64_t key = 0x92835ull;
+    REQUIRE(resolve_cache::save(root, "TestWorld", key, payload));
+    {
+        std::fstream file(root + "/cache/TestWorld.resolve",
+                          std::ios::binary | std::ios::in | std::ios::out);
+        REQUIRE(file.good());
+        // Empty authored data is the final four-byte length field. Its claimed
+        // size exceeds the new section limit but remains below the legacy cap.
+        file.seekp(-4, std::ios::end);
+        const char oversized[4] = {1, 0, 0, 4}; // 64 MiB + 1, little endian
+        file.write(oversized, sizeof(oversized));
+    }
+    resolve_cache::ResolveCachePayload out;
+    CHECK(!resolve_cache::load(root, "TestWorld", key, out));
+    CHECK(out.authored_world.empty()); // rejected before string::resize
+    remove_dir(root);
+}
+
 static void test_truncated_load() {
     printf("[resolve_cache] truncated_load\n");
     const std::string root = sandbox_root("rc_test_trunc");
@@ -742,6 +766,7 @@ int main() {
     test_project_procedural_settings_drive_profile_and_binding();
     test_key_changes_on_seed();
     test_truncated_load();
+    test_authored_world_size_rejected_before_allocation();
     test_bad_magic_rejected();
     test_old_light_record_cache_version_is_rejected();
     test_bad_key_rejected();

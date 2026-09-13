@@ -88,6 +88,10 @@ MatterEngine3/src/render/part_store.cpp|all
 MatterEngine3/src/render/world_state.cpp|all
 MatterEngine3/src/render/lod_trace.cpp|all
 MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp|all
+MatterEngine3/src/render/gpu_meshing/gpu_solid_mesher_common.cpp|all
+MatterEngine3/src/render/gpu_meshing/solid_face_projection_common.cpp|all
+MatterEngine3/src/brick_bond_atlas.cpp|all
+MatterEngine3/src/brick_bond_detail.cpp|all
 MatterEngine3/src/render/tileset_slicer.cpp|all
 MatterEngine3/src/render/bc_encode.cpp|all
 MatterEngine3/src/provider/local_provider.cpp|all
@@ -109,6 +113,7 @@ MatterEngine3/src/refine_controller.cpp|all
 MatterEngine3/src/async_bake.cpp|all
 MatterEngine3/src/bake_trace.cpp|all
 MatterEngine3/src/resolve_cache.cpp|all
+MatterEngine3/src/authored_world_cache.cpp|all
 MatterEngine3/src/terrain_field.cpp|all
 MatterEngine3/src/terrain_mesher.cpp|all
 MatterEngine3/src/seam_weld.cpp|all

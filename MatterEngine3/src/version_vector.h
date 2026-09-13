@@ -102,7 +102,12 @@ namespace components {
 //   9 -> 10: flattened instance normals use the row-major inverse transpose.
 //            Previous rotated/sheared children stored inverse-transformed
 //            normals, so serialized shading normals must be rebaked.
-inline constexpr uint32_t kEngineBake = 10u;
+//  10 -> 11: ordered solid CSG normals use the same field as extraction;
+//            simplify modifiers preserve corner normals/material attributes.
+//            Existing artifacts must not retain the old face-normal fallback.
+//            Explicit static singleton sources also retain one runtime rung
+//            through both disk and in-memory compositional fallback staging.
+inline constexpr uint32_t kEngineBake = 11u;
 
 // The physics library. A settle that lands differently is different content.
 inline constexpr uint32_t kBox3d = 1u;

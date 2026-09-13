@@ -319,6 +319,11 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gpu_mesh_classify.comp.spv \
          build/shaders_vk/gpu_mesh_compact.comp.spv \
          build/shaders_vk/gpu_mesh_emit.comp.spv \
+         build/shaders_vk/solid_field.comp.spv \
+         build/shaders_vk/solid_face_project.comp.spv \
+         build/shaders_vk/solid_classify.comp.spv \
+         build/shaders_vk/solid_scan.comp.spv \
+         build/shaders_vk/solid_emit.comp.spv \
          build/shaders_vk/atmosphere_transmittance.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \
          build/shaders_vk/atmosphere_sky_view.comp.spv \
@@ -326,6 +331,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
+         build/shaders_vk/primary_light_cull.comp.spv \
          build/shaders_vk/visible_ids.comp.spv \
          build/shaders_vk/visibility_id.vert.spv \
          build/shaders_vk/visibility_id.frag.spv \
@@ -344,7 +350,10 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/rt_visibility.rchit.spv \
          build/shaders_vk/rt_visibility.rahit.spv \
          build/shaders_vk/rt_radiance.rmiss.spv \
-         build/shaders_vk/rt_lighting.rgen.spv \
+         build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+         build/shaders_vk/rt_lighting_culled.rgen.spv build/shaders_vk/rt_lighting_culled_audit.rgen.spv \
+         build/shaders_vk/rt_primary_adaptive_culled.rgen.spv build/shaders_vk/rt_primary_adaptive_culled_audit.rgen.spv \
+         build/shaders_vk/rt_primary_fixed.rgen.spv \
          build/shaders_vk/gi_temporal.comp.spv \
          build/shaders_vk/gi_atrous.comp.spv \
          build/shaders_vk/rt_surface.rchit.spv \
@@ -381,6 +390,14 @@ build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
 build/shaders_vk/gpu_mesh_classify.comp.spv \
     build/shaders_vk/gpu_mesh_emit.comp.spv: shaders_vk/gpu_mesh_mc_tables.glsl
 
+build/shaders_vk/solid_field.comp.spv \
+    build/shaders_vk/solid_face_project.comp.spv \
+    build/shaders_vk/solid_classify.comp.spv \
+    build/shaders_vk/solid_scan.comp.spv \
+    build/shaders_vk/solid_emit.comp.spv: shaders_vk/solid_field.glsl
+build/shaders_vk/solid_classify.comp.spv \
+    build/shaders_vk/solid_emit.comp.spv: shaders_vk/gpu_mesh_mc_tables.glsl
+
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
 
@@ -413,20 +430,31 @@ build/shaders_vk/water_forward.frag.spv: \
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
     shaders_vk/rt_surface_common.glsl shaders_vk/tileset_common.glsl
+
+# Shared local-space VT normal frame: all direct and transitive consumers.
+build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
+    build/shaders_vk/raster_water.vert.spv \
+    build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv build/shaders_vk/rt_surface_test.rgen.spv: \
+    shaders_vk/vt_normal_frame.glsl
 
 # Phase 2 (horizon-map lighting): rt_shadow.rgen now includes
 # tileset_common.glsl directly (not via rt_surface_common.glsl -- it does
 # not otherwise use that file) to reach bindings 15/16 for the horizon test.
 build/shaders_vk/rt_shadow.rgen.spv: shaders_vk/tileset_common.glsl
 
-build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
+build/shaders_vk/composite.frag.spv build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv: \
     shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
 
-build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
-    shaders_vk/local_lighting.glsl
+build/shaders_vk/composite.frag.spv build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv: \
+    shaders_vk/local_lighting.glsl shaders_vk/local_light_types.glsl
+
+build/shaders_vk/primary_light_cull.comp.spv: shaders_vk/local_light_types.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     shaders_vk/gi_common.glsl
@@ -451,7 +479,7 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv \
     build/shaders_vk/vt_composite.comp.spv: shaders_vk/wang_common.glsl
 
@@ -476,7 +504,7 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
     build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_common.glsl
 
 # M2.5 impostors: impostor_common.glsl is the ONE place the view grid is
@@ -499,7 +527,7 @@ build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
     build/shaders_vk/raster_water.vert.spv \
     build/shaders_vk/gbuffer.frag.spv \
     build/shaders_vk/rt_shadow.rgen.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/composite.frag.spv: shaders_vk/impostor_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
@@ -785,3 +813,20 @@ test:
 clean:
 	rm -rf build
 	$(MAKE) -C tests clean
+
+# Finished local surface detail shared by raster and RT hits.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
+    build/shaders_vk/rt_surface.rahit.spv build/shaders_vk/rt_visibility.rahit.spv \
+    build/shaders_vk/rt_radiance.rmiss.spv build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/surface_detail.glsl
+
+# Shared implementation; all transitive dependency groups above cover both wrappers.
+build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv: shaders_vk/rt_lighting_impl.glsl
+
+# Culling/audit wrappers share every transitive lighting include. The shader
+# inventory is small; conservative include dependencies keep the rollback Make
+# build correct alongside CMake's compiler-generated dependency files.
+build/shaders_vk/rt_lighting_culled.rgen.spv build/shaders_vk/rt_lighting_culled_audit.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive_culled.rgen.spv build/shaders_vk/rt_primary_adaptive_culled_audit.rgen.spv \
+    build/shaders_vk/rt_primary_fixed.rgen.spv: \
+    $(wildcard shaders_vk/*.glsl)

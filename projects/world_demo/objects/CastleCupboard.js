@@ -6,7 +6,7 @@ import { emitFurnishing, furnishingChildren, FURNISHING_DEFAULTS } from 'shared-
 class CastleCupboard extends Part {
   static lodBudgets = [1];
   static noImpostor = true;
-  static params = { ...FURNISHING_DEFAULTS.cupboard };
+  static params = { surfaceMembers: 0, ...FURNISHING_DEFAULTS.cupboard };
   static requires(p) { return furnishingChildren('cupboard', p); }
   build(p) { emitFurnishing(this, 'cupboard', p); }
 }

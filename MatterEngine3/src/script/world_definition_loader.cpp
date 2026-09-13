@@ -1652,7 +1652,7 @@ const char* const kMaterialSpecKeys[] = {
     "alphaCutoff", "shadowOpacity",
     "thinWalled", "doubleSided", "alphaTested", "volumeBoundary",
     "waterSurface",
-    "detail", "detailDensity",
+    "detail", "detailDensity", "detailMode",
 };
 
 // A typo in a spec key would otherwise shade with a silently-defaulted value,
@@ -1800,6 +1800,28 @@ JSValue define_material(JSContext* context,
             name.c_str());
     }
     JS_FreeValue(context, detail);
+
+    JSValue detail_mode = JS_GetPropertyStr(context, spec, "detailMode");
+    if (!JS_IsUndefined(detail_mode)) {
+        std::string mode;
+        if (!JS_IsString(detail_mode) || !string_value(context, detail_mode, mode) ||
+            (mode != "ground" && mode != "surface")) {
+            JS_FreeValue(context, detail_mode);
+            JS_FreeValue(context, spec);
+            return JS_ThrowTypeError(context,
+                "defineMaterial('%s'): detailMode must be 'ground' or 'surface'", name.c_str());
+        }
+        if (mode == "surface") {
+            if (record.detail_module.empty()) {
+                JS_FreeValue(context, detail_mode);
+                JS_FreeValue(context, spec);
+                return JS_ThrowTypeError(context,
+                    "defineMaterial('%s'): detailMode 'surface' requires detail", name.c_str());
+            }
+            def.surfaceFlags |= MATERIAL_SURFACE_DETAIL;
+        }
+    }
+    JS_FreeValue(context, detail_mode);
 
     float density = 0.0f;
     bool density_present = false;

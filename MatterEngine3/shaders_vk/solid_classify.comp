@@ -1,0 +1,42 @@
+#version 450
+#include "solid_field.glsl"
+#include "gpu_mesh_mc_tables.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 2) readonly buffer Field {
+    float field[];
+};
+layout(std430, binding = 3) buffer Cells {
+    uvec2 cells[];
+};
+layout(std430, binding = 4) buffer Blocks {
+    uint blocks[];
+};
+layout(std430, binding = 5) readonly buffer Table {
+    int triangles[];
+};
+shared uint scan[256];
+void main() {
+    uint i = gl_GlobalInvocationID.x, l = gl_LocalInvocationID.x;
+    uint c = 0, n = 0;
+    if (i < limits.y) {
+        uvec3 b = solidCoordinate(i, dims.xyz - uvec3(1));
+        for (uint k = 0u; k < 8u; ++k)
+            if (field[solidIndex(b + gpuMeshCornerOffset(k))] < 0)
+                c |= 1u << k;
+        for (; n < 15u; ++n)
+            if (triangles[c * 16u + n] < 0)
+                break;
+    }
+    scan[l] = n;
+    barrier();
+    for (uint d = 1u; d < 256u; d <<= 1u) {
+        uint v = l >= d ? scan[l - d] : 0u;
+        barrier();
+        scan[l] += v;
+        barrier();
+    }
+    if (i < limits.y)
+        cells[i] = uvec2(c, scan[l] - n);
+    if (l == 255u)
+        blocks[gl_WorkGroupID.x] = scan[l];
+}

@@ -189,6 +189,7 @@ globalThis.Part = class Part {
   nativeController(name,controller,source) { __dsl_nativeController(name,controller,source,(new Error()).stack); }
   output(name,node)        { __dsl_output(name,node,(new Error()).stack); }
   endMotion()              { __dsl_endMotion((new Error()).stack); }
+  solidSource(spec)      { __dsl_solidSource(spec); }
   beginVoxels(spacing)   { __dsl_beginVoxels(spacing); }
   endVoxels()            { __dsl_endVoxels(); }
   sphere(c,r)            { __dsl_sphere(c[0],c[1],c[2],r); }
@@ -204,6 +205,7 @@ globalThis.Part = class Part {
   placeChild(module,params,opts) { __dsl_placeChild(module, params, opts); }
   beginShape(mode)       { __dsl_beginShape(mode|0); }
   vertex(x,y,z)          { __dsl_vertex(x,y,(z===undefined?0:z)); }
+  surfaceVertex(x,y,z,nx,ny,nz,u,v) { __dsl_surfaceVertex(x,y,z,nx,ny,nz,u,v); }
   endShape()             { __dsl_endShape(); }
   beginContour()         { __dsl_beginContour(); }
   endContour()           { __dsl_endContour(); }

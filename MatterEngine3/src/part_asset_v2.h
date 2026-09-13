@@ -42,6 +42,8 @@
 #include <string>
 #include <vector>
 
+namespace matter { struct PartRenderPolicy; }
+
 namespace part_asset {
 
 // M4: these are ALIASES of the version vector's format components, not
@@ -130,6 +132,10 @@ struct LodVariants {
 // False if the section is missing or unparseable (callers fall back to QEM).
 bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
                       LodVariants& out);
+// Strict proof for the static source-singleton fallback, distinct from the
+// compatibility reader above. Rejects malformed/trailing tokens and foreign refs.
+bool load_single_full_lod_policy(const std::string& path, uint64_t resolved_hash);
+
 bool save_lod_sidecar(const std::string& path, uint64_t resolved_hash,
                       const LodVariants& variants);
 
@@ -252,6 +258,22 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const LodLevels& lods,
              const std::vector<VolumeEmitter>& emitters,
              uint64_t resolved_hash);
+
+// Proof supplied only after a static leaf's own class declared exactly [1].
+// Existing VARS/PLAN formats encode these values; this is not a new disk format.
+struct StaticLeafMetadata {
+    double anchor_size = 0.0;
+    bool no_impostor = false;
+};
+
+// Static-only atomic RNDR + REP0 publish. The animation/candidate APIs below
+// retain their existing ordering and never use this convenience entry point.
+bool save_v2_with_render_policy(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods, const std::vector<VolumeEmitter>& emitters,
+             uint64_t resolved_hash, const matter::PartRenderPolicy& policy,
+             const StaticLeafMetadata* leaf_metadata = nullptr);
 
 // Animated parts — appends a tagged "ANLK" trailer (after any EMIT block)
 // carrying the PartAnimationLink that binds this Part to its animation bundle.
@@ -456,6 +478,12 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out,
                   std::vector<FlatInstanceRef>& instance_refs_out);
+// Validated refs-only scan: same header, full checksum and common/FLAT grammar
+// as the non-emitter loader, without BLAS/TLAS construction or geometry copies.
+// Optional trailing EMIT data is ignored, as in that overload. Failure leaves
+// output unchanged; success replaces it (including the zero-ref case).
+bool load_flat_instance_refs(const std::string& path, uint64_t expected_resolved_hash,
+                             std::vector<FlatInstanceRef>& instance_refs_out);
 // Back-compat overload: discards the instance_refs trailer (still validates it).
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,

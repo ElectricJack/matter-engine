@@ -838,6 +838,7 @@ struct WorldSession::Impl {
 
     // World data.
     viewer::WorldManifest manifest;
+    world_lights::EffectiveLocalLightCache effective_local_light_cache;
     viewer::WorldState    state;
     matter::FogSettings   authored_fog_{};
     // Publish the authored fog to BOTH consumers in one place: authored_fog_
@@ -3326,7 +3327,7 @@ void WorldSession::Impl::worker_loop() {
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload) {
     auto& token = cmd.token;
-    auto is_cancelled = [&] { return token && token->is_cancelled(); };
+    auto is_cancelled = [token] { return token && token->is_cancelled(); };
 
     // Bake Lab (task 1.2): fresh trace for this run; make the session collector
     // current on the worker thread so BAKE_SPAN/BAKE_COUNT sites anywhere below
@@ -3334,8 +3335,26 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     bake_collector.reset();
     bake_trace::set_current(&bake_collector);
     struct TraceCurrentGuard {
-        ~TraceCurrentGuard() { bake_trace::set_current(nullptr); }
-    } trace_current_guard;
+        bake_trace::Collector& collector;
+        ~TraceCurrentGuard() {
+            bake_trace::set_current(nullptr);
+            const char* path = std::getenv("MATTER_BAKE_TRACE");
+            if (!path || !*path) return;
+            // Declared before bake scopes: every nested RAII span is closed
+            // before export, including cancellation, errors and exceptions.
+            try {
+                std::string error;
+                if (!bake_trace::write_snapshot_json(collector.snapshot(), path, error))
+                    MATTER_LOGW("bake-trace", "%s\n", error.c_str());
+                else
+                    MATTER_LOGI("bake-trace", "wrote %s\n", path);
+            } catch (const std::exception& e) {
+                MATTER_LOGW("bake-trace", "export failed: %s\n", e.what());
+            } catch (...) {
+                MATTER_LOGW("bake-trace", "export failed: unknown exception\n");
+            }
+        }
+    } trace_current_guard{bake_collector};
 
     // Unbound the resolver for the world about to load. install_world resets
     // it from the resolved band table for a STREAMED world; a closed world
@@ -3411,6 +3430,38 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             return false;
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
+    };
+    cfg.vk_solid_source_bake = [this, token](
+        const gpu_meshing::SolidJob& job, gpu_meshing::MeshResult& result,
+        gpu_meshing::SolidStats& stats, gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) -> bool {
+        if (!vk_scene) {
+            error = {gpu_meshing::ErrorCode::Unavailable,
+                     "Vulkan solid source renderer not active"};
+            return false;
+        }
+        auto guarded = control;
+        guarded.cancelled = [token, control] {
+            return (token && token->is_cancelled()) ||
+                   (control.cancelled && control.cancelled());
+        };
+        return vk_scene->build_solid_source(job, result, stats, error, guarded);
+    };
+    cfg.vk_solid_face_project = [this, token](
+        const gpu_meshing::FaceJob& job, gpu_meshing::FacePatch& result,
+        gpu_meshing::FaceStats& stats, gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) -> bool {
+        if (!vk_scene) {
+            error = {gpu_meshing::ErrorCode::Unavailable,
+                     "Vulkan source face renderer not active"};
+            return false;
+        }
+        auto guarded = control;
+        guarded.cancelled = [token, control] {
+            return (token && token->is_cancelled()) ||
+                   (control.cancelled && control.cancelled());
+        };
+        return vk_scene->project_solid_face(job, result, stats, error, guarded);
     };
     cfg.vk_particle_visual_bake = [this](
         const gpu_meshing::ParticleJob& job,
@@ -3509,7 +3560,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                 if (provider->restore_from_cache(rc_payload.snapshot,
                                                  rc_payload.bake_plan,
                                                  rc_payload.root_hashes,
-                                                 rc_err)) {
+                                                 rc_err,
+                                                 rc_payload.authored_world)) {
                     // Procedural worlds never write this closed-world resolve
                     // cache. Restore the recoverable non-streaming profile state
                     // before the fast path returns.
@@ -3757,6 +3809,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_save.snapshot    = provider->graph_snapshot();
         rc_save.bake_plan   = provider->install_result().bake_plan;
         rc_save.root_hashes = provider->install_result().root_hashes;
+        rc_save.authored_world = provider->authored_world_cache();
         if (!resolve_cache::save(cfg.cache_root, cfg.world_name,
                                  rc_cache_key, rc_save)) {
             MATTER_LOGW("resolve", "resolve cache: save failed (non-fatal)\n");
@@ -4154,7 +4207,7 @@ void WorldSession::Impl::publish_pipeline(
     static_assert(
         std::is_nothrow_swappable_v<matter::TerrainCollisionStatus>,
         "collision status commit must remain non-throwing");
-    auto is_cancelled = [&] { return token && token->is_cancelled(); };
+    auto is_cancelled = [token] { return token && token->is_cancelled(); };
 
     auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
         if (code != BakeErrorCode::Cancelled) {
@@ -4820,17 +4873,14 @@ void WorldSession::Impl::publish_pipeline(
         // Runs on the worker before posting the GPU job, so the new entries are
         // visible to the upcoming GPU job's `added` snapshot build.
         if (!part_bake_failed) {
+            BAKE_SPAN("publish.reference-scan");
             // Only attempt ref streaming when the flat is available (demand or eager).
             const std::string flat_abs = cfg.cache_root + "/" +
                                          part_asset::cache_path_flat(h);
             if (part_asset::peek_format_version(flat_abs) ==
                     part_asset::kFormatVersionFlat) {
-                BLASManager scratch_blas;
-                TLASManager scratch_tlas(4);
-                std::vector<part_asset::FlatCluster> clusters_ignored;
                 std::vector<part_asset::FlatInstanceRef> refs;
-                if (part_asset::load_flat_v3(flat_abs, h, scratch_blas,
-                                              scratch_tlas, clusters_ignored, refs)
+                if (part_asset::load_flat_instance_refs(flat_abs, h, refs)
                     && !refs.empty()) {
                     size_t tail_start = publish_order.size();
                     for (const auto& r : refs) {
@@ -10078,7 +10128,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     auto& token = cmd.token;
-    auto is_cancelled = [&] { return token && token->is_cancelled(); };
+    auto is_cancelled = [token] { return token && token->is_cancelled(); };
 
     const std::set<std::string> paths(cmd.changed_files.begin(),
                                       cmd.changed_files.end());
@@ -10201,6 +10251,38 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
             return false;
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
+    };
+    cfg.vk_solid_source_bake = [this, token](
+        const gpu_meshing::SolidJob& job, gpu_meshing::MeshResult& result,
+        gpu_meshing::SolidStats& stats, gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) -> bool {
+        if (!vk_scene) {
+            error = {gpu_meshing::ErrorCode::Unavailable,
+                     "Vulkan solid source renderer not active"};
+            return false;
+        }
+        auto guarded = control;
+        guarded.cancelled = [token, control] {
+            return (token && token->is_cancelled()) ||
+                   (control.cancelled && control.cancelled());
+        };
+        return vk_scene->build_solid_source(job, result, stats, error, guarded);
+    };
+    cfg.vk_solid_face_project = [this, token](
+        const gpu_meshing::FaceJob& job, gpu_meshing::FacePatch& result,
+        gpu_meshing::FaceStats& stats, gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) -> bool {
+        if (!vk_scene) {
+            error = {gpu_meshing::ErrorCode::Unavailable,
+                     "Vulkan source face renderer not active"};
+            return false;
+        }
+        auto guarded = control;
+        guarded.cancelled = [token, control] {
+            return (token && token->is_cancelled()) ||
+                   (control.cancelled && control.cancelled());
+        };
+        return vk_scene->project_solid_face(job, result, stats, error, guarded);
     };
     cfg.vk_particle_visual_bake = [this](
         const gpu_meshing::ParticleJob& job,
@@ -13165,10 +13247,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     lighting.vol_enabled = opts.volumetrics.enabled ? 1.0f : 0.0f;
     lighting.vol_debug_view = opts.volumetrics.vol_debug_view;
     // Local lights are a separate immutable publication from the small
-    // sun/sky push block. Revision equality makes the steady camera path a
-    // no-op; a light-only edit republishes buffers without touching geometry.
-    if (!impl_->vk_scene->update_local_lights(
-            impl_->manifest.lights.local, err)) {
+    // sun/sky push block. CastleUpgraded uses a shorter influence radius to
+    // reduce broadphase and per-pixel RT candidates. The authored publication
+    // remains unchanged; scaling happens exactly once at this handoff.
+    const world_lights::LocalLightPublication* effective_local_lights = nullptr;
+    const float local_light_range_scale =
+        impl_->cfg.world_name == "CastleUpgraded" ? 0.75f : 1.0f;
+    const world_lights::LocalLightIndexConfig local_light_index_config{
+        impl_->cfg.world_name == "CastleUpgraded"
+            ? 4.0f : impl_->manifest.lights.local.index.cell_size,
+        impl_->manifest.lights.local.index.max_cells_per_light};
+    if (!impl_->effective_local_light_cache.resolve(
+            impl_->manifest.lights.local, local_light_range_scale,
+            local_light_index_config, effective_local_lights, err) ||
+        !impl_->vk_scene->update_local_lights(*effective_local_lights, err)) {
         return false;
     }
     // Request the live coefficients before the renderer records this frame's
@@ -13389,6 +13481,19 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_tlas_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneTlas);
     impl_->stats.gpu_rt_ms               = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt);
     impl_->stats.gpu_rt_gi_ms            = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRtGi);
+    impl_->stats.gpu_hdr_lighting_ms = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneHdrLighting);
+    impl_->stats.gpu_primary_light_cull_ms = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZonePrimaryLightCull);
+    impl_->stats.gpu_rt_gi_diffuse_ms = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRtGiDiffuse);
+    impl_->stats.gpu_rt_gi_reflection_transmission_ms = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRtGiReflectionTransmission);
+    impl_->stats.gpu_rt_local_direct_ms = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRtLocalDirect);
+    static_assert(matter::kGpuTimingNames.size() == viewer::VkSceneRenderer::kGpuZoneCount);
+    auto& gpu_sample = impl_->stats.gpu_timing_sample;
+    gpu_sample.sequence = impl_->vk_scene->gpu_sample_sequence();
+    gpu_sample.valid_mask = impl_->vk_scene->gpu_sample_valid_mask();
+    for (uint32_t zone = 0; zone < viewer::VkSceneRenderer::kGpuZoneCount; ++zone)
+        gpu_sample.milliseconds[zone] = impl_->vk_scene->gpu_zone_last_ms(zone);
+    impl_->stats.raster_width = impl_->vk_scene->raster_width();
+    impl_->stats.raster_height = impl_->vk_scene->raster_height();
     impl_->stats.gpu_denoise_ms          = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDenoise);
     impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
     impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);

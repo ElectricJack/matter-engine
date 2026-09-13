@@ -312,7 +312,18 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
 - `MATTER_CAPTURE_LIGHTING_UI` — capture-only aid: focuses the Lighting panel
   for automated verification screenshots; inert outside a capture.
 - `MATTER_TIME_SCALE` — initial simulation time scale.
-- `MATTER_CACHE_ROOT` — overrides the bake cache root.
+- `MATTER_CACHE_ROOT` — external base for per-world bake artifacts. Nonblank values
+  select `<base>/projects/<project-path-digest>/<world>`. Relative bases resolve
+  against the opened project's absolute directory, so later cwd changes do not
+  redirect writes. The base is absolute and normalized; existing symlink aliases
+  are resolved where possible. The 16-hex FNV-1a project digest uses the normalized
+  absolute project path with `/` separators (ASCII case-folded on Windows).
+  Different project directories and worlds remain isolated. Unset, empty or
+  whitespace-only values keep `<project>/.cache/<world>`. Existing caches are
+  neither moved nor deleted; switching the base can intentionally cause a cold bake.
+- `MATTER_BUNDLE_PROFILE=1` — opt-in `bundle-profile` log-sink write timings with exact path,
+  read/encode/write/flush/replace stages, bytes and replacement attempts. Sampled
+  once per process; creates no profiling artifact and does not weaken durability.
 - `MATTER_LIVE_EDIT` — enables live-edit (hot script reload) file watching.
   **The functional backend is Linux-only** (`InotifyWatcher`); the Windows
   backend (`WinDirWatcher`, `MatterEngine3/src/file_watcher.h`) is a stub.
@@ -354,14 +365,62 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
 - `MATTER_PROFILE_TRACE=<path>` — on exit, dumps the profiler's FrameRecord tail
   as a Chrome trace (`chrome://tracing`-loadable) — the same data every issue
   report embeds as `profile_tail.json`.
+- `MATTER_PRESENT_MODE=auto|fifo|mailbox|immediate` — explicit Vulkan swapchain
+  policy. Unset/`auto` retains FIFO by default and the existing `MATTER_VSYNC=0`
+  preference for MAILBOX, then IMMEDIATE, then FIFO. An explicit mode overrides
+  `MATTER_VSYNC`; invalid or unsupported requests fail rather than silently
+  falling back. Swapchain creation logs requested/effective modes, supported
+  modes, actual image count and extent. IMMEDIATE can tear. This is a launch
+  control; changing the frame limiter below does not change presentation mode.
+- `render.gpu.frame_limit` — live integer FPS limit, 0..360, default 0 (unlimited),
+  persisted per user in Performance → GPU Features. FIFO example:
+  `set render.gpu.frame_limit 90`. `MATTER_FRAME_LIMIT` forces the same property
+  at launch and disables UI/FIFO overrides. Pacing runs before input sampling,
+  uses a high-resolution waitable timer on supported Windows systems and a
+  short bounded yield tail, and rebases after hitches instead of catching up.
+  Long waits service window events at 25 ms intervals. No rendering quality or
+  global Windows timer-resolution change is involved. Choose a sustainable
+  rate with headroom; the limiter cannot make a slow frame meet its deadline.
+- `MATTER_FRAME_TIMINGS=1` — optional CPU wait attribution; default off. The
+  Vulkan device exposes the latest attempt's serial/slot/image and separate
+  frame-fence, acquisition-fence, acquire, prior-present-fence, retained-resource
+  cleanup, submit and present durations. Perf mode buffers up to 262,144 raw rows
+  in `frame_timing_trace` and writes them after sampling, with a dropped-row
+  count. Rows include loop phases, pacing and CPU present intervals. GPU values
+  are the latest retired readback, explicitly **not** the current CPU frame.
+- `MATTER_BAKE_TRACE=<absolute path>` — on each `execute_bake` exit, including
+  cancellation/error, overwrites this diagnostic JSON with the full existing
+  bake span tree and ordered counters. Schema 1 reports precise millisecond
+  begin/end/duration values; open spans and nonfinite counters use JSON null.
+  Parent directories must exist. Export failures are logged as `[bake-trace]`
+  without changing bake results. This is a direct diagnostic write, with no
+  atomic replacement or fsync; use a distinct path per concurrent session.
+  Unset or empty disables export. It does not capture later asynchronous work
+  beyond the existing collector's scope.
 - `MATTER_PERF_OUTPUT`, `MATTER_PERF_WARMUP_SECONDS`, `MATTER_PERF_SAMPLE_SECONDS`
-  — headless perf run (§ recipe 8 in the QA cookbook). **Must be set together**;
+  — automated perf run (§ recipe 8 in the QA cookbook). **Must be set together**;
   setting any subset is a fatal startup error
-  (`read_perf_run_config` in `main.cpp`). The hidden window is borderless so
+  (`read_perf_run_config` in `main.cpp`). The window defaults to hidden;
+  explicitly set `MATTER_HIDE_WINDOW=0` for visible runs. It is borderless so
   `MATTER_WINDOW_WIDTH/HEIGHT` describe the exact framebuffer. Sampling begins
   only after the static vertex/cluster upload counters remain unchanged for 30
   rendered frames, preventing terrain-sector publication from contaminating a
   steady-state GPU measurement.
+  `perf.json` retains legacy `gpu_*_ms` fields as moving-average values.
+  `gpu_pass_statistics.passes` separately reports raw timestamp readback
+  sample counts, median and nearest-rank p95 in milliseconds. Readbacks are
+  deduplicated; unavailable queries are omitted, and real zero durations count.
+  `gpu_rt_local_direct_ms` measures local direct lighting; `gpu_rt_ms` is the
+  existing sun-shadow pass, and `gpu_gi_ms` is the secondary lighting dispatch.
+  `present_cadence_statistics` separately reports actual successive CPU
+  post-present boundaries (mean/FPS, median, p95, p99, min/max and standard
+  deviation). These include inter-frame bookkeeping that the legacy loop
+  metric excludes. Neither metric proves display/scanout cadence. The helper
+  `tools/castle_rt_perf.py` accepts `--frame-limit`, `--present-mode`,
+  `--frame-timings`, `--validation` and optional `--presentmon <console.exe>`;
+  it records a missing PresentMon CSV rather than treating exit 0 as proof of
+  display samples. Benchmarks explicitly force the FPS limit to zero by default
+  so saved user preferences cannot silently cap a comparison.
 - `MATTER_HIZ` — dead. Legacy env var, retained only to print
   `MATTER_HIZ: not available in Vulkan milestone; ignored` instead of silently
   doing nothing.
@@ -435,6 +494,120 @@ exists. `MATTER_FLATTEN_LADDER`, `MATTER_FLATTEN_PEAK`, `MATTER_FLATTEN_RETAIN_M
 `MATTER_IMPOSTOR_DISTANCE`, `MATTER_GPU_JOB_SLOW_MS`.
 
 ### Vulkan
+
+Live indirect-lighting controls (session-only, available in Tunables and via
+FIFO `set`; not saved across launches):
+
+- `render.gi.enabled` — enables diffuse GI, traced reflections and transmission
+  together. False retains primary direct lighting and traced direct shadows,
+  but glass uses the sky fallback and scene reflections disappear.
+- `render.gi.diffuse_multiplier` — diffuse bounce strength, 0..4. Exactly zero
+  skips diffuse bounce rays while retaining full-resolution reflections/glass
+  when `reflection_trace_scale=1`. Other nonzero values change brightness,
+  not ray count.
+- `render.gi.trace_scale` — diffuse GI width/height scale, 0.125..1, default 1.
+  A value of 0.125 traces one sixty-fourth as many diffuse pixels. Reduced
+  diffuse stores and filters incident lighting, then reconstructs it using
+  full-resolution surface guides and applies full-resolution albedo/metalness/AO.
+  This control no longer reduces reflections or glass.
+- `render.gi.reflection_trace_scale` — independent traced reflection/refraction
+  width/height scale, 0.125..1, default 1. Keep 1 for crisp window boundaries
+  and reflected detail. Reduced specular/transmission still uses the existing
+  sampling path and can be blocky; diffuse reconstruction does not blur it.
+
+Suggested low-cost GI with sharp reflections: `enabled=true`,
+`trace_scale=0.128`, `reflection_trace_scale=1`, `diffuse_multiplier=1`.
+Lower bounce strength if the indirect fill is too strong. See
+[the reconstruction comparison](../gi-reconstruction-2026-09-12.md).
+
+RT lighting pipeline controls (sampled during pipeline creation; restart
+to change them):
+
+- `MATTER_DLSS_MATERIAL_FOOTPRINT=0|1` — finished-surface height, normal and
+  material mip selection uses output-pixel footprints when upscaling; default
+  1. Set 0 for the previous internal-pixel reference. Geometry LOD, placement,
+  relief limits and Native material sampling are unchanged. Read once at the
+  first frame upload; restart to change it.
+- `MATTER_RT_LOCAL_PRIMARY_SAMPLES=0..4` — area-light visibility samples for
+  primary direct lighting; default 4. Fixed 1..4 remain comparison controls;
+  0 opts into experimental adaptive 1/4 sampling from presented local-direct history.
+  Adaptive uses one only with at least 16 history frames, low prior relative
+  variance (10% coefficient of variation), matching material/instance, normal
+  dot >=0.99, ORM changes <=0.01, reversed-depth agreement within 0.1% (1e-6
+  floor), motion after removing camera jitter <=0.25 internal pixels and
+  reactivity <=0.01. Reprojection still uses the full jittered velocity. Camera/history
+  resets or changes to the current TLAS/light/material scene key force four.
+  The count is chosen before current-frame samples, preserving each light's
+  visibility-average expectation. Point lights use one; secondary surfaces
+  use one and transmission retains four. Adaptive and fixed one need visible
+  motion/disocclusion/penumbra assessment before choosing them for a scene.
+- `MATTER_GPU_LIGHTING_DETAIL_TIMERS=0|1` — default 0, read once per process;
+  restart required. Set 1 to enable the additional profiling timestamp pairs for
+  `hdr_lighting` (zone 21), `rt_gi_diffuse` (22),
+  `rt_gi_reflection_transmission` (23), and `primary_light_cull` (24).
+  Rendering and the original `rt_gi`
+  aggregate and `composite` display-transform timers remain unchanged.
+  Previous zone indices remain intact in the 25-zone contract: disabled detail zones have
+  no written timestamps or validity bits, so raw perf statistics report zero
+  samples with null median/p95 (EMA fields report 0). Use matching restarted
+  captures to measure the incremental cost of these timestamp barriers. From
+  WSL, include this variable in `WSLENV` when launching the native editor.
+- `MATTER_PRIMARY_LIGHT_CULLING=0|1` — default 0, restart required. Builds
+  conservative 16×16 primary receiver masks and compact light lists from
+  current jittered G-buffer depth, rejecting finite-range and spotlight-cone
+  misses before raster/RT direct BRDF evaluation. Primary shading chooses the
+  shorter tile/world list. Secondary/reflection/transmission hits keep the
+  world-space lists and original GI shader. Candidate order and shadow sample
+  counts are preserved. Masks plus list capacity are capped at 64 MiB and device limits; over-budget or
+  invalid metadata selects the exact world-list path without truncating lights.
+- `MATTER_RT_PRIMARY_ONLY=0|1` — default 0, restart required. Selects a smaller
+  fixed primary-only RT shader independently of culling. Culling and adaptive
+  shadows already use a separate primary stage. This comparison control adds
+  no adaptive history resources and preserves the chosen fixed sample count.
+- `MATTER_PRIMARY_LIGHT_CULL_AUDIT=0|1` — default 0, restart required. Checks
+  every original world candidate against actual chosen-list membership and
+  evaluates the BRDF of omissions, then logs
+  retired-frame `primary-light-cull` candidate/rejected/positive_rejected/kept
+  counts (first three, then every 120 frames; any positive rejection is always
+  logged). Every retired audit frame is checked. Positive rejections indicate a
+  correctness failure. Counts accumulate per invocation with at most four
+  global atomics per receiver. Disable audit for performance runs.
+- `MATTER_RT_ADAPTIVE_DIAGNOSTICS=0|1` — default 0. With primary samples 0,
+  opt in to GPU first-rejection classification counters and a retired-frame
+  `rt-adaptive` log (first three frames, then every 120). `one`/`four` count
+  primary receivers, including receivers without contributing local lights;
+  rejection fields separate CPU gate, motion, reactivity, bounds, history age,
+  identity, depth, normal, ORM, invalid moments and variance. `cpu_gate` bits
+  are 1 temporal reset, 2 direct reset, 4 no presented token, 8 scene mismatch.
+  Diagnostics add atomics; disable them for performance comparisons. Fixed
+  1..4 stages compile adaptive policy out entirely. Adaptive primary has its
+  own raygen and optional history descriptor set 3; the original scene,
+  environment and local-light sets retain their layout. GI retains the fixed
+  lighting stage and its normal sample policy.
+- `MATTER_RT_VISIBILITY_COUNTERS=0|1` — any-hit diagnostic atomics; default 0
+  in normal builds, 1 in fault-injection tests. Disabling counters does not
+  disable transparent visibility or the per-ray layer limit.
+- `MATTER_RT_SURFACE_DETAIL_MODE=0..2` — secondary closest-hit POM: 0 reference
+  (default), 1 footprint-adaptive relief and march budget, 2 normal/material
+  maps without height marching. Primary raster POM is unchanged.
+- `MATTER_RT_KEEP_LOCAL_SELECTION=0|1` — default 0 specializes out the legacy
+  top-K selection branch when both light budgets are unlimited. Setting 1
+  retains it for equivalent-output performance comparisons. Requested nonzero
+  budgets always retain their selection code.
+- `MATTER_RT_SECONDARY_LIGHT_SAMPLING=0|1` — 1 evaluates all
+  candidate BRDFs and samples one shadow light with probability weighting;
+  unshadowed lights remain exact. Default 1 when the secondary light budget
+  is unlimited; an explicitly configured nonzero budget retains mode 0.
+  Explicitly setting 1 overrides secondary top-K budgets. Mode 0 restores
+  exact or explicitly budgeted secondary lighting for comparison.
+  Primary and transmission remain unchanged. The estimator preserves expected
+  RGB before the existing firefly clamp and denoiser, which can introduce bias
+  with high variance. Keep reference mode for acceptance comparisons.
+
+`tools/castle_rt_perf.py` runs the CastleUpgraded hall, gold or exterior camera
+with a verified visible Windows editor window and captures settings, binary
+hash, screenshot, logs and perf JSON in a fresh output directory. Invoke it
+using native Windows Python (`py -3`); see `--help` for comparison controls.
 
 `MATTER_VSYNC`, `MATTER_VK_ROBUSTNESS`, `MATTER_VK_SMOKE_MODE` (§ QA cookbook
 recipe 6), `MATTER_VK_STATIC_RESERVE_CLUSTER_MB` / `_VERTEX_MB` / `_INDEX_MB`
@@ -684,3 +857,23 @@ hard-to-diagnose failures:
    all cwd-relative to `MatterEditor/`.
 3. **Never build while `editor.exe` is running** — it holds a file lock on its
    own binary; a build started while it's up fails or silently no-ops.
+
+- `MATTER_VT_PROP_TEXELS_PER_METER` — explicit chart-density override for prop
+  rendering proofs (finite1–2048; default16). Used when preparing runtime
+  chart pages; terrain staging retains its existing policy. `512` is useful
+  for the high-to-low wall proof. Requested density can be reduced by atlas
+  packing limits; it is not a promise that every chart fits at that density.
+
+### Finished surface detail materials
+
+`defineMaterial('Brick', {detail:'BrickDetail', detailMode:'surface'})` opts a
+finished baked surface into part-local height parallax and excludes legacy
+ground POM and the ground near overlay. `detailMode` must be `'surface'` or
+`'ground'`; omission preserves ground behavior, and surface mode requires a
+`detail` module. This changes shading only, not geometry or silhouettes.
+
+The mode travels as `MATERIAL_SURFACE_DETAIL` (bit 5) in existing
+`MaterialDef.surfaceFlags` / GPU `flags_misc.x`. Material schema 6 rejects
+older serialized material contracts; repeated declarations compare this bit.
+Authored world-source identity changes with the property. The unchanged atlas
+pixels retain their source/projection recipe cache key.

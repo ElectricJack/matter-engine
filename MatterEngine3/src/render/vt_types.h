@@ -205,7 +205,7 @@ struct VtPartContext {
 //
 // v2: GPU tape interpreter (weight-seam mode 3) — bumped so any cache keyed
 // on the old implicit v1 identity invalidates once.
-constexpr uint32_t kVtBakeVersion = 2u;
+constexpr uint32_t kVtBakeVersion = 3u; // robust object-local normal frame
 
 // Process-wide gate for the GPU tape interpreter. MATTER_VT_TAPE_GPU=0 forces
 // weight-seam mode 2 everywhere (the escape hatch); anything else (including

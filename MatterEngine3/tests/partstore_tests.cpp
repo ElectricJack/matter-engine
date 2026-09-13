@@ -18,6 +18,7 @@
 #include "render/raster_cull.h"
 #include "part_asset_v2.h"
 #include "lod_select.h"
+#include "lod_bake.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "animation/anim_asset.h"
@@ -1004,7 +1005,205 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
           "sector bounds: all-corners-outside contract keeps the intersecting sector");
 }
 
+// A singleton with several source ranges (including reordered/repeated ranges)
+// must reuse the exact legacy rung, while a shorter rung preserves its subset.
+// Release/reload checks registrations rather than merely view-array equality.
+static void test_singleton_flat_reuses_exact_rungs() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "me3_singleton_flat_reuse";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); }
+    } cleanup{root};
+    constexpr uint64_t hash = 0x5136f1a700001ull;
+    CHECK(publish_static_part(root, hash), "singleton canonical Part saved");
+    BLASManager source;
+    TLASManager tlas(4);
+    for (int i = 0; i < 2; ++i) {
+        const float x = 4.0f * i;
+        Tri triangle{};
+        triangle.vertex0 = make_float3(x, 0, 0);
+        triangle.vertex1 = make_float3(x + 1, 0, 0);
+        triangle.vertex2 = make_float3(x, 1, 0);
+        triangle.centroid = make_float3(x + 1.0f / 3, 1.0f / 3, 0);
+        TriEx extra{};
+        source.register_triangles(&triangle, 1, &extra);
+    }
+    part_asset::FlatCluster cluster{};
+    cluster.aabb_max[0] = 5;
+    cluster.aabb_max[1] = 1;
+    cluster.lods = {{0.75f, {1, 0, 1}}, {0.25f, {0}}};
+    CHECK(part_asset::save_flat_v3(
+              (root / part_asset::cache_path_flat(hash)).string(), source,
+              tlas, {cluster}, hash), "singleton ordered two-rung FLAT saved");
+    viewer::PartStore store(root.string());
+    for (int pass = 0; pass < 2; ++pass) {
+        const auto* loaded = store.get_or_load(hash);
+        CHECK(loaded && loaded->clusters.size() == 1,
+              "singleton flat loads before and after release");
+        if (!loaded || loaded->clusters.size() != 1) break;
+        const auto& view = loaded->clusters.front();
+        CHECK(loaded->lod_mesh_data.size() == 2 && loaded->lod_charts.size() == 2 &&
+                  loaded->owned_blas.size() == 2,
+              "singleton prepares charts/meshes/registrations once per rung");
+        CHECK(view.lod_mesh == std::vector<int>({0, 1}) &&
+                  view.lod_blas == loaded->lod_blas &&
+                  view.thresholds == std::vector<float>({0.75f, 0.25f}),
+              "singleton cluster aliases exact legacy charts and retains thresholds");
+        if (loaded->lod_blas.size() == 2) {
+            const auto* full = store.blas().get_entry(loaded->lod_blas[0]);
+            const auto* subset = store.blas().get_entry(loaded->lod_blas[1]);
+            CHECK(full && full->triangles.size() == 3 &&
+                      full->triangles[0].vertex0.x == 4 &&
+                      full->triangles[1].vertex0.x == 0 &&
+                      full->triangles[2].vertex0.x == 4,
+                  "singleton full rung retains exact repeated source order");
+            CHECK(subset && subset->triangles.size() == 1 &&
+                      subset->triangles[0].vertex0.x == 0,
+                  "singleton subset rung never aliases full geometry");
+        }
+        store.release(hash);
+        CHECK(store.blas().live_count() == 0,
+              "singleton release drops each owned registration exactly once");
+    }
+}
+
+// Disk BVH topology and triangle indices are already valid for a one-source
+// rung. Charting must retain all authored shading attributes while changing UVs;
+// adoption must preserve content dedup and own exactly one reference per Part.
+static void test_singleton_flat_adopts_persisted_bvh() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "me3_singleton_prebuilt_bvh";
+    std::error_code ec; fs::remove_all(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code e; fs::remove_all(root, e); } } cleanup{root};
+    constexpr uint64_t hash = 0x5136f1a700021ull, twin = hash + 1;
+    CHECK(publish_static_part(root, hash) && publish_static_part(root, twin), "singleton canonical twins saved");
+    std::vector<Tri> tris;
+    std::vector<TriEx> extras;
+    for (int i = 0; i != 16; ++i) {
+        const float x = static_cast<float>(i) * 0.15f;
+        Tri t{}; t.vertex0=make_float3(x,0,0); t.vertex1=make_float3(x+1,0,0);
+        t.vertex2=make_float3(x,1,0); t.centroid=make_float3(x+1.f/3,1.f/3,0);
+        tris.push_back(t);
+        TriEx e{}; e.N0=make_float3(0,0,1); e.N1=make_float3(0,.6f,.8f); e.N2=make_float3(.6f,0,.8f);
+        e.materialId=i%3; e.tint=make_float4(.3f,.4f,.5f,.25f);
+        e.uv0=make_float2(11,12); e.uv1=make_float2(13,14); e.uv2=make_float2(15,16);
+        e.ao0=.2f; e.ao1=.5f; e.ao2=.8f; extras.push_back(e);
+    }
+    BLASManager source; TLASManager tlas(4);
+    const auto source_handle=source.register_triangles(tris,extras,true);
+    source.register_triangles(tris,extras,true); // Writer owns two references; each reader owns one.
+    const auto* saved=source.get_entry(source_handle);
+    part_asset::FlatCluster cluster{}; cluster.aabb_max[0]=4; cluster.aabb_max[1]=1;
+    cluster.lods={{.75f,{0}}};
+    for(const auto h:{hash,twin}) CHECK(part_asset::save_flat_v3(
+        (root/part_asset::cache_path_flat(h)).string(),source,tlas,{cluster},h), "singleton persisted BVH saved");
+    auto expected=extras;
+    chart_atlas::ChartAtlasRung expected_charts;
+    CHECK(lod_bake::build_chart_rung(tris,expected,16.f,chart_atlas::kChartNormalConeDeg,expected_charts), "expected singleton chart prepared");
+    viewer::PartStore store(root.string());
+    // Offset the destination handle space: adoption must use its remap rather
+    // than accidentally succeeding because source/destination handles match.
+    Tri decoy=tris.front();
+    decoy.vertex0.z=decoy.vertex1.z=decoy.vertex2.z=decoy.centroid.z=5.f;
+    const auto decoy_handle=store.blas().register_triangles(&decoy,1,&extras.front());
+    const auto* loaded=store.get_or_load(hash);
+    CHECK(loaded && loaded->owned_blas.size()==1, "singleton reader owns one registration");
+    if(!loaded || loaded->owned_blas.size()!=1) return;
+    const auto handle=loaded->owned_blas[0];
+    CHECK(handle!=source_handle && handle!=decoy_handle, "source handle is remapped into occupied destination manager");
+    const auto* entry=store.blas().get_entry(handle);
+    CHECK(entry && entry->ref_count==1, "disk writer reference count is not adopted as reader ownership");
+    if(!entry) return;
+    CHECK(entry->triangles.size()==tris.size() &&
+        std::memcmp(entry->triangles.data(),tris.data(),tris.size()*sizeof(Tri))==0,
+        "persisted primitive order and positions retained exactly");
+    CHECK(entry->bvh->nodesUsed==saved->bvh->nodesUsed &&
+        std::memcmp(entry->bvh->bvhNode,saved->bvh->bvhNode,saved->bvh->nodesUsed*sizeof(BVHNode))==0 &&
+        std::memcmp(entry->bvh->triIdx,saved->bvh->triIdx,tris.size()*sizeof(uint))==0,
+        "persisted BVH arrays reused exactly without rebuilding");
+    CHECK(entry->tri_extra.size()==expected.size(), "all corner attributes retained");
+    if(entry->tri_extra.size()==expected.size()) for(size_t i=0;i<expected.size();++i){
+        const auto& got=entry->tri_extra[i];const auto& want=expected[i];
+        CHECK(std::memcmp(&got.N0,&want.N0,sizeof(float3))==0 &&
+            std::memcmp(&got.N1,&want.N1,sizeof(float3))==0 &&
+            std::memcmp(&got.N2,&want.N2,sizeof(float3))==0 && got.materialId==want.materialId &&
+            std::memcmp(&got.tint,&want.tint,sizeof(float4))==0 && got.ao0==want.ao0 && got.ao1==want.ao1 && got.ao2==want.ao2,
+            "adoption preserves authored normals, material, tint and AO");
+        CHECK(std::memcmp(&got.uv0,&want.uv0,sizeof(float2))==0 &&
+            std::memcmp(&got.uv1,&want.uv1,sizeof(float2))==0 &&
+            std::memcmp(&got.uv2,&want.uv2,sizeof(float2))==0,
+            "adoption carries freshly generated chart UVs");
+    }
+    const auto* shared=store.get_or_load(twin);
+    CHECK(shared && shared->owned_blas.size()==1 && shared->owned_blas[0]==handle && store.blas().live_count()==2,
+        "adoption retains cross-Part content dedup");
+    CHECK(store.blas().get_entry(handle)->ref_count==2, "two resident Parts own two references");
+    store.release(hash);
+    CHECK(store.blas().get_entry(handle) && store.blas().get_entry(handle)->ref_count==1,
+        "releasing first Part preserves second owner");
+    store.release(twin);
+    CHECK(store.blas().live_count()==1 && store.blas().get_entry(decoy_handle), "final owner releases adopted BVH without disturbing another entry");
+    store.blas().release_blas(decoy_handle);
+    CHECK(store.blas().live_count()==0, "all registrations released");
+}
+
+// A bounded bundle snapshot must verify every payload before serving cheap
+// section reads, then disappear before the store's final live-file check.
+static void test_scoped_verified_bundle_reads() {
+    namespace fs = std::filesystem;
+    const fs::path root=fs::temp_directory_path()/"me3_scoped_bundle_reads";
+    std::error_code ec; fs::remove_all(root,ec);
+    struct Cleanup { fs::path root; ~Cleanup(){std::error_code e;fs::remove_all(root,e);} } cleanup{root};
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "verified-read fixture directory created");
+    if (ec) return;
+    constexpr uint64_t hash=0x5136f1a700041ull;
+    const std::string path=(root/part_bundle::cache_path_bundle(hash)).string();
+    const std::vector<uint8_t> old_policy={1,2,3},new_policy={4,5,6,7},geometry={8,9,10,11};
+    const part_bundle::SectionUpdate updates[]={{part_bundle::kSectionRenderPolicy,old_policy.data(),old_policy.size()},
+        {part_bundle::kSectionFlat,geometry.data(),geometry.size()}};
+    CHECK(part_bundle::write_sections(path,hash,updates,2), "verified-read fixture saved");
+    std::vector<uint8_t> bytes;uint64_t full_length=0;
+    part_bundle::ScopedReadSnapshot snapshot(path,hash);
+    CHECK(part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes)&&bytes==old_policy,
+        "verified snapshot serves complete policy bytes");
+    CHECK(part_bundle::read_section_prefix(path,hash,part_bundle::kSectionFlat,2,bytes,full_length)&&
+        bytes==std::vector<uint8_t>({8,9})&&full_length==geometry.size(), "verified prefix keeps exact full length");
+    CHECK(part_bundle::has_section(path,hash,part_bundle::kSectionFlat)&&part_bundle::section_tags(path).size()==2,
+        "verified tags and presence reuse the same bundle");
+    CHECK(!part_bundle::read_section(path,hash+1,part_bundle::kSectionRenderPolicy,bytes),
+        "verified snapshot does not bypass resolved hash validation");
+    CHECK(part_bundle::write_section(path,hash,part_bundle::kSectionRenderPolicy,new_policy.data(),new_policy.size()),
+        "writer can atomically replace bundle while snapshot is active");
+    CHECK(part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes)&&bytes==old_policy,
+        "one scoped read transaction cannot mix writer generations");
+    CHECK(snapshot.file_bytes>0&&snapshot.reused_reads>=6, "verified snapshot exposes bounded reuse census");
+    snapshot.close();
+    CHECK(part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes)&&bytes==new_policy,
+        "closed snapshot forces the live-file read used by final revalidation");
+    {
+        std::fstream file(path,std::ios::binary|std::ios::in|std::ios::out);
+        file.seekg(-1,std::ios::end);char byte=0;file.read(&byte,1);byte^=0x40;
+        file.seekp(-1,std::ios::end);file.write(&byte,1);
+    }
+    {
+        part_bundle::ScopedReadSnapshot corrupt(path,hash);
+        CHECK(!part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes)&&
+            !part_bundle::read_section_prefix(path,hash,part_bundle::kSectionRenderPolicy,1,bytes,full_length)&&
+            part_bundle::section_tags(path).empty(),
+            "corruption in another payload rejects the entire verified snapshot");
+    }
+    CHECK(!part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes),
+        "corrupt snapshot never weakens ordinary full checksum validation");
+}
+
 int main() {
+    test_scoped_verified_bundle_reads();
+    test_singleton_flat_adopts_persisted_bvh();
+    test_singleton_flat_reuses_exact_rungs();
     test_render_policy_legacy_malformed_and_expansion_resolution();
     test_compositional_sector_bounds_survive_to_frustum_culling();
     test_partstore_segmented_loading();

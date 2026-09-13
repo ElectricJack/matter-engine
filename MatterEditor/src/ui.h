@@ -250,6 +250,7 @@ struct ViewerStats {
     ViewerAtmosphereStatus atmosphere_status{};
     float    fps = 0.0f;
     float    frame_ms = 0.0f;
+    float    loop_pacing_ms = 0.0f;
     float    cam_pos[3] = {0,0,0};
     int      instances_total = 0;
     int      instances_active = 0;
@@ -322,8 +323,8 @@ struct ViewerStats {
     float gpu_gbuffer_ms        = 0.0f;
     float gpu_blas_ms           = 0.0f;
     float gpu_tlas_ms           = 0.0f;
-    float gpu_rt_ms             = 0.0f;  // primary/shadow trace only
-    float gpu_rt_gi_ms          = 0.0f;  // GI/reflection trace (0 when GI off)
+    float gpu_rt_ms             = 0.0f;  // sun-shadow trace (legacy name)
+    float gpu_rt_gi_ms          = 0.0f;  // aggregate GI/reflection/transmission trace (0 when GI off)
     float gpu_denoise_ms        = 0.0f;
     float gpu_dlss_ms           = 0.0f;
     float gpu_composite_ms      = 0.0f;
@@ -455,6 +456,12 @@ struct ViewerStats {
     uint64_t gpu_allocation_count = 0;
     uint64_t process_working_set_bytes = 0;
     uint64_t process_peak_working_set_bytes = 0;
+    float gpu_rt_local_direct_ms = 0.0f;
+    uint32_t gpu_timing_valid_mask = 0; // latest raw timestamp availability
+    float gpu_hdr_lighting_ms = 0; // HDR reconstruction, before display transform
+    float gpu_primary_light_cull_ms = 0; // optional GPU tile-list construction
+    float gpu_rt_gi_diffuse_ms = 0; // split-resolution child of gpu_rt_gi_ms
+    float gpu_rt_gi_reflection_transmission_ms = 0; // inseparable dispatch child
 };
 
 // StreamingLodPrefs (the persisted, schema-described override) -> the engine

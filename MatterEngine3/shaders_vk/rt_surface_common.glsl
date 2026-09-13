@@ -14,6 +14,7 @@
 #define TILESET_TEX_BINDING 15
 #define TILESET_PARAMS_BINDING 16
 #include "tileset_common.glsl"
+#include "surface_detail.glsl"
 
 // WP-G (chart VT in the RT path): RT set 0 mirrors the raster set 1 VT
 // bindings 10/11/12 at 17/18/19 -- the same mirroring trick the tileset port
@@ -31,6 +32,7 @@
 #define VT_INDIRECTION_BINDING 18
 #define VT_VARIANTS_BINDING 19
 #include "vt_common.glsl"
+#include "vt_normal_frame.glsl"
 
 struct RtSurface {
     vec3 position;
@@ -55,7 +57,17 @@ struct RtSurface {
     float cone_width;
     uint water_binding_slot;
     uint water_generation;
+    // Nine additional payload scalars (36 bytes): transformed LOCAL frame.
+    // Raygen has no instance-transform descriptor. Do not normalize columns:
+    // inverse-transpose scale must survive until the final normal is formed.
+    // When RT_SURFACE_DETAIL_APPLIED is set, columns instead hold precomputed
+    // albedo, ORM and world shading normal. Closest-hit owns that tagged form.
+    mat3 vt_normal_basis;
+    vec3 visibility_position; // undisplaced proxy hit; ray origins stay outside it
 };
+
+const uint RT_SURFACE_DETAIL_APPLIED = 4u;
+const uint RT_SURFACE_DETAIL_MATERIAL_FLAG = 32u;
 
 // Ray cone (WP-G). `cone_width` is the footprint width at the RAY ORIGIN and
 // `cone_spread` the cone's spread angle in radians (small-angle: width grows
@@ -167,6 +179,7 @@ RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
     result.roughness = 0.0;
     result.metallic = 0.0;
     result.mean_occlusion = 0.0;
+    if ((material.flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) != 0u) return result;
     int slot = tileset_detail_slot(material.flags_misc);
     if (slot < 0) return result;
     float footprint = max(surface.cone_width, 1e-4);
@@ -245,6 +258,17 @@ RtVtSample rt_vt_sample(RtSurface surface) {
     result.occlusion = 1.0;
     result.desired_mip = 0.0;
     result.mapped_mip = 0.0;
+    if ((surface.flags & RT_SURFACE_DETAIL_APPLIED) != 0u) {
+        result.applied = true;
+        float tint_blend = clamp(surface.tint.a, 0.0, 1.0);
+        result.albedo = surface.vt_normal_basis[0] * mix(vec3(1), surface.tint.rgb, tint_blend);
+        vec3 orm = surface.vt_normal_basis[1];
+        result.normal = surface.vt_normal_basis[2];
+        result.occlusion = clamp(orm.r, 0.0, 1.0);
+        result.roughness = clamp(orm.g, 0.0, 1.0);
+        result.metallic = clamp(orm.b, 0.0, 1.0);
+        return result;
+    }
     if (surface.vt_slot == 0u) return result;
     // Cone footprint -> atlas-UV footprint. An isotropic square footprint is
     // the right model here: the cone has no anisotropy of its own, and
@@ -261,7 +285,7 @@ RtVtSample rt_vt_sample(RtSurface surface) {
     float tint_blend = clamp(surface.tint.a, 0.0, 1.0);
     result.applied = true;
     result.albedo = albedo * mix(vec3(1.0), surface.tint.rgb, tint_blend);
-    result.normal = tileset_rotate_normal(normal_ts, surface.normal);
+    result.normal = normalize(surface.vt_normal_basis * normal_ts);
     result.occlusion = clamp(orm.r, 0.0, 1.0);
     result.roughness = clamp(orm.g, 0.0, 1.0);
     result.metallic = clamp(orm.b, 0.0, 1.0);
@@ -302,6 +326,7 @@ RtRasterVertex rt_load_vertex(RtVertexBuffer geometry, uint vertex,
 RtSurface invalid_rt_surface() {
     RtSurface surface;
     surface.position = vec3(1.0, 0.0, 1.0);
+    surface.visibility_position = surface.position;
     surface.hit_t = -1.0;
     surface.normal = vec3(0.0, 1.0, 0.0);
     surface.material_index = 0xffffffffu;
@@ -314,10 +339,89 @@ RtSurface invalid_rt_surface() {
     surface.cone_width = 0.0;
     surface.water_binding_slot = 0xffffffffu;
     surface.water_generation = 0u;
+    surface.vt_normal_basis = mat3(1.0);
     return surface;
 }
 
 #ifdef RT_SURFACE_HIT_SHADER
+#ifdef RT_SURFACE_CLOSEST_HIT_SHADER
+// Controlled secondary-hit experiment. Only rt_surface.rchit declares id 5;
+// the shared any-hit includes retain their original interface and behavior.
+// 0 = reference (default), 1 = footprint-adaptive, 2 = material channels only.
+layout(constant_id = 5) const uint RT_SURFACE_DETAIL_MODE = 0u;
+
+float rt_surface_relief_weight(float relief_m, float inward,
+                              float local_ray_length, float max_ray_m,
+                              float footprint_m) {
+    if (inward <= 1e-5 || relief_m <= 1e-7 || max_ray_m <= 0.0) return 0.0;
+    // Bound the complete local displacement along the ray, including its
+    // tangential texture shift at grazing incidence. Keeping the depth
+    // component makes this conservative for near-normal sharp reflections.
+    // Both displacement and the incoming cone footprint are in local metres;
+    // the ray parameter / max_ray_m remain world metres, as in the marcher.
+    float displacement_m = min(relief_m / inward, max_ray_m) * local_ray_length;
+    float footprint_ratio = displacement_m / max(footprint_m, 1e-4);
+    // <= half a footprint: no relief; >= four footprints: exact reference
+    // budget and relief. Between them, continuously fade relief and reduce
+    // work. Distance alone never promotes a broad diffuse cone to full POM.
+    return smoothstep(0.5, 4.0, footprint_ratio);
+}
+#endif
+// Shading-only displacement: hardware intersection/any-hit remain the proxy.
+// Keep ray origins at that proxy, while BRDF/texture positions use the relief.
+void apply_rt_surface_detail(inout RtSurface surface) {
+    if (surface.vt_slot == 0u || surface.material_index >= rt_materials.length()) return;
+    RtMaterialGpu material = rt_materials[surface.material_index];
+    if ((material.flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) == 0u) return;
+    int slot = tileset_detail_slot(material.flags_misc);
+    if (slot < 0 || slot >= TILESET_MAX_SLOTS) return;
+    if (tileset.mean_albedo[slot].w <= 0.0 ||
+        TILESET_SLOT_SCALAR(tile_size_m,slot) <= 0.0) return;
+    mat3 world_to_local = mat3(gl_WorldToObjectEXT);
+    vec3 local_position = gl_ObjectRayOriginEXT + gl_HitTEXT * gl_ObjectRayDirectionEXT;
+    vec3 local_normal = normalize(transpose(mat3(gl_ObjectToWorldEXT)) * surface.normal);
+    vec3 world_ray = normalize(gl_WorldRayDirectionEXT);
+    vec3 local_ray = world_to_local * world_ray;
+    // Frobenius norm bounds the largest singular value, including legacy scale.
+    float cone_scale = sqrt(dot(world_to_local[0],world_to_local[0]) +
+                            dot(world_to_local[1],world_to_local[1]) +
+                            dot(world_to_local[2],world_to_local[2]));
+    float band = max(tileset.pom_a.w, 1e-4);
+    float fade = 1.0-clamp((surface.hit_t-(tileset.pom_a.z-band))/band,0.0,1.0);
+    float footprint_m = max(surface.cone_width*cone_scale,1e-4);
+    int detail_steps = int(tileset.pom_a.x);
+    int detail_refine = int(tileset.pom_a.y);
+    float max_ray_m = max(tileset.pom_b.w,0.0);
+    float relief_cap_m = max(tileset.pom_b.z,0.0)*fade;
+#ifdef RT_SURFACE_CLOSEST_HIT_SHADER
+    if (RT_SURFACE_DETAIL_MODE == 2u) {
+        // surface_detail_sample tests steps > 0 before its clamp(steps,1,128).
+        // Zero skips all height reads; the final material/normal reads remain.
+        detail_steps = 0;
+    } else if (RT_SURFACE_DETAIL_MODE == 1u && detail_steps > 0) {
+        float range_m = max(0.0, TILESET_SLOT_SCALAR(height_max,slot) -
+                                 TILESET_SLOT_SCALAR(height_min,slot));
+        float weight = rt_surface_relief_weight(min(range_m,relief_cap_m),
+            -dot(local_normal,local_ray), length(local_ray), max_ray_m, footprint_m);
+        if (weight < 1.0) {
+            int full_steps = clamp(detail_steps,1,128);
+            detail_steps = weight > 0.0
+                ? min(full_steps,max(4,int(ceil(float(full_steps)*weight)))) : 0;
+            detail_refine = int(ceil(float(clamp(detail_refine,0,12))*weight));
+            // Fade the effective range, not just an oversized author cap.
+            relief_cap_m = min(range_m,relief_cap_m)*weight;
+        }
+    }
+#endif
+    SurfaceDetailSample detail = surface_detail_sample(
+        slot, local_position, local_normal, local_ray,
+        footprint_m, detail_steps, detail_refine, max_ray_m, relief_cap_m);
+    surface.position = (gl_ObjectToWorldEXT * vec4(detail.position,1)).xyz;
+    surface.hit_t += detail.ray_t;
+    surface.vt_normal_basis = mat3(detail.albedo, detail.orm,
+                                  normalize(transpose(world_to_local)*detail.normal));
+    surface.flags |= RT_SURFACE_DETAIL_APPLIED;
+}
 RtSurface load_rt_surface(vec2 hit_barycentrics) {
     uint part_slot = gl_InstanceCustomIndexEXT;
     GpuRtPartRecord part = rt_parts[part_slot];
@@ -349,10 +453,14 @@ RtSurface load_rt_surface(vec2 hit_barycentrics) {
 
     RtSurface surface;
     surface.position = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
+    surface.visibility_position = surface.position;
     surface.hit_t = gl_HitTEXT;
     surface.normal = normalize(transpose(mat3(gl_WorldToObjectEXT)) *
                                object_normal);
     if (!front_face) surface.normal = -surface.normal;
+    surface.vt_normal_basis = transpose(mat3(gl_WorldToObjectEXT)) *
+                              vt_normal_frame(object_normal);
+    if (!front_face) surface.vt_normal_basis = -surface.vt_normal_basis;
     surface.material_index = v0.material_index;
     surface.tint = v0.tint * weights.x + v1.tint * weights.y +
                    v2.tint * weights.z;

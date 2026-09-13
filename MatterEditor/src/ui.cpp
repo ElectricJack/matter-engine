@@ -30,6 +30,7 @@
 // Everything in this file is main-thread, immediate-mode, and only valid
 // inside an ImGui frame.
 #include "ui.h"
+#include "matter/gpu_timing_sample.h"
 
 #include <array>
 #include <cmath>
@@ -1210,18 +1211,39 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
         if (s.gpu_timers_supported) {
+            // Resolve public sample names instead of duplicating renderer indices.
+            const auto measured = [&s](const char* name) {
+                for (size_t i = 0; i < matter::kGpuTimingNames.size(); ++i)
+                    if (std::strcmp(matter::kGpuTimingNames[i], name) == 0)
+                        return (s.gpu_timing_valid_mask & (1u << i)) != 0;
+                return false;
+            };
+            const auto detail_timing = [&measured](const char* name,
+                                                   const char* label, float ms) {
+                if (measured(name)) ImGui::Text("  %s %.1f", label, ms);
+                else ImGui::TextDisabled("  %s: not measured", label);
+            };
             const float gpu_sum = s.gpu_cull_ms + s.gpu_gbuffer_ms +
                                   s.gpu_blas_ms + s.gpu_tlas_ms + s.gpu_rt_ms +
-                                  s.gpu_rt_gi_ms + s.gpu_denoise_ms +
+                                  s.gpu_rt_local_direct_ms + s.gpu_rt_gi_ms + s.gpu_denoise_ms +
                                   s.gpu_dlss_ms + s.gpu_composite_ms +
-                                  s.gpu_vol_ms;
+                                  s.gpu_vol_ms + (measured("hdr_lighting")
+                                      ? s.gpu_hdr_lighting_ms : 0.0f) +
+                                  (measured("primary_light_cull")
+                                      ? s.gpu_primary_light_cull_ms : 0.0f);
             ImGui::Text("GPU %.1f ms total", s.gpu_total_ms);
             ImGui::Text("  Cull %.1f  GBuf %.1f  BLAS %.1f  TLAS %.1f",
                         s.gpu_cull_ms, s.gpu_gbuffer_ms, s.gpu_blas_ms,
                         s.gpu_tlas_ms);
-            ImGui::Text("  RT-prim %.1f  RT-GI %.1f  Den %.1f",
-                        s.gpu_rt_ms, s.gpu_rt_gi_ms, s.gpu_denoise_ms);
-            ImGui::Text("  DLSS %.1f  Comp %.1f  Vol %.1f  (other %.1f)",
+            ImGui::Text("  RT-sun %.1f  RT-local %.1f  RT-GI %.1f  Den %.1f",
+                        s.gpu_rt_ms, s.gpu_rt_local_direct_ms,
+                        s.gpu_rt_gi_ms, s.gpu_denoise_ms);
+            detail_timing("rt_gi_diffuse", "GI diffuse dispatch", s.gpu_rt_gi_diffuse_ms);
+            detail_timing("rt_gi_reflection_transmission", "GI reflection/transmission dispatch",
+                          s.gpu_rt_gi_reflection_transmission_ms);
+            detail_timing("hdr_lighting", "HDR lighting", s.gpu_hdr_lighting_ms);
+            detail_timing("primary_light_cull", "Primary light culling", s.gpu_primary_light_cull_ms);
+            ImGui::Text("  DLSS %.1f  Display %.1f  Vol %.1f  (other %.1f)",
                         s.gpu_dlss_ms, s.gpu_composite_ms,
                         s.gpu_vol_ms, s.gpu_total_ms - gpu_sum);
             ImGui::Text("  Atmos %.1f  Cloud shadows %.1f", s.gpu_atmosphere_ms,
@@ -1237,13 +1259,14 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         // Main-loop attribution: partitions the same window frame_ms covers, so
         // `other` is genuinely unmeasured code, not clock skew. `render` already
         // contains the resolve/build/draw line -- don't double-count.
-        const float loop_sum = s.loop_poll_ms + s.loop_acquire_ms +
+        const float loop_sum = s.loop_pacing_ms + s.loop_poll_ms + s.loop_acquire_ms +
                                s.loop_ui_ms + s.loop_tick_ms + s.loop_pump_ms +
                                s.loop_lab_ms + s.loop_render_ms +
                                s.loop_present_ms;
         ImGui::Text("Loop: poll %.2f  acq %.2f  ui %.2f  tick %.2f",
                     s.loop_poll_ms, s.loop_acquire_ms, s.loop_ui_ms,
                     s.loop_tick_ms);
+        ImGui::Text("      frame pacing %.2f ms", s.loop_pacing_ms);
         ImGui::Text("      pump %.2f  lab %.2f  render %.2f  present %.2f",
                     s.loop_pump_ms, s.loop_lab_ms, s.loop_render_ms,
                     s.loop_present_ms);

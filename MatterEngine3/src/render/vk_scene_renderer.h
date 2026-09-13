@@ -95,6 +95,8 @@
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
 #include "matter/gpu_visual_meshing.h"
+#include "matter/solid_sdf_meshing.h"
+#include "matter/solid_face_projection.h"
 #include "matter/math_types.h"
 #include "matter/world_definition.h"
 #include "material_registry.h"
@@ -129,6 +131,8 @@ struct TilesetPomSettings;
 
 namespace gpu_meshing {
 class GpuVisualMesher;
+class GpuSolidMesher;
+class GpuSolidFaceProjector;
 }
 
 namespace tileset {
@@ -916,10 +920,23 @@ struct RtSurfaceHit {
     uint32_t vt_slot = 0;            // 0 = the hit rung carries no chart table
     bool vt_applied = false;         // a VT page actually resolved and sampled
     matter::Float3 vt_albedo{};      // tinted VT albedo at the hit
+    matter::Float3 vt_normal{};      // decoded world normal (test words 29..31)
     float vt_desired_mip = 0.0f;     // virtual mip the ray cone asked for
     float vt_mapped_mip = 0.0f;      // mip that was actually resident
     float cone_width = 0.0f;         // world-space cone footprint at the hit
     float uv_density = 0.0f;         // atlas UV per metre across the hit triangle
+};
+
+// A raw signal texel, optionally with the primary receiver sampled by that
+// texel. Coordinates are in signal space, including reduced diffuse targets.
+struct GiTemporalGpuTexelPatch {
+    GiPixelCoord pixel{3, 3};
+    matter::Float4 raw{200.0f, 200.0f, 200.0f, 1.0f};
+    bool patch_geometry = false;
+    float depth = 0.5f;
+    matter::Float4 normal{0.0f, 0.0f, 1.0f, 0.0f};
+    uint32_t material_index = 7;
+    uint32_t instance_token = 41;
 };
 
 struct GiTemporalGpuFixture {
@@ -933,8 +950,11 @@ struct GiTemporalGpuFixture {
     uint32_t instance_token = 41;
     float reactivity = 0.0f;
     matter::Float4 previous_radiance{0.25f, 0.5f, 0.75f, 1.0f};
+    bool patch_previous_radiance = false;
+    matter::Float4 previous_radiance_patch{200.0f, 200.0f, 200.0f, 1.0f};
     matter::Float3 previous_moments{};
     uint32_t previous_history_length = 3;
+    uint32_t previous_history_background_length = 0;
     float previous_depth = 0.5f;
     matter::Float4 previous_normal{0.0f, 0.0f, 1.0f, 0.0f};
     uint32_t previous_material_index = 7;
@@ -943,6 +963,9 @@ struct GiTemporalGpuFixture {
     GiPixelCoord output_pixel{3, 3};
     GiPixelCoord history_patch_pixel{3, 3};
     bool reset = false;
+    std::vector<GiTemporalGpuTexelPatch> current_patches;
+    // Diffuse-only sequences read the preceding fixture's complete GPU output.
+    bool reuse_previous_output = false;
 };
 
 struct GiTemporalGpuResult {
@@ -1067,10 +1090,13 @@ struct alignas(16) LocalLightGpuMeta {
     float cell_size = 8.0f;
     float inverse_cell_size = 0.125f;
     uint32_t max_candidates_per_cell = 0;
-    uint32_t reserved = 0;
+    uint32_t selection_budgets = 0; // primary/secondary bytes; 0=unlimited
+    uint32_t primary_tiles_x = 0, primary_tiles_y = 0;
+    uint32_t primary_words_per_tile = 0, primary_culling_enabled = 0;
 };
-static_assert(sizeof(LocalLightGpuMeta) == 32,
-              "local-light metadata must remain two aligned vec4 lanes");
+static_assert(offsetof(LocalLightGpuMeta, primary_tiles_x) == 32);
+static_assert(sizeof(LocalLightGpuMeta) == 48,
+              "local-light metadata is three aligned vec4 lanes");
 
 // Exactly one stage owns primary local-direct radiance. This task publishes
 // Raster; the RT lighting task may publish RayTraced only after its separate
@@ -1238,6 +1264,19 @@ public:
         gpu_meshing::MeshResult& result,
         gpu_meshing::Stats& stats,
         gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control = {});
+    // Source geometry bake on the app/Vulkan thread, outside an active frame.
+    // The service retains pipelines and scratch across distinct part recipes.
+    bool build_solid_source(
+        const gpu_meshing::SolidJob& job,
+        gpu_meshing::MeshResult& result,
+        gpu_meshing::SolidStats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control = {});
+    // Projects a transient source field directly into finite surface texels.
+    bool project_solid_face(
+        const gpu_meshing::FaceJob& job, gpu_meshing::FacePatch& result,
+        gpu_meshing::FaceStats& stats, gpu_meshing::Error& error,
         const gpu_meshing::BuildControl& control = {});
     // Registers `part` (or returns the slot it already has) and hands back the
     // dense part_slot every GPU table is indexed by, or -1 on failure. Stages
@@ -1519,6 +1558,12 @@ public:
         const world_lights::LocalLightPublication& publication,
         std::string& error);
     LocalLightRenderStats local_light_stats() const noexcept;
+    // Caller must have retired this slot's submission and call before reusing it.
+    bool readback_primary_light_list(uint32_t frame_slot, uint32_t tile_x,
+        uint32_t tile_y, std::vector<uint32_t>& ids, std::string& error);
+    bool readback_primary_light_mask(uint32_t frame_slot, uint32_t tile_x,
+        uint32_t tile_y, LocalLightGpuMeta& header,
+        std::vector<uint32_t>& words, std::string& error);
     LocalDirectLightingContract local_direct_contract() const noexcept {
         return {local_direct_owner_, local_light_revision_,
                 local_direct_lane_revision_};
@@ -1840,6 +1885,10 @@ public:
         std::string&);
     VkSampler test_sky_view_sampler() const;
     VkSampler test_composite_sampler() const;
+    void test_force_primary_light_fallback(bool fallback) {
+        test_force_primary_light_fallback_ = fallback;
+        for (auto& slot : frames_) slot.primary_light_extent = {};
+    }
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
     }
@@ -1949,6 +1998,7 @@ public:
     VkFormat test_visibility_format() const { return visibility_.format; }
     VkFormat test_raw_diffuse_format() const { return raw_diffuse_.format; }
     VkExtent2D test_raw_diffuse_extent() const { return raw_diffuse_extent_; }
+    VkExtent2D test_raw_reflection_extent() const { return raw_reflection_extent_; }
     uint32_t test_gi_presented_history_index() const {
         return gi_presented_history_index_;
     }
@@ -2016,11 +2066,9 @@ public:
     // WP-E: the VT page-fill pass (residency uploads + the tier-1 compositor's
     // dispatches and pool copies), recorded just before the G-buffer zone.
     static constexpr uint32_t kGpuZoneVt           = 10;
-    // The RT pass is two dispatches: kGpuZoneRt now brackets ONLY the primary/
-    // shadow trace (full-res cmd_trace), and this zone brackets the separate GI/
-    // reflection trace (rt_lighting raygen at raw_diffuse_extent), which only
-    // runs when GI is enabled. Splitting them tells primary-ray BLAS traversal
-    // cost (dense foliage) apart from the GI bounce cost.
+    // kGpuZoneRt brackets only sun-shadow tracing. This zone brackets the
+    // aggregate GI dispatch interval (combined or split-resolution) when enabled.
+    // Primary local-light tracing has its own append-only zone below.
     static constexpr uint32_t kGpuZoneRtGi         = 11;
     // Append-only: external captures consume the established zones by index.
     static constexpr uint32_t kGpuZoneAtmosphere    = 12;
@@ -2031,7 +2079,14 @@ public:
     static constexpr uint32_t kGpuZoneWaterDecode   = 17;
     static constexpr uint32_t kGpuZoneWaterDraw     = 18;
     static constexpr uint32_t kGpuZoneWaterDirectDraw = 19;
-    static constexpr uint32_t kGpuZoneCount         = 20;
+    static constexpr uint32_t kGpuZoneRtLocalDirect = 20;
+    // HDR composite.frag lighting reconstruction, before the display transform.
+    static constexpr uint32_t kGpuZoneHdrLighting = 21;
+    // Children of RtGi, available only for the split-resolution dispatch path.
+    static constexpr uint32_t kGpuZoneRtGiDiffuse = 22;
+    static constexpr uint32_t kGpuZoneRtGiReflectionTransmission = 23;
+    static constexpr uint32_t kGpuZonePrimaryLightCull = 24;
+    static constexpr uint32_t kGpuZoneCount         = 25;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
@@ -2039,6 +2094,8 @@ public:
     float gpu_zone_last_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_last_ms_[zone] : 0.0f;
     }
+    uint64_t gpu_sample_sequence() const { return gpu_sample_sequence_; }
+    uint32_t gpu_sample_valid_mask() const { return gpu_sample_valid_mask_; }
     std::uint64_t water_animation_upload_count() const noexcept {
         return water_animation_upload_count_;
     }
@@ -2545,6 +2602,11 @@ private:
         matter::VkBufferResource local_light_indices;
         matter::VkBufferResource local_light_oversized_indices;
         matter::VkBufferResource local_light_meta;
+        LocalLightGpuMeta local_light_header{};
+        VkExtent2D primary_light_extent{};
+        VkDescriptorSet primary_light_cull_set = VK_NULL_HANDLE;
+        std::shared_ptr<void> primary_light_cull_pool;
+        bool primary_light_audit_pending = false;
         matter::VkBufferResource instances;
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
@@ -2577,6 +2639,7 @@ private:
         matter::VkBufferResource rt_parts;
         matter::VkBufferResource rt_error_counter;
         matter::VkBufferResource rt_test_output;
+        bool rt_adaptive_diagnostics_pending = false;
         matter::VkBufferResource gi_atrous_markers;
         // C2 compute deformation resources.  Sources alias the immutable
         // raster vertex arena; all other streams are per-frame so C1 fences
@@ -2796,6 +2859,8 @@ private:
     void update_composite_descriptor(FrameResources& frame);
     void update_local_light_descriptor(FrameResources& frame);
     bool upload_local_lights(FrameResources& frame, std::string& error);
+    bool record_primary_light_cull(const matter::VulkanFrame& frame,
+        const FrameMatrices& matrices, std::string& error);
     bool publish_local_direct_owner(FrameResources& frame,
                                     LocalDirectOwner owner,
                                     uint64_t lane_revision,
@@ -2990,6 +3055,8 @@ private:
     WaterFieldVk water_fields_;
     WaterFieldVkResources water_field_resources_;
     std::unique_ptr<gpu_meshing::GpuVisualMesher> gpu_visual_mesher_;
+    std::unique_ptr<gpu_meshing::GpuSolidMesher> gpu_solid_mesher_;
+    std::unique_ptr<gpu_meshing::GpuSolidFaceProjector> gpu_solid_face_projector_;
     VkAnimationSkinning animation_skinning_;
     std::vector<VkSkinFallback> consumed_animation_skin_fallbacks_;
     VkAnimationBounds animation_bounds_;
@@ -3000,6 +3067,7 @@ private:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
     bool test_force_rt_unavailable_ = false;
+    bool test_force_primary_light_fallback_ = false;
     bool test_skip_volumetrics_ = false;
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
     uint32_t test_last_rt_blas_build_count_ = 0;
@@ -3044,6 +3112,12 @@ private:
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    bool primary_light_culling_ = false;
+    bool primary_light_audit_ = false;
+    uint64_t primary_light_audit_frames_ = 0;
+    VkDescriptorSetLayout primary_light_cull_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout primary_light_cull_layout_ = VK_NULL_HANDLE;
+    VkPipeline primary_light_cull_pipeline_ = VK_NULL_HANDLE;
     VkSampler sky_view_linear_sampler_ = VK_NULL_HANDLE;
     VkSampler vol_linear_sampler_ = VK_NULL_HANDLE;  // trilinear for froxel volume
     VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
@@ -3060,10 +3134,12 @@ private:
     VkPipelineLayout gi_atrous_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline gi_atrous_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout rt_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline rt_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool rt_descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> rt_descriptor_sets_;
+    std::vector<VkDescriptorSet> rt_adaptive_descriptor_sets_;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkDescriptorPool water_forward_descriptor_pool_ = VK_NULL_HANDLE;
     bool initialized_ = false;
@@ -3124,6 +3200,12 @@ private:
     matter::VkImageResource raw_local_direct_;
     matter::VkImageResource vol_dummy_3d_;
     VkExtent2D raw_diffuse_extent_{};
+    VkExtent2D raw_reflection_extent_{};
+    // Denoiser modes: diffuse0, reflection1, transmission2, primary direct3.
+    VkExtent2D gi_signal_extent(uint32_t mode) const {
+        return mode == 3u ? raster_extent_
+             : mode == 0u ? raw_diffuse_extent_ : raw_reflection_extent_;
+    }
 
     // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
     TilesetSlotGpu tileset_slots_[tileset::kMaxTilesetSlots]{};
@@ -3365,6 +3447,11 @@ private:
     VkDeviceAddress rt_sbt_address_ = 0;
     VkDeviceAddress rt_sbt_test_raygen_address_ = 0;
     VkDeviceAddress rt_sbt_lighting_raygen_address_ = 0;
+    VkDeviceAddress rt_sbt_primary_raygen_address_ = 0;
+    bool rt_primary_adaptive_ = false;
+    bool rt_separate_primary_ = false;
+    bool rt_adaptive_diagnostics_ = false;
+    uint64_t rt_adaptive_diagnostic_frames_ = 0;
     VkDeviceAddress rt_sbt_miss_address_ = 0;
     VkDeviceAddress rt_sbt_hit_address_ = 0;
     VkDeviceSize rt_sbt_stride_ = 0;
@@ -3714,6 +3801,8 @@ private:
     // Most recently retired raw sample per zone. Acceptance/perf capture uses
     // this rather than an EMA so median and p95 retain their meaning.
     float gpu_last_ms_[kGpuZoneCount]{};
+    uint64_t gpu_sample_sequence_ = 0;
+    uint32_t gpu_sample_valid_mask_ = 0;
     std::uint64_t water_animation_upload_count_ = 0u;
     std::uint64_t water_animation_decode_dispatch_count_ = 0u;
     // Helper recorded per-frame to stamp the command buffer.

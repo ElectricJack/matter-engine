@@ -29,6 +29,7 @@
 #include "dsl_state.h"
 #include "triangle_emit.hpp"
 #include "polygon_triangulate.hpp"
+#include <cmath>
 
 namespace dsl {
 
@@ -86,6 +87,20 @@ void DslState::vertex(float x, float y, float z) {
     }
     if (session_ != Session::Triangles) { set_error("vertex() outside a beginShape/endShape pair"); return; }
     tris_buf_->vertex(make_float3(x, y, z));
+}
+void DslState::surfaceVertex(float x, float y, float z, float nx, float ny, float nz,
+                             float u, float v) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
+    if (polygon_open_ || session_ != Session::Triangles) {
+        set_error("surfaceVertex requires a triangle, strip or fan shape"); return;
+    }
+    for (float value : {x,y,z,nx,ny,nz,u,v}) {
+        if (!std::isfinite(value)) { set_error("surfaceVertex requires finite numbers"); return; }
+    }
+    if (double(nx)*nx+double(ny)*ny+double(nz)*nz < 1e-20) {
+        set_error("surfaceVertex requires a nonzero shading normal"); return;
+    }
+    tris_buf_->surfaceVertex(make_float3(x,y,z),make_float3(nx,ny,nz),make_float2(u,v));
 }
 void DslState::endShape() {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }

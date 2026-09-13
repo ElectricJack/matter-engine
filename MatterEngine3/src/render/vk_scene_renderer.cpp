@@ -106,7 +106,10 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
 #include "vk_scene_renderer.h"
+#include "primary_light_culling.h"
 #include "gpu_meshing/gpu_visual_mesher_vk.h"
+#include "gpu_meshing/gpu_solid_mesher_vk.h"
+#include "gpu_meshing/gpu_solid_face_projector_vk.h"
 
 #include "lod_distance.h"   // the one LOD selection rule (M1)
 #include "impostor_bake.h"  // M2.5 terminal impostor atlas layout
@@ -120,6 +123,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdio>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -170,6 +174,43 @@ namespace {
 bool env_flag_on(const char* name) {
     const char* value = std::getenv(name);
     return value == nullptr || value[0] == '\0' || value[0] != '0';
+}
+
+// Extra drain-to-drain timestamps are opt-in profiling: their dispatch
+// boundaries can reduce GPU overlap. Keep the original zones, query pool
+// size, and aggregate GI interval unchanged.
+bool lighting_detail_timers_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MATTER_GPU_LIGHTING_DETAIL_TIMERS");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+// Experimental lossy light budgets are process-fixed: zero keeps exact lighting.
+// Read once so a live environment edit cannot change lighting without history
+// invalidation. Metadata carries primary in byte 0 and secondary in byte 1.
+uint32_t local_light_budget_word() {
+    static const uint32_t value = [] {
+        const auto read_budget = [](const char* name) -> uint32_t {
+            const char* text = std::getenv(name);
+            if (!text || !*text) return 0u;
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(text, &end, 10);
+            if (end == text || *end != '\0' || parsed > 8u) {
+                MATTER_LOGW("local-light", "%s must be an integer in [0,8]; using unlimited\n", name);
+                return 0u;
+            }
+            return static_cast<uint32_t>(parsed);
+        };
+        const uint32_t primary = read_budget("MATTER_RT_LOCAL_PRIMARY_BUDGET");
+        const uint32_t secondary = read_budget("MATTER_RT_LOCAL_SECONDARY_BUDGET");
+        if (primary || secondary)
+            MATTER_LOGI("local-light", "experimental lossy budgets primary=%u secondary=%u (0=unlimited); transmission unlimited\n",
+                        primary, secondary);
+        return primary | (secondary << 8u);
+    }();
+    return value;
 }
 
 // Static-geometry reservation, in bytes, from a megabyte-valued env var.
@@ -250,9 +291,13 @@ struct alignas(16) FrameConstants {
     // reports the world visible. Inspecting the feature destroyed the thing
     // being inspected.
     GpuMat4 cull_world_to_clip;
+    // Material derivatives cover internal pixels. Temporal upscalers need
+    // detail selected for output pixels before reconstruction sees the HDR.
+    // xy = internal/output extent ratio; zw reserved. Native stays exactly 1.
+    float surface_detail_sampling[4];
 };
 
-static_assert(sizeof(FrameConstants) == 288 + 16 + 16 + 64,
+static_assert(sizeof(FrameConstants) == 288 + 16 + 16 + 64 + 16,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 24,
               "VkCullStats must match the std430 stats block");
@@ -373,6 +418,63 @@ VkDescriptorSetLayoutBinding descriptor_binding(
     return result;
 }
 
+// Opt-in CPU wall time around the driver pipeline call itself. Begin records
+// are flushed before entering Vulkan so a slow compile is identifiable live.
+bool pipeline_profile_enabled() {
+    const char* value = std::getenv("MATTER_PIPELINE_PROFILE");
+    return value && std::strcmp(value, "1") == 0;
+}
+uint64_t profile_module_id(VkShaderModule module) {
+    uint64_t id = 0;
+    static_assert(sizeof(module) <= sizeof(id), "shader handle fits diagnostic id");
+    std::memcpy(&id, &module, sizeof(module));
+    return id;
+}
+uint64_t profile_bytes_hash(const void* data, size_t size) {
+    uint64_t hash = 14695981039346656037ull;
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
+    return hash;
+}
+void profile_stage(const VkPipelineShaderStageCreateInfo& stage, uint32_t index) {
+    std::fprintf(stderr, "[pipeline-profile] stage=%u flag=0x%x module=%016llx entry=%s\n",
+                 index, static_cast<unsigned>(stage.stage),
+                 static_cast<unsigned long long>(profile_module_id(stage.module)),
+                 stage.pName ? stage.pName : "(null)");
+    if (stage.pSpecializationInfo && stage.pSpecializationInfo->dataSize) {
+        const auto& spec = *stage.pSpecializationInfo;
+        std::fprintf(stderr, "[pipeline-profile] stage=%u specialization_bytes=%zu fnv64=%016llx\n",
+                     index, spec.dataSize,
+                     static_cast<unsigned long long>(profile_bytes_hash(spec.pData, spec.dataSize)));
+    }
+}
+void profile_stages(const VkComputePipelineCreateInfo& info) {
+    profile_stage(info.stage, 0);
+}
+void profile_stages(const VkGraphicsPipelineCreateInfo& info) {
+    for (uint32_t i = 0; i < info.stageCount; ++i) profile_stage(info.pStages[i], i);
+}
+void profile_stages(const VkRayTracingPipelineCreateInfoKHR& info) {
+    for (uint32_t i = 0; i < info.stageCount; ++i) profile_stage(info.pStages[i], i);
+}
+template<class Info, class Call>
+VkResult profile_pipeline_call(const char* kind, const char* caller, int line,
+                               uint32_t count, const Info* infos, Call call) {
+    if (!pipeline_profile_enabled()) return call();
+    std::fprintf(stderr, "[pipeline-profile] begin kind=%s caller=%s:%d count=%u\n",
+                 kind, caller, line, count);
+    for (uint32_t i = 0; i < count; ++i) profile_stages(infos[i]);
+    std::fflush(stderr);
+    const auto begin = std::chrono::steady_clock::now();
+    const VkResult result = call();
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - begin).count();
+    std::fprintf(stderr, "[pipeline-profile] end kind=%s caller=%s:%d ms=%.6f result=%d\n",
+                 kind, caller, line, ms, static_cast<int>(result));
+    std::fflush(stderr);
+    return result;
+}
+
 bool create_shader_module(VkDevice device, const char* name,
                           VkShaderModule& shader, std::string& error) {
     const matter::EmbeddedSpirvView spirv = matter::find_spirv(name);
@@ -386,6 +488,12 @@ bool create_shader_module(VkDevice device, const char* name,
     create.pCode = spirv.words;
     const VkResult result =
         vkCreateShaderModule(device, &create, nullptr, &shader);
+    if (result == VK_SUCCESS && pipeline_profile_enabled()) {
+        const uint64_t hash = profile_bytes_hash(spirv.words, create.codeSize);
+        std::fprintf(stderr, "[pipeline-profile] shader=%s module=%016llx spv_fnv64=%016llx bytes=%zu\n",
+                     name, static_cast<unsigned long long>(profile_module_id(shader)),
+                     static_cast<unsigned long long>(hash), create.codeSize);
+    }
     return result == VK_SUCCESS ||
            fail_vk("vkCreateShaderModule", result, error);
 }
@@ -558,6 +666,7 @@ struct RasterRecord {
     matter::VkImageResource* raw_diffuse;
     matter::VkImageResource* raw_specular;
     matter::VkImageResource* raw_transmission;
+    matter::VkImageResource* raw_local_direct;
     VkExtent2D extent;
     VkPipeline raster_pipeline;
     VkPipeline skinned_raster_pipeline;
@@ -1036,8 +1145,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+        // Composite binding 11 also samples local direct light. The immediate
+        // path has no RT producer, so initialize all four signals identically.
         for (auto* signal : {record.raw_diffuse, record.raw_specular,
-                             record.raw_transmission})
+                             record.raw_transmission, record.raw_local_direct})
             clear_color_image_for_use(
                 command_buffer, *signal, zero,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1084,6 +1195,12 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     }
 
     PROFILE_SCOPE("raster.composite");
+    constexpr uint32_t hdr_zone = VkSceneRenderer::kGpuZoneHdrLighting;
+    if (lighting_detail_timers_enabled() &&
+        record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
+        write_ts(command_buffer, record.ts_pool, hdr_zone, false);
+        record.ts_written[hdr_zone] |= 1u;
+    }
     VkRenderingAttachmentInfo hdr_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     hdr_attachment.imageView = record.hdr->view;
@@ -1115,6 +1232,11 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                        kVkSceneLightingPushBytes, &record.lighting);
     vkCmdDraw(command_buffer, 3, 1, 0, 0);
     vkCmdEndRendering(command_buffer);
+    if (lighting_detail_timers_enabled() &&
+        record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
+        write_ts(command_buffer, record.ts_pool, hdr_zone, true);
+        record.ts_written[hdr_zone] |= 2u;
+    }
 }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -1127,12 +1249,14 @@ struct RasterReadbackRecord {
     uint32_t raw_x;
     uint32_t raw_y;
     uint32_t image_count = 16;
+    VkExtent2D source_extent{};
 };
 
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
-    // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[16] = {0, 8, 16, 20, 24, 32,
+    // ORM is half4 (8 bytes); velocity/depth occupy the former padding
+    // before HDR. Each offset remains aligned to its texel-block size.
+    constexpr VkDeviceSize offsets[16] = {0, 8, 16, 24, 28, 32,
                                           40, 48, 56, 64, 72, 80,
                                           88, 96, 104, 112};
     for (size_t i = 0; i < record.image_count; ++i) {
@@ -1144,8 +1268,15 @@ void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
         copy.bufferOffset = offsets[i];
         copy.imageSubresource.aspectMask = record.aspects[i];
         copy.imageSubresource.layerCount = 1;
-        const uint32_t copy_x = i >= 9 ? record.raw_x : record.x;
-        const uint32_t copy_y = i >= 9 ? record.raw_y : record.y;
+        // Mixed-resolution GI readbacks map each image independently.
+        const uint32_t copy_x = record.source_extent.width != 0
+            ? static_cast<uint32_t>(uint64_t(record.x) * record.images[i]->extent.width /
+                                    record.source_extent.width)
+            : i >= 9 ? record.raw_x : record.x;
+        const uint32_t copy_y = record.source_extent.height != 0
+            ? static_cast<uint32_t>(uint64_t(record.y) * record.images[i]->extent.height /
+                                    record.source_extent.height)
+            : i >= 9 ? record.raw_y : record.y;
         copy.imageOffset = {static_cast<int32_t>(copy_x),
                             static_cast<int32_t>(copy_y), 0};
         copy.imageExtent = {1, 1, 1};
@@ -2480,6 +2611,8 @@ void VkSceneRenderer::set_gi_settings(
     normalized.samples_per_pixel = 1u;
     normalized.trace_scale = std::isfinite(settings.trace_scale)
         ? std::clamp(settings.trace_scale, 0.125f, 1.0f) : 1.0f;
+    normalized.reflection_trace_scale = std::isfinite(settings.reflection_trace_scale)
+        ? std::clamp(settings.reflection_trace_scale, 0.125f, 1.0f) : 1.0f;
     if (std::memcmp(&gi_settings_, &normalized, sizeof(normalized)) == 0)
         return;
     gi_settings_ = normalized;
@@ -2495,10 +2628,11 @@ void VkSceneRenderer::set_gi_settings(
 bool VkSceneRenderer::consume_dlss_history_reset() {
     const bool pending = dlss_history_reset_pending_;
     dlss_history_reset_pending_ = false;
-    // A mode switch that changed the internal extent has already reset the
-    // current temporal candidate. Do not invalidate TemporalState again and
-    // manufacture a second reset on the next presented frame.
-    return pending && !gi_candidate_was_reset_;
+    // Explicit RT/GI/light edits invalidate whole-frame lighting independently
+    // of GI's candidate history. In particular, a previous GI frame's reset
+    // flag must not swallow a new control edit before the next frame starts.
+    // Bridge-owned transition notifications are coalesced at their source.
+    return pending;
 }
 
 VkSceneRenderer::~VkSceneRenderer() {
@@ -2521,6 +2655,8 @@ VkSceneRenderer::~VkSceneRenderer() {
 void VkSceneRenderer::destroy_pipeline() {
     if (!vulkan_) return;
     gpu_visual_mesher_.reset();
+    gpu_solid_face_projector_.reset();
+    gpu_solid_mesher_.reset();
     if (volumetrics_) {
         volumetrics_->destroy();
         volumetrics_.reset();
@@ -2534,6 +2670,12 @@ void VkSceneRenderer::destroy_pipeline() {
         cloud_shadows_.reset();
     }
     const VkDevice device = vulkan_->device();
+    if (primary_light_cull_pipeline_) vkDestroyPipeline(device, primary_light_cull_pipeline_, nullptr);
+    if (primary_light_cull_layout_) vkDestroyPipelineLayout(device, primary_light_cull_layout_, nullptr);
+    if (primary_light_cull_set_layout_) vkDestroyDescriptorSetLayout(device, primary_light_cull_set_layout_, nullptr);
+    primary_light_cull_pipeline_ = VK_NULL_HANDLE;
+    primary_light_cull_layout_ = VK_NULL_HANDLE;
+    primary_light_cull_set_layout_ = VK_NULL_HANDLE;
     water_field_resources_.destroy();
     const auto destroy_water_animation_generation =
         [](WaterAnimationVulkanGeneration& generation) {
@@ -2608,6 +2750,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorPool(device, rt_descriptor_pool_, nullptr);
     if (rt_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, rt_set_layout_, nullptr);
+    if (rt_adaptive_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, rt_adaptive_set_layout_, nullptr);
     if (composite_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, composite_sampler_, nullptr);
     if (sky_view_linear_sampler_ != VK_NULL_HANDLE)
@@ -2755,10 +2899,17 @@ void VkSceneRenderer::destroy_pipeline() {
     rt_pipeline_layout_ = VK_NULL_HANDLE;
     rt_descriptor_pool_ = VK_NULL_HANDLE;
     rt_set_layout_ = VK_NULL_HANDLE;
+    rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     rt_descriptor_sets_.clear();
+    rt_adaptive_descriptor_sets_.clear();
     rt_sbt_address_ = 0;
     rt_sbt_test_raygen_address_ = 0;
     rt_sbt_lighting_raygen_address_ = 0;
+    rt_sbt_primary_raygen_address_ = 0;
+    rt_primary_adaptive_ = false;
+    rt_separate_primary_ = false;
+    rt_adaptive_diagnostics_ = false;
+    rt_adaptive_diagnostic_frames_ = 0;
     rt_sbt_miss_address_ = 0;
     rt_sbt_hit_address_ = 0;
     rt_sbt_stride_ = 0;
@@ -2831,6 +2982,14 @@ bool VkSceneRenderer::create_environment_resources(std::string& error) {
 // any failure the caller (init) calls destroy_pipeline() to unwind.
 bool VkSceneRenderer::create_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
+    const auto read_switch = [](const char* name) {
+        const char* value = std::getenv(name);
+        if (value && std::strcmp(value, "0") && std::strcmp(value, "1"))
+            MATTER_LOGW("primary-light-cull", "%s must be 0 or 1; using 0", name);
+        return value && std::strcmp(value, "1") == 0;
+    };
+    primary_light_culling_ = read_switch("MATTER_PRIMARY_LIGHT_CULLING");
+    primary_light_audit_ = read_switch("MATTER_PRIMARY_LIGHT_CULL_AUDIT");
     // Phase 2 (tileset POM, Task 10) adds FRAGMENT_BIT: gbuffer.frag needs
     // FrameConstants.world_to_clip (project the marched world position for
     // the conservative depth write) and camera_eye_pixel_budget.xyz (view
@@ -3011,8 +3170,10 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     skin_create.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     skin_create.stage.module = skin_shader;
     skin_create.stage.pName = "main";
-    result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &skin_create,
+    result = profile_pipeline_call("compute", __func__, __LINE__, 1, &skin_create, [&] {
+        return vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &skin_create,
                                       nullptr, &skin_pipeline_);
+    });
     vkDestroyShaderModule(device, skin_shader, nullptr);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateComputePipelines(animation skin)", result, error);
@@ -3059,9 +3220,11 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
             VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         pipeline_create.stage = pass_stage;
         pipeline_create.layout = pipeline_layout_;
-        result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
+        result = profile_pipeline_call("compute", __func__, __LINE__, 1, &pipeline_create, [&] {
+        return vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
                                           &pipeline_create, nullptr,
                                           cull_targets[pass]);
+    });
         if (result != VK_SUCCESS) {
             vkDestroyShaderModule(device, shader, nullptr);
             return fail_vk(pass == 0 ? "vkCreateComputePipelines(cull vis)"
@@ -3144,8 +3307,10 @@ bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
         VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     create.stage = stage;
     create.layout = gi_temporal_pipeline_layout_;
-    result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &create,
+    result = profile_pipeline_call("compute", __func__, __LINE__, 1, &create, [&] {
+        return vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &create,
                                       nullptr, &gi_temporal_pipeline_);
+    });
     vkDestroyShaderModule(device, shader, nullptr);
     return result == VK_SUCCESS ||
            fail_vk("vkCreateComputePipelines(GI temporal)", result, error);
@@ -3202,8 +3367,10 @@ bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
         VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     create.stage = stage;
     create.layout = gi_atrous_pipeline_layout_;
-    result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &create,
+    result = profile_pipeline_call("compute", __func__, __LINE__, 1, &create, [&] {
+        return vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &create,
                                       nullptr, &gi_atrous_pipeline_);
+    });
     vkDestroyShaderModule(device, shader, nullptr);
     return result == VK_SUCCESS ||
            fail_vk("vkCreateComputePipelines(GI A-trous)", result, error);
@@ -3220,9 +3387,35 @@ bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
 // records followed by the miss and hit categories, which is why
 // rt_sbt_test_raygen_address_ / rt_sbt_lighting_raygen_address_ are stored
 // individually -- a trace picks its entry point by choosing an address, not
-// by an index.
+// by an index. Adaptive primary optionally appends stage 9 / group 7 and a
+// fourth raygen record after all existing SBT regions, preserving their offsets.
 bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
+    // Compile the sample count into the shader: keep the four-sample baseline
+    // available while measuring temporal primary soft shadows. Zero selects
+    // the conservative history-driven adaptive mode; the default stays four.
+    uint32_t primary_area_samples = 4u;
+    if (const char* value = std::getenv("MATTER_RT_LOCAL_PRIMARY_SAMPLES")) {
+        if (value[0] >= '0' && value[0] <= '4' && value[1] == '\0')
+            primary_area_samples = static_cast<uint32_t>(value[0] - '0');
+        else
+            MATTER_LOGW("rt", "MATTER_RT_LOCAL_PRIMARY_SAMPLES must be 0 (adaptive) or 1..4; using 4");
+    }
+    rt_primary_adaptive_ = primary_area_samples == 0u;
+    const char* primary_only_value = std::getenv("MATTER_RT_PRIMARY_ONLY");
+    const bool primary_only = primary_only_value && std::strcmp(primary_only_value, "1") == 0;
+    if (primary_only_value && std::strcmp(primary_only_value, "0") &&
+        std::strcmp(primary_only_value, "1"))
+        MATTER_LOGW("rt", "MATTER_RT_PRIMARY_ONLY must be 0 or 1; using 0");
+    rt_separate_primary_ = rt_primary_adaptive_ || primary_light_culling_ ||
+                           primary_light_audit_ || primary_only;
+    rt_adaptive_diagnostics_ = false;
+    if (const char* value = std::getenv("MATTER_RT_ADAPTIVE_DIAGNOSTICS")) {
+        if (std::strcmp(value, "1") == 0)
+            rt_adaptive_diagnostics_ = rt_primary_adaptive_;
+        else if (std::strcmp(value, "0") != 0)
+            MATTER_LOGW("rt", "MATTER_RT_ADAPTIVE_DIAGNOSTICS must be 0 or 1; disabled");
+    }
     VkDescriptorSetLayoutBinding bindings[] = {
         descriptor_binding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR),
@@ -3345,14 +3538,29 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     bindings[24].descriptorCount = kWaterFieldBindingSlots;
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount =
-        static_cast<uint32_t>(sizeof(bindings) / sizeof(bindings[0]));
+    // Original scene set is identical in both modes. Adaptive history is set 3.
+    set_info.bindingCount = 27u;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
                                                    &rt_set_layout_);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateDescriptorSetLayout(ray tracing)", result,
                        error);
+    if (rt_primary_adaptive_) {
+        VkDescriptorSetLayoutBinding history_bindings[8]{};
+        for (uint32_t i = 0; i < 8; ++i)
+            history_bindings[i] = descriptor_binding(
+                i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+        VkDescriptorSetLayoutCreateInfo history_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        history_info.bindingCount = 8;
+        history_info.pBindings = history_bindings;
+        result = vkCreateDescriptorSetLayout(device, &history_info, nullptr,
+                                              &rt_adaptive_set_layout_);
+        if (result != VK_SUCCESS)
+            return fail_vk("vkCreateDescriptorSetLayout(adaptive history)", result, error);
+    }
     VkPushConstantRange push{};
     push.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
     push.size = 128;
@@ -3360,8 +3568,9 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     const VkDescriptorSetLayout rt_sets[] = {rt_set_layout_,
                                               environment_set_layout_,
-                                              local_light_set_layout_};
-    layout_info.setLayoutCount = 3;
+                                              local_light_set_layout_,
+                                              rt_adaptive_set_layout_};
+    layout_info.setLayoutCount = rt_primary_adaptive_ ? 4u : 3u;
     layout_info.pSetLayouts = rt_sets;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push;
@@ -3369,13 +3578,29 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                     &rt_pipeline_layout_);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreatePipelineLayout(ray tracing)", result, error);
+    const uint32_t stage_count = rt_separate_primary_ ? 10u : 9u;
+    const uint32_t group_count = rt_separate_primary_ ? 8u : 7u;
     const char* names[] = {"rt_shadow.rgen.spv", "rt_surface_test.rgen.spv",
                            "rt_lighting.rgen.spv",
                            "rt_visibility.rmiss.spv", "rt_radiance.rmiss.spv",
                            "rt_visibility.rchit.spv",
                            "rt_visibility.rahit.spv",
                            "rt_surface.rchit.spv",
-                           "rt_surface.rahit.spv"};
+                           "rt_surface.rahit.spv", "rt_primary_adaptive.rgen.spv"};
+    // Stage 2 always keeps the original full GI module. Only the optional
+    // primary stage includes tile iteration/audit code, so secondary rays do
+    // not inherit its larger call graph or compiler resource requirements.
+    if (rt_primary_adaptive_) {
+        if (primary_light_audit_)
+            names[9] = "rt_primary_adaptive_culled_audit.rgen.spv";
+        else if (primary_light_culling_)
+            names[9] = "rt_primary_adaptive_culled.rgen.spv";
+    } else if (rt_separate_primary_) {
+        names[9] = primary_light_audit_
+            ? "rt_lighting_culled_audit.rgen.spv"
+            : (primary_light_culling_ ? "rt_lighting_culled.rgen.spv"
+                                      : "rt_primary_fixed.rgen.spv");
+    }
     const VkShaderStageFlagBits stages_bits[] = {
         VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR,
         VK_SHADER_STAGE_RAYGEN_BIT_KHR,
@@ -3383,10 +3608,10 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
         VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
-        VK_SHADER_STAGE_ANY_HIT_BIT_KHR};
-    VkShaderModule modules[9]{};
-    VkPipelineShaderStageCreateInfo stages[9]{};
-    for (uint32_t i = 0; i < 9; ++i) {
+        VK_SHADER_STAGE_ANY_HIT_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR};
+    VkShaderModule modules[10]{};
+    VkPipelineShaderStageCreateInfo stages[10]{};
+    for (uint32_t i = 0; i < stage_count; ++i) {
         if (!create_shader_module(device, names[i], modules[i], error)) {
             for (VkShaderModule module : modules)
                 if (module) vkDestroyShaderModule(device, module, nullptr);
@@ -3412,15 +3637,103 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     uint32_t walk_alpha_test = 1u;
     if (const char* walk_env = std::getenv("MATTER_RT_WALK_ALPHA_TEST"))
         walk_alpha_test = std::strtoul(walk_env, nullptr, 10) != 0 ? 1u : 0u;
-    const uint32_t lighting_constants[2] = {count_lobe_samples,
-                                            walk_alpha_test};
-    const VkSpecializationMapEntry lighting_entries[2] = {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    uint32_t visibility_counters = 1u;
+#else
+    uint32_t visibility_counters = 0u;
+#endif
+    if (const char* value = std::getenv("MATTER_RT_VISIBILITY_COUNTERS")) {
+        if ((value[0] == '0' || value[0] == '1') && value[1] == '\0')
+            visibility_counters = static_cast<uint32_t>(value[0] - '0');
+        else
+            MATTER_LOGW("rt", "MATTER_RT_VISIBILITY_COUNTERS must be 0 or 1; retaining default");
+    }
+    MATTER_LOGI("rt", "local primary area samples=%u (0=adaptive); visibility diagnostic counters=%u",
+                primary_area_samples, visibility_counters);
+    uint32_t enable_local_selection = local_light_budget_word() != 0u ? 1u : 0u;
+    if (const char* value = std::getenv("MATTER_RT_KEEP_LOCAL_SELECTION")) {
+        if (std::strcmp(value, "1") == 0)
+            enable_local_selection = 1u;
+        else if (std::strcmp(value, "0") != 0)
+            MATTER_LOGW("rt", "MATTER_RT_KEEP_LOCAL_SELECTION must be 0 or 1; retaining automatic selection policy");
+    }
+    MATTER_LOGI("rt", "local-light selection code=%u; packed budgets=%u",
+                enable_local_selection, local_light_budget_word());
+    // The weighted estimator avoids tracing every secondary shadow candidate.
+    // Preserve an explicitly configured legacy secondary budget unless the
+    // sampling override below requests otherwise.
+    uint32_t secondary_light_sampling =
+        (local_light_budget_word() & 0xff00u) != 0u ? 0u : 1u;
+    if (const char* value = std::getenv("MATTER_RT_SECONDARY_LIGHT_SAMPLING")) {
+        if ((value[0] == '0' || value[0] == '1') && value[1] == '\0')
+            secondary_light_sampling = static_cast<uint32_t>(value[0] - '0');
+        else {
+            secondary_light_sampling = 0u;
+            MATTER_LOGW("rt", "MATTER_RT_SECONDARY_LIGHT_SAMPLING must be 0 or 1; using exact mode 0");
+        }
+    }
+    MATTER_LOGI("rt", "secondary local-light sampling=%u (0 exact, 1 importance reservoir)",
+                secondary_light_sampling);
+    const uint32_t lighting_constants[7] = {count_lobe_samples,
+                                            walk_alpha_test,
+                                            rt_primary_adaptive_ ? 4u : primary_area_samples,
+                                            enable_local_selection,
+                                            secondary_light_sampling,
+                                            primary_light_culling_ ? 1u : 0u,
+                                            primary_light_audit_ ? 1u : 0u};
+    const VkSpecializationMapEntry lighting_entries[7] = {
         {0, 0, sizeof(uint32_t)},
-        {1, sizeof(uint32_t), sizeof(uint32_t)}};
+        {1, sizeof(uint32_t), sizeof(uint32_t)},
+        {4, 2 * sizeof(uint32_t), sizeof(uint32_t)},
+        {6, 3 * sizeof(uint32_t), sizeof(uint32_t)},
+        {7, 4 * sizeof(uint32_t), sizeof(uint32_t)},
+        {9, 5 * sizeof(uint32_t), sizeof(uint32_t)},
+        {10, 6 * sizeof(uint32_t), sizeof(uint32_t)}};
+    const uint32_t lighting_constant_count = primary_light_audit_ ? 7u :
+        (primary_light_culling_ ? 6u : 5u);
+    // Preserve the baseline stage's original five specialization entries and
+    // data size even when the separate primary stage is enabled.
     const VkSpecializationInfo lighting_specialization{
-        2, lighting_entries, sizeof(lighting_constants), lighting_constants};
+        5u, lighting_entries, 5u * sizeof(uint32_t), lighting_constants};
     stages[2].pSpecializationInfo = &lighting_specialization;
-    VkRayTracingShaderGroupCreateInfoKHR groups[7]{};
+    const VkSpecializationInfo primary_specialization{
+        lighting_constant_count, lighting_entries,
+        lighting_constant_count * sizeof(uint32_t), lighting_constants};
+    const uint32_t adaptive_constants[] = {
+        enable_local_selection, rt_adaptive_diagnostics_ ? 1u : 0u,
+        primary_light_culling_ ? 1u : 0u, primary_light_audit_ ? 1u : 0u};
+    const VkSpecializationMapEntry adaptive_entries[] = {
+        {6, 0, sizeof(uint32_t)}, {8, sizeof(uint32_t), sizeof(uint32_t)},
+        {9, 2 * sizeof(uint32_t), sizeof(uint32_t)},
+        {10, 3 * sizeof(uint32_t), sizeof(uint32_t)}};
+    const uint32_t adaptive_constant_count = primary_light_audit_ ? 4u :
+        (primary_light_culling_ ? 3u : 2u);
+    const VkSpecializationInfo adaptive_specialization{
+        adaptive_constant_count, adaptive_entries,
+        adaptive_constant_count * sizeof(uint32_t), adaptive_constants};
+    if (rt_separate_primary_)
+        stages[9].pSpecializationInfo = rt_primary_adaptive_
+            ? &adaptive_specialization : &primary_specialization;
+    // Any-hit has its own specialization namespace. Normal runs must not
+    // contend on global diagnostic counters for every glass/shadow crossing.
+    const VkSpecializationMapEntry visibility_entry{2, 0, sizeof(uint32_t)};
+    const VkSpecializationInfo visibility_specialization{
+        1, &visibility_entry, sizeof(visibility_counters), &visibility_counters};
+    stages[6].pSpecializationInfo = &visibility_specialization;
+    uint32_t surface_detail_mode = 0u;
+    if (const char* value = std::getenv("MATTER_RT_SURFACE_DETAIL_MODE")) {
+        if (value[0] >= '0' && value[0] <= '2' && value[1] == '\0')
+            surface_detail_mode = static_cast<uint32_t>(value[0] - '0');
+        else
+            MATTER_LOGW("rt", "MATTER_RT_SURFACE_DETAIL_MODE must be 0..2; using reference mode 0");
+    }
+    MATTER_LOGI("rt", "secondary surface detail mode=%u (0 reference, 1 adaptive, 2 normal-only)",
+                surface_detail_mode);
+    const VkSpecializationMapEntry detail_entry{5, 0, sizeof(uint32_t)};
+    const VkSpecializationInfo detail_specialization{
+        1, &detail_entry, sizeof(surface_detail_mode), &surface_detail_mode};
+    stages[7].pSpecializationInfo = &detail_specialization;
+    VkRayTracingShaderGroupCreateInfoKHR groups[8]{};
     for (auto& group : groups) {
         group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         group.generalShader = VK_SHADER_UNUSED_KHR;
@@ -3447,11 +3760,15 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     // Only rays traced WITHOUT gl_RayFlagsOpaqueEXT ever run it (today:
     // the refraction walk's non-opaque re-trace).
     groups[6].anyHitShader = 8;
+    if (rt_separate_primary_) {
+        groups[7].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+        groups[7].generalShader = 9;
+    }
     VkRayTracingPipelineCreateInfoKHR create{
         VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
-    create.stageCount = 9;
+    create.stageCount = stage_count;
     create.pStages = stages;
-    create.groupCount = 7;
+    create.groupCount = group_count;
     create.pGroups = groups;
     create.maxPipelineRayRecursionDepth = 1;
     create.layout = rt_pipeline_layout_;
@@ -3463,11 +3780,13 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         error = "native ray tracing pipeline entry points are unavailable";
         result = VK_ERROR_EXTENSION_NOT_PRESENT;
     } else {
-        result = create_pipeline(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1,
+        result = profile_pipeline_call("ray_tracing", __func__, __LINE__, 1, &create, [&] {
+        return create_pipeline(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1,
                                  &create, nullptr, &rt_pipeline_);
+    });
     }
     for (VkShaderModule module : modules)
-        vkDestroyShaderModule(device, module, nullptr);
+        if (module) vkDestroyShaderModule(device, module, nullptr);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateRayTracingPipelinesKHR", result, error);
 
@@ -3489,8 +3808,8 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         error = "ray tracing SBT stride exceeds maxShaderGroupStride";
         return false;
     }
-    std::vector<uint8_t> handles(static_cast<size_t>(7 * handle_size));
-    result = get_handles(device, rt_pipeline_, 0, 7, handles.size(),
+    std::vector<uint8_t> handles(static_cast<size_t>(group_count * handle_size));
+    result = get_handles(device, rt_pipeline_, 0, group_count, handles.size(),
                          handles.data());
     if (result != VK_SUCCESS)
         return fail_vk("vkGetRayTracingShaderGroupHandlesKHR", result, error);
@@ -3502,8 +3821,13 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         (handle_stride + props.shader_group_base_alignment - 1) /
         props.shader_group_base_alignment * props.shader_group_base_alignment;
     const VkDeviceSize raygen_span = 3 * raygen_record_stride;
+    // Keep every existing raygen/miss/hit offset unchanged. Optional group 7
+    // is a separately base-aligned raygen record appended after the hit span.
+    const VkDeviceSize primary_offset = raygen_span + 2 * category_span;
+    const VkDeviceSize sbt_span = primary_offset +
+        (rt_separate_primary_ ? raygen_record_stride : 0);
     if (!matter::create_buffer(
-            *vulkan_, raygen_span + 2 * category_span +
+            *vulkan_, sbt_span +
                            props.shader_group_base_alignment - 1,
             VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -3516,13 +3840,15 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     rt_sbt_stride_ = handle_stride;
     rt_sbt_test_raygen_address_ = rt_sbt_address_ + raygen_record_stride;
     rt_sbt_lighting_raygen_address_ = rt_sbt_address_ + 2 * raygen_record_stride;
+    rt_sbt_primary_raygen_address_ = rt_separate_primary_
+        ? rt_sbt_address_ + primary_offset : 0;
     rt_sbt_miss_address_ = rt_sbt_address_ + raygen_span;
     rt_sbt_hit_address_ = rt_sbt_miss_address_ + category_span;
     rt_sbt_miss_size_ = category_size;
     rt_sbt_hit_size_ = category_size;
     const VkDeviceSize mapped_offset = rt_sbt_address_ - rt_sbt_.address;
     std::memset(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset, 0,
-                static_cast<size_t>(raygen_span + 2 * category_span));
+                static_cast<size_t>(sbt_span));
     for (uint32_t i = 0; i < 3; ++i) {
         std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
                         i * raygen_record_stride,
@@ -3539,8 +3865,13 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                     handles.data() + (5 + i) * handle_size,
                     static_cast<size_t>(handle_size));
     }
-    return matter::flush_buffer(rt_sbt_, mapped_offset,
-                                raygen_span + 2 * category_span, error);
+    if (rt_separate_primary_) {
+        std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
+                        primary_offset,
+                    handles.data() + 7 * handle_size,
+                    static_cast<size_t>(handle_size));
+    }
+    return matter::flush_buffer(rt_sbt_, mapped_offset, sbt_span, error);
 }
 
 // Creates the five graphics pipelines that share the scene pipeline layout,
@@ -3672,7 +4003,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     color_blend.pAttachments = blend_attachments;
     const VkFormat gbuffer_formats[] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT,
+        VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16_SFLOAT,
         VK_FORMAT_R32G32_UINT, VK_FORMAT_R8_UNORM};
     VkPipelineRenderingCreateInfo rendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -3693,8 +4024,10 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     raster_create.pColorBlendState = &color_blend;
     raster_create.pDynamicState = &dynamic;
     raster_create.layout = pipeline_layout_;
-    VkResult result = vkCreateGraphicsPipelines(
+    VkResult result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &raster_create, [&] {
+        return vkCreateGraphicsPipelines(
         device, VK_NULL_HANDLE, 1, &raster_create, nullptr, &raster_pipeline_);
+    });
     if (result != VK_SUCCESS) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
         vkDestroyShaderModule(device, raster_fragment, nullptr);
@@ -3769,9 +4102,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         id_create.pColorBlendState = &id_color_blend;
         id_create.pDynamicState = &dynamic;
         id_create.layout = pipeline_layout_;
-        const VkResult id_result = vkCreateGraphicsPipelines(
+        const VkResult id_result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &id_create, [&] {
+        return vkCreateGraphicsPipelines(
             device, VK_NULL_HANDLE, 1, &id_create, nullptr,
             &visibility_id_pipeline_);
+    });
         vkDestroyShaderModule(device, id_fragment, nullptr);
         vkDestroyShaderModule(device, id_vertex, nullptr);
         if (id_result != VK_SUCCESS) {
@@ -3808,9 +4143,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     vertex_input.pVertexBindingDescriptions = skin_vertex_bindings;
     vertex_input.vertexAttributeDescriptionCount = 6;
     vertex_input.pVertexAttributeDescriptions = skin_attributes;
-    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+    result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &raster_create, [&] {
+        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
                                        &raster_create, nullptr,
                                        &skinned_raster_pipeline_);
+    });
     if (result != VK_SUCCESS) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
         vkDestroyShaderModule(device, raster_fragment, nullptr);
@@ -3839,9 +4176,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     vertex_input.pVertexBindingDescriptions = &water_vertex_binding;
     vertex_input.vertexAttributeDescriptionCount = 1u;
     vertex_input.pVertexAttributeDescriptions = water_attributes;
-    result = vkCreateGraphicsPipelines(
+    result = profile_pipeline_call("graphics", __func__, __LINE__, 1u, &raster_create, [&] {
+        return vkCreateGraphicsPipelines(
         device, VK_NULL_HANDLE, 1u, &raster_create, nullptr,
         &water_animation_raster_pipeline_);
+    });
     vkDestroyShaderModule(device, water_raster_vertex, nullptr);
     if (result != VK_SUCCESS) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
@@ -3879,9 +4218,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         wireframe_vertex_input.vertexAttributeDescriptionCount = 7;
         wireframe_vertex_input.pVertexAttributeDescriptions = attributes;
         wireframe_create.pVertexInputState = &wireframe_vertex_input;
-        result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+        result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &wireframe_create, [&] {
+        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
                                            &wireframe_create, nullptr,
                                            &wireframe_raster_pipeline_);
+    });
         if (result != VK_SUCCESS) {
             vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
             vkDestroyShaderModule(device, raster_fragment, nullptr);
@@ -3895,9 +4236,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         wireframe_vertex_input.pVertexBindingDescriptions = skin_vertex_bindings;
         wireframe_vertex_input.vertexAttributeDescriptionCount = 6;
         wireframe_vertex_input.pVertexAttributeDescriptions = skin_attributes;
-        result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+        result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &wireframe_create, [&] {
+        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
                                            &wireframe_create, nullptr,
                                            &wireframe_skinned_raster_pipeline_);
+    });
         if (result != VK_SUCCESS) {
             vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
             vkDestroyShaderModule(device, raster_fragment, nullptr);
@@ -4002,6 +4345,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     composite_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     composite_stages[1].module = composite_fragment;
     composite_stages[1].pName = "main";
+    const uint32_t primary_cull_constant = primary_light_culling_ ? 1u : 0u;
+    const VkSpecializationMapEntry primary_cull_entry{9, 0, sizeof(uint32_t)};
+    const VkSpecializationInfo primary_cull_specialization{
+        1, &primary_cull_entry, sizeof(primary_cull_constant), &primary_cull_constant};
+    composite_stages[1].pSpecializationInfo = &primary_cull_specialization;
     VkPipelineVertexInputStateCreateInfo no_vertex_input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineColorBlendAttachmentState hdr_blend{};
@@ -4041,9 +4389,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     composite_create.pColorBlendState = &hdr_color_blend;
     composite_create.pDynamicState = &dynamic;
     composite_create.layout = composite_pipeline_layout_;
-    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+    result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &composite_create, [&] {
+        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
                                        &composite_create, nullptr,
                                        &composite_pipeline_);
+    });
     vkDestroyShaderModule(device, composite_fragment, nullptr);
     vkDestroyShaderModule(device, composite_vertex, nullptr);
     if (result != VK_SUCCESS)
@@ -4290,9 +4640,11 @@ bool VkSceneRenderer::create_water_forward_pipelines(std::string& error) {
     create.pDynamicState = &dynamic;
     create.layout = water_forward_pipeline_layout_;
 
-    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
+    result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &create, [&] {
+        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
                                        nullptr,
                                        &water_forward_static_pipeline_);
+    });
     if (result == VK_SUCCESS) {
         stages[0].module = direct_vertex;
         const VkVertexInputBindingDescription direct_binding{
@@ -4303,9 +4655,11 @@ bool VkSceneRenderer::create_water_forward_pipelines(std::string& error) {
         vertex_input.pVertexBindingDescriptions = &direct_binding;
         vertex_input.vertexAttributeDescriptionCount = 1;
         vertex_input.pVertexAttributeDescriptions = &direct_attribute;
-        result = vkCreateGraphicsPipelines(
+        result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &create, [&] {
+        return vkCreateGraphicsPipelines(
             device, VK_NULL_HANDLE, 1, &create, nullptr,
             &water_forward_direct_pipeline_);
+    });
     }
     vkDestroyShaderModule(device, fragment, nullptr);
     vkDestroyShaderModule(device, direct_vertex, nullptr);
@@ -4414,8 +4768,10 @@ bool VkSceneRenderer::create_display_pipeline(std::string& error) {
     create.pColorBlendState = &color_blend;
     create.pDynamicState = &dynamic;
     create.layout = display_pipeline_layout_;
-    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
+    result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &create, [&] {
+        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
                                        nullptr, &display_pipeline_);
+    });
     vkDestroyShaderModule(device, fragment, nullptr);
     vkDestroyShaderModule(device, vertex, nullptr);
     return result == VK_SUCCESS ||
@@ -4530,8 +4886,10 @@ bool VkSceneRenderer::create_overlay_line_pipeline(std::string& error) {
     create.pColorBlendState = &color_blend;
     create.pDynamicState = &dynamic;
     create.layout = overlay_line_layout_;
-    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
+    result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &create, [&] {
+        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
                                        nullptr, &overlay_line_pipeline_);
+    });
     vkDestroyShaderModule(device, frag, nullptr);
     vkDestroyShaderModule(device, vert, nullptr);
     return result == VK_SUCCESS ||
@@ -4966,8 +5324,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                                      sizeof(GpuRtCounters),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             // 0-17 surface query, 18/19 reflection-lobe counters,
-            // 20-28 WP-G VT/ray-cone readback (rt_surface_test.rgen).
-            !ensure_candidate_buffer(frame.rt_test_output, 32 * sizeof(uint32_t),
+            // 20-31 WP-G VT/ray-cone readback (rt_surface_test.rgen).
+            // 32-55 optional adaptive classifications and CPU gate snapshot.
+            !ensure_candidate_buffer(frame.rt_test_output, 64 * sizeof(uint32_t),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.gi_atrous_markers,
                                      5 * sizeof(uint32_t),
@@ -5079,6 +5438,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         if (rt_descriptor_pool_ != VK_NULL_HANDLE)
             vkDestroyDescriptorPool(vulkan_->device(), rt_descriptor_pool_,
                                     nullptr);
+        rt_descriptor_pool_ = VK_NULL_HANDLE;
+        rt_descriptor_sets_.clear();
+        rt_adaptive_descriptor_sets_.clear();
         // Phase 1 tileset Vulkan port (Task 6): RT set 0 gained binding 15
         // (kMaxTilesetSlots*kTilesetChannelCount combined-image-sampler
         // descriptors -- 48 = 8 slots x 6 channels) and binding 16 (1
@@ -5087,11 +5449,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // combined-image-samplers, and 18/19 storage buffers (the VT
         // indirection buffer and the variant table — 18 was an indirection
         // sampler before the buffer-indirection redesign).
+        // Only the adaptive pipeline layout adds eight history samplers.
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
              frame_slot_count *
-                 (5 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+                 (5 + (rt_primary_adaptive_ ? 8u : 0u) +
+                  tileset::kMaxTilesetSlots * kTilesetChannelCount +
                   vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
             // 7 storage images: visibility, raw diffuse, raw specular + aux,
             // raw transmission + aux, and traced local direct.
@@ -5100,7 +5464,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        rt_pool.maxSets = frame_slot_count;
+        rt_pool.maxSets = frame_slot_count * (rt_primary_adaptive_ ? 2u : 1u);
         rt_pool.poolSizeCount =
             static_cast<uint32_t>(sizeof(rt_sizes) / sizeof(rt_sizes[0]));
         rt_pool.pPoolSizes = rt_sizes;
@@ -5122,6 +5486,14 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         if (rt_result != VK_SUCCESS)
             return fail_vk("vkAllocateDescriptorSets(ray tracing)", rt_result,
                            error);
+        if (rt_primary_adaptive_) {
+            rt_adaptive_descriptor_sets_.resize(frame_slot_count);
+            std::fill(rt_layouts.begin(), rt_layouts.end(), rt_adaptive_set_layout_);
+            rt_result = vkAllocateDescriptorSets(vulkan_->device(), &rt_allocate,
+                                                 rt_adaptive_descriptor_sets_.data());
+            if (rt_result != VK_SUCCESS)
+                return fail_vk("vkAllocateDescriptorSets(adaptive history)", rt_result, error);
+        }
         for (uint32_t index = 0u; index != frame_slot_count; ++index) {
             if (!write_water_field_descriptors_for_frame(
                     frames_[index], rt_descriptor_sets_[index], error))
@@ -8425,8 +8797,9 @@ void VkSceneRenderer::update_local_light_descriptor(FrameResources& frame) {
 
 bool VkSceneRenderer::upload_local_lights(FrameResources& frame,
                                           std::string& error) {
-    if (frame.local_light_generation == local_light_generation_)
-        return true;
+    const bool publication_changed = frame.local_light_generation != local_light_generation_;
+    if (!publication_changed && frame.primary_light_extent.width == raster_extent_.width &&
+        frame.primary_light_extent.height == raster_extent_.height) return true;
 
     const auto& publication = local_light_publication_;
     const auto& index = publication.index;
@@ -8472,7 +8845,20 @@ bool VkSceneRenderer::upload_local_lights(FrameResources& frame,
     meta.cell_size = index.cell_size;
     meta.inverse_cell_size = index.cell_size > 0.0f ? 1.0f / index.cell_size : 0.0f;
     meta.max_candidates_per_cell = index.stats.max_candidates_per_cell;
+    meta.selection_budgets = local_light_budget_word();
 
+    bool enable_mask = primary_light_culling_;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    enable_mask = enable_mask && !test_force_primary_light_fallback_;
+#endif
+    const auto mask_layout = world_lights::primary_light_mask_layout(
+        enable_mask ? raster_extent_.width : 0u, raster_extent_.height,
+        meta.light_count, std::min<uint64_t>(limits_.max_storage_buffer_range, 64ull * 1024 * 1024),
+        limits_.max_buffer_size);
+    meta.primary_tiles_x = mask_layout.tiles_x;
+    meta.primary_tiles_y = mask_layout.tiles_y;
+    meta.primary_words_per_tile = mask_layout.words_per_tile;
+    meta.primary_culling_enabled = mask_layout.enabled ? 1u : 0u;
     matter::VkBufferResource records, cells, compact, oversized, metadata;
     const auto make_buffer = [&](matter::VkBufferResource& output,
                                  VkDeviceSize payload_bytes,
@@ -8495,29 +8881,286 @@ bool VkSceneRenderer::upload_local_lights(FrameResources& frame,
                                      payload_bytes == 0 ? empty_payload : payload,
                                      static_cast<size_t>(bytes), 0, error);
     };
-    if (!make_buffer(records, record_bytes, sizeof(zero_light),
+    if (publication_changed && (!make_buffer(records, record_bytes, sizeof(zero_light),
                      publication.records.data(), &zero_light) ||
         !make_buffer(cells, cell_bytes, sizeof(zero_cell), index.cells.data(),
                      &zero_cell) ||
         !make_buffer(compact, compact_bytes, sizeof(zero_index),
                      index.light_indices.data(), &zero_index) ||
         !make_buffer(oversized, oversized_bytes, sizeof(zero_index),
-                     index.oversized_light_indices.data(), &zero_index) ||
-        !make_buffer(metadata, sizeof(meta), sizeof(meta), &meta, &meta)) {
+                     index.oversized_light_indices.data(), &zero_index))) {
         return false;
     }
 
+    if (!matter::create_buffer(*vulkan_, mask_layout.byte_size,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                (mask_layout.enabled ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                                     : VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
+            metadata, error) ||
+        !matter::upload_buffer(*vulkan_, metadata, &meta, sizeof(meta), 0, error))
+        return false;
+    if (mask_layout.enabled)
+        MATTER_LOGI("primary-light-cull", "tiles=%ux%u words=%u bytes=%llu memory=0x%x",
+            mask_layout.tiles_x, mask_layout.tiles_y, mask_layout.words_per_tile,
+            static_cast<unsigned long long>(mask_layout.byte_size),
+            static_cast<unsigned>(metadata.memory_properties));
     // Commit all five resources together. Until this point the frame slot and
     // its descriptor still name the previous complete publication.
-    frame.local_light_records = std::move(records);
-    frame.local_light_cells = std::move(cells);
-    frame.local_light_indices = std::move(compact);
-    frame.local_light_oversized_indices = std::move(oversized);
+    if (publication_changed) {
+        frame.local_light_records = std::move(records);
+        frame.local_light_cells = std::move(cells);
+        frame.local_light_indices = std::move(compact);
+        frame.local_light_oversized_indices = std::move(oversized);
+    }
+    frame.local_light_header = meta;
+    frame.primary_light_extent = raster_extent_;
     frame.local_light_meta = std::move(metadata);
     frame.local_light_generation = local_light_generation_;
     frame.local_direct_owner = LocalDirectOwner::Raster;
     frame.local_direct_lane_revision = 0;
     update_local_light_descriptor(frame);
+    return true;
+}
+
+bool VkSceneRenderer::record_primary_light_cull(
+    const matter::VulkanFrame& frame, const FrameMatrices& matrices,
+    std::string& error) {
+    if (!primary_light_culling_) return true;
+    if (frame.frame_slot >= frames_.size()) {
+        error = "primary light cull frame slot out of range";
+        return false;
+    }
+    auto& selected = frames_[frame.frame_slot];
+    const auto& header = selected.local_light_header;
+    if (!header.primary_culling_enabled) return true;
+    const VkDevice device = vulkan_->device();
+    if (!primary_light_cull_pipeline_) {
+        // Commit the complete pipeline atomically: a failed creation can be
+        // retried without overwriting a live layout or leaking intermediate handles.
+        struct PipelineCandidate {
+            VkDevice device;
+            VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+            VkPipelineLayout layout = VK_NULL_HANDLE;
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            VkShaderModule module = VK_NULL_HANDLE;
+            ~PipelineCandidate() {
+                if (module) vkDestroyShaderModule(device, module, nullptr);
+                if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
+                if (layout) vkDestroyPipelineLayout(device, layout, nullptr);
+                if (set_layout) vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+            }
+        } candidate{device};
+        // A private compute layout keeps all graphics/RT set layouts identical
+        // to the reference path (even unused RT bindings affect driver cost).
+        VkDescriptorSetLayoutBinding bindings[] = {
+            descriptor_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_COMPUTE_BIT),
+            descriptor_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
+            descriptor_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
+            descriptor_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)};
+        VkDescriptorSetLayoutCreateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        set_info.bindingCount = 4;
+        set_info.pBindings = bindings;
+        VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr, &candidate.set_layout);
+        if (result != VK_SUCCESS) return fail_vk("primary light cull set layout", result, error);
+        VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 80};
+        VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = &candidate.set_layout;
+        layout_info.pushConstantRangeCount = 1;
+        layout_info.pPushConstantRanges = &push;
+        result = vkCreatePipelineLayout(device, &layout_info, nullptr, &candidate.layout);
+        if (result != VK_SUCCESS) return fail_vk("primary light cull pipeline layout", result, error);
+        if (!create_shader_module(device, "primary_light_cull.comp.spv", candidate.module, error)) return false;
+        VkComputePipelineCreateInfo pipeline_info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipeline_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipeline_info.stage.module = candidate.module;
+        pipeline_info.stage.pName = "main";
+        pipeline_info.layout = candidate.layout;
+        result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &candidate.pipeline);
+        if (result != VK_SUCCESS) return fail_vk("primary light cull pipeline", result, error);
+        primary_light_cull_set_layout_ = candidate.set_layout;
+        primary_light_cull_layout_ = candidate.layout;
+        primary_light_cull_pipeline_ = candidate.pipeline;
+        candidate.set_layout = VK_NULL_HANDLE;
+        candidate.layout = VK_NULL_HANDLE;
+        candidate.pipeline = VK_NULL_HANDLE;
+    }
+    if (!selected.primary_light_cull_pool) {
+        VkDescriptorPoolSize sizes[] = {
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
+        VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool_info.maxSets = 1;
+        pool_info.poolSizeCount = 2;
+        pool_info.pPoolSizes = sizes;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        VkResult result = vkCreateDescriptorPool(device, &pool_info, nullptr, &pool);
+        if (result != VK_SUCCESS) return fail_vk("primary light cull descriptor pool", result, error);
+        auto pool_lifetime = std::shared_ptr<void>(new VkDescriptorPool(pool),
+            [device](void* pointer) {
+                auto* value = static_cast<VkDescriptorPool*>(pointer);
+                vkDestroyDescriptorPool(device, *value, nullptr);
+                delete value;
+            });
+        VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocation.descriptorPool = pool;
+        allocation.descriptorSetCount = 1;
+        allocation.pSetLayouts = &primary_light_cull_set_layout_;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        result = vkAllocateDescriptorSets(device, &allocation, &set);
+        if (result != VK_SUCCESS) return fail_vk("primary light cull descriptor set", result, error);
+        selected.primary_light_cull_pool = std::move(pool_lifetime);
+        selected.primary_light_cull_set = set;
+    }
+    VkDescriptorImageInfo depth_info{composite_sampler_, depth_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo buffer_infos[] = {
+        {selected.local_light_records.buffer, 0, selected.local_light_records.size},
+        {selected.local_light_meta.buffer, 0, selected.local_light_meta.size},
+        {selected.local_light_oversized_indices.buffer, 0, selected.local_light_oversized_indices.size}};
+    VkWriteDescriptorSet writes[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = selected.primary_light_cull_set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        if (i == 0) writes[i].pImageInfo = &depth_info;
+        else writes[i].pBufferInfo = &buffer_infos[i - 1];
+    }
+    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    // The slot owns this persistent descriptor pool until frame-resource
+    // replacement/renderer teardown, both of which wait for device idle. Do
+    // not also place its raw-device deleter in VulkanFrame::retained: those
+    // references can survive vkDestroyDevice (unlike registered buffers).
+    if (!vulkan_->retain_for_frame(frame,
+            {depth_.lifetime, selected.local_light_records.lifetime,
+             selected.local_light_meta.lifetime,
+             selected.local_light_oversized_indices.lifetime}, error)) return false;
+    matter::record_image_transition(frame.command_buffer, depth_,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    VkMemoryBarrier2 memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    memory.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    memory.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+    memory.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    memory.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &memory;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    struct Push { GpuMat4 clip_to_world; uint32_t width, height, count, words; } push{};
+    static_assert(sizeof(Push) == 80);
+    push.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
+    push.width = raster_extent_.width;
+    push.height = raster_extent_.height;
+    push.count = header.light_count;
+    push.words = header.primary_words_per_tile;
+    vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, primary_light_cull_pipeline_);
+    vkCmdBindDescriptorSets(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+        primary_light_cull_layout_, 0, 1, &selected.primary_light_cull_set, 0, nullptr);
+    vkCmdPushConstants(frame.command_buffer, primary_light_cull_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    write_gpu_timestamp(frame.command_buffer, kGpuZonePrimaryLightCull, false, selected);
+    vkCmdDispatch(frame.command_buffer, header.primary_tiles_x, header.primary_tiles_y, 1);
+    write_gpu_timestamp(frame.command_buffer, kGpuZonePrimaryLightCull, true, selected);
+    memory.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    memory.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    memory.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+    if (vulkan_->ray_tracing_available()) memory.dstStageMask |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    memory.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    return true;
+}
+
+bool VkSceneRenderer::readback_primary_light_mask(
+    uint32_t frame_slot, uint32_t tile_x, uint32_t tile_y,
+    LocalLightGpuMeta& header, std::vector<uint32_t>& words, std::string& error) {
+    words.clear();
+    header = {};
+    if (frame_slot >= frames_.size()) {
+        error = "primary light mask readback frame slot out of range";
+        return false;
+    }
+    auto& buffer = frames_[frame_slot].local_light_meta;
+    if (!matter::map_buffer(buffer, error) ||
+        !matter::invalidate_buffer(buffer, 0, buffer.size, error)) return false;
+    std::memcpy(&header, buffer.mapped, sizeof(header));
+    if (!header.primary_culling_enabled) return true;
+    if (tile_x >= header.primary_tiles_x || tile_y >= header.primary_tiles_y) {
+        error = "primary light mask tile out of range";
+        return false;
+    }
+    const uint64_t offset = sizeof(header) +
+        (uint64_t(tile_y) * header.primary_tiles_x + tile_x) * header.primary_words_per_tile * sizeof(uint32_t);
+    const uint64_t bytes = uint64_t(header.primary_words_per_tile) * sizeof(uint32_t);
+    if (offset > buffer.size || bytes > buffer.size - offset) {
+        error = "primary light mask header exceeds allocation";
+        return false;
+    }
+    words.resize(header.primary_words_per_tile);
+    std::memcpy(words.data(), static_cast<const uint8_t*>(buffer.mapped) + offset, static_cast<size_t>(bytes));
+    return true;
+}
+
+bool VkSceneRenderer::readback_primary_light_list(
+    uint32_t frame_slot, uint32_t tile_x, uint32_t tile_y,
+    std::vector<uint32_t>& ids, std::string& error) {
+    ids.clear();
+    if (frame_slot >= frames_.size()) {
+        error = "primary light list readback frame slot out of range";
+        return false;
+    }
+    auto& buffer = frames_[frame_slot].local_light_meta;
+    LocalLightGpuMeta header{};
+    if (buffer.size < sizeof(header)) {
+        error = "primary light list metadata header is missing";
+        return false;
+    }
+    if (!matter::map_buffer(buffer, error) ||
+        !matter::invalidate_buffer(buffer, 0, buffer.size, error)) return false;
+    std::memcpy(&header, buffer.mapped, sizeof(header));
+    if (!header.primary_culling_enabled) return true;
+    if (tile_x >= header.primary_tiles_x || tile_y >= header.primary_tiles_y) {
+        error = "primary light list tile out of range";
+        return false;
+    }
+    const uint64_t tile_count = uint64_t(header.primary_tiles_x) * header.primary_tiles_y;
+    const uint64_t word_budget = (buffer.size - sizeof(header)) / sizeof(uint32_t);
+    const uint64_t stride = uint64_t(header.light_count) + 1u;
+    // Divide before multiplying: corrupt headers must never wrap an offset
+    // back into the allocation. Check the complete mask/list publication.
+    if (!header.primary_words_per_tile ||
+        tile_count > word_budget / header.primary_words_per_tile) {
+        error = "primary light list mask span exceeds allocation";
+        return false;
+    }
+    const uint64_t mask_words = tile_count * header.primary_words_per_tile;
+    if (tile_count > (word_budget - mask_words) / stride) {
+        error = "primary light list span exceeds allocation";
+        return false;
+    }
+    const uint64_t tile = uint64_t(tile_y) * header.primary_tiles_x + tile_x;
+    const auto* words = reinterpret_cast<const uint32_t*>(
+        static_cast<const uint8_t*>(buffer.mapped) + sizeof(header));
+    const uint64_t start = mask_words + tile * stride;
+    const uint32_t count = words[start];
+    if (count > header.light_count) {
+        error = "primary light list count exceeds light count";
+        return false;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (words[start + 1u + i] >= header.light_count) {
+            error = "primary light list contains an invalid light index";
+            return false;
+        }
+    }
+    ids.assign(words + start + 1u, words + start + 1u + count);
     return true;
 }
 
@@ -8542,8 +9185,9 @@ bool VkSceneRenderer::publish_local_direct_owner(FrameResources& frame,
     meta.inverse_cell_size = meta.cell_size > 0.0f ? 1.0f / meta.cell_size : 0.0f;
     meta.max_candidates_per_cell =
         local_light_publication_.index.stats.max_candidates_per_cell;
+    meta.selection_budgets = local_light_budget_word();
     if (!matter::upload_buffer(*vulkan_, frame.local_light_meta, &meta,
-                               sizeof(meta), 0, error)) {
+                               offsetof(LocalLightGpuMeta, primary_tiles_x), 0, error)) {
         return false;
     }
     frame.local_direct_owner = owner;
@@ -9280,6 +9924,14 @@ bool VkSceneRenderer::init(std::string& error) {
     {
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(vulkan_->physical_device(), &props);
+        constexpr uint32_t kRasterInterfaceComponents = 88;
+        if (props.limits.maxVertexOutputComponents < kRasterInterfaceComponents ||
+            props.limits.maxFragmentInputComponents < kRasterInterfaceComponents) {
+            error = "chart-VT raster interface needs 88 components (locations 0..21); device vertex=" +
+                    std::to_string(props.limits.maxVertexOutputComponents) +
+                    " fragment=" + std::to_string(props.limits.maxFragmentInputComponents);
+            return false;
+        }
         const bool has_ts = props.limits.timestampComputeAndGraphics &&
                             props.limits.timestampPeriod > 0.0f;
         gpu_timers_supported_ = has_ts;
@@ -9461,6 +10113,50 @@ bool VkSceneRenderer::build_particle_visual(
     }
     return gpu_visual_mesher_->build_particle_visual(job, result, stats,
                                                       error, control);
+}
+
+bool VkSceneRenderer::build_solid_source(
+    const gpu_meshing::SolidJob& job, gpu_meshing::MeshResult& result,
+    gpu_meshing::SolidStats& stats, gpu_meshing::Error& error,
+    const gpu_meshing::BuildControl& control) {
+    if (!vulkan_) {
+        error = {gpu_meshing::ErrorCode::Unavailable,
+                 "Vulkan solid source mesher has no device"};
+        return false;
+    }
+    if (!gpu_solid_mesher_) {
+        try {
+            gpu_solid_mesher_ =
+                std::make_unique<gpu_meshing::GpuSolidMesher>(*vulkan_);
+        } catch (const std::bad_alloc&) {
+            error = {gpu_meshing::ErrorCode::Unavailable,
+                     "Vulkan solid source mesher allocation failed"};
+            return false;
+        }
+    }
+    return gpu_solid_mesher_->build(job, result, stats, error, control);
+}
+
+bool VkSceneRenderer::project_solid_face(
+    const gpu_meshing::FaceJob& job, gpu_meshing::FacePatch& result,
+    gpu_meshing::FaceStats& stats, gpu_meshing::Error& error,
+    const gpu_meshing::BuildControl& control) {
+    if (!vulkan_) {
+        error = {gpu_meshing::ErrorCode::Unavailable,
+                 "Vulkan source face projector has no device"};
+        return false;
+    }
+    if (!gpu_solid_face_projector_) {
+        try {
+            gpu_solid_face_projector_ =
+                std::make_unique<gpu_meshing::GpuSolidFaceProjector>(*vulkan_);
+        } catch (const std::bad_alloc&) {
+            error = {gpu_meshing::ErrorCode::Unavailable,
+                     "Vulkan source face projector allocation failed"};
+            return false;
+        }
+    }
+    return gpu_solid_face_projector_->project(job, result, stats, error, control);
 }
 
 // Registers a part's geometry with the renderer and returns its part SLOT, or
@@ -10198,7 +10894,7 @@ bool VkSceneRenderer::readback_test_surface_hit(
     if (!matter::map_buffer(selected.rt_test_output, error) ||
         !matter::map_buffer(selected.rt_error_counter, error) ||
         !matter::invalidate_buffer(selected.rt_test_output, 0,
-                                   29 * sizeof(uint32_t), error) ||
+                                   32 * sizeof(uint32_t), error) ||
         !matter::invalidate_buffer(selected.rt_error_counter, 0,
                                    sizeof(GpuRtCounters), error)) return false;
     const auto* words =
@@ -10232,6 +10928,7 @@ bool VkSceneRenderer::readback_test_surface_hit(
     hit.vt_mapped_mip = as_float(words[26]);
     hit.cone_width = as_float(words[27]);
     hit.uv_density = as_float(words[28]);
+    hit.vt_normal = {as_float(words[29]), as_float(words[30]), as_float(words[31])};
     invalid_count =
         *static_cast<const uint32_t*>(selected.rt_error_counter.mapped);
     return true;
@@ -10327,19 +11024,31 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     // Test-only diagnostics may run immediately after an asynchronous smoke
     // frame. Recycle descriptor sets only after that submitted work is done.
     vulkan_->wait_idle();
-    const VkExtent2D fixture_extent = fixture.signal_mode == 3u
-        ? raster_extent_ : raw_diffuse_extent_;
-    if (frames_.empty() || raw_diffuse_.image == VK_NULL_HANDLE ||
+    const VkExtent2D fixture_extent = gi_signal_extent(fixture.signal_mode);
+    if (fixture.signal_mode > 3u ||
+        (fixture.reuse_previous_output && fixture.signal_mode != 0u) ||
+        frames_.empty() || raw_diffuse_.image == VK_NULL_HANDLE ||
         fixture.output_pixel.x < 0 || fixture.output_pixel.y < 0 ||
         fixture.output_pixel.x >= static_cast<int>(fixture_extent.width) ||
         fixture.output_pixel.y >= static_cast<int>(fixture_extent.height)) {
         error = "GI temporal GPU fixture requires initialized in-bounds targets";
         return false;
     }
+    for (const auto& patch : fixture.current_patches) {
+        if (patch.pixel.x < 0 || patch.pixel.y < 0 ||
+            patch.pixel.x >= static_cast<int>(fixture_extent.width) ||
+            patch.pixel.y >= static_cast<int>(fixture_extent.height)) {
+            error = "GI temporal current patch is outside the signal extent";
+            return false;
+        }
+    }
+    // History count plus optional previous radiance occupy sixteen bytes;
+    // every rgba16f/rg32ui patch remains eight-byte aligned.
+    const VkDeviceSize upload_size = 16u + 32u * fixture.current_patches.size();
     matter::VkBufferResource upload;
     matter::VkBufferResource readback;
     if (!matter::create_buffer(
-            *vulkan_, 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            *vulkan_, upload_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, upload, error) ||
         !matter::create_buffer(
@@ -10353,7 +11062,32 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     const uint16_t history_patch = static_cast<uint16_t>(
         std::min(kGiHistoryLengthMax, fixture.previous_history_length));
     std::memcpy(upload.mapped, &history_patch, sizeof(history_patch));
-    if (!matter::flush_buffer(upload, 0, 4, error)) return false;
+    const uint16_t previous_raw[4] = {
+        float_to_half(fixture.previous_radiance_patch.x),
+        float_to_half(fixture.previous_radiance_patch.y),
+        float_to_half(fixture.previous_radiance_patch.z),
+        float_to_half(fixture.previous_radiance_patch.w)};
+    std::memcpy(static_cast<uint8_t*>(upload.mapped) + 8u,
+                previous_raw, sizeof(previous_raw));
+    const auto fixture_half = [](float value) {
+        return std::isnan(value) ? uint16_t{0x7e00u} : float_to_half(value);
+    };
+    for (size_t i = 0; i < fixture.current_patches.size(); ++i) {
+        const auto& patch = fixture.current_patches[i];
+        auto* bytes = static_cast<uint8_t*>(upload.mapped) + 16u + 32u * i;
+        const uint16_t raw[4] = {fixture_half(patch.raw.x),
+            fixture_half(patch.raw.y), fixture_half(patch.raw.z),
+            fixture_half(patch.raw.w)};
+        const uint16_t normal[4] = {float_to_half(patch.normal.x),
+            float_to_half(patch.normal.y), float_to_half(patch.normal.z),
+            float_to_half(patch.normal.w)};
+        const uint32_t identity[2] = {patch.material_index, patch.instance_token};
+        std::memcpy(bytes, raw, sizeof(raw));
+        std::memcpy(bytes + 8, &patch.depth, sizeof(patch.depth));
+        std::memcpy(bytes + 16, normal, sizeof(normal));
+        std::memcpy(bytes + 24, identity, sizeof(identity));
+    }
+    if (!matter::flush_buffer(upload, 0, upload_size, error)) return false;
 
     struct FixtureRecord {
         VkSceneRenderer* renderer;
@@ -10372,6 +11106,17 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     const bool saved_composite = last_composite_used_gi_temporal_;
     const TemporalFrame saved_temporal = temporal_frame_;
     const auto saved_direct = local_direct_history_state_;
+    const bool saved_history_reset_pending = gi_history_reset_pending_;
+    const bool saved_diffuse_reset_pending = gi_diffuse_history_reset_pending_;
+    const bool saved_reflection_reset_pending = gi_reflection_history_reset_pending_;
+    // Fixtures own their reset bit, including before a renderer has presented
+    // any RT frame and while independently probing a newly resized target.
+    gi_history_reset_pending_ = false;
+    gi_diffuse_history_reset_pending_ = false;
+    gi_reflection_history_reset_pending_ = false;
+    const uint32_t saved_presented_index = gi_presented_history_index_;
+    if (fixture.reuse_previous_output)
+        gi_presented_history_index_ = gi_candidate_history_index_;
     if (fixture.signal_mode == 3u) {
         local_direct_history_state_.presented_token = 1;
         local_direct_history_state_.reset_pending = false;
@@ -10406,13 +11151,15 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         matter::VkImageResource& raw_signal =
             f.signal_mode == 3u ? renderer.raw_local_direct_
             : f.signal_mode == 0u ? renderer.raw_diffuse_
-                                : renderer.raw_specular_;
+            : f.signal_mode == 1u ? renderer.raw_specular_
+                                 : renderer.raw_transmission_;
         clear_color(raw_signal, value);
         value = {};
         value.float32[0] = f.raw_aux.x;
         value.float32[1] = f.raw_aux.y;
         clear_color(f.signal_mode == 3u ? renderer.orm_
-                                       : renderer.raw_specular_aux_, value);
+                    : f.signal_mode == 2u ? renderer.raw_transmission_aux_
+                                         : renderer.raw_specular_aux_, value);
         value = {};
         value.float32[0] = f.velocity.x;
         value.float32[1] = f.velocity.y;
@@ -10440,6 +11187,39 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         value = {};
         value.float32[0] = f.reactivity;
         clear_color(renderer.reactivity_, value);
+        const auto patch_texel = [&](matter::VkImageResource& image,
+                VkDeviceSize offset, GiPixelCoord pixel, VkImageAspectFlags aspect) {
+            transition_for_use(command_buffer, image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT, aspect);
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = offset;
+            copy.imageSubresource.aspectMask = aspect;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageOffset = {pixel.x, pixel.y, 0};
+            copy.imageExtent = {1, 1, 1};
+            vkCmdCopyBufferToImage(command_buffer, item.upload, image.image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        };
+        const VkExtent2D signal_extent = renderer.gi_signal_extent(f.signal_mode);
+        for (size_t i = 0; i < f.current_patches.size(); ++i) {
+            const auto& patch = f.current_patches[i];
+            const VkDeviceSize base = 16u + 32u * i;
+            patch_texel(raw_signal, base, patch.pixel, VK_IMAGE_ASPECT_COLOR_BIT);
+            if (!patch.patch_geometry) continue;
+            const GiPixelCoord source{
+                static_cast<int>((static_cast<float>(patch.pixel.x) + 0.5f) *
+                    static_cast<float>(renderer.raster_extent_.width) /
+                    static_cast<float>(signal_extent.width)),
+                static_cast<int>((static_cast<float>(patch.pixel.y) + 0.5f) *
+                    static_cast<float>(renderer.raster_extent_.height) /
+                    static_cast<float>(signal_extent.height))};
+            patch_texel(renderer.depth_, base + 8u, source, VK_IMAGE_ASPECT_DEPTH_BIT);
+            patch_texel(renderer.normal_, base + 16u, source, VK_IMAGE_ASPECT_COLOR_BIT);
+            patch_texel(renderer.material_instance_, base + 24u, source,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+        }
         const auto sampled = [&](matter::VkImageResource& image,
                                  VkImageAspectFlags aspect) {
             transition_for_use(command_buffer, image,
@@ -10454,23 +11234,31 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
 
         GiHistorySet* histories = f.signal_mode == 3u
             ? renderer.local_direct_history_ : f.signal_mode == 0u
-            ? renderer.gi_history_ : renderer.gi_spec_history_;
+            ? renderer.gi_history_ : f.signal_mode == 1u
+            ? renderer.gi_spec_history_ : renderer.gi_trans_history_;
         GiHistorySet& previous =
             histories[f.signal_mode == 3u
                 ? renderer.local_direct_history_state_.presented_index
                 : renderer.gi_presented_history_index_];
+        if (!f.reuse_previous_output) {
         value = {};
         value.float32[0] = f.previous_radiance.x;
         value.float32[1] = f.previous_radiance.y;
         value.float32[2] = f.previous_radiance.z;
         value.float32[3] = f.previous_radiance.w;
         clear_color(previous.radiance, value);
+        if (f.patch_previous_radiance)
+            patch_texel(previous.radiance, 8u, f.history_patch_pixel,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
         value = {};
         value.float32[0] = f.previous_moments.x;
         value.float32[1] = f.previous_moments.y;
         clear_color(previous.moments, value);
         value = {};
+        value.uint32[0] = std::min(kGiHistoryLengthMax,
+                                  f.previous_history_background_length);
         clear_color(previous.history_length, value);
+        value = {};
         value.float32[0] = f.previous_depth;
         clear_color(previous.depth, value);
         value = {};
@@ -10502,6 +11290,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
                                previous.history_length.image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                &patch);
+        }
         matter::VulkanFrame fake{};
         fake.command_buffer = command_buffer;
         fake.frame_slot = renderer.active_frame_index_;
@@ -10541,6 +11330,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         matter::ImmediateSubmitPhase::compute_dispatch,
         {upload.lifetime, readback.lifetime, raw_diffuse_.lifetime,
          raw_specular_.lifetime, raw_specular_aux_.lifetime,
+         raw_transmission_.lifetime, raw_transmission_aux_.lifetime,
          velocity_.lifetime, depth_.lifetime, normal_.lifetime,
          material_instance_.lifetime, reactivity_.lifetime,
          gi_history_[0].radiance.lifetime, gi_history_[0].moments.lifetime,
@@ -10566,7 +11356,23 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
          gi_spec_history_[1].normal.lifetime,
          gi_spec_history_[1].identity.lifetime,
          gi_spec_history_[1].rejection.lifetime,
-         gi_spec_history_[1].aux.lifetime});
+         gi_spec_history_[1].aux.lifetime,
+         gi_trans_history_[0].radiance.lifetime,
+         gi_trans_history_[0].moments.lifetime,
+         gi_trans_history_[0].history_length.lifetime,
+         gi_trans_history_[0].depth.lifetime,
+         gi_trans_history_[0].normal.lifetime,
+         gi_trans_history_[0].identity.lifetime,
+         gi_trans_history_[0].rejection.lifetime,
+         gi_trans_history_[0].aux.lifetime,
+         gi_trans_history_[1].radiance.lifetime,
+         gi_trans_history_[1].moments.lifetime,
+         gi_trans_history_[1].history_length.lifetime,
+         gi_trans_history_[1].depth.lifetime,
+         gi_trans_history_[1].normal.lifetime,
+         gi_trans_history_[1].identity.lifetime,
+         gi_trans_history_[1].rejection.lifetime,
+         gi_trans_history_[1].aux.lifetime});
     gi_presented_attempt_token_ = saved_presented_token;
     gi_candidate_scene_key_ = saved_candidate_scene_key;
     gi_candidate_frame_serial_ = saved_candidate_serial;
@@ -10575,6 +11381,10 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     last_composite_used_gi_temporal_ = saved_composite;
     temporal_frame_ = saved_temporal;
     local_direct_history_state_ = saved_direct;
+    gi_history_reset_pending_ = saved_history_reset_pending;
+    gi_diffuse_history_reset_pending_ = saved_diffuse_reset_pending;
+    gi_reflection_history_reset_pending_ = saved_reflection_reset_pending;
+    gi_presented_history_index_ = saved_presented_index;
     if (!submitted || !record.ok) return false;
     std::array<uint8_t, 32> bytes{};
     if (!matter::readback_buffer(*vulkan_, readback, bytes.data(), bytes.size(),
@@ -10618,13 +11428,17 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
     }
     vulkan_->wait_idle();
     const float saved_scale = gi_settings_.trace_scale;
+    const float saved_reflection_scale = gi_settings_.reflection_trace_scale;
     gi_settings_.trace_scale = 1.0f;
+    gi_settings_.reflection_trace_scale = 1.0f;
     if (!ensure_raster_targets(fixture.extent.width, fixture.extent.height,
                                error)) {
         gi_settings_.trace_scale = saved_scale;
+        gi_settings_.reflection_trace_scale = saved_reflection_scale;
         return false;
     }
     gi_settings_.trace_scale = saved_scale;
+    gi_settings_.reflection_trace_scale = saved_reflection_scale;
 
     const VkDeviceSize signal_offset = 0;
     const VkDeviceSize moments_offset = pixel_count * 8;
@@ -11131,7 +11945,7 @@ bool VkSceneRenderer::record_gi_temporal_signal(
         return true;
     const bool direct = signal_mode == 3u;
     auto& direct_state = local_direct_history_state_;
-    const VkExtent2D signal_extent = direct ? raster_extent_ : raw_diffuse_extent_;
+    const VkExtent2D signal_extent = gi_signal_extent(signal_mode);
     const uint32_t previous_index = direct ? direct_state.presented_index
                                             : gi_presented_history_index_;
     const uint32_t candidate_index = previous_index ^ 1u;
@@ -11146,11 +11960,16 @@ bool VkSceneRenderer::record_gi_temporal_signal(
         : signal_mode == 0u   ? raw_diffuse_
         : signal_mode == 1u ? raw_specular_
                             : raw_transmission_;
-    // Diffuse ignores aux. Direct reads primary ORM; secondary signals read
-    // their (hit distance, roughness) pair.
+    // Diffuse ignores aux, but the shared shader still fetches/stores it.
+    // Bind an in-bounds signal-sized image when the secondary extent differs.
+    // Direct reads primary ORM; secondary signals read (hit distance, roughness).
     matter::VkImageResource& raw_aux =
         direct ? orm_
-        : signal_mode == 2u ? raw_transmission_aux_ : raw_specular_aux_;
+        : signal_mode == 2u ? raw_transmission_aux_
+        : signal_mode == 0u &&
+              (raw_diffuse_extent_.width != raw_reflection_extent_.width ||
+               raw_diffuse_extent_.height != raw_reflection_extent_.height)
+            ? raw_diffuse_ : raw_specular_aux_;
     const auto sampled = [&](matter::VkImageResource& image) {
         transition_for_use(frame.command_buffer, image,
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -11341,7 +12160,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
     std::string& error, bool retain) {
     const bool direct = signal_mode == 3u;
     auto& direct_state = local_direct_history_state_;
-    const VkExtent2D signal_extent = direct ? raster_extent_ : raw_diffuse_extent_;
+    const VkExtent2D signal_extent = gi_signal_extent(signal_mode);
     if (frame.frame_slot >= frames_.size() ||
         gi_atrous_pipeline_ == VK_NULL_HANDLE ||
         (direct ? direct_state.candidate_serial : gi_candidate_frame_serial_) == 0)
@@ -13751,6 +14570,24 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.vis_params[1] = visibility_reduce_ ? 1u : 0u;
     constants.vis_params[2] = 0;
     constants.vis_params[3] = 0;
+    // Process-level reference switch for matched DLSS quality measurements.
+    // No bias is applied to geometry LOD, culling, or the displacement range.
+    static const bool output_material_footprint =
+        env_flag_on("MATTER_DLSS_MATERIAL_FOOTPRINT");
+    constants.surface_detail_sampling[0] = 1.0f;
+    constants.surface_detail_sampling[1] = 1.0f;
+    if (output_material_footprint &&
+        temporal_frame_.internal_extent.width != 0u &&
+        temporal_frame_.internal_extent.height != 0u &&
+        temporal_frame_.output_extent.width != 0u &&
+        temporal_frame_.output_extent.height != 0u) {
+        constants.surface_detail_sampling[0] = std::min(1.0f,
+            static_cast<float>(temporal_frame_.internal_extent.width) /
+            static_cast<float>(temporal_frame_.output_extent.width));
+        constants.surface_detail_sampling[1] = std::min(1.0f,
+            static_cast<float>(temporal_frame_.internal_extent.height) /
+            static_cast<float>(temporal_frame_.output_extent.height));
+    }
     return matter::upload_buffer(*vulkan_, frame.frame_constants, &constants,
                                  sizeof(constants), 0, error);
 }
@@ -13758,6 +14595,10 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
 void VkSceneRenderer::write_gpu_timestamp(VkCommandBuffer cmd, uint32_t zone_id,
                                           bool is_end, FrameResources& frame) {
     if (!gpu_timers_supported_ || frame.ts_pool == VK_NULL_HANDLE) return;
+    if ((zone_id == kGpuZoneHdrLighting || zone_id == kGpuZoneRtGiDiffuse ||
+         zone_id == kGpuZoneRtGiReflectionTransmission ||
+         zone_id == kGpuZonePrimaryLightCull) &&
+        !lighting_detail_timers_enabled()) return;
     write_ts(cmd, frame.ts_pool, zone_id, is_end);
     const uint8_t bit = is_end ? 2u : 1u;
     frame.ts_written[zone_id] |= bit;
@@ -13859,6 +14700,8 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
             // vkGetQueryPoolResults returns VK_NOT_READY when any query is unavailable;
             // the per-query availability bits below gate each sample individually.
             if (rb == VK_SUCCESS || rb == VK_NOT_READY) {
+                ++gpu_sample_sequence_;
+                gpu_sample_valid_mask_ = 0;
                 for (uint32_t z = 0; z < kGpuZoneCount; ++z) {
                     // Atmosphere LUT candidates submit and resolve their own
                     // query pool before this frame begins. Frame query slot
@@ -13881,6 +14724,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                         static_cast<double>(end_val - begin_val) *
                         timestamp_period_ns_ / 1e6);
                     gpu_last_ms_[z] = ms;
+                    gpu_sample_valid_mask_ |= 1u << z;
                     gpu_smoothed_ms_[z] = gpu_smoothed_ms_[z] * 0.9f + ms * 0.1f;
                 }
             }
@@ -14156,6 +15000,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     const matter::VulkanFrame& frame, const FrameMatrices& matrices,
     matter::Float3 camera_eye, float pixel_budget,
     VkExtent2D trace_extent, std::string& error) {
+    if (!record_primary_light_cull(frame, matrices, error)) return false;
     auto clear_visibility = [&]() {
         const VkClearColorValue one{{1.0f, 1.0f, 1.0f, 1.0f}};
         clear_color_image_for_use(frame.command_buffer, visibility_, one,
@@ -14745,6 +15590,52 @@ bool VkSceneRenderer::build_ray_geometry(
 void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
     if (frame_slot >= frames_.size()) return;
     FrameResources& selected = frames_[frame_slot];
+    if (primary_light_audit_ && selected.primary_light_audit_pending) {
+        selected.primary_light_audit_pending = false;
+        ++primary_light_audit_frames_;
+        std::string diagnostic_error;
+        // Inspect every retired audit frame, including short camera moves
+        // between periodic status lines. Never throttle a correctness failure.
+        if (matter::map_buffer(selected.rt_test_output, diagnostic_error) &&
+            matter::invalidate_buffer(selected.rt_test_output, 56 * sizeof(uint32_t),
+                8 * sizeof(uint32_t), diagnostic_error)) {
+            const auto* words = static_cast<const uint32_t*>(selected.rt_test_output.mapped);
+            if (words[58] != 0 || primary_light_audit_frames_ <= 3 ||
+                primary_light_audit_frames_ % 120 == 0)
+                MATTER_LOGI("primary-light-cull", "retired=%llu candidates=%u rejected=%u positive_rejected=%u kept=%u",
+                    static_cast<unsigned long long>(primary_light_audit_frames_),
+                    words[56], words[57], words[58], words[59]);
+        } else {
+            MATTER_LOGW("primary-light-cull", "audit readback failed: %s", diagnostic_error.c_str());
+        }
+    }
+    if (rt_adaptive_diagnostics_ && selected.rt_adaptive_diagnostics_pending) {
+        selected.rt_adaptive_diagnostics_pending = false;
+        ++rt_adaptive_diagnostic_frames_;
+        std::string diagnostic_error;
+        // First few frames expose startup resets; then one sampled retired
+        // frame per 120 avoids both logging spam and a history-size readback.
+        if ((rt_adaptive_diagnostic_frames_ <= 3 ||
+             rt_adaptive_diagnostic_frames_ % 120 == 0) &&
+            matter::map_buffer(selected.rt_test_output, diagnostic_error) &&
+            matter::invalidate_buffer(selected.rt_test_output,
+                32 * sizeof(uint32_t), 24 * sizeof(uint32_t), diagnostic_error)) {
+            const auto* w = static_cast<const uint32_t*>(selected.rt_test_output.mapped);
+            const auto word64 = [&](uint32_t lo) {
+                return static_cast<unsigned long long>(w[lo]) |
+                       (static_cast<unsigned long long>(w[lo + 1]) << 32);
+            };
+            MATTER_LOGI("rt-adaptive",
+                "retired=%llu one=%u four=%u reject gate=%u motion=%u reactive=%u "
+                "bounds=%u history=%u identity=%u depth=%u normal=%u orm=%u "
+                "moments=%u variance=%u cpu_gate=0x%x key=%016llx previous=%016llx "
+                "token=%llu lights=%u",
+                static_cast<unsigned long long>(rt_adaptive_diagnostic_frames_),
+                w[32], w[44], w[33], w[34], w[35], w[36], w[37], w[38],
+                w[39], w[40], w[41], w[42], w[43], w[48], word64(49), word64(51),
+                word64(53), w[55]);
+        }
+    }
     if (selected.rt_error_counter.buffer == VK_NULL_HANDLE) return;
     std::string error;
     if (!matter::map_buffer(selected.rt_error_counter, error) ||
@@ -15027,7 +15918,7 @@ bool VkSceneRenderer::emit_ray_instances(
 // Writes the RT descriptor set from current renderer state and records up to
 // three traces plus the denoisers: the shadow raygen at the full trace extent,
 // the full-resolution local-direct lighting raygen when local lights exist,
-// then (when GI is enabled) the lighting raygen at raw_diffuse_extent_, followed
+// then GI lighting at its diffuse and reflection/transmission extents, followed
 // by record_gi_temporal + record_gi_atrous.
 //
 // The whole 22-write descriptor array is rebuilt every frame rather than
@@ -15043,6 +15934,14 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     PFN_vkCmdTraceRaysKHR cmd_trace,
     std::string& error) {
     FrameResources& selected = frames_[frame.frame_slot];
+    if (primary_light_audit_) {
+        if (!matter::map_buffer(selected.rt_test_output, error)) return false;
+        auto* words = static_cast<uint32_t*>(selected.rt_test_output.mapped);
+        std::memset(words + 56, 0, 8 * sizeof(uint32_t));
+        if (!matter::flush_buffer(selected.rt_test_output, 56 * sizeof(uint32_t),
+                                  8 * sizeof(uint32_t), error)) return false;
+        selected.primary_light_audit_pending = true;
+    }
     transition_for_use(frame.command_buffer, visibility_, VK_IMAGE_LAYOUT_GENERAL,
                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -15063,6 +15962,72 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    }
+    // Primary motion vectors cannot reveal an off-screen shadow/reflection
+    // change. Both diffuse GI and rough reflection therefore compare actual
+    // emitted TLAS records against their last successfully submitted scene.
+    uint64_t key = 14695981039346656037ull;
+    const auto hash_bytes = [&key](const void* data, size_t size) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < size; ++i) {
+            key ^= bytes[i];
+            key *= 1099511628211ull;
+        }
+    };
+    hash_bytes(selected.rt_tlas_instances.data(),
+               selected.rt_tlas_instances.size() *
+                   sizeof(VkAccelerationStructureInstanceKHR));
+    hash_bytes(&rt_geometry_epoch_, sizeof(rt_geometry_epoch_));
+    hash_bytes(&local_light_revision_, sizeof(local_light_revision_));
+    hash_bytes(&material_shading_revision_, sizeof(material_shading_revision_));
+    hash_bytes(&material_geometry_revision_, sizeof(material_geometry_revision_));
+    hash_bytes(&ray_tracing_settings_.bias, sizeof(ray_tracing_settings_.bias));
+    hash_bytes(&gi_settings_.enabled, sizeof(gi_settings_.enabled));
+    gi_candidate_scene_key_ = key;
+    // Validate history against this frame's emitted scene BEFORE selecting ray
+    // counts. A changed off-screen blocker is invisible to primary velocity.
+    const bool primary_history_valid = !temporal_frame_.reset &&
+        !local_direct_history_state_.reset_pending &&
+        local_direct_history_state_.presented_token != 0 &&
+        key == local_direct_history_state_.presented_scene_key;
+    if (rt_adaptive_diagnostics_) {
+        if (!matter::map_buffer(selected.rt_test_output, error)) return false;
+        auto* words = static_cast<uint32_t*>(selected.rt_test_output.mapped);
+        std::memset(words + 32, 0, 24 * sizeof(uint32_t));
+        // Snapshot the exact CPU gate for the retired frame's classification.
+        words[48] = (temporal_frame_.reset ? 1u : 0u) |
+            (local_direct_history_state_.reset_pending ? 2u : 0u) |
+            (local_direct_history_state_.presented_token == 0 ? 4u : 0u) |
+            (key != local_direct_history_state_.presented_scene_key ? 8u : 0u);
+        words[49] = static_cast<uint32_t>(key);
+        words[50] = static_cast<uint32_t>(key >> 32);
+        words[51] = static_cast<uint32_t>(local_direct_history_state_.presented_scene_key);
+        words[52] = static_cast<uint32_t>(local_direct_history_state_.presented_scene_key >> 32);
+        words[53] = static_cast<uint32_t>(local_direct_history_state_.presented_token);
+        words[54] = static_cast<uint32_t>(local_direct_history_state_.presented_token >> 32);
+        words[55] = static_cast<uint32_t>(local_light_publication_.records.size());
+        if (!matter::flush_buffer(selected.rt_test_output, 32 * sizeof(uint32_t),
+                                  24 * sizeof(uint32_t), error)) return false;
+    }
+    matter::VkImageResource* primary_history_inputs[8]{};
+    VkDescriptorImageInfo primary_history_infos[8]{};
+    if (rt_primary_adaptive_) {
+        GiHistorySet& previous =
+            local_direct_history_[local_direct_history_state_.presented_index];
+        matter::VkImageResource* inputs[] = {
+            &velocity_, &reactivity_, &previous.history_length, &previous.depth,
+            &previous.normal, &previous.identity, &previous.aux, &previous.moments};
+        std::copy(std::begin(inputs), std::end(inputs), primary_history_inputs);
+        for (uint32_t i = 0; i < 8; ++i) {
+            auto& image = *primary_history_inputs[i];
+            transition_for_use(frame.command_buffer, image,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                               VK_IMAGE_ASPECT_COLOR_BIT);
+            primary_history_infos[i] = {composite_sampler_, image.view,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        }
     }
     VkWriteDescriptorSetAccelerationStructureKHR as_write{
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
@@ -15236,6 +16201,19 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[21].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[21].pImageInfo = &raw_local_direct_info;
     vkUpdateDescriptorSets(vulkan_->device(), 22, writes, 0, nullptr);
+    if (rt_primary_adaptive_) {
+        VkWriteDescriptorSet history_writes[8]{};
+        for (uint32_t i = 0; i < 8; ++i) {
+            auto& write = history_writes[i];
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = rt_adaptive_descriptor_sets_[frame.frame_slot];
+            write.dstBinding = i;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &primary_history_infos[i];
+        }
+        vkUpdateDescriptorSets(vulkan_->device(), 8, history_writes, 0, nullptr);
+    }
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
         float to_sun_max_distance[4];
@@ -15286,6 +16264,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     vkCmdBindDescriptorSets(frame.command_buffer,
                             VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
                             rt_pipeline_layout_, 0, 3, rt_sets, 0, nullptr);
+    // Bind before the first trace: all statically referenced pipeline sets
+    // stay valid even when the initial SBT selects the sun-shadow raygen.
+    if (rt_primary_adaptive_)
+        vkCmdBindDescriptorSets(frame.command_buffer,
+            VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_layout_,
+            3, 1, &rt_adaptive_descriptor_sets_[frame.frame_slot], 0, nullptr);
     vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                        VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(constants),
                        &constants);
@@ -15305,7 +16289,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, false, rt_frame_slot);
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
               trace_extent.width, trace_extent.height, 1);
-    // End the primary/shadow zone here; the GI trace below is timed separately.
+    // End sun shadows here; local-direct and GI traces have separate zones.
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, true, rt_frame_slot);
     const bool trace_local_direct = !local_light_publication_.records.empty();
     if (gi_settings_.enabled || trace_local_direct) {
@@ -15376,13 +16360,32 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         const VkStridedDeviceAddressRegionKHR gi_raygen{
             rt_sbt_lighting_raygen_address_, handle_stride, handle_stride};
         if (trace_local_direct) {
-            gi.shadow_samples = local_shadow_samples |
-                                kLocalDirectDispatchBit | scene_gi_state;
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneRtLocalDirect,
+                                false, rt_frame_slot);
+            // These multiplier lanes are unused by primary-only raygen. Carry
+            // jitter delta in internal Y-down pixels without growing the 128B
+            // push ABI; GI dispatches retain their original multiplier values.
+            GiConstants primary_gi = gi;
+            primary_gi.diffuse_multiplier =
+                temporal_frame_.current_jittered.jitter_pixels[0] -
+                temporal_frame_.previous_jittered.jitter_pixels[0];
+            primary_gi.reflection_multiplier =
+                temporal_frame_.current_jittered.jitter_pixels[1] -
+                temporal_frame_.previous_jittered.jitter_pixels[1];
+            primary_gi.shadow_samples = local_shadow_samples |
+                                kLocalDirectDispatchBit | scene_gi_state |
+                                (primary_history_valid ? 0x04000000u : 0u);
             vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
-                               VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi),
-                               &gi);
-            cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
+                               VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(primary_gi),
+                               &primary_gi);
+            const VkStridedDeviceAddressRegionKHR primary_raygen{
+                rt_separate_primary_ ? rt_sbt_primary_raygen_address_
+                                     : rt_sbt_lighting_raygen_address_,
+                handle_stride, handle_stride};
+            cmd_trace(frame.command_buffer, &primary_raygen, &miss, &hit, &callable,
                       raster_extent_.width, raster_extent_.height, 1);
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneRtLocalDirect,
+                                true, rt_frame_slot);
             ++last_rt_trace_dispatches_;
             if (!publish_local_direct_owner(selected,
                                             LocalDirectOwner::RayTraced,
@@ -15390,6 +16393,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                 return false;
             }
             selected.local_direct_candidate_serial = frame.serial;
+            selected.rt_adaptive_diagnostics_pending = rt_adaptive_diagnostics_;
         } else {
             if (!publish_local_direct_owner(selected, LocalDirectOwner::Raster,
                                             0, error)) {
@@ -15399,39 +16403,43 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         if (gi_settings_.enabled) {
             write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, false,
                                 rt_frame_slot);
-            gi.shadow_samples = local_shadow_samples |
-                                kGiDispatchBit | scene_gi_state;
-            vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
-                               VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi),
-                               &gi);
-            cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
-                      raw_diffuse_extent_.width, raw_diffuse_extent_.height, 1);
-            ++last_rt_trace_dispatches_;
+            constexpr uint32_t kDiffuseOnlyBit = 0x10000000u;
+            constexpr uint32_t kReflectionOnlyBit = 0x08000000u;
+            const auto trace_signal = [&](VkExtent2D extent, uint32_t mask) {
+                gi.shadow_samples = local_shadow_samples |
+                                    kGiDispatchBit | scene_gi_state | mask;
+                vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
+                                   VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
+                cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
+                          extent.width, extent.height, 1);
+                ++last_rt_trace_dispatches_;
+            };
+            if (raw_diffuse_extent_.width == raw_reflection_extent_.width &&
+                raw_diffuse_extent_.height == raw_reflection_extent_.height) {
+                // Identical extents retain the original combined dispatch.
+                trace_signal(raw_diffuse_extent_, 0u);
+            } else {
+                // These dispatches write disjoint signal images. Their shared
+                // scene/material inputs are read-only; denoising follows both.
+                // Distinct query pairs nest inside RtGi. Each pair is written
+                // once per frame; reflection and transmission share one dispatch.
+                write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGiDiffuse,
+                                    false, rt_frame_slot);
+                trace_signal(raw_diffuse_extent_, kDiffuseOnlyBit);
+                write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGiDiffuse,
+                                    true, rt_frame_slot);
+                write_gpu_timestamp(frame.command_buffer,
+                                    kGpuZoneRtGiReflectionTransmission,
+                                    false, rt_frame_slot);
+                trace_signal(raw_reflection_extent_, kReflectionOnlyBit);
+                write_gpu_timestamp(frame.command_buffer,
+                                    kGpuZoneRtGiReflectionTransmission,
+                                    true, rt_frame_slot);
+            }
             write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, true,
                                 rt_frame_slot);
         }
     }
-    // Primary motion vectors cannot reveal an off-screen shadow/reflection
-    // change. Both diffuse GI and rough reflection therefore compare actual
-    // emitted TLAS records against their last successfully submitted scene.
-    uint64_t key = 14695981039346656037ull;
-    const auto hash_bytes = [&key](const void* data, size_t size) {
-        const auto* bytes = static_cast<const unsigned char*>(data);
-        for (size_t i = 0; i < size; ++i) {
-            key ^= bytes[i];
-            key *= 1099511628211ull;
-        }
-    };
-    hash_bytes(selected.rt_tlas_instances.data(),
-               selected.rt_tlas_instances.size() *
-                   sizeof(VkAccelerationStructureInstanceKHR));
-    hash_bytes(&rt_geometry_epoch_, sizeof(rt_geometry_epoch_));
-    hash_bytes(&local_light_revision_, sizeof(local_light_revision_));
-    hash_bytes(&material_shading_revision_, sizeof(material_shading_revision_));
-    hash_bytes(&material_geometry_revision_, sizeof(material_geometry_revision_));
-    hash_bytes(&ray_tracing_settings_.bias, sizeof(ray_tracing_settings_.bias));
-    hash_bytes(&gi_settings_.enabled, sizeof(gi_settings_.enabled));
-    gi_candidate_scene_key_ = key;
     if (gi_settings_.enabled || trace_local_direct)
         write_gpu_timestamp(frame.command_buffer, kGpuZoneDenoise, false,
                             rt_frame_slot);
@@ -15518,6 +16526,9 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
         selected.rt_error_counter.lifetime, selected.materials.lifetime,
         selected.rt_test_output.lifetime, rt_sbt_.lifetime};
+    if (rt_primary_adaptive_)
+        for (const auto* image : primary_history_inputs)
+            retained.push_back(image->lifetime);
     for (const auto& part : parts_) {
         if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
         if (part.rt_index) retained.push_back(part.rt_index->lifetime);
@@ -15645,6 +16656,7 @@ bool VkSceneRenderer::record_cull_and_render(
     }
 
     FrameResources& selected = frames_[frame.frame_slot];
+    if (!upload_local_lights(selected, error)) return false;
     if (!upload_water_forward_constants(selected, matrices, raster_extent_,
                                         error))
         return false;
@@ -15948,6 +16960,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         &raw_diffuse_,
                         &raw_specular_,
                         &raw_transmission_,
+                        &raw_local_direct_,
                         raster_extent_,
                         raster_pipelines.static_mesh,
                         raster_pipelines.skinned_mesh,
@@ -16287,7 +17300,7 @@ bool VkSceneRenderer::readback_draw_water_bindings(
 // the five G-buffer attachments, depth, HDR, sun visibility, the three raw RT
 // signals and their aux images, both GiHistorySets per signal, and the A-trous
 // ping-pong pairs. The RT-signal targets are sized by
-// gi_settings_.trace_scale, so a trace-scale change resizes too.
+// the independent diffuse/reflection trace scales, so either change resizes too.
 //
 // EXPENSIVE AND BLOCKING on a change: wait_idles and frees the DLSS
 // resources first, because everything below is replaced wholesale. It also
@@ -16304,9 +17317,15 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         1u, static_cast<uint32_t>(std::ceil(width * gi_settings_.trace_scale)));
     const uint32_t raw_height = std::max(
         1u, static_cast<uint32_t>(std::ceil(height * gi_settings_.trace_scale)));
+    const uint32_t reflection_width = std::max(
+        1u, static_cast<uint32_t>(std::ceil(width * gi_settings_.reflection_trace_scale)));
+    const uint32_t reflection_height = std::max(
+        1u, static_cast<uint32_t>(std::ceil(height * gi_settings_.reflection_trace_scale)));
     if (raster_extent_.width == width && raster_extent_.height == height &&
         raw_diffuse_extent_.width == raw_width &&
         raw_diffuse_extent_.height == raw_height &&
+        raw_reflection_extent_.width == reflection_width &&
+        raw_reflection_extent_.height == reflection_height &&
         albedo_.image != VK_NULL_HANDLE && normal_.image != VK_NULL_HANDLE &&
         orm_.image != VK_NULL_HANDLE && depth_.image != VK_NULL_HANDLE &&
         velocity_.image != VK_NULL_HANDLE &&
@@ -16366,6 +17385,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource trans_atrous[2];
     const VkExtent3D extent{width, height, 1};
     const VkExtent3D raw_extent{raw_width, raw_height, 1};
+    const VkExtent3D reflection_extent{reflection_width, reflection_height, 1};
     VkImageUsageFlags visibility_usage =
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -16394,7 +17414,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, normal,
                               error) ||
         !matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
-                              VK_FORMAT_R8G8B8A8_UNORM, extent,
+                              VK_FORMAT_R16G16B16A16_SFLOAT, extent,
                               gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, orm,
                               error) ||
@@ -16438,20 +17458,20 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             raw_diffuse, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D,
-            VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent, visibility_usage,
+            VK_FORMAT_R16G16B16A16_SFLOAT, reflection_extent, visibility_usage,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             raw_specular, error) ||
         !matter::create_image(
-            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16_SFLOAT, raw_extent,
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16_SFLOAT, reflection_extent,
             visibility_usage, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, raw_specular_aux, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D,
-            VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent, visibility_usage,
+            VK_FORMAT_R16G16B16A16_SFLOAT, reflection_extent, visibility_usage,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             raw_transmission, error) ||
         !matter::create_image(
-            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16_SFLOAT, raw_extent,
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16_SFLOAT, reflection_extent,
             visibility_usage, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, raw_transmission_aux,
             error) ||
@@ -16483,7 +17503,8 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                               matter::VkImageResource& resource) {
             return matter::create_image(
                 *vulkan_, VK_IMAGE_TYPE_2D, format,
-                sets == &direct_history ? extent : raw_extent, history_usage,
+                sets == &direct_history ? extent
+                    : sets == &history ? raw_extent : reflection_extent, history_usage,
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, resource, error);
         };
@@ -16509,7 +17530,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     for (auto& image : spec_atrous) {
         if (!matter::create_image(
                 *vulkan_, VK_IMAGE_TYPE_2D,
-                VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent, history_usage,
+                VK_FORMAT_R16G16B16A16_SFLOAT, reflection_extent, history_usage,
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, error))
             return false;
@@ -16517,7 +17538,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     for (auto& image : trans_atrous) {
         if (!matter::create_image(
                 *vulkan_, VK_IMAGE_TYPE_2D,
-                VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent, history_usage,
+                VK_FORMAT_R16G16B16A16_SFLOAT, reflection_extent, history_usage,
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, error))
             return false;
@@ -16578,6 +17599,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     gi_history_reset_pending_ = true;
     local_direct_history_state_.reset_pending = true;
     raw_diffuse_extent_ = {raw_width, raw_height};
+    raw_reflection_extent_ = {reflection_width, reflection_height};
     visibility_usage_ = visibility_usage;
     hdr_usage_ = hdr_usage;
     depth_usage_ = depth_usage;
@@ -16642,6 +17664,13 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         return false;
     }
     FrameResources& selected = frames_[active_frame_index_];
+    // The synchronous legacy fixture has no frame/matrix producer hook. Use
+    // the exact world index instead of consuming a mask from another image.
+    const uint32_t disabled_mask[4]{};
+    if (!matter::upload_buffer(*vulkan_, selected.local_light_meta,
+            disabled_mask, sizeof(disabled_mask),
+            offsetof(LocalLightGpuMeta, primary_tiles_x), error)) return false;
+    selected.primary_light_extent = {}; // regenerate on the next normal frame
     selected.water_forward_constants_cache.viewport_refraction = {
         static_cast<float>(width), static_cast<float>(height), 24.0f, 0.75f};
     selected.water_forward_constants_cache.reflection_controls = {
@@ -16670,6 +17699,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.raw_diffuse = &raw_diffuse_;
     record.raw_specular = &raw_specular_;
     record.raw_transmission = &raw_transmission_;
+    record.raw_local_direct = &raw_local_direct_;
     record.extent = raster_extent_;
     const RasterPipelineSelection raster_pipelines = select_raster_pipelines(
         wireframe_, vulkan_->wireframe_available(),
@@ -16761,7 +17791,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         material_instance_.lifetime, reactivity_.lifetime, depth_.lifetime,
         hdr_.lifetime, opaque_hdr_.lifetime, opaque_depth_.lifetime,
-        visibility_.lifetime, raw_diffuse_.lifetime,
+        visibility_.lifetime, raw_diffuse_.lifetime, raw_specular_.lifetime,
+        raw_transmission_.lifetime, raw_local_direct_.lifetime,
         vertices_.lifetime, indices_.lifetime, selected.commands.lifetime,
         selected.frame_constants.lifetime, selected.draw_transforms.lifetime,
         selected.materials.lifetime,
@@ -17061,9 +18092,11 @@ bool VkSceneRenderer::test_dispatch_display_transform_fixture(
     pipeline_create.pColorBlendState = &color_blend;
     pipeline_create.pDynamicState = &dynamic;
     pipeline_create.layout = display_pipeline_layout_;
-    result = vkCreateGraphicsPipelines(
+    result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &pipeline_create, [&] {
+        return vkCreateGraphicsPipelines(
         graphics.device, VK_NULL_HANDLE, 1, &pipeline_create, nullptr,
         &graphics.pipeline);
+    });
     vkDestroyShaderModule(graphics.device, fragment, nullptr);
     vkDestroyShaderModule(graphics.device, vertex, nullptr);
     if (result != VK_SUCCESS)
@@ -17241,7 +18274,12 @@ bool VkSceneRenderer::record_composite_to_swapchain(
     const auto consume_bridge_reset = [this]() {
         if (!dlss_bridge_->consume_dlss_history_reset()) return;
         if (!dlss_history_reset_pending_) ++dlss_reset_count_;
-        dlss_history_reset_pending_ = true;
+        // A bridge mode/extent transition can already be represented by this
+        // frame's GI reset. Coalesce only that bridge notification, never a
+        // pending explicit RT/GI/light edit: resetting a GI lane does not
+        // itself invalidate whole-frame temporal lighting.
+        if (!gi_candidate_was_reset_)
+            dlss_history_reset_pending_ = true;
         gi_history_reset_pending_ = true;
         local_direct_history_state_.reset_pending = true;
     };
@@ -17598,8 +18636,9 @@ bool VkSceneRenderer::test_readback_gi_history(
     }
     record.image_count = 5;
     record.destination = staging.buffer;
-    record.x = x * raw_diffuse_extent_.width / raster_extent_.width;
-    record.y = y * raw_diffuse_extent_.height / raster_extent_.height;
+    record.x = x;
+    record.y = y;
+    record.source_extent = raster_extent_;
     if (!matter::submit_immediate(*vulkan_, record_raster_readback, &record,
             error, matter::ImmediateSubmitPhase::compute_dispatch,
             std::move(retained))) return false;
@@ -17610,8 +18649,10 @@ bool VkSceneRenderer::test_readback_gi_history(
     std::memcpy(&diffuse_history, bytes, 2);
     std::memcpy(&specular_history, bytes + 16, 2);
     std::memcpy(&rejection[0], bytes + 8, 4);
-    std::memcpy(&rejection[1], bytes + 20, 4);
-    std::memcpy(aux, bytes + 24, 4);
+    // Match record_raster_readback's padded image offsets. The fourth and
+    // fifth images follow its eight-byte ORM slot even for this GI fixture.
+    std::memcpy(&rejection[1], bytes + 24, 4);
+    std::memcpy(aux, bytes + 28, 4);
     history[0] = diffuse_history;
     history[1] = specular_history;
     specular_aux = {half_to_float(aux[0]), half_to_float(aux[1]), 0};
@@ -17690,6 +18731,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                 std::min(raw_diffuse_extent_.height - 1,
                                          y * raw_diffuse_extent_.height /
                                              raster_extent_.height)};
+    record.source_extent = raster_extent_;
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         depth_.lifetime, hdr_.lifetime, visibility_.lifetime,
@@ -17718,13 +18760,17 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                               bytes[offset + 3] / 255.0f};
     };
     pixel.albedo = unorm4(0);
-    pixel.orm = unorm4(16);
+    // ORM.a transports finished-surface displacement in world metres.
+    uint16_t orm_half[4]{};
+    std::memcpy(orm_half, bytes.data() + 16, sizeof(orm_half));
+    pixel.orm = {half_to_float(orm_half[0]), half_to_float(orm_half[1]),
+                 half_to_float(orm_half[2]), half_to_float(orm_half[3])};
     uint16_t normal_half[4]{};
     uint16_t hdr_half[4]{};
     std::memcpy(normal_half, bytes.data() + 8, sizeof(normal_half));
     uint16_t velocity_half[2]{};
-    std::memcpy(velocity_half, bytes.data() + 20, sizeof(velocity_half));
-    std::memcpy(&pixel.depth, bytes.data() + 24, sizeof(pixel.depth));
+    std::memcpy(velocity_half, bytes.data() + 24, sizeof(velocity_half));
+    std::memcpy(&pixel.depth, bytes.data() + 28, sizeof(pixel.depth));
     std::memcpy(hdr_half, bytes.data() + 32, sizeof(hdr_half));
     pixel.normal = {half_to_float(normal_half[0]),
                     half_to_float(normal_half[1]),

@@ -51,6 +51,22 @@ if(MATTER_ENABLE_PHYSX)
     endif()
 endif()
 
+set(matter_dist_streamline false)
+set(matter_dist_streamline_arguments)
+set(matter_dist_streamline_files)
+if(MATTER_ENABLE_STREAMLINE)
+    set(matter_dist_streamline true)
+    list(APPEND matter_dist_streamline_arguments
+        --streamline-root "${MATTER_STREAMLINE_ROOT}")
+    foreach(runtime sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll)
+        list(APPEND matter_dist_streamline_files
+            "${MATTER_STREAMLINE_ROOT}/bin/x64/${runtime}")
+    endforeach()
+    list(APPEND matter_dist_streamline_files
+        "${MATTER_STREAMLINE_ROOT}/license.txt"
+        "${MATTER_STREAMLINE_ROOT}/bin/x64/nvngx_dlss.license.txt")
+endif()
+
 add_custom_target(matter_dist
     COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
         "${CMAKE_SOURCE_DIR}/tools/stage-windows-msvc-package.py"
@@ -67,6 +83,8 @@ add_custom_target(matter_dist
         --autoremesher "${matter_dist_autoremesher}"
         --physx "${matter_dist_physx}"
         ${matter_dist_physx_arguments}
+        --streamline "${matter_dist_streamline}"
+        ${matter_dist_streamline_arguments}
         --dependency-library "autoremesher_core=$<TARGET_FILE:matter_autoremesher>"
         --dependency-library "bc7enc=$<TARGET_FILE:matter_bc7enc>"
         --dependency-library "box3d=$<TARGET_FILE:matter_box3d>"
@@ -82,7 +100,7 @@ add_custom_target(matter_dist
         -File "${CMAKE_SOURCE_DIR}/tools/check-windows-msvc-package.ps1"
         -DistPath "${matter_dist_root}"
     DEPENDS matter_editor ${matter_third_party_targets}
-        ${matter_dist_physx_files}
+        ${matter_dist_physx_files} ${matter_dist_streamline_files}
         "${CMAKE_SOURCE_DIR}/tools/stage-windows-msvc-package.py"
         "${CMAKE_SOURCE_DIR}/tools/check-windows-msvc-package.ps1"
     USES_TERMINAL

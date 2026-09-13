@@ -281,12 +281,32 @@ if(BUILD_TESTING)
         LABELS compiler-policy
     )
 
+    matter_add_engine_cpu_test(solid_source_evaluation_tests
+        MatterEngine3/tests/solid_source_evaluation_tests.cpp)
+    set_tests_properties(solid_source_evaluation_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    matter_add_engine_cpu_test(brick_bond_detail_tests
+        MatterEngine3/tests/brick_bond_detail_tests.cpp)
+    set_tests_properties(brick_bond_detail_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    matter_add_engine_cpu_test(brick_bond_atlas_tests
+        MatterEngine3/tests/brick_bond_atlas_tests.cpp)
+    matter_add_engine_cpu_test(solid_face_projection_tests
+        MatterEngine3/tests/solid_face_projection_tests.cpp)
+    matter_add_engine_cpu_test(bake_trace_tests
+        MatterEngine3/tests/bake_trace_tests.cpp)
     matter_add_engine_cpu_test(world_definition_tests
         MatterEngine3/tests/world_definition_tests.cpp)
     matter_add_engine_cpu_test(local_light_index_tests
         MatterEngine3/tests/local_light_index_tests.cpp)
+    matter_add_engine_cpu_test(primary_light_culling_tests
+        MatterEngine3/tests/primary_light_culling_tests.cpp)
     matter_add_engine_cpu_test(resolve_cache_tests
         MatterEngine3/tests/resolve_cache_tests.cpp)
+    matter_add_engine_cpu_test(authored_world_cache_tests
+        MatterEngine3/tests/authored_world_cache_tests.cpp)
+    matter_add_engine_cpu_test(authored_world_provider_cache_tests
+        MatterEngine3/tests/authored_world_provider_cache_tests.cpp)
     matter_add_engine_cpu_test(material_registry_tests
         libs/MatterSurfaceLib/tests/material_registry_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_definition_tests
@@ -310,6 +330,48 @@ if(BUILD_TESTING)
         MatterEngine3/tests/field_probe.cpp)
     matter_add_engine_cpu_test(script_host_tests
         MatterEngine3/tests/script_host_tests.cpp)
+    # Explicit performance harness: fresh cache-miss jobs are not a regular
+    # correctness test and must not run as part of the default CTest suite.
+    add_executable(castle_part_bench MatterEngine3/tests/castle_part_bench.cpp)
+    matter_engine_include_directories(castle_part_bench PRIVATE)
+    target_include_directories(castle_part_bench PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+    target_compile_definitions(castle_part_bench PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(castle_part_bench PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(castle_part_bench)
+    matter_apply_test_assertion_policy(castle_part_bench)
+    add_executable(castle_dependency_bench MatterEngine3/tests/castle_dependency_bench.cpp)
+    matter_engine_include_directories(castle_dependency_bench PRIVATE)
+    target_include_directories(castle_dependency_bench PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+    target_compile_definitions(castle_dependency_bench PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(castle_dependency_bench PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(castle_dependency_bench)
+    matter_apply_test_assertion_policy(castle_dependency_bench)
+    add_executable(castle_surface_shell_tests MatterEngine3/tests/castle_surface_shell_tests.cpp)
+    matter_engine_include_directories(castle_surface_shell_tests PRIVATE)
+    target_compile_definitions(castle_surface_shell_tests PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(castle_surface_shell_tests PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(castle_surface_shell_tests)
+    matter_apply_test_assertion_policy(castle_surface_shell_tests)
+    matter_add_engine_cpu_test(modifier_apply_tests
+        MatterEngine3/tests/modifier_apply_tests.cpp)
+    matter_add_engine_cpu_test(staged_normals_tests
+        libs/MatterSurfaceLib/tests/staged_normals_tests.cpp)
+    matter_add_engine_cpu_test(sdf_candidate_bounds_tests
+        MatterEngine3/tests/sdf_candidate_bounds_tests.cpp)
+    matter_add_engine_cpu_test(surface_vertex_tests
+        MatterEngine3/tests/surface_vertex_tests.cpp)
+    matter_add_engine_cpu_test(castle_singleton_tests
+        MatterEngine3/tests/castle_singleton_tests.cpp)
+    add_custom_target(castle_fast_bake_cpu_tools DEPENDS
+        castle_part_bench castle_dependency_bench modifier_apply_tests
+        staged_normals_tests sdf_candidate_bounds_tests part_asset_v2_tests
+        castle_surface_shell_tests surface_vertex_tests castle_singleton_tests
+        script_host_tests partstore_tests)
     # The part-graph logic suite is host-free (its Baker/ModuleResolver are
     # fakes), so unlike part_graph_integration_tests.cpp -- which needs POSIX
     # unistd.h and stays a Make/MinGW target -- it builds under MSVC and can
@@ -322,6 +384,8 @@ if(BUILD_TESTING)
     # transient-sharing retry, which POSIX rename never reaches.
     matter_add_engine_cpu_test(part_asset_v2_tests
         MatterEngine3/tests/part_asset_v2_tests.cpp)
+    matter_add_engine_cpu_test(part_asset_flat_refs_tests
+        MatterEngine3/tests/part_asset_flat_refs_tests.cpp)
     matter_add_engine_cpu_test(eval_world_tests
         MatterEngine3/tests/eval_world_tests.cpp)
     matter_add_engine_cpu_test(lod_distance_tests

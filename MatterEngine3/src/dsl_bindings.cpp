@@ -45,6 +45,7 @@
 // ---------------------------------------------------------------------------
 #include "dsl_state.h"
 #include "dsl_bindings.h"
+#include <limits>
 #include "pf_bindings.h"
 #include "tileset_spec.h"
 #include "tileset_placement.h"
@@ -659,6 +660,18 @@ static JSValue j_beginShape(JSContext* c, JSValueConst, int, JSValueConst* a){
     int32_t mode=0; JS_ToInt32(c,&mode,a[0]); state_of(c)->beginShape(mode); return JS_UNDEFINED; }
 static JSValue j_vertex(JSContext* c, JSValueConst, int, JSValueConst* a){
     state_of(c)->vertex((float)argd(c,a[0]),(float)argd(c,a[1]),(float)argd(c,a[2])); return JS_UNDEFINED; }
+static JSValue j_surfaceVertex(JSContext* c, JSValueConst, int argc, JSValueConst* a) {
+    if (argc != 8) { state_of(c)->set_error("surfaceVertex requires eight numbers"); return JS_UNDEFINED; }
+    double values[8];
+    for (int i=0; i<8; ++i) {
+        if (!JS_IsNumber(a[i]) || JS_ToFloat64(c,&values[i],a[i]) < 0) {
+            state_of(c)->set_error("surfaceVertex requires eight numbers"); return JS_UNDEFINED;
+        }
+    }
+    state_of(c)->surfaceVertex(float(values[0]),float(values[1]),float(values[2]),
+        float(values[3]),float(values[4]),float(values[5]),float(values[6]),float(values[7]));
+    return JS_UNDEFINED;
+}
 static JSValue j_endShape(JSContext* c, JSValueConst, int, JSValueConst*){ state_of(c)->endShape(); return JS_UNDEFINED; }
 static JSValue j_beginContour(JSContext* c, JSValueConst, int, JSValueConst*){ state_of(c)->beginContour(); return JS_UNDEFINED; }
 static JSValue j_endContour(JSContext* c, JSValueConst, int, JSValueConst*){ state_of(c)->endContour(); return JS_UNDEFINED; }
@@ -1988,6 +2001,191 @@ static JSValue j_emitVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) 
     return JS_UNDEFINED;
 }
 
+namespace {
+struct SolidJsValue {
+    JSContext *context;
+    JSValue value;
+    SolidJsValue(JSContext *c, JSValue v) : context(c), value(v) {}
+    ~SolidJsValue() {
+        JS_FreeValue(context, value);
+    }
+    SolidJsValue(const SolidJsValue &) = delete;
+};
+bool solid_keys(JSContext *c, JSValueConst object,
+                const std::vector<std::string> &allowed) {
+    if (!JS_IsObject(object) || JS_IsArray(object))
+        return false;
+    JSPropertyEnum *props = nullptr;
+    uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(c, &props, &count, object,
+                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) < 0)
+        return false;
+    bool valid = true;
+    for (uint32_t i = 0; i < count; ++i) {
+        const char *key = JS_AtomToCString(c, props[i].atom);
+        if (!key || std::find(allowed.begin(), allowed.end(), key) == allowed.end())
+            valid = false;
+        if (key)
+            JS_FreeCString(c, key);
+        JS_FreeAtom(c, props[i].atom);
+    }
+    js_free(c, props);
+    return valid;
+}
+bool solid_number(JSContext *c, JSValueConst object, const char *key, float &out,
+                  bool required = true) {
+    SolidJsValue value(c, JS_GetPropertyStr(c, object, key));
+    if (JS_IsUndefined(value.value))
+        return !required;
+    double d = 0;
+    if (!JS_IsNumber(value.value) || JS_ToFloat64(c, &d, value.value) < 0 ||
+        !std::isfinite(d) || std::abs(d) > std::numeric_limits<float>::max())
+        return false;
+    out = static_cast<float>(d);
+    return true;
+}
+bool solid_integer(JSContext *c, JSValueConst object, const char *key, uint32_t &out,
+                   uint32_t maximum, bool required = true) {
+    SolidJsValue value(c, JS_GetPropertyStr(c, object, key));
+    if (JS_IsUndefined(value.value))
+        return !required;
+    double d = 0;
+    if (!JS_IsNumber(value.value) || JS_ToFloat64(c, &d, value.value) < 0 ||
+        !std::isfinite(d) || d < 0 || d > maximum || std::floor(d) != d)
+        return false;
+    out = static_cast<uint32_t>(d);
+    return true;
+}
+bool solid_array(JSContext *c, JSValueConst object, const char *key, float *out,
+                 uint32_t size, bool required = true) {
+    SolidJsValue value(c, JS_GetPropertyStr(c, object, key));
+    if (JS_IsUndefined(value.value))
+        return !required;
+    if (!JS_IsArray(value.value))
+        return false;
+    SolidJsValue length(c, JS_GetPropertyStr(c, value.value, "length"));
+    double n = 0;
+    if (JS_ToFloat64(c, &n, length.value) < 0 || n != size)
+        return false;
+    for (uint32_t i = 0; i < size; ++i) {
+        SolidJsValue item(c, JS_GetPropertyUint32(c, value.value, i));
+        double d = 0;
+        if (!JS_IsNumber(item.value) || JS_ToFloat64(c, &d, item.value) < 0 ||
+            !std::isfinite(d) || std::abs(d) > std::numeric_limits<float>::max())
+            return false;
+        out[i] = static_cast<float>(d);
+    }
+    return true;
+}
+bool solid_string(JSContext *c, JSValueConst object, const char *key, std::string &out,
+                  bool required = true) {
+    SolidJsValue value(c, JS_GetPropertyStr(c, object, key));
+    if (JS_IsUndefined(value.value))
+        return !required;
+    if (!JS_IsString(value.value))
+        return false;
+    const char *text = JS_ToCString(c, value.value);
+    if (!text)
+        return false;
+    out = text;
+    JS_FreeCString(c, text);
+    return true;
+}
+bool solid_op(JSContext *c, JSValueConst value, gpu_meshing::SolidOp &out) {
+    std::string shape, combine = "union";
+    if (!solid_string(c, value, "shape", shape) ||
+        !solid_string(c, value, "combine", combine, false))
+        return false;
+    std::vector<std::string> keys{"shape", "combine", "centerM", "rotation", "blendM"};
+    bool valid = false;
+    if (shape == "box" || shape == "roundedBox") {
+        out.kind[0] = shape == "box" ? 0u : 1u;
+        keys.push_back("halfExtentsM");
+        valid = solid_array(c, value, "halfExtentsM", out.shape.data(), 3);
+        if (shape == "roundedBox") {
+            keys.push_back("roundingM");
+            valid = valid && solid_number(c, value, "roundingM", out.shape[3]);
+        }
+    } else if (shape == "sphere") {
+        out.kind[0] = 2;
+        keys.push_back("radiusM");
+        valid = solid_number(c, value, "radiusM", out.shape[0]);
+    } else if (shape == "ellipsoid") {
+        out.kind[0] = 3;
+        keys.push_back("radiiM");
+        valid = solid_array(c, value, "radiiM", out.shape.data(), 3);
+    } else if (shape == "capsule") {
+        out.kind[0] = 4;
+        keys.push_back("radiusM");
+        keys.push_back("halfLengthM");
+        valid = solid_number(c, value, "radiusM", out.shape[0]) &&
+                solid_number(c, value, "halfLengthM", out.shape[1]);
+    }
+    if (!valid || !solid_keys(c, value, keys))
+        return false;
+    if (combine == "union")
+        out.kind[1] = 0;
+    else if (combine == "difference")
+        out.kind[1] = 1;
+    else if (combine == "intersection")
+        out.kind[1] = 2;
+    else
+        return false;
+    float center[3] = {0, 0, 0}, q[4] = {0, 0, 0, 1};
+    if (!solid_array(c, value, "centerM", center, 3, false) ||
+        !solid_array(c, value, "rotation", q, 4, false) ||
+        !solid_number(c, value, "blendM", out.blend[0], false))
+        return false;
+    double norm = 0;
+    for (float f : q)
+        norm += double(f) * f;
+    if (std::abs(norm - 1) > 1e-5)
+        return false;
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    // Inverse of the authored local-to-source unit quaternion rotation.
+    out.row0 = {1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0};
+    out.row1 = {2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0};
+    out.row2 = {2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0};
+    for (auto *row : {&out.row0, &out.row1, &out.row2})
+        for (int k = 0; k < 3; ++k)
+            (*row)[3] -= (*row)[k] * center[k];
+    return true;
+}
+} // namespace
+
+static JSValue j_solidSource(JSContext *c, JSValueConst, int argc, JSValueConst *argv) {
+    auto *state = state_of(c);
+    const auto invalid = [&]() {
+        state->set_error("solidSource requires a strict version-1 bounded physical op "
+                         "tape; unsupported fields/semantics are rejected");
+        return JS_UNDEFINED;
+    };
+    if (argc != 1 ||
+        !solid_keys(c, argv[0], {"version", "voxelM", "maxVertices", "ops"}))
+        return invalid();
+    float voxel = 0;
+    uint32_t version = 0, capacity = 500000;
+    if (!solid_integer(c, argv[0], "version", version, 1) || version != 1 ||
+        !solid_number(c, argv[0], "voxelM", voxel) ||
+        !solid_integer(c, argv[0], "maxVertices", capacity, 2 * 1024 * 1024, false) ||
+        capacity < 3)
+        return invalid();
+    SolidJsValue array(c, JS_GetPropertyStr(c, argv[0], "ops"));
+    if (!JS_IsArray(array.value))
+        return invalid();
+    SolidJsValue length(c, JS_GetPropertyStr(c, array.value, "length"));
+    double n = 0;
+    if (JS_ToFloat64(c, &n, length.value) < 0 || n < 1 || n > 256 || std::floor(n) != n)
+        return invalid();
+    std::vector<gpu_meshing::SolidOp> ops(static_cast<size_t>(n));
+    for (uint32_t i = 0; i < ops.size(); ++i) {
+        SolidJsValue op(c, JS_GetPropertyUint32(c, array.value, i));
+        if (!solid_op(c, op.value, ops[i]))
+            return invalid();
+    }
+    state->solid_source(std::move(ops), voxel, static_cast<uint32_t>(capacity));
+    return JS_UNDEFINED;
+}
 // Register every native verb as a global on `ctx`. Called once per context,
 // after the host has installed the `DslState*` opaque and before any part
 // module is evaluated; the JS prelude wraps these `__`-prefixed globals into
@@ -2019,6 +2217,7 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_radius",j_radius,1); bind("__dsl_socket",j_socket,2); bind("__dsl_mirrorBranch",j_mirrorBranch,3); bind("__dsl_endRig",j_endRig,0); bind("__dsl_skin",j_skin,2); bind("__dsl_segments",j_segments,2); bind("__dsl_attach",j_attach,4); bind("__dsl_bind",j_bind_geometry,2);
     bind("__dsl_beginClip",j_beginClip,3); bind("__dsl_clipDuration",j_clipDuration,1); bind("__dsl_clipRate",j_clipRate,1); bind("__dsl_clipLoop",j_clipLoop,1); bind("__dsl_clipMode",j_clipMode,1); bind("__dsl_clipAt",j_clipAt,1); bind("__dsl_clipMarker",j_clipMarker,2); bind("__dsl_clipKey",j_clipKey,3); bind("__dsl_generate",j_generate,1); bind("__dsl_endClip",j_endClip,0);
     bind("__dsl_beginMotion",j_beginMotion,1); bind("__dsl_input",j_motionInput,2); bind("__dsl_target",j_motionTarget,2); bind("__dsl_controller",j_motionController,3); bind("__dsl_clipNode",j_clipNode,2); bind("__dsl_blend1D",j_blendNode,3); bind("__dsl_additive",j_additiveNode,3); bind("__dsl_nativeController",j_nativeNode,2); bind("__dsl_output",j_outputNode,2); bind("__dsl_endMotion",j_endMotion,0);
+    bind("__dsl_solidSource",j_solidSource,1);
     bind("__dsl_sphere",j_sphere,4); bind("__dsl_box",j_box,6);
     bind("__dsl_op",j_op,1); bind("__dsl_smoothing",j_smoothing,1);
     bind("__dsl_raycast",j_raycast,6);
@@ -2026,6 +2225,7 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_rayTraced",j_rayTraced,1);
     bind("__dsl_placeChild",j_placeChild,3);
     bind("__dsl_beginShape",j_beginShape,1); bind("__dsl_vertex",j_vertex,3);
+    bind("__dsl_surfaceVertex",j_surfaceVertex,8);
     bind("__dsl_endShape",j_endShape,0); bind("__dsl_line",j_line,8);
     bind("__dsl_capsule",j_capsule,7); bind("__dsl_cylinder",j_cylinder,7);
     bind("__dsl_cone",j_cone,8);

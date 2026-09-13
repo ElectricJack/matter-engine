@@ -1,0 +1,74 @@
+#version 450
+#include "solid_field.glsl"
+layout(local_size_x=128) in;
+layout(std430,binding=2) readonly buffer Projection {
+    vec4 frameOrigin; vec4 frameU; vec4 frameV; vec4 frameN;
+    vec4 rect; // u_min, v_min, pitch_u, pitch_v
+    vec4 interval; // height_min, height_max, hit epsilon, enable subtractive-base interval proof
+    vec4 boundsMin; vec4 boundsMax;
+    uvec4 projectionLimits; // width, height, march steps, refinement steps
+};
+struct Pixel { vec4 normalHeight; uvec4 status; }; // status: coverage, error, steps, reserved
+layout(std430,binding=3) writeonly buffer Pixels { Pixel pixels[]; };
+bool finiteFloat(float x) { return !isnan(x)&&!isinf(x); }
+// interval.w is enabled only for base box/rounded box/sphere followed by
+// differences/intersections. No later operation can expand its zero set.
+bool baseProvesMiss(vec3 a, vec3 b) {
+    SolidOp op = ops[0];
+    vec3 extent3 = max(max(abs(a), abs(b)), abs(vec3(op.row0.w, op.row1.w, op.row2.w)));
+    float extent = max(max(extent3.x, max(extent3.y, extent3.z)),
+                       max(max(op.shape.x, op.shape.y), max(op.shape.z, op.shape.w)));
+    float pad = 32.0 * 1.1920928955078125e-7 * (1.0 + extent);
+    vec3 x = vec3(dot(op.row0, vec4(a,1)), dot(op.row1, vec4(a,1)), dot(op.row2, vec4(a,1)));
+    vec3 y = vec3(dot(op.row0, vec4(b,1)), dot(op.row1, vec4(b,1)), dot(op.row2, vec4(b,1)));
+    vec3 lo = min(x,y)-pad, hi = max(x,y)+pad;
+    vec3 nearest = max(max(lo,-hi),vec3(0));
+    op.row0=vec4(1,0,0,0); op.row1=vec4(0,1,0,0); op.row2=vec4(0,0,1,0);
+    return solidPrimitive(op, nearest) > interval.z + pad;
+}
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if(i>=projectionLimits.x*projectionLimits.y)return;
+    Pixel pixel;pixel.normalHeight=vec4(0);pixel.status=uvec4(0);
+    vec2 uv=rect.xy+(vec2(i%projectionLimits.x,i/projectionLimits.x)+.5)*rect.zw;
+    vec3 base=frameOrigin.xyz+frameU.xyz*uv.x+frameV.xyz*uv.y;
+    float low=interval.x,high=interval.y;
+    bool intersects=true;
+    for(int k=0;k<3;++k) {
+        float n=frameN[k];
+        if(abs(n)<1e-20) {if(base[k]<boundsMin[k]||base[k]>boundsMax[k])intersects=false;}
+        else {float a=(boundsMin[k]-base[k])/n,b=(boundsMax[k]-base[k])/n;
+            low=max(low,min(a,b));high=min(high,max(a,b));}
+    }
+    if(!intersects||low>high){pixels[i]=pixel;return;}
+    if(interval.w != 0 && baseProvesMiss(base+frameN.xyz*low, base+frameN.xyz*high)) {
+        pixels[i]=pixel; return;
+    }
+    float at=high,previous=high;
+    bool resolved=false;
+    for(uint step=0;step<projectionLimits.z;++step) {
+        pixel.status.z=step+1;
+        float d=solidField(base+frameN.xyz*at);
+        if(!finiteFloat(d)){pixel.status.y=2;resolved=true;break;}
+        if(step==0&&d < -interval.z){pixel.status.y=3;resolved=true;break;}
+        if(d<=interval.z) {
+            if(d<0&&step>0){float a=at,b=previous;
+                for(uint k=0;k<projectionLimits.w;++k){float mid=(a+b)*.5,f=solidField(base+frameN.xyz*mid);
+                    if(!finiteFloat(f)){pixel.status.y=2;break;}
+                    if(f<0)a=mid;else b=mid;}at=(a+b)*.5;}
+            vec3 n=solidNormal(base+frameN.xyz*at,vec3(0));
+            if(any(isnan(n))||any(isinf(n))||dot(n,n)<.5)pixel.status.y=4;
+            if(pixel.status.y==0){pixel.normalHeight=vec4(dot(n,frameU.xyz),dot(n,frameV.xyz),dot(n,frameN.xyz),at);pixel.status.x=1;}
+            resolved=true;break;
+        }
+        float next=at-d*(.8/1.001);
+        if(next<low){resolved=true;break;}
+        if(!(next<at)){pixel.status.y=5;resolved=true;break;}
+        previous=at;at=next;
+    }
+    if(!resolved) {
+        pixel.status.y=1;
+        pixel.normalHeight=vec4(solidField(base+frameN.xyz*at),0,0,at);
+    }
+    pixels[i]=pixel;
+}

@@ -57,6 +57,167 @@ vec3 yCoCgToRgb(vec3 value) {
                 value.x - value.y - value.z);
 }
 
+bool diffuseFinite(vec3 value) {
+    return !any(isnan(value)) && !any(isinf(value));
+}
+
+// Sparse valid indirect samples need a nonzero cold-start allowance. This is
+// an incident-light ceiling floor, not a contribution added to dark pixels.
+const float DIFFUSE_MIN_INCIDENT_CEILING = 0.25;
+
+vec3 diffuseSafeSignal(vec3 value) {
+    if (!diffuseFinite(value)) return vec3(0.0);
+    value = max(value, vec3(0.0));
+    float largest = max(value.r, max(value.g, value.b));
+    // Both radiance and squared luminance must remain representable in half.
+    return largest > 255.0 ? value * (255.0 / largest) : value;
+}
+
+vec3 diffuseLimitLuminance(vec3 value, float limit) {
+    float valueLuminance = luminance(value);
+    return valueLuminance > limit ? value * (limit / valueLuminance) : value;
+}
+
+float diffuseMedian(inout float values[24], int count) {
+    for (int i = 1; i < count; ++i) {
+        float value = values[i];
+        int j = i;
+        while (j > 0 && values[j - 1] > value) {
+            values[j] = values[j - 1];
+            --j;
+        }
+        values[j] = value;
+    }
+    return 0.5 * (values[(count - 1) / 2] + values[count / 2]);
+}
+
+bool diffusePeerLimit(ivec2 pixel, float depth, vec3 normal,
+                      uvec2 identity, out float limit) {
+    limit = DIFFUSE_MIN_INCIDENT_CEILING;
+    if (!(depth > 0.0) || isnan(depth) || isinf(depth) ||
+        !diffuseFinite(normal) || dot(normal, normal) < 0.5 ||
+        identity.x == 0xffffffffu)
+        return false;
+    float peers[24];
+    int count = 0;
+    for (int ring = 1; ring <= 2; ++ring) {
+        for (int y = -ring; y <= ring; ++y) {
+            for (int x = -ring; x <= ring; ++x) {
+                if (max(abs(x), abs(y)) != ring) continue;
+                ivec2 q = pixel + ivec2(x, y);
+                // Do not duplicate edge texels or let the center contaminate its
+                // own robust statistics. Low-resolution geometry is sampled at
+                // exactly the same integer source pixel as the ray generation.
+                if (any(lessThan(q, ivec2(0))) ||
+                    any(greaterThanEqual(q, ivec2(pc.temporalExtent)))) continue;
+                vec2 qUv = (vec2(q) + 0.5) / vec2(pc.temporalExtent);
+                ivec2 source = clamp(ivec2(qUv * vec2(pc.gbufferExtent)),
+                    ivec2(0), ivec2(pc.gbufferExtent) - 1);
+                if (any(notEqual(texelFetch(identityTex, source, 0).rg, identity)))
+                    continue;
+                float peerDepth = texelFetch(depthTex, source, 0).r;
+                vec3 peerNormal = texelFetch(normalTex, source, 0).xyz;
+                vec3 signal = texelFetch(rawSignal, q, 0).rgb;
+                if (!(peerDepth > 0.0) || isnan(peerDepth) || isinf(peerDepth) ||
+                    !diffuseFinite(peerNormal) || dot(peerNormal, peerNormal) < 0.5 ||
+                    !diffuseFinite(signal)) continue;
+                if (dot(normal, normalize(peerNormal)) < 0.85 ||
+                    abs(depth - peerDepth) > max(1e-5, 0.05 * max(depth, peerDepth)))
+                    continue;
+                peers[count++] = luminance(diffuseSafeSignal(signal));
+            }
+        }
+        // Only the missing-quorum path pays for the complete outer ring.
+        // Gather all qualifying samples in that ring, without directional bias.
+        if (count >= 3) break;
+    }
+    // No quorum keeps a nonzero ceiling; persistent thin lighting may confirm
+    // itself through auxiliary history instead of passing an unbounded sample.
+    if (count < 3) return false;
+    float median = diffuseMedian(peers, count);
+    float deviations[24];
+    for (int i = 0; i < count; ++i)
+        deviations[i] = abs(peers[i] - median);
+    float deviation = diffuseMedian(deviations, count);
+    limit = min(255.0, max(DIFFUSE_MIN_INCIDENT_CEILING,
+                           max(4.0 * median, median + 6.0 * deviation)));
+    return true;
+}
+
+bool diffuseHistoryPeerLimit(ivec2 pixel, float depth, vec3 normal,
+                             uvec2 identity, out float limit) {
+    limit = 255.0;
+    float peers[24];
+    int count = 0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            if (x == 0 && y == 0) continue;
+            ivec2 q = pixel + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) ||
+                any(greaterThanEqual(q, ivec2(pc.temporalExtent)))) continue;
+            if (texelFetch(previousHistory, q, 0).r < 4u ||
+                any(notEqual(texelFetch(previousIdentity, q, 0).rg, identity)))
+                continue;
+            float peerDepth = texelFetch(previousDepth, q, 0).r;
+            vec3 peerNormal = texelFetch(previousNormal, q, 0).xyz;
+            vec3 signal = texelFetch(previousRadiance, q, 0).rgb;
+            if (!(peerDepth > 0.0) || isnan(peerDepth) || isinf(peerDepth) ||
+                !diffuseFinite(peerNormal) || dot(peerNormal, peerNormal) < 0.5 ||
+                !diffuseFinite(signal)) continue;
+            if (dot(normal, normalize(peerNormal)) < 0.85 ||
+                abs(depth - peerDepth) > max(1e-5, 0.05 * max(depth, peerDepth)))
+                continue;
+            peers[count++] = luminance(diffuseSafeSignal(signal));
+        }
+    }
+    if (count < 3) return false;
+    float median = diffuseMedian(peers, count);
+    float deviations[24];
+    for (int i = 0; i < count; ++i)
+        deviations[i] = abs(peers[i] - median);
+    float deviation = diffuseMedian(deviations, count);
+    limit = min(255.0, max(DIFFUSE_MIN_INCIDENT_CEILING,
+                           max(4.0 * median, median + 6.0 * deviation)));
+    return true;
+}
+
+vec2 diffuseConfirmSource(vec2 previous, float rawLuminance,
+                          float spatialLimit,
+                          out float confirmedLimit) {
+    // Diffuse previously ignored aux. Its private history lanes now hold a
+    // candidate outlier's luminance and leaky repetition confidence. Neither
+    // reflection/transmission aux nor primary-direct ORM changes meaning.
+    if (any(isnan(previous)) || any(isinf(previous)) ||
+        previous.x <= 0.0 || previous.x > 255.0 ||
+        previous.y < 0.0 || previous.y > 8.0)
+        previous = vec2(0.0);
+    float confidence = previous.y * (63.0 / 64.0);
+    float candidate = previous.x;
+    if (rawLuminance > spatialLimit) {
+        if (candidate <= 0.0 || confidence < 0.001) {
+            candidate = rawLuminance;
+            confidence = 1.0;
+        } else if (rawLuminance >= candidate * 0.5 &&
+                   rawLuminance <= candidate * 2.0) {
+            candidate = mix(candidate, rawLuminance, 1.0 / (confidence + 1.0));
+            confidence = min(confidence + 1.0, 8.0);
+        } else if (confidence < 3.0) {
+            // Inconsistent isolated hits cannot pool their confidence.
+            candidate = rawLuminance;
+            confidence = 1.0;
+        }
+        // An inconsistent hit cannot raise or replace an established source;
+        // its confidence only decays normally on this frame.
+    }
+    if (confidence < 0.001) {
+        candidate = 0.0;
+        confidence = 0.0;
+    }
+    float permission = smoothstep(3.0, 4.0, confidence);
+    confirmedLimit = mix(spatialLimit, max(spatialLimit, candidate), permission);
+    return vec2(candidate, confidence);
+}
+
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(pixel, ivec2(pc.temporalExtent)))) return;
@@ -76,6 +237,8 @@ void main() {
     // metallic) from ORM, not a secondary hit distance. Keep it independent
     // of GI enablement and transmission's deterministic passthrough.
     bool localDirect = pc.signalMode == 3u;
+    bool reducedDiffuse = pc.signalMode == 0u &&
+        any(notEqual(pc.temporalExtent, pc.gbufferExtent));
     bool secondary = pc.signalMode == 1u || pc.signalMode == 2u;
     vec2 aux = texelFetch(rawAux, pixel, 0).rg;
     bool smoothPassthrough = pc.signalMode == 2u && aux.y < 0.02;
@@ -86,7 +249,27 @@ void main() {
                              0.0, 1.0);
     vec2 velocity = texelFetch(velocityTex, sourcePixel, 0).xy *
                     vec2(pc.temporalExtent) / vec2(pc.gbufferExtent);
+    bool invalidDiffuseVelocity = reducedDiffuse &&
+        (any(isnan(velocity)) || any(isinf(velocity)) ||
+         any(greaterThan(abs(velocity), vec2(pc.temporalExtent) + 1.0)));
+    if (invalidDiffuseVelocity) velocity = vec2(0.0);
     ivec2 previousPixel = ivec2(round(vec2(pixel) - velocity));
+
+    float diffuseSpatialLimit = 255.0;
+    bool diffuseHasPeers = false;
+    vec3 diffuseCurrentRaw = vec3(0.0);
+    if (reducedDiffuse) {
+        raw = diffuseSafeSignal(raw);
+        diffuseCurrentRaw = raw;
+        if (!diffuseFinite(normal)) normal = vec3(0.0);
+        if (isnan(depth) || isinf(depth)) depth = 0.0;
+        if (isnan(reactivity) || isinf(reactivity)) reactivity = 1.0;
+        diffuseHasPeers = diffusePeerLimit(pixel, depth, normal, identity,
+                                           diffuseSpatialLimit);
+        // Apply on the very first/disoccluded frame, before either moment can
+        // capture the spike and before atrous can spread it across the image.
+        raw = diffuseLimitLuminance(raw, diffuseSpatialLimit);
+    }
 
     uint rejection = 0u;
     if (pc.reset != 0u || pc.presentedAttemptTokenLo == 0u)
@@ -94,6 +277,7 @@ void main() {
     else if (any(lessThan(previousPixel, ivec2(0))) ||
              any(greaterThanEqual(previousPixel, ivec2(pc.temporalExtent))))
         rejection = REJECT_BOUNDS;
+    if (invalidDiffuseVelocity) rejection |= REJECT_BOUNDS;
 
     vec3 accumulated = raw;
     float firstMoment = luminance(raw);
@@ -138,43 +322,109 @@ void main() {
             if (stableDistance && abs(aux.x - oldAux.x) > threshold)
                 rejection = REJECT_HIT_DISTANCE;
         }
+        if (reducedDiffuse) {
+            vec3 oldSignal = texelFetch(previousRadiance, previousPixel, 0).rgb;
+            vec2 oldMoments = texelFetch(previousMoments, previousPixel, 0).rg;
+            if (!(depth > 0.0) || !(oldDepth > 0.0) ||
+                isnan(depth) || isinf(depth) || isnan(oldDepth) || isinf(oldDepth))
+                rejection |= REJECT_DEPTH;
+            if (!diffuseFinite(oldNormal) || dot(normal, normal) < 0.5)
+                rejection |= REJECT_NORMAL;
+            if (!diffuseFinite(oldSignal) || any(isnan(oldMoments)) ||
+                any(isinf(oldMoments)) ||
+                texelFetch(previousHistory, previousPixel, 0).r == 0u)
+                rejection |= REJECT_RESET;
+        }
     }
     if (rejection == 0u && localDirect) {
         vec2 oldAux = texelFetch(previousAux, previousPixel, 0).rg;
         if (any(greaterThan(abs(aux - oldAux), vec2(0.1))))
             rejection = REJECT_MATERIAL;
     }
+    float diffuseConfirmedLimit = diffuseSpatialLimit;
+    if (reducedDiffuse) {
+        // Only geometrically valid reprojection may carry confirmation. A
+        // reset/disocclusion starts from zero and can seed at most one hit.
+        vec2 previousConfirmation = rejection == 0u
+            ? texelFetch(previousAux, previousPixel, 0).rg : vec2(0.0);
+        aux = diffuseConfirmSource(previousConfirmation,
+            luminance(diffuseCurrentRaw), diffuseSpatialLimit,
+            diffuseConfirmedLimit);
+        raw = diffuseLimitLuminance(diffuseCurrentRaw, diffuseConfirmedLimit);
+        accumulated = raw;
+        firstMoment = luminance(raw);
+        secondMoment = firstMoment * firstMoment;
+    }
     if (rejection == 0u && !smoothPassthrough) {
-        vec3 neighborhoodMin = vec3(1e30);
-        vec3 neighborhoodMax = vec3(-1e30);
-        for (int y = -1; y <= 1; ++y)
-            for (int x = -1; x <= 1; ++x) {
-                ivec2 q = clamp(pixel + ivec2(x, y), ivec2(0),
-                                ivec2(pc.temporalExtent) - 1);
-                vec3 value = rgbToYCoCg(texelFetch(rawSignal, q, 0).rgb);
-                neighborhoodMin = min(neighborhoodMin, value);
-                neighborhoodMax = max(neighborhoodMax, value);
-            }
-        vec3 historyColor = rgbToYCoCg(
-            texelFetch(previousRadiance, previousPixel, 0).rgb);
         vec2 oldMoments = texelFetch(previousMoments, previousPixel, 0).rg;
-        if (pc.signalMode <= 1u) {
-            // Nine fresh rays can all miss a small indirect source. Do not
-            // clamp its valid accumulated energy to zero on that evidence.
-            // Prior temporal variance expands the bounds; scaling in YCoCg
-            // preserves saturated indirect colors despite luminance moments.
-            float variance = max(oldMoments.y - oldMoments.x * oldMoments.x, 0.0);
-            if (texelFetch(previousHistory, previousPixel, 0).r < 2u)
-                variance = max(variance, oldMoments.x * oldMoments.x);
-            vec3 colorScale = max(abs(historyColor) /
-                max(luminance(yCoCgToRgb(historyColor)), 1e-3), vec3(1.0));
-            vec3 margin = 3.0 * sqrt(variance) * colorScale;
-            neighborhoodMin -= margin;
-            neighborhoodMax += margin;
+        vec3 oldRadiance;
+        if (reducedDiffuse) {
+            oldRadiance = diffuseSafeSignal(
+                texelFetch(previousRadiance, previousPixel, 0).rgb);
+            float historyPeerLimit;
+            bool historyHasPeers = diffuseHistoryPeerLimit(previousPixel,
+                depth, normal, identity, historyPeerLimit);
+            if (historyHasPeers) {
+                // Fresh rays can all miss a real indirect source. Confirmed
+                // neighboring history keeps that fill alive; an isolated old
+                // firefly cannot raise its own median/MAD ceiling.
+                float supportedLimit = max(diffuseConfirmedLimit, historyPeerLimit);
+                raw = diffuseLimitLuminance(diffuseCurrentRaw, supportedLimit);
+                oldRadiance = diffuseLimitLuminance(oldRadiance, supportedLimit);
+            }
+            float oldLuminance = luminance(oldRadiance);
+            // Even its first valid history can preserve a thin receiver's
+            // existing fill. Do not multiply an unconfirmed clipped first hit
+            // into an ever-higher ceiling on subsequent unrelated outliers:
+            // upward growth requires the same persistence confirmation.
+            if (!diffuseHasPeers && !historyHasPeers) {
+                float permission = smoothstep(3.0, 4.0, aux.y);
+                float ownLimit = max(DIFFUSE_MIN_INCIDENT_CEILING,
+                    min(255.0, oldLuminance * mix(1.0, 4.0, permission)));
+                raw = diffuseLimitLuminance(diffuseCurrentRaw,
+                    max(diffuseConfirmedLimit, ownLimit));
+            }
+            // Old firefly moments must not create an unlimited variance
+            // allowance. Match the first moment to the bounded old radiance
+            // and retain at most its squared luminance as historical variance.
+            float oldVariance = max(oldMoments.y - oldMoments.x * oldMoments.x, 0.0);
+            oldVariance = min(oldVariance, max(oldLuminance * oldLuminance, 1e-4));
+            oldMoments = vec2(oldLuminance,
+                min(65025.0, oldLuminance * oldLuminance + oldVariance));
+            firstMoment = luminance(raw);
+            secondMoment = firstMoment * firstMoment;
+        } else {
+            vec3 neighborhoodMin = vec3(1e30);
+            vec3 neighborhoodMax = vec3(-1e30);
+            for (int y = -1; y <= 1; ++y)
+                for (int x = -1; x <= 1; ++x) {
+                    ivec2 q = clamp(pixel + ivec2(x, y), ivec2(0),
+                                    ivec2(pc.temporalExtent) - 1);
+                    vec3 value = rgbToYCoCg(texelFetch(rawSignal, q, 0).rgb);
+                    neighborhoodMin = min(neighborhoodMin, value);
+                    neighborhoodMax = max(neighborhoodMax, value);
+                }
+            vec3 historyColor = rgbToYCoCg(
+                texelFetch(previousRadiance, previousPixel, 0).rgb);
+            if (pc.signalMode <= 1u) {
+                // Nine fresh rays can all miss a small indirect source. Do not
+                // clamp its valid accumulated energy to zero on that evidence.
+                // Prior temporal variance expands the bounds; scaling in YCoCg
+                // preserves saturated indirect colors despite luminance moments.
+                float variance = max(oldMoments.y - oldMoments.x * oldMoments.x, 0.0);
+                if (texelFetch(previousHistory, previousPixel, 0).r < 2u)
+                    variance = max(variance, oldMoments.x * oldMoments.x);
+                vec3 colorScale = max(abs(historyColor) /
+                    max(luminance(yCoCgToRgb(historyColor)), 1e-3), vec3(1.0));
+                vec3 margin = 3.0 * sqrt(variance) * colorScale;
+                neighborhoodMin -= margin;
+                neighborhoodMax += margin;
+            }
+            oldRadiance = yCoCgToRgb(clamp(
+                historyColor, neighborhoodMin, neighborhoodMax));
         }
-        vec3 oldRadiance = yCoCgToRgb(clamp(
-            historyColor, neighborhoodMin, neighborhoodMax));
-        uint maxHistory = pc.signalMode == 0u || localDirect ? 32u :
+        uint maxHistory = reducedDiffuse ? 96u :
+            pc.signalMode == 0u || localDirect ? 32u :
             uint(round(mix(4.0, 16.0, clamp(aux.y, 0.0, 1.0))));
         if (pc.signalMode == 1u)
             maxHistory = uint(round(mix(float(maxHistory), 32.0,
@@ -183,7 +433,8 @@ void main() {
                                            reactivity))));
         historyLength = min(maxHistory,
             texelFetch(previousHistory, previousPixel, 0).r + 1u);
-        float alpha = mix(max(1.0 / float(historyLength), 0.05), 1.0,
+        float minimumAlpha = reducedDiffuse ? 1.0 / 96.0 : 0.05;
+        float alpha = mix(max(1.0 / float(historyLength), minimumAlpha), 1.0,
                           reactivity);
         accumulated = mix(oldRadiance, raw, alpha);
         firstMoment = mix(oldMoments.x, firstMoment, alpha);

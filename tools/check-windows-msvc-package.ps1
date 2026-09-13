@@ -45,6 +45,8 @@ $expectedNotices = @(
     'ozz_animation', 'quickjs_ng', 'vulkan_headers'
 )
 $nvidiaNotices = @('nvidia_physx', 'nvidia_cuda')
+$streamlineNotices = @('nvidia_streamline', 'nvidia_dlss')
+$streamlineRuntime = @('sl.interposer.dll', 'sl.common.dll', 'sl.dlss.dll', 'nvngx_dlss.dll')
 
 $dist = if (Test-Path -LiteralPath $DistPath -PathType Container) {
     (Resolve-Path -LiteralPath $DistPath).Path
@@ -295,6 +297,8 @@ $requiredNotices = if ($manifest.features.physx) {
     @($expectedNotices)
 }
 
+if ($manifest.features.streamline) { $requiredNotices += $streamlineNotices }
+
 Assert-ExactStrings 'notice component list' @($manifest.notices) $requiredNotices
 $noticeText = Get-Content -LiteralPath $noticePath -Raw
 foreach ($label in $requiredNotices) {
@@ -311,6 +315,11 @@ foreach ($label in $requiredNotices) {
 if ($manifest.features.physx) {
     [void](Require-PackageFile 'licenses/NVIDIA_PhysX_LICENSE.md' 'NVIDIA PhysX license')
     [void](Require-PackageFile 'licenses/NVIDIA_CUDA_EULA.txt' 'NVIDIA CUDA EULA')
+}
+
+if ($manifest.features.streamline) {
+    [void](Require-PackageFile 'licenses/NVIDIA_Streamline_LICENSE.txt' 'NVIDIA Streamline license')
+    [void](Require-PackageFile 'licenses/nvngx_dlss.license.txt' 'NVIDIA DLSS license')
 }
 
 $hasPdb = Test-Path -LiteralPath (Join-Path $dist 'editor.pdb') -PathType Leaf
@@ -378,8 +387,14 @@ foreach ($runtime in $runtimeDlls) {
         throw "runtime_dlls contains invalid staged DLL name '$runtime'"
     }
 }
-if ($manifest.features.physx) {
-    Assert-ExactStrings 'PhysX runtime DLL closure' @($runtimeDlls) @('PhysXGpu_64.dll')
+$dynamicRoots = @()
+if ($manifest.features.physx) { $dynamicRoots += 'PhysXGpu_64.dll' }
+if ($manifest.features.streamline) { $dynamicRoots += $streamlineRuntime }
+if ($manifest.features.physx -or $manifest.features.streamline) {
+    Assert-ExactStrings 'Optional runtime DLL closure' @($runtimeDlls | Sort-Object) @($dynamicRoots | Sort-Object)
+}
+if (-not $manifest.features.streamline -and @($runtimeDlls | Where-Object { $_ -match '^(sl[.]|nvngx_)' }).Count -gt 0) {
+    throw 'Streamline runtime DLLs require the streamline feature'
 }
 $stagedDlls = @(Get-ChildItem -LiteralPath $dist -Recurse -File -Filter '*.dll' | ForEach-Object { Get-RelativePackagePath $_.FullName })
 Assert-ExactStrings 'runtime_dlls/staged DLL closure' @($stagedDlls | Sort-Object) @($runtimeDlls | Sort-Object)
@@ -387,15 +402,31 @@ Assert-ExactStrings 'runtime_dlls/staged DLL closure' @($stagedDlls | Sort-Objec
 $forbiddenImports = '^(libstdc\+\+|libgcc|libwinpthread|opengl32).*\.dll$'
 $dynamicMsvcCrtImports = '^(vcruntime|msvcp|concrt|msvcr|ucrtbase|vccorlib)[a-z0-9_.-]*\.dll$'
 $systemDirectory = Join-Path $env:SystemRoot 'System32'
+# Production NVIDIA plugins use the shared VC runtime. This exception does not
+# change the /MT policy for our executable or other package binaries.
+$streamlineCrtImports = @('MSVCP140.dll', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll')
+if ($manifest.features.streamline) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class MatterPackageSystemLoader {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr LoadLibraryEx(string name, IntPtr file, uint flags);
+    [DllImport("kernel32.dll")]
+    public static extern bool FreeLibrary(IntPtr module);
+}
+'@
+}
+
 $pending = New-Object 'System.Collections.Generic.Queue[string]'
 $pending.Enqueue($editor)
 $visited = @{}
 $allImports = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $reachableStaged = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-if ($manifest.features.physx) {
-    $physxGpuRuntime = Require-PackageFile 'PhysXGpu_64.dll' 'Pinned PhysX GPU runtime'
-    [void]$reachableStaged.Add('PhysXGpu_64.dll')
-    $pending.Enqueue($physxGpuRuntime)
+foreach ($runtime in $dynamicRoots) {
+    $runtimePath = Require-PackageFile $runtime 'Optional GPU runtime'
+    [void]$reachableStaged.Add($runtime)
+    $pending.Enqueue($runtimePath)
 }
 while ($pending.Count -gt 0) {
     $binary = $pending.Dequeue()
@@ -406,13 +437,26 @@ while ($pending.Count -gt 0) {
         if ($import -match $forbiddenImports) {
             throw "forbidden GNU/OpenGL import '$import' in $([IO.Path]::GetFileName($binary))"
         }
-        if ($import -match $dynamicMsvcCrtImports) {
+        $isStreamlineBinary = $manifest.features.streamline -and
+            ([IO.Path]::GetFileName($binary) -in $streamlineRuntime)
+        $isStreamlineCrt = $isStreamlineBinary -and ($import -in $streamlineCrtImports)
+        if ($import -match $dynamicMsvcCrtImports -and -not $isStreamlineCrt) {
             throw "dynamic MSVC CRT import '$import' in $([IO.Path]::GetFileName($binary)) contradicts the static CRT package policy"
         }
         $staged = Join-Path $dist $import
         if (Test-Path -LiteralPath $staged -PathType Leaf) {
             [void]$reachableStaged.Add($import)
             $pending.Enqueue((Resolve-Path -LiteralPath $staged).Path)
+            continue
+        }
+        if ($isStreamlineBinary -and $import -match '^api-ms-win-crt-[a-z0-9-]+[.]dll$') {
+            # API-set contracts are loader mappings, often not physical files.
+            # Resolve with System32-only search, never the developer PATH.
+            $module = [MatterPackageSystemLoader]::LoadLibraryEx($import, [IntPtr]::Zero, 0x800)
+            if ($module -eq [IntPtr]::Zero) {
+                throw "Streamline CRT API-set '$import' cannot resolve from Windows System32"
+            }
+            [void][MatterPackageSystemLoader]::FreeLibrary($module)
             continue
         }
         $system = Join-Path $systemDirectory $import

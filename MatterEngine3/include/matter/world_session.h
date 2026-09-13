@@ -56,6 +56,7 @@
 #include <vector>
 
 #include "matter/camera.h"
+#include "matter/gpu_timing_sample.h"
 #include "matter/animation_debug.h"
 #include "matter/render_debug.h"
 #include "matter/ecs.h"
@@ -453,8 +454,8 @@ struct FrameStats {
     float gpu_gbuffer_ms        = 0;
     float gpu_blas_ms           = 0;
     float gpu_tlas_ms           = 0;
-    float gpu_rt_ms             = 0;   // primary/shadow trace only
-    float gpu_rt_gi_ms          = 0;   // GI/reflection trace (0 when GI off)
+    float gpu_rt_ms             = 0;   // sun-shadow trace only (legacy name)
+    float gpu_rt_gi_ms          = 0;   // aggregate GI/reflection/transmission trace (0 when GI off)
     float gpu_denoise_ms        = 0;
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
@@ -502,6 +503,13 @@ struct FrameStats {
     uint64_t ecs_fixed_steps = 0;
     uint64_t ecs_dropped_steps = 0;
     uint64_t ecs_invalid_ticks = 0;
+    float gpu_rt_local_direct_ms = 0; // EMA; primary local-light trace
+    GpuTimingSample gpu_timing_sample{}; // raw, availability-gated; no EMA
+    uint32_t raster_width = 0, raster_height = 0;
+    float gpu_hdr_lighting_ms = 0; // HDR reconstruction, before display transform
+    float gpu_primary_light_cull_ms = 0; // optional GPU tile-list construction
+    float gpu_rt_gi_diffuse_ms = 0; // split-resolution child of gpu_rt_gi_ms
+    float gpu_rt_gi_reflection_transmission_ms = 0; // inseparable dispatch child
 };
 
 // Appends the stable forward-water evidence fragment used by perf JSON. Kept

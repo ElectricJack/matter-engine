@@ -45,6 +45,8 @@ $expectedNotices = @(
     'ozz_animation', 'quickjs_ng', 'vulkan_headers'
 )
 $nvidiaNotices = @('nvidia_physx', 'nvidia_cuda')
+$streamlineNotices = @('nvidia_streamline', 'nvidia_dlss')
+$streamlineRuntime = @('sl.interposer.dll', 'sl.common.dll', 'sl.dlss.dll', 'nvngx_dlss.dll')
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -93,6 +95,7 @@ function Write-Manifest(
     [bool]$TrackedDirty = $false,
     [bool]$Physx = $false,
     [bool]$Cuda = $false,
+    [bool]$Streamline = $false,
     [string[]]$Notices = $expectedNotices
 ) {
     $files = [ordered]@{}
@@ -123,7 +126,7 @@ function Write-Manifest(
         notices = @($Notices)
         features = [ordered]@{
             autoremesher = $true
-            streamline = $false
+            streamline = $Streamline
             physx = $Physx
             cuda = $Cuda
             vulkan_renderer = $true
@@ -191,13 +194,14 @@ function New-ValidFixture(
     [string]$Configuration = 'RelWithDebInfo',
     [switch]$WithoutRuntimeDll,
     [switch]$CompleteContent,
-    [switch]$Physx
+    [switch]$Physx,
+    [switch]$Streamline
 ) {
     $dist = Join-Path $scratch $Name
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
-    $fixtureEditor = if ($Physx) { $script:peFixture.StandaloneEditor } else { $script:peFixture.Editor }
+    $fixtureEditor = if ($Physx -or $Streamline) { $script:peFixture.StandaloneEditor } else { $script:peFixture.Editor }
     Copy-Item -LiteralPath $fixtureEditor -Destination (Join-Path $dist 'editor.exe')
-    if (-not $WithoutRuntimeDll) {
+    if (-not $WithoutRuntimeDll -and -not $Streamline) {
         $runtimeName = if ($Physx) { 'PhysXGpu_64.dll' } else { 'fixture_runtime.dll' }
         Copy-Item -LiteralPath $script:peFixture.RuntimeDll -Destination (Join-Path $dist $runtimeName)
     }
@@ -253,11 +257,32 @@ function New-ValidFixture(
         Set-Content -LiteralPath (Join-Path $hydrologyCache 'handoffs\pool-one.mhyd') `
             -Value 'Accepted handoff MHYD fixture content.' -Encoding ascii
     }
+    if ($Streamline) {
+        foreach ($runtimeName in $streamlineRuntime) {
+            Copy-Item -LiteralPath $script:peFixture.RuntimeDll -Destination (Join-Path $dist $runtimeName)
+        }
+        if ($Physx) {
+            Copy-Item -LiteralPath $script:peFixture.RuntimeDll -Destination (Join-Path $dist 'PhysXGpu_64.dll')
+        }
+        $licenses = Join-Path $dist 'licenses'
+        New-Item -ItemType Directory -Force -Path $licenses | Out-Null
+        foreach ($license in @('NVIDIA_Streamline_LICENSE.txt', 'nvngx_dlss.license.txt')) {
+            Set-Content -LiteralPath (Join-Path $licenses $license) -Value 'Fixture NVIDIA license content for DLSS distribution.' -Encoding utf8
+        }
+        foreach ($label in $streamlineNotices) {
+            $notice += "===== ${label}: licenses/fixture.txt ====="
+            $notice += "Fixture license content for ${label}. $([string]('x' * 80))"
+        }
+    }
     Set-Content -LiteralPath (Join-Path $dist 'THIRD_PARTY_NOTICES.txt') -Value $notice -Encoding utf8
     $runtime = if ($WithoutRuntimeDll) { @() } elseif ($Physx) { @('PhysXGpu_64.dll') } else { @('fixture_runtime.dll') }
     $notices = if ($Physx) { @($expectedNotices + $nvidiaNotices) } else { @($expectedNotices) }
+    if ($Streamline) {
+        $runtime = if ($Physx) { @('PhysXGpu_64.dll') + $streamlineRuntime } else { $streamlineRuntime }
+        $notices += $streamlineNotices
+    }
     Write-Manifest $dist -Configuration $Configuration -RuntimeDlls $runtime `
-        -Physx $Physx.IsPresent -Cuda $Physx.IsPresent -Notices $notices
+        -Physx $Physx.IsPresent -Cuda $Physx.IsPresent -Streamline $Streamline.IsPresent -Notices $notices
     return $dist
 }
 
@@ -429,6 +454,53 @@ exit 0
     Assert-Rejected 'missing accepted hydrology artifact' $missingHydrologyArtifact `
         'RiverHydrology|\.mhyd|hydrology (artifact|network)' $fakeDumpbin @('KERNEL32.dll')
 
+    $dlssNotices = @($expectedNotices + $streamlineNotices)
+    $missingDlss = New-ValidFixture 'streamline-missing-runtime' -Streamline
+    Remove-Item -LiteralPath (Join-Path $missingDlss 'sl.dlss.dll')
+    Write-Manifest $missingDlss -Streamline $true -Notices $dlssNotices -RuntimeDlls $streamlineRuntime
+    Assert-Rejected 'missing DLSS runtime' $missingDlss 'runtime_dlls.*mismatch|staged DLL|sl.dlss.dll' $fakeDumpbin @('KERNEL32.dll')
+
+    $disabledDlss = New-ValidFixture 'streamline-disabled-runtime' -Streamline
+    Write-Manifest $disabledDlss -RuntimeDlls $streamlineRuntime
+    Assert-Rejected 'disabled DLSS runtime' $disabledDlss 'require.*streamline feature' $fakeDumpbin @('KERNEL32.dll')
+
+    $missingDlssLicense = New-ValidFixture 'streamline-missing-license' -Streamline
+    Remove-Item -LiteralPath (Join-Path $missingDlssLicense 'licenses/nvngx_dlss.license.txt')
+    Write-Manifest $missingDlssLicense -Streamline $true -Notices $dlssNotices -RuntimeDlls $streamlineRuntime
+    Assert-Rejected 'missing DLSS license' $missingDlssLicense 'DLSS license.*missing|nvngx_dlss.license' $fakeDumpbin @('KERNEL32.dll')
+
+    $extraDlss = New-ValidFixture 'streamline-framegen' -Streamline
+    Copy-Item -LiteralPath $script:peFixture.RuntimeDll -Destination (Join-Path $extraDlss 'sl.dlss_g.dll')
+    Write-Manifest $extraDlss -Streamline $true -Notices $dlssNotices -RuntimeDlls @($streamlineRuntime + 'sl.dlss_g.dll')
+    Assert-Rejected 'extra frame generation runtime' $extraDlss 'runtime DLL closure.*mismatch' $fakeDumpbin @('KERNEL32.dll')
+
+    $tamperedDlss = New-ValidFixture 'streamline-tampered-runtime' -Streamline
+    Add-Content -LiteralPath (Join-Path $tamperedDlss 'sl.dlss.dll') -Value 'tampered'
+    Assert-Rejected 'DLSS runtime hash tamper' $tamperedDlss 'hash mismatch' $fakeDumpbin @('KERNEL32.dll')
+
+    $vendorCrtDumpbin = Join-Path $scratch 'vendor-crt-dumpbin.ps1'
+    Set-Content -LiteralPath $vendorCrtDumpbin -Encoding utf8 -Value @'
+Write-Output '    KERNEL32.dll'
+if ([IO.Path]::GetFileName($args[-1]) -like 'sl.*.dll') {
+    Write-Output '    MSVCP140.dll'
+    Write-Output '    VCRUNTIME140.dll'
+    Write-Output '    VCRUNTIME140_1.dll'
+    Write-Output '    api-ms-win-crt-runtime-l1-1-0.dll'
+}
+exit 0
+'@
+    $vendorCrt = New-ValidFixture 'streamline-vendor-crt' -Streamline
+    $vendorCrtResult = Invoke-Checker $vendorCrt $vendorCrtDumpbin $null
+    Assert-True ($vendorCrtResult.ExitCode -eq 0) "Streamline vendor CRT exception failed:`n$($vendorCrtResult.Output)"
+    Assert-Rejected 'enabled DLSS does not relax editor static CRT policy' $vendorCrt `
+        'dynamic MSVC CRT import' $fakeDumpbin @('KERNEL32.dll', 'MSVCP140.dll')
+
+    foreach ($withPhysx in @($false, $true)) {
+        $validDlss = New-ValidFixture "valid-streamline-physx-$withPhysx" -Streamline -Physx:$withPhysx
+        $validDlssResult = Invoke-Checker $validDlss '' $null
+        Assert-True ($validDlssResult.ExitCode -eq 0) "valid DLSS package failed:`n$($validDlssResult.Output)"
+    }
+
     $valid = New-ValidFixture 'valid' -CompleteContent
     $validResult = Invoke-Checker $valid '' $null
     Assert-True ($validResult.ExitCode -eq 0) "valid package failed:`n$($validResult.Output)"
@@ -438,7 +510,7 @@ exit 0
     Assert-True ($validPhysxResult.ExitCode -eq 0) "valid PhysX package failed:`n$($validPhysxResult.Output)"
     Assert-True ($validPhysxResult.Output -match 'MSVC package: PASS') `
         'valid PhysX package omitted PASS summary'
-    Write-Output 'Windows MSVC package fixtures: PASS (24/24; PhysX runtime/notices/network, real recursive PE closure, and standalone dumpbin discovery)'
+    Write-Output 'Windows MSVC package fixtures: PASS (33/33; Streamline SR and PhysX runtime/notices/network, real recursive PE closure, and standalone dumpbin discovery)'
 } finally {
     if ($env:MATTER_KEEP_PACKAGE_TESTS) {
         Write-Output "MATTER_PACKAGE_TEST_SCRATCH=$scratch"

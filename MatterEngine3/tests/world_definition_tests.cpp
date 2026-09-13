@@ -25,6 +25,26 @@ namespace fs = std::filesystem;
 
 namespace {
 
+struct ScopedCacheRootEnv {
+    bool existed = false;
+    std::string previous;
+    explicit ScopedCacheRootEnv(const char* value) {
+        if (const char* old = std::getenv("MATTER_CACHE_ROOT")) {
+            existed = true; previous = old;
+        }
+        set(value);
+    }
+    static void set(const char* value) {
+#ifdef _WIN32
+        _putenv_s("MATTER_CACHE_ROOT", value ? value : "");
+#else
+        if (value) setenv("MATTER_CACHE_ROOT", value, 1);
+        else unsetenv("MATTER_CACHE_ROOT");
+#endif
+    }
+    ~ScopedCacheRootEnv() { set(existed ? previous.c_str() : nullptr); }
+};
+
 struct Fixture {
     fs::path root;
 
@@ -192,6 +212,71 @@ void test_scene_object_shadows_project_object() {
 // at the moment of each write, not next to the project -- the exact bug
 // behind the stray parts/, imposters/, and libs/MatterSurfaceLib/parts/
 // directories this phase cleans up.
+void test_external_project_cache_root() {
+    Fixture fixture;
+    const fs::path first = fixture.root / "project-a";
+    const fs::path second = fixture.root / "project-b";
+    fs::create_directories(first);
+    fs::create_directories(second);
+    const fs::path base = fixture.root / "external";
+    ScopedCacheRootEnv env(base.string().c_str());
+    auto config = [&](const fs::path &project, const char *world) {
+        return viewer::LocalProviderConfig::for_project(project.string(), world, "");
+    };
+    const auto a = config(first, "Demo"), b = config(second, "Demo"), c = config(first, "Other");
+    CHECK(a.cache_root != b.cache_root, "external cache isolates projects");
+    CHECK(a.cache_root != c.cache_root, "external cache isolates worlds");
+    const fs::path path(a.cache_root);
+    CHECK(path.is_absolute() && path.filename() == "Demo",
+          "external cache is absolute and world scoped");
+    CHECK(path.parent_path().filename().string().size() == 16 &&
+              path.parent_path().parent_path() == fs::weakly_canonical(base) / "projects",
+          "external cache uses stable project digest below selected base");
+    CHECK(config(first / "unused" / "..", "Demo").cache_root == a.cache_root,
+          "lexical project aliases share cache identity");
+    CHECK(a.project_dir == fs::absolute(first).string(),
+          "cache normalization preserves source project path");
+    ScopedCacheRootEnv::set("../relative-external");
+    const auto relative = config(first, "Demo");
+    CHECK(fs::path(relative.cache_root).parent_path().parent_path() ==
+              fs::weakly_canonical(fixture.root / "relative-external") / "projects",
+          "relative external base is anchored to opened project");
+    {
+        struct CwdGuard {
+            fs::path saved = fs::current_path();
+            ~CwdGuard() {
+                std::error_code ignored;
+                fs::current_path(saved, ignored);
+            }
+        } guard;
+        fs::current_path(second);
+        CHECK(config(first, "Demo").cache_root == relative.cache_root,
+              "cwd changes cannot redirect project-relative external cache");
+    }
+    bool rejected = false;
+    try {
+        (void)config(first, "../escape");
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    CHECK(rejected, "external world component cannot escape project isolation");
+#ifdef _WIN32
+    ScopedCacheRootEnv::set("C:relative-cache");
+    rejected = false;
+    try { (void)config(first, "Demo"); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected, "drive-relative cache base cannot depend on hidden drive cwd");
+#endif
+    for (const char *blank : {"", " \t\r\n"}) {
+        ScopedCacheRootEnv::set(blank);
+        CHECK(config(first, "Demo").cache_root == (first / ".cache" / "Demo").string(),
+              "blank override preserves default project cache");
+    }
+    ScopedCacheRootEnv::set(nullptr);
+    CHECK(config(first, "Demo").cache_root == (first / ".cache" / "Demo").string(),
+          "unset override preserves default project cache");
+}
+
 void test_relative_project_dir_yields_absolute_cache_root() {
     const std::string relative_project = "world_definition_relcache_fixture";
     const fs::path expected_project_abs = fs::absolute(fs::path(relative_project));
@@ -2101,6 +2186,42 @@ class WaterMaterials extends World {
           "volume-boundary glass is not inferred to be river water");
 }
 
+void test_define_material_surface_detail_mode() {
+    Fixture fixture;
+    const fs::path path = fixture.write("SurfaceDetail.js", R"JS(
+defineMaterial('Finished', {detail:'BrickDetail', detailMode:'surface'});
+defineMaterial('Ground', {detail:'GroundDetail', detailMode:'ground'});
+defineMaterial('Default', {detail:'GroundDetail'});
+class SurfaceDetail extends World { static roots = []; }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error), error.message.c_str());
+    CHECK(definition.materials.size() == 3, "all detail domains register");
+    if (definition.materials.size() == 3) {
+        CHECK((MaterialRegistryGet(definition.materials[0].index)->surfaceFlags & MATERIAL_SURFACE_DETAIL) != 0,
+              "surface mode transported in material flags");
+        for (size_t i = 1; i < 3; ++i)
+            CHECK((MaterialRegistryGet(definition.materials[i].index)->surfaceFlags & MATERIAL_SURFACE_DETAIL) == 0,
+                  "explicit ground and omitted mode preserve defaults");
+    }
+    for (const std::string spec : {"{detailMode:'surface'}", "{detail:'D',detailMode:true}",
+                                  "{detail:'D',detailMode:'typo'}", "{detail:'D',detailMode:null}"}) {
+        const auto invalid = fixture.write("InvalidSurface.js",
+            "defineMaterial('Invalid'," + spec + "); class Invalid extends World { static roots=[]; }");
+        CHECK(!matter::load_world_definition(fixture.desc(invalid), definition, error),
+              "invalid surface mode fails typed validation");
+        CHECK(error.message.find("detailMode") != std::string::npos, "error identifies detailMode");
+    }
+    const auto conflict = fixture.write("ConflictingSurface.js", R"JS(
+defineMaterial('Same', {detail:'D',detailMode:'surface'});
+defineMaterial('Same', {detail:'D',detailMode:'ground'});
+class ConflictingSurface extends World { static roots=[]; }
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(conflict), definition, error),
+          "domain change invalidates repeated material identity");
+}
+
 void test_detail_bake_plan_ordering_and_merging() {
     // The deprecated alias alone must produce exactly what the hardcoded path
     // produced: one request for the root module bound to material 16.
@@ -3134,6 +3255,9 @@ void test_slot_binder_reset_union_is_exact() {
 } // namespace
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    ScopedCacheRootEnv clean_cache_environment(nullptr);
+    test_external_project_cache_root();
     test_project_layout_derives_runtime_paths();
     test_scene_layout_derives_runtime_paths();
     test_shared_lib_only_names_shared_objects();
@@ -3182,6 +3306,7 @@ int main() {
     test_define_material_name_collision_rules();
     test_define_material_rejects_bad_specs();
     test_define_material_authors_water_surface_domain();
+    test_define_material_surface_detail_mode();
     test_detail_bake_plan_ordering_and_merging();
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();

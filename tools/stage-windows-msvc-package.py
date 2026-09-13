@@ -513,6 +513,49 @@ def ignored(_directory: str, names: list[str]) -> set[str]:
     }
 
 
+STREAMLINE_RUNTIME_NAMES = (
+    "sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll",
+)
+STREAMLINE_LICENSE_FILES = (
+    ("nvidia_streamline", "license.txt", "NVIDIA_Streamline_LICENSE.txt"),
+    ("nvidia_dlss", "bin/x64/nvngx_dlss.license.txt", "nvngx_dlss.license.txt"),
+)
+
+
+def validate_streamline_inputs(*, enabled: bool, sdk_root: Path | None) -> None:
+    """Require the production DLSS SR bundle before replacing a package."""
+    if not enabled:
+        if sdk_root is not None:
+            raise ValueError("disabled Streamline packaging cannot accept an SDK root")
+        return
+    if sdk_root is None or not sdk_root.is_dir():
+        raise ValueError("enabled Streamline packaging requires an existing SDK root")
+    required = [sdk_root / "bin/x64" / name for name in STREAMLINE_RUNTIME_NAMES]
+    required += [sdk_root / source for _, source, _ in STREAMLINE_LICENSE_FILES]
+    for path in required:
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Streamline runtime or license is missing or empty: {path}")
+
+
+def stage_streamline_runtime_bundle(
+    dist: Path, *, enabled: bool, sdk_root: Path | None,
+) -> tuple[list[str], list[tuple[str, Path]]]:
+    validate_streamline_inputs(enabled=enabled, sdk_root=sdk_root)
+    if not enabled:
+        return [], []
+    assert sdk_root is not None
+    for name in STREAMLINE_RUNTIME_NAMES:
+        shutil.copy2(sdk_root / "bin/x64" / name, dist / name)
+    licenses = dist / "licenses"
+    licenses.mkdir(exist_ok=True)
+    notices = []
+    for identity, source, destination in STREAMLINE_LICENSE_FILES:
+        staged = licenses / destination
+        shutil.copy2(sdk_root / source, staged)
+        notices.append((identity, staged))
+    return list(STREAMLINE_RUNTIME_NAMES), notices
+
+
 def stage_physx_runtime_bundle(
     dist: Path,
     *,
@@ -770,6 +813,8 @@ def main() -> int:
     parser.add_argument("--vulkan-sdk", required=True)
     parser.add_argument("--autoremesher", choices=("true", "false"), required=True)
     parser.add_argument("--physx", choices=("true", "false"), required=True)
+    parser.add_argument("--streamline", choices=("true", "false"), default="false")
+    parser.add_argument("--streamline-root", type=Path)
     parser.add_argument("--physx-runtime", type=Path)
     parser.add_argument("--physx-license", type=Path)
     parser.add_argument("--cuda-license", type=Path)
@@ -825,6 +870,12 @@ def main() -> int:
     for path, label in required:
         if not path.exists():
             raise SystemExit(f"{label} is missing: {path}")
+    try:
+        validate_streamline_inputs(
+            enabled=args.streamline == "true", sdk_root=args.streamline_root
+        )
+    except ValueError as error:
+        raise SystemExit(f"invalid Streamline package inputs: {error}") from error
     dependency_libraries = parse_dependency_libraries(args.dependency_library)
 
     revision = str(run_git(root, "rev-parse", "HEAD")).strip()
@@ -866,6 +917,11 @@ def main() -> int:
         )
     except ValueError as error:
         raise SystemExit(f"invalid PhysX package inputs: {error}") from error
+    streamline_runtime, streamline_notices = stage_streamline_runtime_bundle(
+        dist, enabled=args.streamline == "true", sdk_root=args.streamline_root
+    )
+    runtime_dlls.extend(streamline_runtime)
+    nvidia_notices.extend(streamline_notices)
     assert args.hydrology_cache is not None or args.physx == "false"
     if args.hydrology_cache is not None:
         try:
@@ -951,7 +1007,7 @@ def main() -> int:
         "notices": notice_labels,
         "features": {
             "autoremesher": args.autoremesher == "true",
-            "streamline": False,
+            "streamline": args.streamline == "true",
             "physx": args.physx == "true",
             "cuda": args.physx == "true",
             "vulkan_renderer": True,

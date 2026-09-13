@@ -6,7 +6,7 @@ import { emitFurnishing, furnishingChildren, FURNISHING_DEFAULTS } from 'shared-
 class CastleChest extends Part {
   static lodBudgets = [1];
   static noImpostor = true;
-  static params = { ...FURNISHING_DEFAULTS.chest };
+  static params = { surfaceMembers: 0, ...FURNISHING_DEFAULTS.chest };
   static requires(p) { return furnishingChildren('chest', p); }
   build(p) { emitFurnishing(this, 'chest', p); }
 }

@@ -73,6 +73,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -438,7 +439,29 @@ bool supports_native_ray_tracing(
 // touched from elsewhere is the atomic `validation_errors`.
 struct VulkanDevice::Impl {
     explicit Impl(StreamlineBridge input_streamline)
-        : streamline(std::move(input_streamline)) {}
+        : streamline(std::move(input_streamline)) {
+        const char* timings = std::getenv("MATTER_FRAME_TIMINGS");
+        frame_timings_enabled = timings && std::strcmp(timings, "1") == 0;
+    }
+
+    bool frame_timings_enabled = false;
+    VulkanFrameTimings last_frame_timings{};
+    struct FrameTimingScope {
+        double* output;
+        std::chrono::steady_clock::time_point start{};
+        explicit FrameTimingScope(double* destination) : output(destination) {
+            if (output) start = std::chrono::steady_clock::now();
+        }
+        ~FrameTimingScope() {
+            if (output) *output += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+        }
+    };
+    template <typename Function>
+    auto time_frame_call(double& milliseconds, Function&& call) {
+        FrameTimingScope timing(frame_timings_enabled ? &milliseconds : nullptr);
+        return call();
+    }
 
     // One of the kFramesInFlight CPU-side frame slots, selected by
     // `frame_slot` and advanced in end_frame(). Each slot owns:
@@ -1651,29 +1674,62 @@ struct VulkanDevice::Impl {
                 break;
             }
         }
-        // FIFO unless MATTER_VSYNC=0, which asks for MAILBOX and falls back to
-        // IMMEDIATE, then to FIFO if the device offers neither.
-        //
-        // This exists for MEASUREMENT. Under FIFO a frame that finishes early
-        // waits, the GPU downclocks, and its own timestamps read whatever clock
-        // state the wait left behind: two runs of one binary at one pose
-        // reported 6.0 ms and 22.9 ms of GPU time for the identical 78-batch
-        // frame. Nothing sub-millisecond can be A/B'd through that. Uncapped,
-        // the GPU stays at a working clock and the timestamps mean something.
+        // Explicit mode selection is strict so an unsupported mode cannot
+        // silently turn a pacing comparison into a different experiment.
+        // Read again for every recreation; auto preserves MATTER_VSYNC policy.
+        const auto mode_name = [](VkPresentModeKHR mode) {
+            switch (mode) {
+            case VK_PRESENT_MODE_FIFO_KHR: return "fifo";
+            case VK_PRESENT_MODE_MAILBOX_KHR: return "mailbox";
+            case VK_PRESENT_MODE_IMMEDIATE_KHR: return "immediate";
+            case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "fifo_relaxed";
+            default: return "other";
+            }
+        };
+        const auto offers = [&support](VkPresentModeKHR mode) {
+            return std::find(support.present_modes.begin(),
+                             support.present_modes.end(), mode) !=
+                   support.present_modes.end();
+        };
+        std::string supported_modes;
+        for (VkPresentModeKHR mode : support.present_modes) {
+            if (!supported_modes.empty()) supported_modes += ",";
+            supported_modes += std::string(mode_name(mode)) + "(" +
+                               std::to_string(static_cast<int>(mode)) + ")";
+        }
+        const char* requested_mode = std::getenv("MATTER_PRESENT_MODE");
+        if (!requested_mode) requested_mode = "auto";
+        const bool automatic_mode = std::strcmp(requested_mode, "auto") == 0;
         create.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-        if (const char* vsync = std::getenv("MATTER_VSYNC")) {
-            if (vsync[0] == '0' && vsync[1] == '\0') {
-                const auto offers = [&support](VkPresentModeKHR mode) {
-                    return std::find(support.present_modes.begin(),
-                                     support.present_modes.end(),
-                                     mode) != support.present_modes.end();
-                };
-                if (offers(VK_PRESENT_MODE_MAILBOX_KHR))
-                    create.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-                else if (offers(VK_PRESENT_MODE_IMMEDIATE_KHR))
-                    create.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-                std::printf("MATTER_VSYNC=0: present mode %d\n",
-                            static_cast<int>(create.presentMode));
+        if (automatic_mode) {
+            // FIFO can downclock an early-finishing GPU. Keep the existing
+            // uncapped measurement option: MAILBOX, then IMMEDIATE, then FIFO.
+            if (const char* vsync = std::getenv("MATTER_VSYNC")) {
+                if (vsync[0] == '0' && vsync[1] == '\0') {
+                    if (offers(VK_PRESENT_MODE_MAILBOX_KHR))
+                        create.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                    else if (offers(VK_PRESENT_MODE_IMMEDIATE_KHR))
+                        create.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+                    std::printf("MATTER_VSYNC=0: present mode %d\n",
+                                static_cast<int>(create.presentMode));
+                }
+            }
+        } else {
+            if (std::strcmp(requested_mode, "fifo") == 0)
+                create.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+            else if (std::strcmp(requested_mode, "mailbox") == 0)
+                create.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+            else if (std::strcmp(requested_mode, "immediate") == 0)
+                create.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+            else {
+                error = "MATTER_PRESENT_MODE must be auto, fifo, mailbox, or immediate; received '" +
+                        std::string(requested_mode) + "'";
+                return false;
+            }
+            if (!offers(create.presentMode)) {
+                error = "MATTER_PRESENT_MODE=" + std::string(requested_mode) +
+                        " is unsupported; available modes: " + supported_modes;
+                return false;
             }
         }
         create.clipped = VK_TRUE;
@@ -1732,6 +1788,9 @@ struct VulkanDevice::Impl {
         swapchain_images = std::move(images);
         swapchain_image_views = std::move(views);
         swapchain_image_initialized.assign(swapchain_images.size(), false);
+        MATTER_LOGI("vk", "present requested=%s effective=%s(%d) supported=[%s] images=%u extent=%ux%u",
+            requested_mode, mode_name(create.presentMode), static_cast<int>(create.presentMode),
+            supported_modes.c_str(), actual_count, extent.width, extent.height);
         return true;
     }
 
@@ -1912,6 +1971,10 @@ struct VulkanDevice::Impl {
     // recover_unsubmitted_acquire() so the image is handed back rather than
     // stranded.
     bool begin_frame(VulkanFrame& output, std::string& error) {
+        last_frame_timings = {};
+        last_frame_timings.enabled = frame_timings_enabled;
+        FrameTimingScope begin_timing(frame_timings_enabled
+            ? &last_frame_timings.begin_ms : nullptr);
         error.clear();
         output = {};
         if (!ensure_healthy(error)) return false;
@@ -1942,15 +2005,23 @@ struct VulkanDevice::Impl {
         // flight, not of the frame that never started.
         debug_advance_device_address_frame();
         FrameSlot& slot = frames[frame_slot];
-        if (!vk_ok(vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
-                                   std::numeric_limits<uint64_t>::max()),
+        if (frame_timings_enabled) last_frame_timings.frame_slot = frame_slot;
+        if (!vk_ok(time_frame_call(last_frame_timings.frame_fence_ms, [&] {
+                return vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
+                                      std::numeric_limits<uint64_t>::max());
+            }),
                     "vkWaitForFences", error)) {
             return poison_device(error, "frame fence wait failed");
         }
-        slot.retained.clear();
+        time_frame_call(last_frame_timings.retained_clear_ms, [&] {
+            slot.retained.clear();
+            return true;
+        });
 
         uint32_t image_index = 0;
-        if (!settle_acquire_fence(slot, error)) {
+        if (!time_frame_call(last_frame_timings.acquire_fence_ms, [&] {
+                return settle_acquire_fence(slot, error);
+            })) {
             return poison_device(
                 error, "acquisition completion could not be established");
         }
@@ -1958,18 +2029,22 @@ struct VulkanDevice::Impl {
                    "vkResetFences(acquire completion)", error)) {
             return false;
         }
-        VkResult acquire = streamline.acquire_next_image(
-            device, swapchain, std::numeric_limits<uint64_t>::max(),
-            slot.image_available, slot.acquire_fence, &image_index);
+        VkResult acquire = time_frame_call(last_frame_timings.acquire_ms, [&] {
+            return streamline.acquire_next_image(
+                device, swapchain, std::numeric_limits<uint64_t>::max(),
+                slot.image_available, slot.acquire_fence, &image_index);
+        });
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
             if (!recreate_swapchain(error)) return false;
             if (!vk_ok(vkResetFences(device, 1, &slot.acquire_fence),
                        "vkResetFences(acquire completion)", error)) {
                 return false;
             }
-            acquire = streamline.acquire_next_image(
-                device, swapchain, std::numeric_limits<uint64_t>::max(),
-                slot.image_available, slot.acquire_fence, &image_index);
+            acquire = time_frame_call(last_frame_timings.acquire_ms, [&] {
+                return streamline.acquire_next_image(
+                    device, swapchain, std::numeric_limits<uint64_t>::max(),
+                    slot.image_available, slot.acquire_fence, &image_index);
+            });
         }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR) {
             return vk_ok(acquire, "vkAcquireNextImageKHR", error);
@@ -1978,13 +2053,16 @@ struct VulkanDevice::Impl {
         // (slot reuse, recovery, swapchain retirement) and teardown instead of
         // stalling here for up to a vsync in FIFO; GPU-side ordering is
         // covered by the submit's image_available semaphore wait.
+        if (frame_timings_enabled) last_frame_timings.image_index = image_index;
         slot.acquire_fence_pending = true;
         acquired_suboptimal = acquire == VK_SUBOPTIMAL_KHR;
 
         if (present_fence_pending[image_index]) {
-            if (!vk_ok(vkWaitForFences(
-                           device, 1, &present_fences[image_index], VK_TRUE,
-                           std::numeric_limits<uint64_t>::max()),
+            if (!vk_ok(time_frame_call(last_frame_timings.present_fence_ms, [&] {
+                    return vkWaitForFences(
+                        device, 1, &present_fences[image_index], VK_TRUE,
+                        std::numeric_limits<uint64_t>::max());
+                }),
                         "vkWaitForFences(previous present)", error)) {
                 recover_unsubmitted_acquire(slot, image_index, error);
                 return poison_device(
@@ -2043,6 +2121,7 @@ struct VulkanDevice::Impl {
         output.frame_slot_count = static_cast<uint32_t>(frames.size());
         output.extent = swapchain_extent;
         output.serial = next_serial++;
+        if (frame_timings_enabled) last_frame_timings.frame_serial = output.serial;
         output.swapchain_recreated = report_recreated;
         report_recreated = false;
         active_frame = output;
@@ -2321,6 +2400,8 @@ struct VulkanDevice::Impl {
     // ambiguous one poisons the device and marks WSI teardown unsafe.
     bool end_frame(const VulkanFrame& input, bool& presented,
                    std::string& error) {
+        last_frame_timings.submit_ms = 0.0;
+        last_frame_timings.present_ms = 0.0;
         error.clear();
         presented = false;
         if (!ensure_healthy(error)) return false;
@@ -2404,7 +2485,9 @@ struct VulkanDevice::Impl {
         } else
 #endif
         {
-            submit_result = vkQueueSubmit2(graphics_queue, 1, &submit, slot.fence);
+            submit_result = time_frame_call(last_frame_timings.submit_ms, [&] {
+                return vkQueueSubmit2(graphics_queue, 1, &submit, slot.fence);
+            });
         }
         if (!vk_ok(submit_result,
                     "vkQueueSubmit2", error)) {
@@ -2470,7 +2553,9 @@ struct VulkanDevice::Impl {
             return false;
         }
         const VkResult present_result =
-            streamline.queue_present(graphics_queue, &present);
+            time_frame_call(last_frame_timings.present_ms, [&] {
+                return streamline.queue_present(graphics_queue, &present);
+            });
         presented = present_result_was_presented(present_result);
         const PresentResultState present_state =
             present_result_state(present_result);
@@ -2772,6 +2857,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::create(GLFWwindow* window,
 
 bool VulkanDevice::begin_frame(VulkanFrame& frame, std::string& error) {
     return impl_->begin_frame(frame, error);
+}
+
+VulkanFrameTimings VulkanDevice::frame_timings() const noexcept {
+    return impl_->last_frame_timings;
 }
 
 bool VulkanDevice::end_frame(const VulkanFrame& frame, std::string& error) {

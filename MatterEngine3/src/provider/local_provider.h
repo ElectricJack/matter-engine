@@ -54,6 +54,8 @@
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
 #include "matter/world_definition.h"
 #include "matter/gpu_visual_meshing.h"
+#include "matter/solid_sdf_meshing.h"
+#include "matter/solid_face_projection.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/authored_fluid_request.h"
 #include "hydrology/hydrology_handoff_products.h"
@@ -65,6 +67,8 @@
 #endif
 
 #include <cmath>
+#include <cstdlib>
+#include <cstdio>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -258,6 +262,20 @@ struct LocalProviderConfig {
                        const gpu_meshing::BuildControl& control)>
         vk_particle_visual_bake;
 
+    // Required only by explicit Part.solidSource recipes. Invoked through
+    // gpu_run on the Vulkan thread; no implicit headless approximation.
+    std::function<bool(const gpu_meshing::SolidJob&,
+                       gpu_meshing::MeshResult&, gpu_meshing::SolidStats&,
+                       gpu_meshing::Error&, const gpu_meshing::BuildControl&)>
+        vk_solid_source_bake;
+
+    // Transient finite source projection for declarative detail bakes. The
+    // provider marshals this through gpu_run; no source mesh or bundle is needed.
+    std::function<bool(const gpu_meshing::FaceJob&, gpu_meshing::FacePatch&,
+                       gpu_meshing::FaceStats&, gpu_meshing::Error&,
+                       const gpu_meshing::BuildControl&)> vk_solid_face_project;
+
+
     // Task 7 authored-fluid dependencies. The factory remains dormant until
     // an imperative river network explicitly selects the PhysX backend and a
     // semantic cache miss reaches the worker-owned solver phase.
@@ -300,6 +318,40 @@ LocalProviderConfig make_engine_local_provider_config(
     const std::string& world_name,
     const std::string& engine_shared_lib_dir,
     FluidBakeBackendFactory backend_factory = {});
+
+// External cache identity is independent of cwd after project resolution. Relative
+// overrides are project-relative; normalization does not change source paths.
+inline std::string project_bake_cache_root(const std::filesystem::path& project,
+                                           const std::string& world) {
+    namespace fs = std::filesystem;
+    const char* value = std::getenv("MATTER_CACHE_ROOT");
+    if (!value || std::string(value).find_first_not_of(" \t\r\n") == std::string::npos)
+        return (project / ".cache" / world).string();
+    if (world.empty() || world == "." || world == ".." ||
+        world.find_first_of("/\\:") != std::string::npos)
+        throw std::invalid_argument("external bake cache requires one safe world-name component");
+    auto normalized_absolute = [](fs::path path) {
+        path = fs::absolute(path);
+        std::error_code error;
+        fs::path canonical = fs::weakly_canonical(path, error);
+        return error ? path.lexically_normal() : canonical;
+    };
+    const fs::path identity_path = normalized_absolute(project);
+    std::string identity = identity_path.generic_u8string();
+#ifdef _WIN32
+    // Windows drive letters and ordinary ASCII path case are not distinct projects.
+    for (char& c : identity) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+#endif
+    uint64_t digest = 14695981039346656037ull;
+    for (unsigned char byte : identity) { digest ^= byte; digest *= 1099511628211ull; }
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(digest));
+    fs::path base(value);
+    if (base.has_root_name() && !base.has_root_directory())
+        throw std::invalid_argument("external cache base cannot be drive-relative");
+    if (base.is_relative()) base = identity_path / base;
+    return (normalized_absolute(base) / "projects" / hex / world).string();
+}
 
 inline LocalProviderConfig LocalProviderConfig::for_project(
     const std::string& project_dir_value,
@@ -350,7 +402,7 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     if (fs::is_directory(project_shared, ec))
         cfg.project_shared_lib_dir = project_shared.string();
     cfg.engine_shared_lib_dir = engine_shared_lib_dir_value;
-    cfg.cache_root = (project / ".cache" / world_name_value).string();
+    cfg.cache_root = project_bake_cache_root(project, world_name_value);
     return cfg;
 }
 
@@ -705,7 +757,8 @@ public:
         const part_graph_snapshot::Snapshot&              snapshot,
         const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
         const std::vector<uint64_t>&                      root_hashes,
-        std::string& err);
+        std::string& err, const std::string& authored_world = {});
+    const std::string& authored_world_cache() const { return authored_world_cache_; }
 
     // Task 7 fix: per-part load failures recorded during fetch_parts() when
     // get_or_load returns null (skip-and-continue; returns true even with failures).
@@ -804,6 +857,7 @@ public:
 #endif
 
 private:
+    void bind_solid_source_baker();
     LocalProviderConfig  cfg_;
     int                  baked_count_ = 0;
     int                  hit_count_   = 0;
@@ -836,6 +890,8 @@ private:
     std::string abs_engine_shared_lib_;
     std::vector<std::string> abs_shared_lib_roots_;
     std::string abs_cache_root_;
+    std::string authored_world_cache_;
+    std::string pending_authored_world_cache_;
 
     // First entry of abs_object_roots_ that actually holds <module>.js, or ""
     // when none does. The absolutized twin of LocalProviderConfig::

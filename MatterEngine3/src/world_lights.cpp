@@ -332,6 +332,91 @@ bool rebuild_local_light_publication(LocalLightPublication& publication,
     }
 }
 
+bool make_scaled_local_light_publication(
+    const LocalLightPublication& authored, float range_scale,
+    LocalLightPublication& output, std::string& error) {
+    return make_scaled_local_light_publication(
+        authored, range_scale,
+        LocalLightIndexConfig{authored.index.cell_size,
+                              authored.index.max_cells_per_light},
+        output, error);
+}
+
+bool make_scaled_local_light_publication(
+    const LocalLightPublication& authored, float range_scale,
+    const LocalLightIndexConfig& config,
+    LocalLightPublication& output, std::string& error) {
+    error.clear();
+    if (&authored == &output) {
+        error = "scaled local light publication requires a distinct authored source";
+        return false;
+    }
+    if (!std::isfinite(range_scale) || range_scale <= 0.0f) {
+        error = "local light range scale must be finite and positive";
+        return false;
+    }
+    try {
+        LocalLightPublication candidate;
+        candidate.records = authored.records;
+        for (LocalLight& light : candidate.records) {
+            if (!valid_light(light, error)) return false;
+            const double scaled = static_cast<double>(light.range) * range_scale;
+            if (scaled > std::numeric_limits<float>::max()) {
+                error = "scaled local light range exceeds finite float capacity";
+                return false;
+            }
+            light.range = static_cast<float>(scaled);
+            if (!(light.range > 0.0f)) {
+                error = "scaled local light range underflows to zero";
+                return false;
+            }
+        }
+        if (!rebuild_local_light_publication(candidate, config, error)) return false;
+        output = std::move(candidate);
+        return true;
+    } catch (const std::bad_alloc&) {
+        error = "scaled local light publication allocation failed";
+        return false;
+    } catch (const std::length_error&) {
+        error = "scaled local light publication exceeds container limits";
+        return false;
+    }
+}
+
+bool EffectiveLocalLightCache::resolve(
+    const LocalLightPublication& authored, float range_scale,
+    const LocalLightIndexConfig& config,
+    const LocalLightPublication*& output, std::string& error) {
+    error.clear();
+    if (!std::isfinite(range_scale) ||
+        range_scale <= 0.0f || !std::isfinite(config.cell_size) ||
+        config.cell_size <= 0.0f || config.max_cells_per_light == 0) {
+        error = "effective local lights require valid range/index settings";
+        return false;
+    }
+    if (authored.revision != 0 && range_scale == 1.0f &&
+        config.cell_size == authored.index.cell_size &&
+        config.max_cells_per_light == authored.index.max_cells_per_light) {
+        output = &authored;
+        return true;
+    }
+    if (authored.revision == 0 || authored_revision_ != authored.revision ||
+        range_scale_ != range_scale ||
+        config_.cell_size != config.cell_size ||
+        config_.max_cells_per_light != config.max_cells_per_light) {
+        // The builder commits only after complete validation/index construction.
+        if (!make_scaled_local_light_publication(authored, range_scale, config,
+                                                 effective_, error))
+            return false;
+        authored_revision_ = authored.revision;
+        range_scale_ = range_scale;
+        config_ = config;
+        ++rebuild_count_;
+    }
+    output = &effective_;
+    return true;
+}
+
 bool query_local_light_candidates(const LocalLightSpatialIndex& index,
                                   const float position[3],
                                   std::vector<std::uint32_t>& candidates,
@@ -390,6 +475,66 @@ bool query_local_light_candidates(const LocalLightSpatialIndex& index,
         return false;
     } catch (const std::length_error&) {
         error = "local light candidate query exceeds container limits";
+        return false;
+    }
+}
+
+bool select_local_light_contributions(
+    const std::vector<LocalLightContribution>& contributions, uint32_t budget,
+    std::vector<uint32_t>& selected, std::string& error) {
+    error.clear();
+    if (budget > 8u) {
+        error = "local light selection budget must be in [0,8]";
+        return false;
+    }
+    try {
+        std::vector<uint32_t> result;
+        uint32_t ids[8]{};
+        float scores[8]{};
+        uint32_t count = 0;
+        for (const LocalLightContribution& input : contributions) {
+            if (!finite3(input.contribution) || input.contribution[0] < 0 ||
+                input.contribution[1] < 0 || input.contribution[2] < 0) {
+                error = "local light selection contribution must be finite and nonnegative";
+                return false;
+            }
+            const float score = input.contribution[0] * 0.2126f +
+                                input.contribution[1] * 0.7152f +
+                                input.contribution[2] * 0.0722f;
+            if (!std::isfinite(score)) {
+                error = "local light selection score overflow";
+                return false;
+            }
+            if (!(score > 0)) continue;
+            if (!budget || !input.casts_shadow) {
+                result.push_back(input.light_index);
+                continue;
+            }
+            uint32_t insertion = count;
+            for (uint32_t i = 0; i < count; ++i) {
+                if (score > scores[i] || (score == scores[i] && input.light_index < ids[i])) {
+                    insertion = i;
+                    break;
+                }
+            }
+            if (insertion >= budget) continue;
+            const uint32_t new_count = std::min(count + 1u, budget);
+            for (uint32_t i = new_count - 1u; i > insertion; --i) {
+                ids[i] = ids[i - 1u];
+                scores[i] = scores[i - 1u];
+            }
+            ids[insertion] = input.light_index;
+            scores[insertion] = score;
+            count = new_count;
+        }
+        result.insert(result.end(), ids, ids + count);
+        selected = std::move(result);
+        return true;
+    } catch (const std::bad_alloc&) {
+        error = "local light selection allocation failed";
+        return false;
+    } catch (const std::length_error&) {
+        error = "local light selection exceeds container limits";
         return false;
     }
 }

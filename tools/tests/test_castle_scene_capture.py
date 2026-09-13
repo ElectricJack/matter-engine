@@ -51,6 +51,24 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaises(M.CaptureError):
                 M.await_gate(threading.Condition(), gate, lambda: True, time.monotonic()+1, lambda: True, 'test')
 
+    def test_interleaved_native_finished_callback(self):
+        for errors in (0, 2):
+            gate = M.PublicationGate()
+            gate.feed('bake finished[brick-bond] cache_hit=1 source_meshes=0\n')
+            gate.feed(f' ({errors} errors)\n')
+            gate.feed('viewer: bake ready\n')
+            gate.feed('[bake-timing] install=1ms compose=0ms publish=2ms total=3ms\n')
+            self.assertEqual(gate.published, errors == 0)
+            self.assertEqual(gate.error is not None, errors != 0)
+        for prefix in (False, True):
+            gate = M.PublicationGate()
+            if prefix:
+                gate.feed('bake finished[other-thread]\n')
+                for _ in range(5):
+                    gate.feed('unrelated output\n')
+            gate.feed(' (0 errors)\n')
+            self.assertFalse(gate.finished, 'orphan/expired continuation must fail closed')
+
     def test_timeout_and_early_process_exit(self):
         for alive, deadline, message in [(True, time.monotonic()-1, 'timeout'), (False, time.monotonic()+1, 'exited')]:
             with self.assertRaisesRegex(M.CaptureError, message):
@@ -89,7 +107,7 @@ class PublicationTests(unittest.TestCase):
 
                 class FakeProcess:
                     def __init__(self, *unused, **options):
-                        assert options['env']['MATTER_HIDE_WINDOW'] == '1'
+                        assert options['env']['MATTER_HIDE_WINDOW'] == '0'
                         assert options['env']['MATTER_IMPOSTOR'] == '0'
                         self.returncode = None
                         self.pid = 0  # Fake process: never passed to an OS kill call.

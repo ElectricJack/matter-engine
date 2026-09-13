@@ -6,6 +6,6 @@ import { emitFurnishing, FURNISHING_DEFAULTS } from 'shared-lib/castle_furnishin
 class CastleChandelier extends Part {
   static lodBudgets = [1];
   static noImpostor = true;
-  static params = { ...FURNISHING_DEFAULTS.chandelier };
+  static params = { surfaceMembers: 0, ...FURNISHING_DEFAULTS.chandelier };
   build(p) { emitFurnishing(this, 'chandelier', p); }
 }

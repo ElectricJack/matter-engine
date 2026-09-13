@@ -41,7 +41,7 @@ FINAL_TIMING = re.compile(r'\[bake-timing\]\s+install=([\d.]+)ms\s+compose=([\d.
                           r'publish=([\d.]+)ms\s+total=([\d.]+)ms(?:\s+\(resolve-cache-hit\))?')
 FAILURE = re.compile(r'\bFATAL\b|\bVUID-|Validation Error|\bbake error\b|\bbake aborted\b|'
                      r'flatten failed|validation errors:\s*[1-9]|\[error\]|'
-                     r'cmd: unrecognized|dispatch failed|shot: timeout|idle: timeout|'
+                     r'cmd: unrecognized|set: unknown property|dispatch failed|shot: timeout|idle: timeout|'
                      r'event:.*(?:timeout|aborted)|\bassertion.*failed', re.I)
 
 
@@ -54,6 +54,7 @@ class PublicationGate:
     def __init__(self):
         self.timing = None
         self.finished = False
+        self.finish_continuations = 0
         self.viewer_ready = False
         self.idle = False
         self.error = None
@@ -66,8 +67,17 @@ class PublicationGate:
             self.error = line.strip()
         if '[bake-timing]' in line and ('world-kind' in line or 'ROOTS ONLY' in line):
             self.error = 'streamed world: roots-only timing cannot prove complete geometry; use a sector-fill-aware driver'
+        # The native progress callback prints its prefix and error count in
+        # separate writes. A concurrent detail-loader log can land between them.
+        # Bind a standalone continuation to a recent real prefix, never accept
+        # an orphan count or wait indefinitely for one.
+        prefix = re.search(r'\bbake finished', line)
         finished = re.search(r'\bbake finished \((\d+) errors\)', line)
+        if not finished and self.finish_continuations:
+            finished = re.match(r'^\s*\((\d+) errors\)\s*$', line)
+        self.finish_continuations = 4 if prefix and not finished else max(0, self.finish_continuations - 1)
         if finished:
+            self.finish_continuations = 0
             if int(finished[1]):
                 self.error = line.strip()
             else:
@@ -217,7 +227,7 @@ def capture(args):
     # Clear inherited automation so a stale screenshot/camera timeline cannot
     # race this driver's publication barrier. Explicit overrides remain allowed.
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith('MATTER_')}
-    env['MATTER_HIDE_WINDOW'] = '1'
+    env['MATTER_HIDE_WINDOW'] = '0'
     env['MATTER_IMPOSTOR'] = '0'
     for item in args.env:
         if '=' not in item:
@@ -232,6 +242,8 @@ def capture(args):
     condition = threading.Condition()
     reader_done = False
     deadline = time.monotonic() + args.timeout
+    process_started = time.monotonic()
+    observed_ms = {}
     proc = subprocess.Popen([str(editor)], cwd=editor_dir, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, encoding='utf-8', errors='replace', bufsize=1,
@@ -240,12 +252,22 @@ def capture(args):
     def read_output():
         nonlocal reader_done
         try:
-            with (out / 'log.txt').open('w', encoding='utf-8') as log:
+            with (out / 'log.txt').open('w', encoding='utf-8') as log, \
+                    (out / 'startup-events.jsonl').open('w', encoding='utf-8') as events:
                 for line in proc.stdout:
+                    elapsed_ms = (time.monotonic() - process_started) * 1000
+                    events.write(json.dumps({'observed_ms': elapsed_ms, 'line': line.rstrip('\r\n')}) + '\n')
+                    events.flush()
                     log.write(line)
                     log.flush()
                     with condition:
                         gate.feed(line)
+                        if gate.published:
+                            observed_ms.setdefault("process_to_publication_ms", elapsed_ms)
+                        if "viewer: bake ready" in line:
+                            observed_ms.setdefault("process_to_viewer_ready_ms", elapsed_ms)
+                        if "screenshot written to " in line:
+                            observed_ms.setdefault("process_to_first_screenshot_ms", elapsed_ms)
                         condition.notify_all()
         except Exception as error:
             with condition:
@@ -284,6 +306,7 @@ def capture(args):
         verify_shots(shots, editor_dir, gate)
         receipt = gate.receipt()
         receipt.update(world=args.world, shots=shots, editor_exit=code,
+                       startup_observed_ms=observed_ms,
                        render_environment={key: env[key] for key in (
                            'MATTER_HIDE_WINDOW', 'MATTER_IMPOSTOR',
                            'MATTER_WINDOW_WIDTH', 'MATTER_WINDOW_HEIGHT',

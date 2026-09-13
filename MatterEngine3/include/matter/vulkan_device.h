@@ -189,6 +189,25 @@ struct VulkanFrame {
                                       // must drop size-dependent and temporal state
 };
 
+// Optional CPU wait attribution for the latest begin/end attempt. Enabled by
+// MATTER_FRAME_TIMINGS=1 at device creation; no clocks are sampled otherwise.
+// begin_ms includes all begin_frame work; the named waits are its subspans.
+// frame_serial is zero unless begin_frame succeeded. Read after end_frame.
+struct VulkanFrameTimings {
+    bool enabled = false;
+    uint64_t frame_serial = 0;
+    uint32_t frame_slot = UINT32_MAX;
+    uint32_t image_index = UINT32_MAX;
+    double begin_ms = 0.0;
+    double frame_fence_ms = 0.0;
+    double retained_clear_ms = 0.0;
+    double acquire_fence_ms = 0.0;
+    double acquire_ms = 0.0;
+    double present_fence_ms = 0.0;
+    double submit_ms = 0.0;
+    double present_ms = 0.0;
+};
+
 // Owns the Vulkan instance, physical and logical device, graphics queue,
 // surface, swapchain and per-frame command/sync resources for ONE window, and
 // hands out VulkanFrames to record into.
@@ -238,6 +257,7 @@ public:
     // command_buffer is open for recording. False means the acquire failed or
     // the device is poisoned; `error` carries the latched message.
     bool begin_frame(VulkanFrame& frame, std::string& error);
+    VulkanFrameTimings frame_timings() const noexcept;
     // End and submit the frame's command buffer, resolve any readback queued
     // by readback_swapchain_rgba8(), and present. Must be given the frame
     // begin_frame() produced. The two-argument form discards the presented

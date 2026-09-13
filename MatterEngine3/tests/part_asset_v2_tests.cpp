@@ -1,4 +1,5 @@
 #include "part_asset_v2.h"
+#include "part_render_policy.h"
 #include "part_bundle.h"   // M4: an artifact is a bundle section
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
@@ -7,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <filesystem>
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -1031,6 +1033,77 @@ static void test_static_lod_plan_sidecar() {
           "load_static_lod_plan returns false for a missing file");
 }
 
+static void count_bundle_publishes(const char *phase, double, size_t, uint32_t, void *user) {
+    if (std::strcmp(phase, "bundle_atomic_replace") == 0)
+        ++*static_cast<int *>(user);
+}
+
+static void test_static_multi_section_publish() {
+    using namespace part_asset;
+    const std::string a = std::string(kCacheRoot) + "/atomic-static.bundle";
+    const std::string b = std::string(kCacheRoot) + "/sequential-static.bundle";
+    std::filesystem::remove(a);
+    std::filesystem::remove(b);
+    BLASManager blas;
+    TLASManager tlas(8);
+    BLASHandle ha, hb;
+    build_scene(blas, tlas, ha, hb);
+    const auto kids = sample_children();
+    const auto lods = sample_lods();
+    const uint64_t hash = 0x715AFF;
+    matter::PartRenderPolicy policy;
+    policy.ray_traced = false;
+    policy.child_overrides = {matter::RayTracingOverride::Disabled,
+                              matter::RayTracingOverride::Enabled};
+    const uint8_t sentinel[] = {1, 9, 4};
+    CHECK(
+        part_bundle::write_section(a, hash, part_bundle::kSectionStages, sentinel, sizeof sentinel),
+        "seed unrelated section A");
+    CHECK(
+        part_bundle::write_section(b, hash, part_bundle::kSectionStages, sentinel, sizeof sentinel),
+        "seed unrelated section B");
+    CHECK(matter::save_part_render_policy(b, hash, policy), "sequential policy publish");
+    CHECK(save_v2(b, blas, tlas, kids.data(), kids.size(), lods, {}, hash),
+          "sequential geometry publish");
+    int publishes = 0;
+    part_bundle::set_write_observer(count_bundle_publishes, &publishes);
+    const bool saved =
+        save_v2_with_render_policy(a, blas, tlas, kids.data(), kids.size(), lods, {}, hash, policy);
+    part_bundle::set_write_observer(nullptr);
+    CHECK(saved && publishes == 1, "static policy and geometry use exactly one durable publish");
+    const auto before = read_file(a.c_str());
+    CHECK(before == read_file(b.c_str()),
+          "multi-section file byte-identical to sequential writes including unrelated section");
+    matter::PartRenderPolicy read_policy;
+    CHECK(matter::load_part_render_policy(a, hash, kids.size(), read_policy) &&
+              !read_policy.ray_traced && read_policy.child_overrides == policy.child_overrides,
+          "policy round-trips with geometry");
+    BLASManager decoded;
+    TLASManager decoded_tlas(8);
+    std::vector<ChildInstance> decoded_kids;
+    LodLevels decoded_lods;
+    CHECK(load_v2(a, hash, decoded, decoded_tlas, decoded_kids, decoded_lods) &&
+              decoded_kids.size() == kids.size(),
+          "geometry and children round-trip from atomic bundle");
+    auto bad = policy;
+    bad.child_overrides.pop_back();
+    CHECK(!save_v2_with_render_policy(a, blas, tlas, kids.data(), kids.size(), lods, {}, hash, bad),
+          "mismatched policy count rejects before publish");
+    const part_bundle::SectionUpdate duplicate[] = {{7, sentinel, 1}, {7, sentinel, 2}};
+    CHECK(!part_bundle::write_sections(a, hash, duplicate, 2), "duplicate input tags reject");
+    CHECK(read_file(a.c_str()) == before, "invalid updates preserve complete prior artifact");
+    // Force the same production fopen failure as an inaccessible candidate,
+    // without relying on privileges, timing, or a synthetic mutation callback.
+    std::filesystem::create_directory(a + ".tmp");
+    CHECK(!save_v2_with_render_policy(a, blas, tlas, kids.data(), kids.size(), lods, {}, hash,
+                                      policy),
+          "candidate open failure rejects atomic pair");
+    CHECK(read_file(a.c_str()) == before, "candidate I/O failure preserves both prior sections");
+    std::filesystem::remove(a + ".tmp");
+    std::filesystem::remove(a);
+    std::filesystem::remove(b);
+}
+
 int main() {
     test_atomic_replace_preserves_target_on_failure();
 #ifdef _WIN32
@@ -1051,6 +1124,7 @@ int main() {
     test_flatten_hints_round_trip();
     test_bundle_is_order_independent();
     test_static_lod_plan_sidecar();
+    test_static_multi_section_publish();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }
