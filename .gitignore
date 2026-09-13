@@ -1,4 +1,5 @@
 # Build artifacts
+/build/
 *.obj
 *.so
 *.dylib
@@ -44,6 +45,7 @@ SurfaceLib/test_config
 /MatterEditor/editor_settings.json
 
 # Editor / OS
+__pycache__/
 .DS_Store
 .vscode/
 .idea/
@@ -165,3 +167,6 @@ MatterEditor/vulkan_device_fault.log
 
 # Native CI transcripts and JUnit output.
 /artifacts/ci/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
