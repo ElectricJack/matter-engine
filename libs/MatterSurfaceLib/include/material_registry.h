@@ -62,14 +62,15 @@ typedef enum MaterialSurfaceFlags {
     MATERIAL_DOUBLE_SIDED    = 1u << 1,
     MATERIAL_ALPHA_TESTED    = 1u << 2,
     MATERIAL_VOLUME_BOUNDARY = 1u << 3,
-    MATERIAL_WATER_SURFACE   = 1u << 4
+    MATERIAL_WATER_SURFACE   = 1u << 4,
+    MATERIAL_SURFACE_DETAIL  = 1u << 5 // Finished part-local detail; no ground overlays.
 } MaterialSurfaceFlags;
 
 // Version of MaterialDef's authored/serialized layout, returned by
 // MaterialRegistrySchemaVersion(). Bump it whenever a MaterialDef field is
 // added, removed, or given a new meaning -- v4 is the revision that turned
 // groundTilesetSlot into the general "detail slot" and added groundMacroSlot.
-enum { MATERIAL_SCHEMA_VERSION = 5 };
+enum { MATERIAL_SCHEMA_VERSION = 6 };
 
 // One authored material: PBR surface parameters, plus the handful of fields
 // the CPU side reads (mergeGroup for SDF grouping, meshingAlgorithm for mesher

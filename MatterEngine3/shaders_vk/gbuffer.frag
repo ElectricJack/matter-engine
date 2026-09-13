@@ -8,6 +8,7 @@
 #define TILESET_TEX_BINDING 6
 #define TILESET_PARAMS_BINDING 7
 #include "tileset_common.glsl"
+#include "surface_detail.glsl"
 
 // Chart-space virtual texturing (WP-E). Bindings 10-13 of the scene set (9 is
 // the compute-only vt slot table cull.comp reads); see
@@ -19,6 +20,7 @@
 #define VT_VARIANTS_BINDING 12
 #define VT_FEEDBACK_BINDING 13
 #include "vt_common.glsl"
+#include "vt_normal_frame.glsl"
 
 #define WATER_SET 1
 #define WATER_A_BINDING 20
@@ -42,9 +44,14 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 capacities;
     uvec4 temporal;
     vec4 water_animation;
+    uvec4 vis_params;
+    mat4 cull_world_to_clip;
+    vec4 surface_detail_sampling;
 } frame;
 
 layout(location = 0) in vec3 in_normal;
+layout(location = 18) flat in mat3 in_vt_normal_matrix;
+layout(location = 21) in vec3 in_part_local_pos;
 layout(location = 1) in vec4 in_tint;
 layout(location = 2) in vec4 in_surface;
 layout(location = 3) in vec3 in_velocity_valid;
@@ -170,8 +177,12 @@ void main() {
     float emission = max(material.emission_strength.w, 0.0);
     float encoded_emission = min(log2(1.0 + emission), 15.875);
     float ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0) : 1.0;
-    vec3 shading_normal = normalize(in_normal);
+    vec3 geometric_normal_ws = in_vt_slot != 0u
+        ? normalize(in_vt_normal_matrix * normalize(in_normal))
+        : normalize(in_normal);
+    vec3 shading_normal = geometric_normal_ws;
     float water_reactivity = 0.0;
+    float surface_ray_t = 0.0;
 
     // ---- M2.5: the terminal impostor rep ----------------------------------
     //
@@ -383,7 +394,7 @@ void main() {
     // needs the surface frame (the warp frame, both ground samplers, the VT
     // near-band composite) takes THIS value, so "the frame the march used" and
     // "the frame the shading used" cannot be different expressions.
-    vec3 geo_n = normalize(in_normal);
+    vec3 geo_n = geometric_normal_ws;
 
     // ---- The ground parameterisation, chosen ONCE per fragment -------------
     //
@@ -461,7 +472,12 @@ void main() {
     // carries detailSlot+1 (0 = no tileset). When present, the Wang-sampled
     // ground texture replaces the material's flat base color/normal/ORM.
     int tileset_slot = tileset_detail_slot(material.flags_misc);
-    if (tileset_slot >= 0 && !is_impostor) {
+    const bool finished_domain = (material.flags_misc.x & MATERIAL_SURFACE_DETAIL) != 0u && !is_impostor;
+    bool finished_surface = false;
+    if (finished_domain && in_vt_slot != 0u && tileset_slot >= 0 && tileset_slot < TILESET_MAX_SLOTS)
+        finished_surface = tileset.mean_albedo[tileset_slot].w > 0.0 &&
+                           TILESET_SLOT_SCALAR(tile_size_m, tileset_slot) > 0.0;
+    if (tileset_slot >= 0 && !is_impostor && !finished_domain) {
         vec3 plane_n = geo_n;
         vec3 flat_orm;
         vec3 flat_shading_normal;
@@ -913,7 +929,7 @@ void main() {
     // (the regression gate: chartless parts render byte-identically).
     // in_vt_slot is `flat` and comes from the draw record, so it is
     // quad-uniform — the derivatives below are well defined.
-    if (in_vt_slot != 0u) {
+    if (in_vt_slot != 0u && !finished_surface) {
         vec2 atlas_uv = in_surface.xy;
         float vt_lod =
             vt_desired_mip(in_vt_slot, dFdx(atlas_uv), dFdy(atlas_uv));
@@ -925,6 +941,11 @@ void main() {
             vec4 vt_aux = vt_sample_channel(vt, VT_CHANNEL_AUX);
             vec3 vt_normal_ts =
                 vt_decode_normal(vt_sample_channel(vt, VT_CHANNEL_NORMAL));
+            vec3 page_normal_ws = normalize(in_vt_normal_matrix *
+                vt_frame_decode(vt_normal_ts, normalize(in_normal)));
+            // Near detail is already world-space. Re-express both operands
+            // in one robust world frame only for their final composition.
+            vec3 page_world_ts = vt_frame_encode(page_normal_ws, geo_n);
 
             // Near band: aux.r carries the page's dominant material id; its
             // detail slot is the Wang tileset that rides on the VT base. When
@@ -940,18 +961,9 @@ void main() {
             // discarded everywhere a player looks. Nothing written into the
             // page's normal channel could reach the screen.
             //
-            // The geometric normal (geo_n, hoisted to main() scope) is the
-            // frame BOTH sides are expressed in: the compositor encodes the
-            // page normal relative to it (in tileset_rotate_normal's own
-            // basis) and the live detail can be read back into it with
-            // tileset_unrotate_normal. That still holds with the detail now
-            // sampled through the warp frame — tileset_unrotate_normal takes a
-            // WORLD-space normal and re-expresses it, so which frame the
-            // detail was assembled in does not matter, only that it is a
-            // perturbation of the same geometric normal. Both identities the
-            // composite depends on survive: a detail normal equal to geo_n
-            // still unrotates to exactly (0,0,1) (the warp frame's own N is
-            // geo_n), so a neutral detail still costs the page nothing.
+            // Page detail has already been transformed from its local frame.
+            // Both page and live detail are composed around the same world
+            // geometric normal, with a stable frame even on +/-X faces.
             vec3 near_albedo = vt_albedo;
             // Neutral until proven otherwise: (0,0,1) composes to "the page,
             // untouched", and ratios of 1 leave the page's ORM alone.
@@ -1031,25 +1043,16 @@ void main() {
                     rough_ratio =
                         clamp(detail_orm_here.g / mean_orm.g, 0.25, 4.0);
                 }
-                detail_ts = tileset_unrotate_normal(detail_normal_ws, geo_n);
+                detail_ts = vt_frame_encode(detail_normal_ws, geo_n);
             }
             base_color = mix(vt_albedo, near_albedo, near_band) *
                          mix(vec3(1.0), in_tint.rgb, in_tint.a);
-            // The page normal is tangent-space relative to the geometric
-            // normal, encoded by the compositor in tileset_rotate_normal's
-            // own frame; the stub writes the neutral (0,0,1), i.e. the
-            // geometric normal.
-            //
-            // Fade the DETAIL toward neutral, then compose onto the page.
-            // Fading the detail (rather than mixing the two results) is what
-            // makes the band edge exact: at near_band == 0 the detail IS
-            // (0,0,1) and tileset_blend_normal_detail returns the page normal
-            // bit-for-bit, so the handoff to pure VT — the same thing RT does
-            // at every distance — has no seam of its own.
+            // Fade live detail toward neutral, then compose it with the page
+            // in the common world frame. At zero near-band the page survives.
             vec3 detail_ts_faded =
                 normalize(mix(vec3(0.0, 0.0, 1.0), detail_ts, near_band));
-            shading_normal = tileset_rotate_normal(
-                tileset_blend_normal_detail(vt_normal_ts, detail_ts_faded),
+            shading_normal = vt_frame_decode(
+                tileset_blend_normal_detail(page_world_ts, detail_ts_faded),
                 geo_n);
             // ORM: page value modulated by the mean-preserving ratios, faded
             // to 1 (page untouched) at the band edge.
@@ -1101,6 +1104,36 @@ void main() {
         }
     }
 
+    if (finished_surface) {
+        // The inverse transpose is already carried for local VT normals;
+        // its transpose transforms a world ray into local metres per world m.
+        vec3 ray_world = normalize(in_world_pos - frame.camera_eye_pixel_budget.xyz);
+        vec3 ray_local = transpose(in_vt_normal_matrix) * ray_world;
+        // Select height, normal and material mips for the reconstructed output
+        // pixel. Keeping one footprint for every channel avoids marching one
+        // heightfield and shading a differently filtered material surface.
+        float footprint = max(
+            length(dFdx(in_part_local_pos)) * frame.surface_detail_sampling.x,
+            length(dFdy(in_part_local_pos)) * frame.surface_detail_sampling.y);
+        float distance_m = length(in_world_pos - frame.camera_eye_pixel_budget.xyz);
+        float fade_m = max(tileset.pom_a.w, 1e-4);
+        float fade = 1.0 - clamp((distance_m - (tileset.pom_a.z - fade_m)) / fade_m, 0.0, 1.0);
+        SurfaceDetailSample detail = surface_detail_sample(tileset_slot,
+            in_part_local_pos, normalize(in_normal), ray_local, footprint,
+            int(tileset.pom_a.x), int(tileset.pom_a.y), max(tileset.pom_b.w, 0.0),
+            max(tileset.pom_b.z, 0.0) * fade);
+        surface_ray_t = detail.ray_t;
+        base_color = detail.albedo * mix(vec3(1.0), in_tint.rgb, clamp(in_tint.a, 0.0, 1.0));
+        shading_normal = normalize(in_vt_normal_matrix * detail.normal);
+        roughness = clamp(detail.orm.g, 0.0, 1.0);
+        metallic = clamp(detail.orm.b, 0.0, 1.0);
+        ao *= clamp(detail.orm.r, 0.0, 1.0);
+        vec4 displaced_clip = frame.world_to_clip *
+            vec4(in_world_pos + ray_world * detail.ray_t, 1.0);
+        if (displaced_clip.w > 0.0)
+            frag_depth = min(frag_depth, displaced_clip.z / displaced_clip.w);
+    }
+
     gl_FragDepth = frag_depth;
 
     // render.pom.horizon_debug: the last word on base_color, deliberately.
@@ -1143,8 +1176,11 @@ void main() {
     //
     // Everything that is not parallaxed ground writes 1.0 (see the
     // declaration), so this is the identity for every other pixel.
+    // Surface-detail materials instead carry world-ray recess distance in
+    // the half-float alpha lane. RT reconstructs the original proxy point
+    // for visibility, avoiding normals derived across displaced mortar steps.
     out_orm = vec4(roughness, metallic, ao,
-                   clamp(horizon_sun_visibility, 0.0, 1.0));
+        finished_domain ? surface_ray_t : clamp(horizon_sun_visibility, 0.0, 1.0));
     out_reactivity = clamp(water_reactivity, 0.0, 1.0);
     out_velocity = in_velocity_valid.z > 0.5
                        ? in_velocity_valid.xy

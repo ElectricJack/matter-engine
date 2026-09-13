@@ -50,14 +50,18 @@ struct GpuPrefs {
     // viewer.debug's resolver_choice). main.cpp converts, with a static_assert
     // pinning the two orderings together.
     int dlss_mode = 0;
+    // CPU pacing before input sampling. Zero leaves throughput uncapped.
+    int frame_limit = 0;
 };
 
-// Live session controls for separating primary local direct lighting from the
-// diffuse GI contribution. These deliberately are not persisted: they are
+// Live session controls for separating direct lighting, diffuse bounce strength
+// and indirect resolution. These deliberately are not persisted: they are
 // validation/tuning controls whose defaults restore the authored render.
 struct GiPrefs {
     bool enabled = true;
     float diffuse_multiplier = 1.0f;
+    float trace_scale = 1.0f;
+    float reflection_trace_scale = 1.0f;
 };
 
 // Index-compatible with matter::DlssMode. Capitalised because they are UI text;

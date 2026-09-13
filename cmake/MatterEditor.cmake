@@ -56,7 +56,7 @@ target_compile_definitions(matter_editor PRIVATE
     MATTER_HAVE_SCRIPT_HOST
     MATTER_VULKAN_VIEWER
     MATTER_VULKAN_ONLY
-    MATTER_HAVE_STREAMLINE=0
+    MATTER_HAVE_STREAMLINE=${matter_streamline_enabled}
     VK_USE_PLATFORM_WIN32_KHR
     _CRT_SECURE_NO_WARNINGS
 )
@@ -87,12 +87,17 @@ target_compile_options(matter_editor PRIVATE /WX)
 if(MATTER_ENABLE_PHYSX)
     matter_stage_physx_runtime(matter_editor)
 endif()
+set(matter_editor_output_directory "${CMAKE_SOURCE_DIR}/MatterEditor/build/windows-msvc")
+if(MATTER_ENABLE_STREAMLINE)
+    set(matter_editor_output_directory "${CMAKE_SOURCE_DIR}/MatterEditor/build/windows-msvc-dlss")
+endif()
 set_target_properties(matter_editor PROPERTIES
     OUTPUT_NAME editor
     WIN32_EXECUTABLE TRUE
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEditor/build/windows-msvc"
-    PDB_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEditor/build/windows-msvc"
+    RUNTIME_OUTPUT_DIRECTORY "${matter_editor_output_directory}"
+    PDB_OUTPUT_DIRECTORY "${matter_editor_output_directory}"
 )
+matter_stage_streamline_runtime(matter_editor)
 
 # Keep main() as the single portable entry point while still producing a
 # window-subsystem executable (no console window for the editor). Redirected
@@ -102,6 +107,27 @@ target_link_options(matter_editor PRIVATE /ENTRY:mainCRTStartup)
 add_custom_target(editor DEPENDS matter_editor)
 
 if(BUILD_TESTING)
+    add_executable(frame_pacer_tests MatterEditor/tests/test_frame_pacer.cpp)
+    target_include_directories(frame_pacer_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include")
+    matter_apply_project_defaults(frame_pacer_tests)
+    matter_apply_test_assertion_policy(frame_pacer_tests)
+    add_test(NAME frame_pacer_tests COMMAND frame_pacer_tests)
+    set_tests_properties(frame_pacer_tests PROPERTIES LABELS "editor;cpu")
+
+    add_executable(perf_gpu_stats_tests
+        MatterEditor/tests/test_perf_gpu_stats.cpp
+    )
+    target_include_directories(perf_gpu_stats_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+    )
+    matter_apply_project_defaults(perf_gpu_stats_tests)
+    matter_apply_test_assertion_policy(perf_gpu_stats_tests)
+    add_test(NAME perf_gpu_stats_tests COMMAND perf_gpu_stats_tests)
+    set_tests_properties(perf_gpu_stats_tests PROPERTIES LABELS "editor;cpu")
+
     add_executable(agent_protocol_tests
         MatterEditor/tests/test_agent_protocol.cpp
         MatterEditor/src/agent_protocol.cpp

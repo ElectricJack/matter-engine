@@ -166,6 +166,48 @@ inline bool rebuild_local_light_publication(LocalLightPublication& publication,
         publication, LocalLightIndexConfig{}, error);
 }
 
+// Derive renderer-facing records/index from an unscaled authored publication.
+// Default behavior is unchanged (scale 1); a scene may explicitly request 0.75.
+// Only range changes: source_radius, intensity, cone and source records survive
+// unchanged. Rebuild/validation of the resulting publication must NOT rescale it.
+// Input/output must be distinct; failure leaves both unchanged. The resulting
+// revision includes the effective ranges, so changing scale invalidates history.
+bool make_scaled_local_light_publication(
+    const LocalLightPublication& authored, float range_scale,
+    LocalLightPublication& output, std::string& error);
+
+// Build only the requested index, avoiding an intermediate authored-cell index.
+bool make_scaled_local_light_publication(
+    const LocalLightPublication& authored, float range_scale,
+    const LocalLightIndexConfig& config,
+    LocalLightPublication& output, std::string& error);
+
+// Memoizes immutable, published inputs (a nonzero content revision). Unpublished
+// inputs are validated/rebuilt each call, preserving the empty startup path.
+// Unchanged requests allocate nothing. Identity requests reference the source
+// directly; transformed results remain valid until the next successful rebuild.
+// On failure, the previous cache and the caller's output pointer stay intact.
+class EffectiveLocalLightCache {
+public:
+    bool resolve(const LocalLightPublication& authored, float range_scale,
+                 const LocalLightIndexConfig& config,
+                 const LocalLightPublication*& output, std::string& error);
+    std::uint64_t rebuild_count() const { return rebuild_count_; }
+
+private:
+    LocalLightPublication effective_;
+    std::uint64_t authored_revision_ = 0;
+    float range_scale_ = 1.0f;
+    LocalLightIndexConfig config_{};
+    std::uint64_t rebuild_count_ = 0;
+};
+
+inline bool make_scaled_local_light_publication(
+    const LocalLightPublication& authored,
+    LocalLightPublication& output, std::string& error) {
+    return make_scaled_local_light_publication(authored, 1.0f, output, error);
+}
+
 // CPU reference lookup for arbitrary world positions, including off-screen RT
 // hit positions. Returns the cell candidates followed by every oversized light;
 // there is no fixed candidate cap and no silent truncation.
@@ -173,6 +215,19 @@ bool query_local_light_candidates(const LocalLightSpatialIndex& index,
                                   const float position[3],
                                   std::vector<std::uint32_t>& candidates,
                                   std::string& error);
+
+// CPU oracle for the opt-in RT post-BRDF selector. contribution is the
+// unoccluded, transmission-weighted BRDF RGB at one receiver. Light IDs must
+// be unique (as they are in the spatial query). Non-shadow lights are exact
+// and never consume the shadow budget; zero preserves input order/all lights.
+struct LocalLightContribution {
+    uint32_t light_index = 0;
+    float contribution[3] = {};
+    bool casts_shadow = true;
+};
+bool select_local_light_contributions(
+    const std::vector<LocalLightContribution>& contributions, uint32_t budget,
+    std::vector<uint32_t>& selected, std::string& error);
 
 // CPU reference shared by tests and the follow-up raster/RT shader work.
 float local_light_attenuation(const LocalLight& light,

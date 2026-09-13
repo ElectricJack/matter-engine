@@ -74,8 +74,8 @@ int main() {
     CHECK(offsetof(MaterialGpuRecord, flags_misc) == 128,
           "RTX flags uvec4 begins at byte 128");
     CHECK(MaterialRegistryCount() == 30, "garden registry has stable count 30");
-    CHECK(MaterialRegistrySchemaVersion() == 5u,
-          "water-surface identity advances the material schema to version 5");
+    CHECK(MaterialRegistrySchemaVersion() == 6u,
+          "finished surface-detail identity advances material schema to version 6");
     const uint64_t legacy_prefix_hash =
         fnv1a64(buf, 18u * MATERIAL_FLOATS_PER_DEF * sizeof(float));
     if (legacy_prefix_hash != 0x028ace098b99e124ull)
@@ -182,6 +182,23 @@ int main() {
                MATERIAL_WATER_SURFACE) != 0u,
               "dynamic water-domain identity reaches the Vulkan material record");
     }
+    MaterialDef authored_surface{};
+    MaterialRegistryDefaultDynamicDef(&authored_surface);
+    CHECK((authored_surface.surfaceFlags & MATERIAL_SURFACE_DETAIL) == 0u,
+          "default materials retain ground detail behavior");
+    CHECK(MATERIAL_SURFACE_DETAIL == 32u, "surface detail GPU bit contract");
+    authored_surface.surfaceFlags |= MATERIAL_SURFACE_DETAIL;
+    const int surface_id = MaterialRegistryDefineDynamic(&authored_surface, "RegistryTestSurface");
+    CHECK(surface_id >= MaterialRegistryStaticCount(), "finished surface registers normally");
+    MaterialRegistryPackRtForGPU(dynamic_records);
+    if (surface_id >= 0) {
+        CHECK((dynamic_records[surface_id].flags_misc[0] & MATERIAL_SURFACE_DETAIL) != 0u,
+              "finished surface bit reaches GPU without new record fields");
+    }
+    authored_surface.surfaceFlags &= ~MATERIAL_SURFACE_DETAIL;
+    CHECK(MaterialRegistryDefineDynamic(&authored_surface, "RegistryTestSurface") ==
+              MATERIAL_DEFINE_ERR_CONFLICT,
+          "changing detail domain changes material definition identity");
     CHECK(records[15].scattering[3] > 0.0f &&
           (records[15].flags_misc[0] & MATERIAL_THIN_WALLED) != 0,
           "leaf opts into thin scattering");

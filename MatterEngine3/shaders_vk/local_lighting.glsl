@@ -11,15 +11,7 @@ const uint LOCAL_DIRECT_RASTER = 0u;
 const uint LOCAL_DIRECT_RAY_TRACED = 1u;
 const float LOCAL_LIGHT_PI = 3.14159265358979323846;
 
-struct LocalLightGpu {
-    vec4 position_range;
-    vec4 direction_cos_outer;
-    vec4 color_source_radius;
-    float cos_inner;
-    uint kind;
-    uint flags;
-    uint reserved;
-};
+#include "local_light_types.glsl"
 
 struct LocalLightCellGpu {
     ivec3 cell;
@@ -49,8 +41,78 @@ layout(set = 2, binding = 3, std430) readonly buffer LocalLightOversizedIndices 
 layout(set = 2, binding = 4, std430) readonly buffer LocalLightMetadata {
     uvec4 local_light_counts;  // records, buckets, oversized, direct owner
     vec2 local_light_grid;     // cell size, inverse cell size
-    uvec2 local_light_debug;   // max candidates per cell, reserved
+    uvec2 local_light_debug;   // max candidates per cell, primary/secondary budget bytes
+#ifdef MATTER_PRIMARY_LIGHT_CULLING
+    // Preserve the original 32-byte metadata prefix and descriptor layout.
+    uvec4 local_primary_tiles; // tile count X/Y, mask words per tile, enabled
+    // Byte 48: tile masks, then tile lists (count + light_count ID capacity).
+    uint local_primary_masks[];
+#endif
 };
+
+#ifdef MATTER_PRIMARY_LIGHT_CULLING
+// Process-fixed off pipelines fold out every tile-buffer read.
+layout(constant_id = 9) const uint enable_primary_culling = 0u;
+
+// Validate the complete tile once, outside the candidate loops. The sentinel
+// also represents a disabled dispatch, so its consumers need only one scalar.
+uint primary_light_tile_base(ivec2 pixel) {
+    if (enable_primary_culling == 0u)
+        return 0xffffffffu;
+    if (local_primary_tiles.w == 0u || local_primary_tiles.z == 0u ||
+        any(lessThan(pixel, ivec2(0))))
+        return 0xffffffffu;
+    uvec2 tile = uvec2(pixel) / 16u;
+    if (any(greaterThanEqual(tile, local_primary_tiles.xy)))
+        return 0xffffffffu;
+    uint required_words = (local_light_counts.x >> 5u) +
+                          ((local_light_counts.x & 31u) != 0u ? 1u : 0u);
+    if (local_primary_tiles.z < required_words)
+        return 0xffffffffu;
+    uint tile_index = tile.y * local_primary_tiles.x + tile.x;
+    uint available_words = uint(local_primary_masks.length());
+    if (tile_index >= available_words / local_primary_tiles.z)
+        return 0xffffffffu;
+    return tile_index * local_primary_tiles.z;
+}
+
+bool primary_light_candidate_visible(uint tile_base, uint light_index,
+                                     inout uint cached_word,
+                                     inout uint cached_mask) {
+    if (enable_primary_culling == 0u || tile_base == 0xffffffffu)
+        return true;
+    uint word = light_index >> 5u;
+    if (word != cached_word) {
+        cached_word = word;
+        cached_mask = local_primary_masks[tile_base + word];
+    }
+    // Ordinary and oversized IDs are each ascending. Testing inequality also
+    // handles the word-number decrease between those phases without a reset.
+    return (cached_mask & (1u << (light_index & 31u))) != 0u;
+}
+
+// Return the first list ID's offset, or the exact-world fallback sentinel.
+uint primary_light_tile_list_base(uint tile_base, out uint list_count) {
+    list_count = 0u;
+    if (enable_primary_culling == 0u || tile_base == 0xffffffffu)
+        return 0xffffffffu;
+    uint mask_words = local_primary_tiles.x * local_primary_tiles.y *
+                      local_primary_tiles.z;
+    uint available_words = uint(local_primary_masks.length());
+    uint stride = local_light_counts.x + 1u;
+    if (available_words < mask_words || stride == 0u)
+        return 0xffffffffu;
+    uint tile = tile_base / local_primary_tiles.z;
+    if (tile >= (available_words - mask_words) / stride)
+        return 0xffffffffu;
+    uint base = mask_words + tile * stride;
+    list_count = local_primary_masks[base];
+    if (list_count > local_light_counts.x)
+        return 0xffffffffu;
+    return base + 1u;
+}
+
+#endif
 
 uint local_light_cell_hash(ivec3 cell) {
     uint hash = uint(cell.x) * 0x8da6b343u;

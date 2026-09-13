@@ -6,6 +6,6 @@ import { emitFurnishing, FURNISHING_DEFAULTS } from 'shared-lib/castle_furnishin
 class CastleSconce extends Part {
   static lodBudgets = [1];
   static noImpostor = true;
-  static params = { ...FURNISHING_DEFAULTS.sconce };
+  static params = { surfaceMembers: 0, ...FURNISHING_DEFAULTS.sconce };
   build(p) { emitFurnishing(this, 'sconce', p); }
 }

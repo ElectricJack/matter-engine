@@ -12,7 +12,18 @@ The user explicitly prefers GPU meshing of high detail brick SDFs. Implement and
 
 The castle/render integration is merged with upstream at `44220e96` and pushed to main. The native MSVC PhysX editor links. Ten affected castle suites pass after resolving overlapping connector, court, roof, and test changes. Renderer code is identical to the source-pinned native direct/GI and transmission gates that reported ALL PASS and zero validation errors. Final full-castle walkthrough and full-resolution GI stability acceptance from the earlier project remain incomplete.
 
-Current source observations, to be quantified by native profiling:
+Measured implementation checkpoint (2026-09-11; full editor integration is still pending):
+
+* The frozen native 4 m timber baseline spent 37.5–38.9 s in meshing. Conservative CPU candidate bounds plus the normal fix reduce this to 5.17–5.68 s with the same 40,620 triangles. This is an intermediate fallback improvement, not the final source-generation target.
+* A simple slab generates 12 triangles in about 0.03 ms, but four durable bundle writes spend roughly 93–103 ms in flushes on warm fresh bakes. Combining two sections reduces four publications to three; variable flush latency means that intermediate change alone has not demonstrated an elapsed-time improvement. A static singleton transaction is under test to combine all four sections into one publication.
+* The normal flattened castle path already stores one LOD for `[1]`. The compositional staging fallback incorrectly builds three; the source-owned singleton policy must cover disk and in-memory staging identically.
+* The new Vulkan solid-field service passes its field/normal/determinism/overflow/cancellation gates with zero validation errors. Warm fresh recipe generation at 6 mm has p50/p95 2.436/2.971 ms; at 3 mm, 9.373/9.615 ms. These include service preparation, GPU submission/wait, readback and CPU mesh conversion, **not** QuickJS, BLAS construction, bundle persistence or scene publication. Cached host readback fixes an initial 192 ms median at 3 mm; GPU dispatch itself is about 0.54 ms in the corrected run. Cold initialization is not included in these numbers.
+* Native QuickJS `CastleWingMasonry.requires()` takes 3.8–4.5 s, with 20 dependencies. Rebuilding whole-site data inside a leaf lookup is a separate measured bottleneck. The immediate safe change is selected-wing decoration; the new structural kit should consume compact module recipes.
+* New physical shell catalogues and rigid span planning are implemented in shared JS. Translation/proper rotation are enforced; beams repeat fixed lengths and keep one explicitly cut residual. Native leaf shells have passed their first geometry gate; the attributed wall/curve gate and rendered proof are still pending.
+
+Raw native profiling and provenance are documented in [the native part report](../castle-native-part-profile-2026-09-11.md). GPU receipts are in `C:/tmp/solid-sdf-a3-gate/cached`, with the uncached baseline in its `baseline-coherent` sibling.
+
+Initial source observations that motivated this roadmap:
 
 * `CastleStone.js`, `CastleBeam.js`, and `CastlePlank.js` already declare `lodBudgets = [1]` and `noImpostor = true`. Confirm the actual persisted and published rung count, including legacy fallback paths, before attributing time to unwanted LODs.
 * The production gallery uses eight ordinary brick recipes, but roughly 58,000 brick placements. Geometry recipes and placements are different cost axes. Diagnostic `CastleMaterials` still displays twelve seeds; it must not expand the production catalogue.
@@ -33,9 +44,11 @@ Current source observations, to be quantified by native profiling:
 3. **Runtime surface:** a bounded low complexity structural mesh plus material textures, with explicit near-detail geometry where needed.
 4. **Collision:** simple independent structural volumes preserving floors, walls, clearances, and portals.
 
-Source-only ownership must be explicit. A brick also placed loose in the world still needs a drawable representation. A brick used only by a wall's texture bake should not consume runtime instance slots or accumulate unused child LODs. Keep source availability for rebakes without recursively expanding it into the runtime scene.
+Source-only ownership must be explicit. A brick also placed loose in the world still needs a drawable representation. A brick used only by a wall's texture bake should not consume runtime instance slots or accumulate unused child LODs. Keep source availability for rebakes without recursively expanding it into the runtime scene. Bake-only inputs default to transient memory, with zero intermediate bundle writes. Reuse them by recipe identity within a bake generation, then release them after their consumers finish. Persist the final structural mesh and surface atlas. For an evaluable SDF, project the field directly into the reusable face atlas; do not build a triangle mesh or BLAS merely to project it back into a texture. A source also placed as a loose object has a separate drawable demand, so mixed use cannot erase its runtime output. Source edits must still invalidate dependent outputs even when no source artifact exists on disk.
 
 Keep five to ten ordinary brick shapes. The current eight effective recipes satisfy this constraint. Longer-term separate reusable geometry identity from palette identity where material binding permits it; do not silently remove a material from an existing cache key. Seeds, geometry inputs, algorithm versions, and source dependencies remain part of identity.
+
+**Placement uses translation and proper rotation only: no instance scaling.** Author each catalogue shape at its physical dimensions. Assemble longer spans from repeated fixed-size pieces, using a bounded catalogue of shorter pieces for gaps (for example 1/2/4 m timber), or an explicitly authored cut end when required. A rotated 4 m beam remains the same geometry resource. Do not stretch normalized cubes, bricks, beams, floor slabs, or whole assemblies to fit. Preserve section thickness, brick proportions, joint spacing, and physical texture density. The existing castle contains scaled placements; migrate those consumers explicitly and test the final emitted transforms rather than claiming the new catalogue alone removes scaling.
 
 ### 2. GPU SDF source generation
 

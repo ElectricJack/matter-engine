@@ -515,6 +515,68 @@ class DirectChildSafetyTests(unittest.TestCase):
                     os.rename(parked_dist, dist_root)
 
 
+class StreamlineRuntimeStageTests(unittest.TestCase):
+    def make_sdk(self, root: Path) -> Path:
+        sdk = root / "sdk"
+        (sdk / "bin/x64").mkdir(parents=True)
+        for name in stager.STREAMLINE_RUNTIME_NAMES:
+            (sdk / "bin/x64" / name).write_bytes(b"production runtime " + name.encode())
+        for _, source, _ in stager.STREAMLINE_LICENSE_FILES:
+            (sdk / source).write_text("NVIDIA license content " * 4, encoding="utf-8")
+        return sdk
+
+    def test_stages_only_sr_production_files_and_both_licenses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sdk = self.make_sdk(root)
+            (sdk / "bin/x64/sl.dlss_g.dll").write_bytes(b"must not ship frame generation")
+            (sdk / "bin/x64/sl.dlss_d.dll").write_bytes(b"must not ship ray reconstruction")
+            (sdk / "bin/x64/development").mkdir()
+            (sdk / "bin/x64/development/sl.dlss.dll").write_bytes(b"development")
+            dist = root / "dist"
+            (dist / "licenses").mkdir(parents=True)  # Coexist with PhysX notices.
+            runtime, notices = stager.stage_streamline_runtime_bundle(
+                dist, enabled=True, sdk_root=sdk
+            )
+            self.assertEqual(runtime, list(stager.STREAMLINE_RUNTIME_NAMES))
+            self.assertEqual([identity for identity, _ in notices], ["nvidia_streamline", "nvidia_dlss"])
+            self.assertEqual({p.name for p in dist.glob("*.dll")}, set(runtime))
+            for name in runtime:
+                self.assertEqual((dist / name).read_bytes(), (sdk / "bin/x64" / name).read_bytes())
+            for (_, source, _), (_, staged) in zip(stager.STREAMLINE_LICENSE_FILES, notices):
+                self.assertEqual(staged.read_bytes(), (sdk / source).read_bytes())
+
+    def test_missing_or_empty_runtime_and_licenses_fail_before_copy(self) -> None:
+        sources = ["bin/x64/" + name for name in stager.STREAMLINE_RUNTIME_NAMES]
+        sources += [source for _, source, _ in stager.STREAMLINE_LICENSE_FILES]
+        for source in sources:
+            for empty in (False, True):
+                with self.subTest(source=source, empty=empty), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    sdk = self.make_sdk(root)
+                    if empty:
+                        (sdk / source).write_bytes(b"")
+                    else:
+                        (sdk / source).unlink()
+                    dist = root / "dist"
+                    dist.mkdir()
+                    with self.assertRaisesRegex(ValueError, "missing or empty"):
+                        stager.stage_streamline_runtime_bundle(dist, enabled=True, sdk_root=sdk)
+                    self.assertEqual(list(dist.iterdir()), [])
+
+    def test_enabled_requires_sdk_and_disabled_stages_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            dist = Path(temporary)
+            self.assertEqual(stager.stage_streamline_runtime_bundle(
+                dist, enabled=False, sdk_root=None), ([], []))
+            for sdk in (None, dist / "missing"):
+                with self.assertRaisesRegex(ValueError, "existing SDK root"):
+                    stager.stage_streamline_runtime_bundle(dist, enabled=True, sdk_root=sdk)
+            with self.assertRaisesRegex(ValueError, "disabled Streamline"):
+                stager.stage_streamline_runtime_bundle(dist, enabled=False, sdk_root=dist)
+            self.assertEqual(list(dist.iterdir()), [])
+
+
 class PhysxRuntimeStageTests(unittest.TestCase):
     def test_stages_exact_physx_gpu_runtime_and_nvidia_notices(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matter-stage-physx-") as temporary:

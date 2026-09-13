@@ -64,6 +64,17 @@
 
 namespace viewer {
 
+// Explicit proof/quality override; chart pages are regenerated in memory on
+// load. Terrain staging keeps its existing policy. Invalid values retain16t/m.
+static float prop_chart_texels_per_meter() {
+    const char* text = std::getenv("MATTER_VT_PROP_TEXELS_PER_METER");
+    if (!text || !*text) return 16.0f;
+    char* end = nullptr;
+    const float value = std::strtof(text, &end);
+    return end != text && *end == '\0' && std::isfinite(value) &&
+           value >= 1.0f && value <= 2048.0f ? value : 16.0f;
+}
+
 // Release exactly the references this LoadedPart registered.  Legacy view
 // arrays are deliberately not authoritative: v2 mirrors a registration into a
 // synthetic cluster, while v3 may legitimately register the same deduplicated
@@ -596,6 +607,17 @@ bool PartStore::has(uint64_t part_hash) const {
 // if v3 is unavailable. Returns false (fall back to the compositional .part) when
 // the file is absent or fails to load in either format.
 bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, LoadedPart& lp) {
+    const bool profile = std::getenv("MATTER_PARTSTORE_PROFILE") != nullptr;
+    using ProfileClock = std::chrono::steady_clock;
+    auto profile_last = profile ? ProfileClock::now() : ProfileClock::time_point{};
+    const auto profile_split = [&](const char* phase) {
+        if (!profile) return;
+        const auto now = ProfileClock::now();
+        MATTER_LOGI("partstore", "%016llx flat_%s=%.3f ms\n",
+                    (unsigned long long)part_hash, phase,
+                    std::chrono::duration<double, std::milli>(now - profile_last).count());
+        profile_last = now;
+    };
     // The caller has already selected and validated the canonical `.part`
     // from this root as ANLK-free.  Do not independently probe scratch/cache:
     // a flat is only valid beside that exact canonical static Part.
@@ -622,6 +644,8 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                         (unsigned long long)part_hash, path.c_str());
             return false;
         }
+
+        profile_split("decode");
 
         // Determine if the flat is segmented (has any coarse-segment clusters).
         bool segmented = std::any_of(clusters_in.begin(), clusters_in.end(),
@@ -793,6 +817,17 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         chart_atlas::ChartAtlasRung chart_base;
         std::vector<Tri> chart_base_tris;
 
+        // Record the exact ordered source ranges used by each completed legacy
+        // rung. Reuse requires equality, not merely a single cluster: skipped
+        // entries/rungs or a different concatenation must keep the old path.
+        std::vector<std::vector<uint32_t>> legacy_sources(max_lods);
+        std::vector<int> legacy_mesh_indices(max_lods, -1);
+        profile_split("prepare");
+        double chart_ms = 0, blas_ms = 0, raster_ms = 0;
+        size_t adopted_prebuilt_rungs = 0;
+        const auto elapsed_ms = [](ProfileClock::time_point begin) {
+            return std::chrono::duration<double, std::milli>(ProfileClock::now() - begin).count();
+        };
         for (size_t li = 0; li < max_lods; ++li) {
             std::vector<Tri> tris;
             std::vector<TriEx> triex;
@@ -811,6 +846,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 thr = std::fmax(thr, cl.lods[use_li].screen_size_threshold);
                 for (uint32_t bi : cl.lods[use_li].blas_indices) {
                     if (bi >= entries.size()) continue;
+                    legacy_sources[li].push_back(bi);
                     tris.insert(tris.end(), entries[bi]->triangles.begin(), entries[bi]->triangles.end());
                     triex.insert(triex.end(), entries[bi]->tri_extra.begin(), entries[bi]->tri_extra.end());
                 }
@@ -825,14 +861,55 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             std::vector<TriEx> charted;
             chart_atlas::ChartAtlasRung rung_table;
             bool charted_ok = false;
+            const auto chart_begin = profile ? ProfileClock::now() : ProfileClock::time_point{};
             if (ex && !legacy_impostor) {
                 charted.assign(triex.begin(), triex.end());
                 charted_ok = lod_bake::chart_rung_unified(
-                    tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
+                    tris, charted, prop_chart_texels_per_meter(), chart_atlas::kChartNormalConeDeg,
                     unify_charts, chart_base, chart_base_tris, rung_table);
                 if (charted_ok) ex = charted.data();
             }
-            BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
+            if (profile) chart_ms += elapsed_ms(chart_begin);
+            const auto blas_begin = profile ? ProfileClock::now() : ProfileClock::time_point{};
+            legacy_mesh_indices[li] = static_cast<int>(lp.lod_mesh_data.size());
+            BLASHandle h = INVALID_BLAS_HANDLE;
+            // A static singleton's saved BVH already accelerates this exact
+            // ordered triangle stream. Charting only changes UVs, not positions,
+            // material/tint hash or BVH topology. Refresh its private attributes
+            // and adopt once instead of rebuilding the persisted tree. Keep the
+            // ordinary path for concatenated/repeated ranges and other ladders.
+            const bool singleton_prebuilt = !segmented && clusters_in.size() == 1 &&
+                max_lods == 1 && impostor_rung[0] == SIZE_MAX && entries.size() == 1 &&
+                legacy_sources[li].size() == 1 && legacy_sources[li][0] == 0 &&
+                entries[0]->triangles.size() == tris.size() &&
+                std::memcmp(entries[0]->triangles.data(), tris.data(), tris.size() * sizeof(Tri)) == 0 &&
+                entries[0]->bvh && entries[0]->bvh->bvhNode &&
+                entries[0]->bvh->nodesUsed > 0 && entries[0]->bvh->triIdx;
+            if (singleton_prebuilt) {
+                auto& source = *entries[0];
+                if (charted_ok) {
+                    source.tri_extra = charted;
+                    // Keep the scratch manager internally coherent until its
+                    // destruction; adopt_from reads tri_extra, not mesh->triEx.
+                    if (source.mesh && source.mesh->triEx)
+                        std::memcpy(source.mesh->triEx, charted.data(), charted.size() * sizeof(TriEx));
+                }
+                // Disk ownership belongs to the writer. This LoadedPart owns
+                // exactly one registration, shared by its whole/cluster views.
+                source.ref_count = 1;
+                const BLASHandle source_handle = source.handle;
+                std::unordered_map<BLASHandle, BLASHandle> remap;
+                blas_.adopt_from(scratch, remap);
+                const auto adopted = remap.find(source_handle);
+                if (adopted != remap.end()) {
+                    h = adopted->second;
+                    ++adopted_prebuilt_rungs;
+                }
+            }
+            if (h == INVALID_BLAS_HANDLE)
+                h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
+            if (profile) blas_ms += elapsed_ms(blas_begin);
+            const auto raster_begin = profile ? ProfileClock::now() : ProfileClock::time_point{};
             lp.owned_blas.push_back(h);
             lp.thresholds.push_back(thr);
             lp.lod_blas.push_back(h);
@@ -854,8 +931,14 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 lp.lod_mesh_data.push_back({});
             }
             lp.lod_charts.push_back(std::move(rung_table));   // parallel to lod_mesh_data
+            if (profile) raster_ms += elapsed_ms(raster_begin);
         }
         if (lp.lod_blas.empty()) return rollback();
+        profile_split("whole_rungs");
+        if (profile) MATTER_LOGI("partstore",
+            "%016llx flat_chart=%.3f flat_blas=%.3f flat_raster=%.3f ms prebuilt_rungs=%zu\n",
+            (unsigned long long)part_hash, chart_ms, blas_ms, raster_ms, adopted_prebuilt_rungs);
+        size_t reused_rungs = 0;
 
         // --- Step 2: Per-cluster data (for Task 13 per-cluster GPU culling). ---
         // Each cluster gets its own LoadedCluster with parallel thresholds / lod_blas /
@@ -891,6 +974,23 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
 
             for (size_t li = 0; li < cl_in.lods.size(); ++li) {
                 const auto& lod_in = cl_in.lods[li];
+                const bool reuse_whole_rung = !segmented && clusters_in.size() == 1 &&
+                    impostor_rung[ci] == SIZE_MAX && li < legacy_mesh_indices.size() &&
+                    legacy_mesh_indices[li] >= 0 &&
+                    legacy_sources[li] == lod_in.blas_indices;
+                if (reuse_whole_rung) {
+                    // Both views reference exactly the same ordered geometry and
+                    // chart lineage. owned_blas records registrations, not views;
+                    // do not register/retain/release a second reference here.
+                    const int mesh_index = legacy_mesh_indices[li];
+                    assert(static_cast<size_t>(mesh_index) < lp.lod_blas.size());
+                    assert(legacy_sources[li] == lod_in.blas_indices);
+                    cl_out.thresholds.push_back(lod_in.screen_size_threshold);
+                    cl_out.lod_blas.push_back(lp.lod_blas[mesh_index]);
+                    cl_out.lod_mesh.push_back(mesh_index);
+                    ++reused_rungs;
+                    continue;
+                }
                 // Gather tris from this cluster's lod level.
                 std::vector<Tri> ctris;
                 std::vector<TriEx> ctriex;
@@ -911,7 +1011,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 if (cex && !is_impostor) {
                     ccharted.assign(ctriex.begin(), ctriex.end());
                     ccharted_ok = lod_bake::chart_rung_unified(
-                        ctris, ccharted, 16.0f, chart_atlas::kChartNormalConeDeg,
+                        ctris, ccharted, prop_chart_texels_per_meter(), chart_atlas::kChartNormalConeDeg,
                         unify_charts, cchart_base, cchart_base_tris, crung_table);
                     if (ccharted_ok) cex = ccharted.data();
                 }
@@ -956,6 +1056,12 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             lp.clusters.push_back(std::move(cl_out));
         }
         if (lp.clusters.empty()) return rollback();
+        profile_split("cluster_rungs");
+        if (profile) {
+            MATTER_LOGI("partstore", "%016llx flat_reused_rungs=%zu meshes=%zu registrations=%zu\n",
+                        (unsigned long long)part_hash, reused_rungs,
+                        lp.lod_mesh_data.size(), lp.owned_blas.size());
+        }
 
         // Set fine_cluster_count: for segmented flats, count pushed fine clusters;
         // for unsegmented flats, all clusters are "fine" (fine_cluster_count == size).
@@ -1021,7 +1127,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             if (ex) {
                 charted.assign(triex.begin(), triex.end());
                 charted_ok = lod_bake::chart_rung_unified(
-                    tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
+                    tris, charted, prop_chart_texels_per_meter(), chart_atlas::kChartNormalConeDeg,
                     unify_charts_v2, chart_base_v2, chart_base_v2_tris,
                     rung_table);
                 if (charted_ok) ex = charted.data();
@@ -1143,6 +1249,8 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
         out.lods_in = std::move(candidate_lods);
         out.emitters = std::move(candidate_emitters);
         out.render_policy = std::move(candidate_render_policy);
+        out.source_single_full_rep = !candidate_link && out.children.empty() &&
+            part_asset::load_single_full_lod_policy(path, part_hash);
         out.animation_link = candidate_link;
         if (candidate_link) out.loaded_animation = std::move(candidate_animation);
         coherent = true;
@@ -1271,7 +1379,7 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // rung; terrain sectors 16 t/m at rung 0 halving per coarser rung. A rung
     // whose chart build fails ships an empty table (charts = 0, legacy path).
     lod_bake::ChartBakeOptions chart_opts;
-    chart_opts.texels_per_meter = 16.0f;
+    chart_opts.texels_per_meter = terrain_tile ? 16.0f : prop_chart_texels_per_meter();
     // Nested sector LOD: a level-L terrain tile is 2^L times wider than a
     // level-0 one for the SAME triangle count, so a fixed texels-per-metre
     // would ask for 2^L times the texels across -- a 2 km level-5 tile would
@@ -1302,12 +1410,18 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // 0 (every non-streaming caller) is exactly today's behaviour.
     lod_bake::TerrainBakeTargets terrain_targets;
     terrain_targets.first_rung = first_rung;
+    lod_bake::BakeTargets regular_targets;
+    if (snapshot.source_single_full_rep && !terrain_sector && !terrain_tile &&
+        !animation_asset && !snapshot.animation_link && children.empty()) {
+        regular_targets.keep_ratio.resize(1);
+        regular_targets.threshold.resize(1);
+    }
     lod_bake::LodLevels lods = terrain_tile
         ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius,
                                       terrain_targets,
                                       *staged.staging, triex_ptr, observer_,
                                       &lod_handles, &chart_opts, &rung_charts)
-        : lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, *staged.staging,
+        : lod_bake::bake_lods(tris, regular_targets, *staged.staging,
                               triex_ptr, observer_, &lod_handles,
                               &chart_opts, &rung_charts);
     staged.ladder_ms = stage_split();
@@ -1534,6 +1648,9 @@ bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
     out.lods_in = baked.lods;
     out.emitters = baked.emitters;
     out.render_policy = baked.render_policy;
+    out.source_single_full_rep = (baked.source_single_full_rep_hash != 0 ||
+        baked.validated_single_full_rep_hash != 0) &&
+        baked.children.empty() && !baked.boundary;
     // No ANLK: BakedGeometry is retained only on the static save path, so the
     // artifact this stands in for carries no animation link either.
     out.animation_link.reset();
@@ -1551,7 +1668,10 @@ PartStore::StagedPart PartStore::stage_from_bake(
     // [stream.stage] telemetry keeps reading as "cost of getting the geometry
     // in front of the ladder" on both paths and the saving is legible there.
     const auto read_t0 = std::chrono::steady_clock::now();
-    const bool built = snapshot_from_baked(baked, snapshot);
+    const bool valid_policy =
+        (baked.source_single_full_rep_hash == 0 || baked.source_single_full_rep_hash == part_hash) &&
+        (baked.validated_single_full_rep_hash == 0 || baked.validated_single_full_rep_hash == part_hash);
+    const bool built = valid_policy && snapshot_from_baked(baked, snapshot);
     const double read_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - read_t0).count();
     if (!built) { staged.read_ms = read_ms; return staged; }
@@ -1790,14 +1910,26 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         // child subtree runs instead -- the uncollapsed walk.
         static const bool flat_gate_log =
             std::getenv("MATTER_FLAT_GATE_LOG") != nullptr;
+        const bool admission_profile = std::getenv("MATTER_PARTSTORE_PROFILE") != nullptr;
+        using AdmissionClock = std::chrono::steady_clock;
+        const auto admission_begin = admission_profile ? AdmissionClock::now() : AdmissionClock::time_point{};
+        // REP0 admission, RNDR policy and FLAT decode share one fully verified
+        // bundle generation. The final fingerprint check below must not share it.
+        part_bundle::ScopedReadSnapshot bundle_snapshot(canonical_part, part_hash);
         const bool snap_ok = part_asset::load_static_part_snapshot(
             canonical_part, part_hash, canonical_snapshot);
+        const auto snapshot_done = admission_profile ? AdmissionClock::now() : AdmissionClock::time_point{};
         matter::PartRenderPolicy flat_render_policy;
         const bool policy_ok = snap_ok && resolve_uniform_flat_render_policy(
             selected_root, part_hash, canonical_snapshot, flat_render_policy);
+        const auto policy_done = admission_profile ? AdmissionClock::now() : AdmissionClock::time_point{};
         bool flat_loaded = false;
         const bool flat_ok = policy_ok &&
             (flat_loaded = load_flat(part_hash, selected_root, flat));
+        bundle_snapshot.close(); // revalidation and test replacement hooks read the live file
+        if (admission_profile) MATTER_LOGI("partstore",
+            "%016llx flat_verified_bundle_bytes=%zu reused_section_reads=%zu\n",
+            (unsigned long long)part_hash, bundle_snapshot.file_bytes, bundle_snapshot.reused_reads);
         if (flat_ok) flat.render_policy = std::move(flat_render_policy);
         if (flat_gate_log && !flat_ok)
             MATTER_LOGD("flatgate",
@@ -1837,11 +1969,20 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             // selected before loading the flat.  A replacement (including a
             // newly linked generation) invalidates this static acceleration;
             // fall through and re-probe the normal coherent loader instead.
+            const auto validation_begin = admission_profile ? AdmissionClock::now() : AdmissionClock::time_point{};
             uint64_t final_fingerprint = 0;
             const bool fingerprint_stable =
                 part_asset::load_static_part_snapshot(canonical_part, part_hash,
                                                       final_fingerprint) &&
                 final_fingerprint == canonical_snapshot.fingerprint;
+            if (admission_profile) {
+                const auto ms = [](auto begin, auto end) {
+                    return std::chrono::duration<double, std::milli>(end - begin).count();
+                };
+                MATTER_LOGI("partstore", "%016llx flat_snapshot=%.3f flat_policy=%.3f flat_revalidate=%.3f ms\n",
+                    (unsigned long long)part_hash, ms(admission_begin, snapshot_done),
+                    ms(snapshot_done, policy_done), ms(validation_begin, AdmissionClock::now()));
+            }
             // The SECOND way a flat is abandoned: it loaded fine, but the part
             // was replaced (a newly linked generation) between the two
             // snapshots, so this falls through to the coherent loader too.

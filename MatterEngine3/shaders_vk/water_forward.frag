@@ -31,6 +31,8 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
 #include "water_screen_space.glsl"
 
 layout(location = 0) in vec3 in_normal;
+layout(location = 8) flat in uint in_vt_slot;
+layout(location = 18) flat in mat3 in_vt_normal_matrix;
 layout(location = 3) in vec3 in_velocity_valid;
 layout(location = 4) flat in uint in_material_index;
 layout(location = 5) flat in uint in_instance_token;
@@ -46,6 +48,9 @@ layout(location = 2) out float out_reactivity;
 layout(location = 3) out uvec2 out_material_instance;
 
 void main() {
+    vec3 normal_ws = in_vt_slot != 0u
+        ? normalize(in_vt_normal_matrix * normalize(in_normal))
+        : normalize(in_normal);
     vec3 color = vec3(0.0);
     float roughness = 1.0;
     if (in_material_valid != 0u) {
@@ -57,7 +62,7 @@ void main() {
     WaterSurfaceState surface;
     bool surface_valid = in_material_valid != 0u &&
         water_evaluate_surface(in_water_binding_slot, in_water_generation,
-                               in_material_index, in_world_pos.xz, in_normal,
+                               in_material_index, in_world_pos.xz, normal_ws,
                                frame.water_animation.x, roughness, surface);
 
     uint diagnostic_view = water_forward.diagnostics.x;
@@ -67,7 +72,7 @@ void main() {
                 ? in_water_diagnostic_identity : in_instance_token;
             color = water_diagnostic_identity_color(identity);
         } else if (diagnostic_view == WATER_DIAGNOSTIC_GEOMETRY_NORMAL) {
-            color = normalize(in_normal) * 0.5 + 0.5;
+            color = normal_ws * 0.5 + 0.5;
         } else if (diagnostic_view == WATER_DIAGNOSTIC_FOAM_DRIVER) {
             color = surface_valid ? water_foam_driver_heatmap(surface.foam.coverage) : vec3(0.0);
         }

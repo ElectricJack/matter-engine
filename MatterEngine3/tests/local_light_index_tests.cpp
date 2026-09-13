@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -275,6 +276,195 @@ void test_spot_cone_and_finite_range_attenuation() {
           "large finite ranges do not overflow the cutoff calculation");
 }
 
+void test_scaled_publication() {
+    using namespace world_lights;
+    LocalLightPublication authored;
+    authored.records = {point(0, 0, 0, 8.0f, 3.0f)};
+    LocalLightIndexConfig config;
+    config.cell_size = 1.0f;
+    config.max_cells_per_light = 10000;
+    std::string error;
+    CHECK(rebuild_local_light_publication(authored, config, error), error.c_str());
+    const LocalLight original = authored.records[0];
+    const uint64_t original_revision = authored.revision;
+    LocalLightPublication scaled;
+    CHECK(make_scaled_local_light_publication(authored, 0.75f, scaled, error), error.c_str());
+    CHECK(scaled.records[0].range == 6.0f, "effective range is 75 percent of authored range");
+    LocalLight expected = original;
+    expected.range = 6.0f;
+    CHECK(std::memcmp(&expected, &scaled.records[0], sizeof(expected)) == 0,
+          "only range changes; source radius, colors and flags remain exact");
+    CHECK(std::memcmp(&original, &authored.records[0], sizeof(original)) == 0 &&
+          authored.revision == original_revision, "authored source remains unchanged");
+    CHECK(scaled.revision != authored.revision, "effective range changes publication revision");
+    CHECK(scaled.index.cell_size == 1.0f && scaled.index.max_cells_per_light == 10000,
+          "publication preserves explicit spatial index config");
+    CHECK(contains(query(authored, 7.5f, 0, 0), 0) &&
+          !contains(query(scaled, 7.5f, 0, 0), 0), "index uses the reduced GPU-record range");
+    const uint64_t scaled_revision = scaled.revision;
+    CHECK(rebuild_local_light_publication(scaled, config, error), error.c_str());
+    CHECK(scaled.records[0].range == 6 && scaled.revision == scaled_revision,
+          "renderer validation never compounds the range scale");
+    LocalLightPublication repeat;
+    CHECK(make_scaled_local_light_publication(authored, 0.75f, repeat, error), error.c_str());
+    CHECK(repeat.revision == scaled.revision, "repeated source publication is deterministic");
+    CHECK(make_scaled_local_light_publication(authored, repeat, error), error.c_str());
+    CHECK(repeat.revision == authored.revision, "default scale one preserves original publication");
+    for (float x : {0.0f, 1.0f, 5.0f, 5.99f, 6.0f, 7.0f}) {
+        const float receiver[3] = {x, 0, 0};
+        const float actual = local_light_attenuation(scaled.records[0], receiver);
+        const double normalized = static_cast<double>(x) / 6.0;
+        const double cutoff = std::max(0.0, 1.0 - normalized * normalized);
+        const double reference = cutoff * cutoff /
+            (static_cast<double>(x) * x + original.source_radius * original.source_radius);
+        CHECK(std::fabs(actual - reference) <= 2e-5 * std::max(1.0, reference),
+              "scaled range preserves squared smooth cutoff and unscaled source softening");
+        CHECK(std::fabs(evaluated_red(scaled, receiver, true) -
+                        evaluated_red(scaled, receiver, false)) < 1e-5f,
+              "scaled indexed evaluation matches brute force");
+    }
+    const float near_edge[3] = {5.999f, 0, 0};
+    CHECK(local_light_attenuation(scaled.records[0], near_edge) < 1e-7f,
+          "attenuation smoothly approaches zero at shortened range");
+    for (float bad : {0.0f, -1.0f, std::numeric_limits<float>::infinity(),
+                      std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::max()}) {
+        CHECK(!make_scaled_local_light_publication(authored, bad, scaled, error),
+              "invalid or overflowing range scale rejected");
+        CHECK(scaled.revision == scaled_revision && scaled.records[0].range == 6,
+              "failed scale preserves prior output");
+    }
+    LocalLightPublication spot_source = authored;
+    spot_source.records[0].kind = static_cast<uint32_t>(LocalLightKind::Spot);
+    spot_source.records[0].direction[0] = 1.0f;
+    spot_source.records[0].cos_inner = 0.95f;
+    spot_source.records[0].cos_outer = 0.8f;
+    LocalLightPublication spot_scaled;
+    CHECK(make_scaled_local_light_publication(spot_source, 0.75f, spot_scaled, error), error.c_str());
+    const float inside_cone[3] = {2, 0, 0};
+    const float outside_cone[3] = {0, 2, 0};
+    const float beyond_range[3] = {7, 0, 0};
+    CHECK(local_light_attenuation(spot_scaled.records[0], inside_cone) > 0 &&
+          local_light_attenuation(spot_scaled.records[0], outside_cone) == 0 &&
+          local_light_attenuation(spot_scaled.records[0], beyond_range) == 0,
+          "spot cone remains unchanged while its finite range shortens");
+    CHECK(!make_scaled_local_light_publication(authored, 0.75f, authored, error),
+          "in-place scaling rejected to protect authored source");
+    CHECK(authored.revision == original_revision && authored.records[0].range == 8,
+          "alias rejection leaves source intact");
+}
+
+void test_importance_selection() {
+    using namespace world_lights;
+    std::string error;
+    std::vector<LocalLightContribution> contributions;
+    const float receiver[3] = {0, 0, 0};
+    // Nearby low-intensity light beats distant modest lights; a sufficiently
+    // bright distant light also survives. Range and cone rejection happen
+    // before ranking, exactly as in the RT shader's BRDF evaluator.
+    auto near_light = point(0.25f, 0, 0, 10, 1);
+    auto bright_light = point(3, 0, 0, 10, 200);
+    auto distant_light = point(4, 0, 0, 10, 1);
+    auto out_of_range = point(11, 0, 0, 10, 100000);
+    for (const LocalLight& light : {near_light, bright_light, distant_light, out_of_range}) {
+        LocalLightContribution entry;
+        entry.light_index = static_cast<uint32_t>(contributions.size());
+        evaluate_local_light_irradiance(light, receiver, entry.contribution);
+        contributions.push_back(entry);
+    }
+    LocalLightContribution exact;
+    exact.light_index = 4;
+    exact.contribution[0] = 0.01f;
+    exact.casts_shadow = false;
+    contributions.push_back(exact);
+    std::vector<uint32_t> result;
+    CHECK(select_local_light_contributions(contributions, 2, result, error), error.c_str());
+    CHECK(result.size() == 3 && contains(result, 0) && contains(result, 1) && contains(result, 4),
+          "nearest and highest contribution retained; unshadowed light outside budget");
+    CHECK(!contains(result, 2) && !contains(result, 3), "weak and out-of-range lights not selected");
+    CHECK(select_local_light_contributions(contributions, 0, result, error), error.c_str());
+    CHECK(result == std::vector<uint32_t>({0, 1, 2, 4}), "zero budget preserves all contributing input order");
+    contributions.clear();
+    for (uint32_t id : {9u, 2u, 7u, 1u}) {
+        LocalLightContribution entry;
+        entry.light_index = id;
+        entry.contribution[0] = entry.contribution[1] = entry.contribution[2] = 1;
+        contributions.push_back(entry);
+    }
+    CHECK(select_local_light_contributions(contributions, 2, result, error), error.c_str());
+    CHECK(result == std::vector<uint32_t>({1, 2}), "equal contributions tie by stable light ID");
+    std::reverse(contributions.begin(), contributions.end());
+    CHECK(select_local_light_contributions(contributions, 2, result, error), error.c_str());
+    CHECK(result == std::vector<uint32_t>({1, 2}), "budget ranking independent of candidate traversal order");
+    const auto before = result;
+    CHECK(!select_local_light_contributions(contributions, 9, result, error) && result == before,
+          "unsupported budget fails transactionally");
+    contributions[0].contribution[0] = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!select_local_light_contributions(contributions, 2, result, error) && result == before,
+          "invalid contribution fails transactionally");
+}
+
+void test_effective_publication_cache() {
+    using namespace world_lights;
+    LocalLightPublication authored;
+    authored.records = {point(1, 2, 3, 12), point(-8, 2, 0, 6)};
+    std::string error;
+    CHECK(rebuild_local_light_publication(authored, error), error.c_str());
+    EffectiveLocalLightCache cache;
+    const LocalLightPublication* output = nullptr;
+    LocalLightIndexConfig config{authored.index.cell_size,
+                                authored.index.max_cells_per_light};
+    CHECK(cache.resolve(authored, 1.0f, config, output, error), error.c_str());
+    CHECK(output == &authored && cache.rebuild_count() == 0,
+          "identity request borrows the publication without copies or rebuilds");
+
+    config.cell_size = 4.0f;
+    CHECK(cache.resolve(authored, .75f, config, output, error), error.c_str());
+    CHECK(cache.rebuild_count() == 1 && output->records[0].range == 9,
+          "castle policy builds only the requested index once");
+    LocalLightPublication legacy;
+    CHECK(make_scaled_local_light_publication(authored, .75f, legacy, error), error.c_str());
+    CHECK(rebuild_local_light_publication(legacy, config, error), error.c_str());
+    CHECK(output->revision == legacy.revision &&
+          output->index.light_indices == legacy.index.light_indices,
+          "one-pass result retains legacy two-pass content and history revision");
+    const auto* records = output->records.data();
+    for (int frame = 0; frame < 100; ++frame)
+        CHECK(cache.resolve(authored, .75f, config, output, error), error.c_str());
+    CHECK(cache.rebuild_count() == 1 && output->records.data() == records,
+          "unchanged frames reuse storage and do not reconstruct indices");
+
+    authored.records[0].position[0] += 1;
+    CHECK(rebuild_local_light_publication(authored, error), error.c_str());
+    CHECK(cache.resolve(authored, .75f, config, output, error), error.c_str());
+    CHECK(cache.rebuild_count() == 2, "source revision invalidates cached result");
+    CHECK(cache.resolve(authored, .5f, config, output, error), error.c_str());
+    CHECK(cache.rebuild_count() == 3 && output->records[0].range == 6,
+          "scale changes derive from authored ranges, never compounded ranges");
+    config.cell_size = 2;
+    CHECK(cache.resolve(authored, .5f, config, output, error), error.c_str());
+    config.max_cells_per_light = 1;
+    CHECK(cache.resolve(authored, .5f, config, output, error), error.c_str());
+    CHECK(cache.rebuild_count() == 5 && !output->index.oversized_light_indices.empty(),
+          "both index configuration fields invalidate the cache");
+
+    const auto revision = output->revision;
+    const auto* previous = output;
+    CHECK(!cache.resolve(authored, -1, config, output, error), "invalid scale rejected");
+    auto invalid = authored;
+    invalid.revision = 0; // Unpublished records must be validated rather than trusted.
+    invalid.records[0].range = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!cache.resolve(invalid, .5f, config, output, error), "invalid records rejected");
+    CHECK(output == previous && output->revision == revision && cache.rebuild_count() == 5,
+          "validation failure preserves the last accepted publication and cache key");
+    CHECK(cache.resolve(authored, .5f, config, output, error), error.c_str());
+    CHECK(cache.rebuild_count() == 5, "failed request did not evict accepted cache");
+
+    LocalLightPublication startup;
+    CHECK(cache.resolve(startup, 1.0f, LocalLightIndexConfig{}, output, error), error.c_str());
+    CHECK(output->records.empty() && output->revision != 0,
+          "unpublished empty startup still produces valid renderer publication");
+}
+
 } // namespace
 
 int main() {
@@ -286,5 +476,8 @@ int main() {
     test_unrepresentable_query_still_returns_oversized();
     test_determinism_and_light_only_revision();
     test_spot_cone_and_finite_range_attenuation();
+    test_scaled_publication();
+    test_effective_publication_cache();
+    test_importance_selection();
     return check_summary();
 }

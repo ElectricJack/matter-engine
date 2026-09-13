@@ -51,11 +51,11 @@ inline bool get_u64(const std::vector<std::uint8_t>& bytes, std::size_t& at,
 
 }  // namespace render_policy_detail
 
-inline bool save_part_render_policy(const std::string& path,
-                                    std::uint64_t resolved_hash,
-                                    const PartRenderPolicy& policy) {
+inline bool encode_part_render_policy(std::uint64_t resolved_hash,
+                                      const PartRenderPolicy& policy,
+                                      std::vector<std::uint8_t>& bytes) {
+    bytes.clear();
     if (policy.child_overrides.size() > UINT32_MAX) return false;
-    std::vector<std::uint8_t> bytes;
     bytes.reserve(21u + policy.child_overrides.size());
     render_policy_detail::put_u32(bytes, render_policy_detail::kMagic);
     render_policy_detail::put_u32(bytes, render_policy_detail::kVersion);
@@ -69,6 +69,14 @@ inline bool save_part_render_policy(const std::string& path,
             return false;
         bytes.push_back(encoded);
     }
+    return true;
+}
+
+inline bool save_part_render_policy(const std::string& path,
+                                    std::uint64_t resolved_hash,
+                                    const PartRenderPolicy& policy) {
+    std::vector<std::uint8_t> bytes;
+    if (!encode_part_render_policy(resolved_hash, policy, bytes)) return false;
     return part_bundle::write_section(path, resolved_hash,
                                       part_bundle::kSectionRenderPolicy,
                                       bytes.data(), bytes.size());

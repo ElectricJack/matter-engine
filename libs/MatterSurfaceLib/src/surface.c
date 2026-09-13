@@ -19,12 +19,11 @@
 //   4. Marching cubes. Per cube: classify corners, interpolate the crossed
 //      edges, dedupe shared edge vertices through a 1M-entry open-addressed
 //      hash keyed by global edge coordinate, emit triangles from `triTable`.
-//   5. Normals. The accumulated face normals are OVERWRITTEN by
-//      `compute_surface_normals_impl` — the analytic SDF gradient, which depends
-//      only on world position and is therefore continuous across independently
-//      meshed cells. This is why neighbouring tiles do not show shading seams,
-//      and why anything that later moves vertices (simplification) must
-//      re-run `ComputeSurfaceNormals`.
+//   5. Normals. Replace accumulated geometric normals with the SAME field's
+//      gradient: analytic for the legacy sphere path, central differences of
+//      CalculateScalarStaged for ordered/fat fields. Degenerate gradients use
+//      the initialized geometric normal. Recompute after moving vertices with
+//      the matching normal API (ComputeSurfaceNormalsStaged for ordered CSG).
 //
 // Sign and isovalue convention. The field is a signed distance: NEGATIVE inside,
 // POSITIVE outside, and a corner counts as inside when `scalar < isovalue`. The
@@ -374,8 +373,8 @@ Mesh GenerateMeshWithScratch(SurfaceScratch* scratch, Particle* particles, float
 }
 
 // Typed iso-primitives + ordered CSG variant. Threads the stage list + fat array
-// into the field-fill; everything else (normals, simplify-free path) matches
-// GenerateMeshWithScratch.
+// into both field-fill and normal evaluation. The legacy sphere-only case
+// still uses GenerateMeshWithScratch's analytic normal path.
 Mesh GenerateMeshStaged(SurfaceScratch* scratch, Particle* particles, float particleRadius,
         int particleCount, Bounds volume, float blendWidth,
         const FieldStages* stages, const FatPrim* fat, int fatCount,
@@ -446,6 +445,72 @@ static SpatialHash* scratch_ensure_hash(SurfaceScratch* s, Particle* particles,
     s->hashParticles = particles;
     s->hashCount = count;
     return s->hash;
+}
+
+// Six samples of the production evaluator preserve transforms, the ordered
+// stage fold, smooth stage unions and trailing carve/clip semantics. Keep this
+// separate from the legacy sphere analytic path. No adjacency averaging or
+// crease-wide smoothing is performed; only an infinitesimal field derivative.
+static void compute_staged_normals(SpatialHash* hash, Mesh* mesh,
+        float particleRadius, float blendWidth, float sampleSpacing,
+        const FieldStages* stages, const FatPrim* fat, int fatCount,
+        Particle* clipParticles, int clipCount, Particle* carveParticles,
+        int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr,
+        SpatialHash* clip_hash, float clip_qr) {
+    float epsilon = fmaxf(fabsf(sampleSpacing) * 0.001f, 1e-6f);
+    for (int i = 0; i < mesh->vertexCount; ++i) {
+        MtVec3 p = {mesh->vertices[3*i], mesh->vertices[3*i+1], mesh->vertices[3*i+2]};
+        float g[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            MtVec3 lo = p, hi = p;
+            float v = axis == 0 ? p.x : (axis == 1 ? p.y : p.z);
+            // At large coordinates epsilon may round to zero. Use neighboring
+            // representable values and divide by the actual sample separation.
+            float a = v - epsilon, b = v + epsilon;
+            if (a == v) a = nextafterf(v, -INFINITY);
+            if (b == v) b = nextafterf(v, INFINITY);
+            if (axis == 0) { lo.x = a; hi.x = b; }
+            else if (axis == 1) { lo.y = a; hi.y = b; }
+            else { lo.z = a; hi.z = b; }
+            float fa = CalculateScalarStaged(lo, hash, particleRadius, blendWidth,
+                stages, fat, fatCount, clipParticles, clipCount, carveParticles,
+                carveCount, carveBlend, carve_hash, carve_qr, clip_hash, clip_qr).scalarValue;
+            float fb = CalculateScalarStaged(hi, hash, particleRadius, blendWidth,
+                stages, fat, fatCount, clipParticles, clipCount, carveParticles,
+                carveCount, carveBlend, carve_hash, carve_qr, clip_hash, clip_qr).scalarValue;
+            g[axis] = (fb - fa) / (b - a);
+        }
+        float length = sqrtf(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+        if (!isfinite(length) || length <= 1e-8f) {
+            // Extraction initializes this from incident geometric faces. For
+            // recomputation it is the caller's incoming geometric normal.
+            g[0] = mesh->normals[3*i]; g[1] = mesh->normals[3*i+1]; g[2] = mesh->normals[3*i+2];
+            length = sqrtf(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+            if (!isfinite(length) || length <= 1e-8f) {
+                g[0] = 0.0f; g[1] = 0.0f; g[2] = 1.0f; length = 1.0f;
+            }
+        }
+        for (int axis = 0; axis < 3; ++axis) mesh->normals[3*i+axis] = g[axis] / length;
+    }
+}
+
+void ComputeSurfaceNormalsStaged(SurfaceScratch* scratch, Mesh* mesh, Particle* particles,
+        float particleRadius, int particleCount, float blendWidth, float sampleSpacing,
+        const FieldStages* stages, const FatPrim* fat, int fatCount,
+        Particle* clipParticles, int clipCount, Particle* carveParticles,
+        int carveCount, float carveBlend) {
+    if (!field_needs_staging(stages, fatCount)) {
+        ComputeSurfaceNormalsWithScratch(scratch, mesh, particles, particleRadius,
+            particleCount, blendWidth, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+        return;
+    }
+    if (!scratch || !mesh || !mesh->vertices || !mesh->normals || mesh->vertexCount <= 0) return;
+    float cellSize = particleRadius * 2.5f + blendWidth * 4.0f;
+    if (cellSize <= 0.0f) cellSize = 1.0f;
+    SpatialHash* hash = scratch_ensure_hash(scratch, particles, particleCount, cellSize);
+    compute_staged_normals(hash, mesh, particleRadius, blendWidth, sampleSpacing,
+        stages, fat, fatCount, clipParticles, clipCount, carveParticles, carveCount,
+        carveBlend, NULL, 0.0f, NULL, 0.0f);
 }
 
 static void compute_surface_normals_impl(SpatialHash* hash, Mesh* mesh, Particle* particles,
@@ -1228,7 +1293,14 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     // Overwrite the per-cell face normals with the cross-cell-continuous SDF
     // gradient (face normals remain only as the degenerate-vertex fallback).
     // Reuse the spatial hash we just built rather than rebuilding it.
-    compute_surface_normals_impl(spatialHash, &mesh, particles, particleRadius, particleCount, blendWidth, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+    if (useStaged) {
+        float spacing = fminf(data.cellSize.x, fminf(data.cellSize.y, data.cellSize.z));
+        compute_staged_normals(spatialHash, &mesh, particleRadius, blendWidth, spacing,
+            stages, fat, fatCount, clipParticles, clipCount, carveParticles, carveCount,
+            carveBlend, scratch->carve_hash, carve_qr, scratch->clip_hash, clip_qr);
+    } else {
+        compute_surface_normals_impl(spatialHash, &mesh, particles, particleRadius, particleCount, blendWidth, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+    }
 
     // Set material IDs as vertex colors
     mesh.colors = (unsigned char*)RL_MALLOC(vertexCount * 4 * sizeof(unsigned char));

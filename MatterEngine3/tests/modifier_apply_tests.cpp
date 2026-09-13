@@ -83,6 +83,51 @@ void test_failed_modifier_is_skipped() {
     assert(out.indices.size() < m.indices.size());  // simplify still ran
 }
 
+void test_simplify_preserves_smooth_corner_attributes() {
+    MeshIndexed source = make_sphere(3);
+    source.triex.resize(source.indices.size() / 3);
+    for (size_t t = 0; t < source.triex.size(); ++t) {
+        TriEx& e = source.triex[t];
+        e.N0 = source.positions[source.indices[t * 3]];
+        e.N1 = source.positions[source.indices[t * 3 + 1]];
+        e.N2 = source.positions[source.indices[t * 3 + 2]];
+        e.materialId = 8;
+        e.tint = make_float4(0.7f, 0.5f, 0.2f, 1.0f);
+        e.ao0 = e.ao1 = e.ao2 = 0.75f;
+    }
+    const MeshIndexed out = modifier_apply::apply_stack(
+        source, {simplify_spec(0.34f)}, "smooth-source");
+    assert(out.indices.size() < source.indices.size());
+    assert(out.triex.size() == out.indices.size() / 3);
+    size_t varying_corners = 0;
+    for (size_t t = 0; t < out.triex.size(); ++t) {
+        const TriEx& e = out.triex[t];
+        assert(e.materialId == 8);
+        assert(std::fabs(e.tint.x - 0.7f) < 1e-5f);
+        assert(std::fabs(e.tint.y - 0.5f) < 1e-5f);
+        assert(std::fabs(e.ao0 - 0.75f) < 1e-5f);
+        const float3 normals[] = {e.N0, e.N1, e.N2};
+        for (size_t k = 0; k < 3; ++k) {
+            const float3 n = normals[k];
+            const float3 p = out.positions[out.indices[t * 3 + k]];
+            const float length = std::sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+            const float dot = (p.x*n.x + p.y*n.y + p.z*n.z) / length;
+            assert(std::isfinite(dot) && dot > 0.99f);
+            assert(std::fabs(n.x*n.x+n.y*n.y+n.z*n.z-1.0f) < 1e-4f);
+        }
+        if (std::fabs(e.N0.x-e.N1.x) + std::fabs(e.N0.y-e.N1.y) +
+            std::fabs(e.N0.z-e.N1.z) > 1e-4f) ++varying_corners;
+    }
+    assert(varying_corners > out.triex.size() * 9 / 10);
+}
+
+void test_simplify_without_attributes_remains_geometry_only() {
+    const MeshIndexed out = modifier_apply::apply_stack(
+        make_sphere(2), {simplify_spec(0.5f)}, "geometry-only");
+    assert(!out.indices.empty());
+    assert(out.triex.empty());
+}
+
 void test_retopo_unavailable_is_skipped() {
 #ifndef MATTER_HAVE_AUTOREMESHER
     MeshIndexed m = make_sphere(1);
@@ -114,6 +159,8 @@ int main() {
     printf("modifier_apply_tests\n");
     test_stack_order_matters();
     test_failed_modifier_is_skipped();
+    test_simplify_preserves_smooth_corner_attributes();
+    test_simplify_without_attributes_remains_geometry_only();
     test_retopo_unavailable_is_skipped();
     test_chunk_hash_sensitivity();
     printf("all modifier_apply tests passed\n");

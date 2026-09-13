@@ -75,8 +75,8 @@ namespace script_host {
 //
 // Populated only when BakeOptions::retain_geometry is set AND the bake took the
 // static (non-animated) path; every other bake leaves BakeResult::geometry null
-// and pays nothing. The artifact is still written unconditionally: this is a
-// retained copy of the writer's inputs, never a replacement for the write.
+// and pays nothing. RuntimeLeafMemory also retains these inputs, but skips
+// persistence after validating the standalone static singleton contract.
 //
 // Declared incomplete in script_host.h (which holds it only through a
 // shared_ptr) and DEFINED here, because this is the header where both the
@@ -91,6 +91,13 @@ struct BakedGeometry {
     part_asset::LodLevels                         lods;      // empty for every static bake
     std::vector<part_asset::VolumeEmitter>        emitters;  // the EMIT trailer's contents
     matter::PartRenderPolicy                      render_policy;
+    // Nonzero only when this exact source hash durably published singleton VARS.
+    uint64_t source_single_full_rep_hash = 0;
+    // Source validation is independent of durable cache publication. A nonzero
+    // hash certifies the explicit singleton static leaf contract in memory.
+    uint64_t validated_single_full_rep_hash = 0;
+    part_asset::StaticLeafMetadata singleton_metadata;
+
     // Volumetric-sectors M0-WP3a: the seam boundary record terrainVolume's
     // mesher exported for this tile, lifted off DslState by bake_source. Null
     // for every part that meshed no terrain volume (i.e. almost all of them).
@@ -534,6 +541,7 @@ private:
         part_asset::LodLevels                            lods_in;  // .part stores LOD0 only
         std::vector<part_asset::VolumeEmitter>           emitters;
         matter::PartRenderPolicy                          render_policy;
+        bool source_single_full_rep = false;
         std::optional<part_asset::PartAnimationLink>     animation_link;
         matter::animation::AnimAsset                     loaded_animation;
     };

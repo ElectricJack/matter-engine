@@ -164,6 +164,7 @@
 //   passed persist=false and ImGui's IniFilename is cleared, so a headless
 //   capture can neither inherit nor overwrite an interactive session's files.
 #include "matter/engine_context.h"
+#include "perf_gpu_stats.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_session.h"
 #include "matter/ecs.h"
@@ -198,6 +199,7 @@
 #include "console_panel.h"
 #include "matter/log.h"
 #include "ui.h"
+#include "frame_pacer.h"
 #include "wireframe_controls.h"
 #include "session_binding.h"
 #include "scene_model_adapter.h"
@@ -229,6 +231,7 @@
 #include "external/stb_image_write.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -240,6 +243,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <new>
 #include <sstream>
@@ -896,6 +900,44 @@ struct PerfCounters {
     uint64_t water_animation_steady_state_allocations = 0;
 };
 
+// Optional bounded diagnostic history. Written only after sampling finishes,
+// so per-frame disk I/O cannot manufacture the stalls being investigated.
+struct PerfFrameTrace {
+    static constexpr size_t kMaxRows = 262144;
+    static constexpr const char* kColumns[] = {
+        "serial", "slot", "image", "start_ms", "start_interval_ms", "loop_ms",
+        "poll_ms", "acquire_phase_ms", "ui_ms", "tick_ms", "pump_ms", "lab_ms",
+        "render_ms", "present_phase_ms", "begin_ms", "frame_fence_ms",
+        "retained_clear_ms", "acquire_fence_ms", "acquire_ms", "present_fence_ms",
+        "submit_ms", "present_ms", "gpu_readback_sequence", "gpu_total_ms",
+        "pacing_ms", "present_interval_ms"};
+    using Row = std::array<double, std::size(kColumns)>;
+    std::vector<Row> rows;
+    size_t dropped_rows = 0;
+
+    void append_json(std::ostream& out) const {
+        out << ",\"frame_timing_trace\":{\"dropped_rows\":" << dropped_rows
+            << ",\"gpu_time_basis\":\"latest_retired_readback_not_current_frame\","
+               "\"columns\":[";
+        for (size_t i = 0; i < std::size(kColumns); ++i) {
+            if (i) out << ',';
+            out << '"' << kColumns[i] << '"';
+        }
+        out << "],\"rows\":[";
+        for (size_t r = 0; r < rows.size(); ++r) {
+            if (r) out << ',';
+            out << '[';
+            for (size_t c = 0; c < rows[r].size(); ++c) {
+                if (c) out << ',';
+                if (std::isfinite(rows[r][c])) out << rows[r][c];
+                else out << "null";
+            }
+            out << ']';
+        }
+        out << "]}";
+    }
+};
+
 bool parse_perf_seconds(const char* value, const char* name, double& result,
                         std::string& error) {
     char* end = nullptr;
@@ -1101,12 +1143,16 @@ void emit_registration_census(
 //
 // Two different time bases live in the output and mixing them up is the usual
 // mistake: the `*_delta` fields are end-minus-start over the whole sampling
-// window, while every gpu_*_ms / cpu_*_ms / loop_*_ms field is the LAST
-// SAMPLED FRAME only. The inline comments in the body say why each group was
-// added.
+// window, while legacy gpu_*_ms are the latest EMA (except raw water animation)
+// and cpu_*_ms / loop_*_ms are the latest observation. gpu_pass_statistics
+// contains percentiles of unique, available RAW timestamp pairs. Its window
+// is readback observation time; asynchronous retirement can lag presentation.
 bool write_perf_result(const PerfRunConfig& config, const std::string& world,
                        std::vector<double> frame_times,
+                       std::vector<double> present_intervals,
                        std::vector<double> water_animation_times,
+                       const viewer::PerfGpuStats& gpu_pass_stats,
+                       const PerfFrameTrace& frame_trace,
                        const PerfCounters& start,
                        const PerfCounters& finish,
                        const matter::FrameStats& frame_stats,
@@ -1123,6 +1169,11 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
     const size_t p95_index = static_cast<size_t>(
         std::ceil(static_cast<double>(frame_times.size()) * 0.95)) - 1;
     const double p95_frame_ms = frame_times[p95_index];
+    if (present_intervals.size() != frame_times.size()) {
+        error = "present-cadence samples do not match performance frames";
+        return false;
+    }
+    std::sort(present_intervals.begin(), present_intervals.end());
     if (water_animation_times.size() != frame_times.size()) {
         error = "water-animation GPU samples do not match performance frames";
         return false;
@@ -1212,7 +1263,7 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"loop_present_ms\":" << loop_stats.loop_present_ms
            << ",\"loop_peak_pump_ms\":" << loop_stats.loop_peak_pump_ms
            << ",\"loop_peak_acquire_ms\":" << loop_stats.loop_peak_acquire_ms
-           // GPU pass timers, as of the last sampled frame. These are the
+           // Legacy GPU EMA snapshots, as of the last sampled frame. These are the
            // only way to cost a compute pass that is small next to the frame:
            // at 220 fps the froxel passes are well under the run-to-run
            // spread of median_frame_ms, so a sweep over them reads as pure
@@ -1229,8 +1280,8 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"vol_memory_bytes\":" << frame_stats.vol_memory_bytes
            << ",\"cloud_shadow_memory_bytes\":"
            << frame_stats.cloud_shadow_memory_bytes
-           // Full per-pass GPU zone breakdown (last sampled frame). rt is the
-           // primary/shadow trace; rt_gi is the separate GI/reflection trace.
+           // Full per-pass GPU EMA breakdown (latest observation). rt is the
+           // sun-shadow trace; rt_gi aggregates GI/reflection/transmission dispatches.
            // Added so a fly-through capture can attribute a heavy RT frame to
            // primary-ray traversal (dense foliage) vs the GI bounce.
            << ",\"gpu_cull_ms\":" << frame_stats.gpu_cull_ms
@@ -1238,7 +1289,12 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_blas_ms\":" << frame_stats.gpu_blas_ms
            << ",\"gpu_tlas_ms\":" << frame_stats.gpu_tlas_ms
            << ",\"gpu_rt_ms\":" << frame_stats.gpu_rt_ms
+           << ",\"gpu_rt_local_direct_ms\":" << frame_stats.gpu_rt_local_direct_ms
            << ",\"gpu_rt_gi_ms\":" << frame_stats.gpu_rt_gi_ms
+           << ",\"gpu_hdr_lighting_ms\":" << frame_stats.gpu_hdr_lighting_ms
+           << ",\"gpu_primary_light_cull_ms\":" << frame_stats.gpu_primary_light_cull_ms
+           << ",\"gpu_rt_gi_diffuse_ms\":" << frame_stats.gpu_rt_gi_diffuse_ms
+           << ",\"gpu_rt_gi_reflection_transmission_ms\":" << frame_stats.gpu_rt_gi_reflection_transmission_ms
            << ",\"gpu_denoise_ms\":" << frame_stats.gpu_denoise_ms
            << ",\"gpu_dlss_ms\":" << frame_stats.gpu_dlss_ms
            << ",\"gpu_composite_ms\":" << frame_stats.gpu_composite_ms
@@ -1257,6 +1313,16 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"local_light_oversized\":"
            << frame_stats.local_light_oversized;
     matter::append_water_forward_perf_json(output, frame_stats);
+    gpu_pass_stats.append_json(output);
+    output << ",\"gpu_legacy_metric\":\"latest_ema_except_raw_water_animation\""
+           << ",\"gpu_rt_metric\":\"sun_shadow\""
+           << ",\"gpu_timers_supported\":" << (frame_stats.gpu_timers_supported ? "true" : "false")
+           << ",\"raster_width\":" << frame_stats.raster_width
+           << ",\"raster_height\":" << frame_stats.raster_height
+           << ",\"pom_enabled\":" << (loop_stats.tileset_pom.enabled ? "true" : "false")
+           << ",\"pom_steps\":" << loop_stats.tileset_pom.steps
+           << ",\"pom_max_distance_m\":" << loop_stats.tileset_pom.max_distance_m
+           << ",\"pom_relief_cap_m\":" << loop_stats.tileset_pom.relief_cap_m;
     // CPU render-thread split (last sampled frame).
     output << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
            << ",\"cpu_build_ms\":" << frame_stats.build_ms
@@ -1265,7 +1331,29 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"cpu_draw_cull_render_ms\":" << frame_stats.draw_cull_render_ms
            << ",\"cpu_draw_skin_seal_ms\":" << frame_stats.draw_skin_seal_ms
            << ",\"cpu_draw_composite_ms\":" << frame_stats.draw_composite_ms
-           << ",\"validation_errors\":" << validation_errors << "}\n";
+           << ",\"loop_pacing_ms\":" << loop_stats.loop_pacing_ms
+           << ",\"validation_errors\":" << validation_errors;
+    double present_sum = 0.0;
+    for (double ms : present_intervals) present_sum += ms;
+    const double present_mean = present_sum / present_intervals.size();
+    double present_variance = 0.0;
+    for (double ms : present_intervals)
+        present_variance += (ms - present_mean) * (ms - present_mean);
+    output << ",\"present_cadence_statistics\":{"
+              "\"metric\":\"cpu_present_call_return_interval_not_display\","
+              "\"samples\":" << present_intervals.size()
+           << ",\"mean_ms\":" << present_mean
+           << ",\"mean_fps\":" << (present_mean > 0.0 ? 1000.0 / present_mean : 0.0)
+           << ",\"median_ms\":" << median_of_sorted(present_intervals)
+           << ",\"p95_ms\":" << present_intervals[p95_index]
+           << ",\"p99_ms\":" << present_intervals[static_cast<size_t>(
+                  std::ceil(present_intervals.size() * 0.99)) - 1]
+           << ",\"min_ms\":" << present_intervals.front()
+           << ",\"max_ms\":" << present_intervals.back()
+           << ",\"stddev_ms\":" << std::sqrt(present_variance / present_intervals.size())
+           << '}';
+    if (!frame_trace.rows.empty()) frame_trace.append_json(output);
+    output << "}\n";
     if (!output) {
         error = "failed while writing MATTER_PERF_OUTPUT '" + config.output_path + "'";
         return false;
@@ -1319,14 +1407,13 @@ int main() {
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    // Perf mode is an automated GPU measurement, not an interactive editor
-    // session. Keeping its window hidden prevents the Windows desktop manager
-    // from clipping oversized acceptance resolutions to the work area or
-    // throttling an occluded surface to roughly one present per second.
-    // FIFO capture/walkthrough sessions also need a real hidden surface:
-    // minimizing a visible editor can suspend publication and frame barriers.
+    // Automated measurements default to hidden for oversized acceptance
+    // resolutions. An explicit MATTER_HIDE_WINDOW=0 must still permit visible
+    // profiling; otherwise a requested interactive measurement silently hides.
     const char* hide_window_env = std::getenv("MATTER_HIDE_WINDOW");
-    if (registration_census_mode || perf.enabled ||
+    const bool force_visible =
+        hide_window_env && std::strcmp(hide_window_env, "0") == 0;
+    if (((registration_census_mode || perf.enabled) && !force_visible) ||
         (hide_window_env && std::strcmp(hide_window_env, "1") == 0))
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     if (perf.enabled)
@@ -1392,16 +1479,11 @@ int main() {
     // matching what the frame loop does. (smoke_vulkan_viewer.ps1 greps the
     // line, not its position.)
     matter::EngineDesc engine_desc;
-    // Phase 1 cache-leak fix: MATTER_CACHE_ROOT is an explicit override and
-    // still wins when set, but it is canonicalized to absolute here (rather
-    // than handed to the engine as-is) so a relative override behaves
-    // identically regardless of the directory editor.exe was launched from.
-    // EngineContext::create() also canonicalizes/requires cache_root itself
-    // (see matter_engine.cpp), but engine_desc.cache_root is informational
-    // only -- the per-world cache_root actually used for baking is derived
-    // from WorldDesc::project_dir via LocalProviderConfig::for_project() in
-    // open_world() -- so cache_root must never be left null here or
-    // EngineContext::create() fails loudly for no functional reason.
+    // EngineDesc still needs a non-null absolute cache root for initialization.
+    // Actual per-world artifacts use LocalProviderConfig::for_project(), which
+    // applies MATTER_CACHE_ROOT as an external base with project/world isolation.
+    // That provider resolves relative overrides against the opened project;
+    // this informational EngineDesc path is not the per-world artifact path.
     const char* cache_root_env = std::getenv("MATTER_CACHE_ROOT");
     std::string cache_root_abs;
     {
@@ -2710,7 +2792,13 @@ int main() {
     PerfCounters perf_start_counters{};
     uint64_t perf_start_dlss_resets = 0;
     std::vector<double> perf_frame_times;
+    std::vector<double> perf_present_intervals;
     std::vector<double> perf_water_animation_times;
+    viewer::PerfGpuStats perf_gpu_pass_stats;
+    PerfFrameTrace perf_frame_trace;
+    auto perf_previous_frame_start = std::chrono::steady_clock::now();
+    auto perf_previous_present = perf_previous_frame_start;
+    viewer::FramePacer frame_pacer;
     auto previous_time = std::chrono::steady_clock::now();
     double hud_frame_ms = 0.0;
 
@@ -4813,12 +4901,16 @@ int main() {
         // This starts before event polling and begin_frame(), whose fence wait and
         // swapchain acquire are part of the user-visible frame cadence.
         const auto perf_frame_start = std::chrono::steady_clock::now();
+        const double perf_start_interval_ms = std::chrono::duration<double, std::milli>(
+            perf_frame_start - perf_previous_frame_start).count();
+        perf_previous_frame_start = perf_frame_start;
         // Main-loop phase attribution (ViewerStats::loop_*_ms). Rolling split
         // timer: each phase_split() returns the ms since the previous split, so
         // the phases exactly partition perf_frame_start..end_frame. Added
         // because resolve/build/draw accounted for under a third of the frame
         // and the remainder had no attribution at all.
         struct LoopPhase {
+            double pacing = 0;
             double poll = 0, acquire = 0, ui = 0, tick = 0;
             double pump = 0, lab = 0, render = 0, present = 0;
         } phase{};
@@ -4830,6 +4922,11 @@ int main() {
             phase_mark = split_now;
             return ms;
         };
+        frame_pacer.wait(editor_props.gpu_prefs().frame_limit, [&] {
+            glfwPollEvents();
+            return glfwWindowShouldClose(window) != 0;
+        });
+        phase.pacing = phase_split();
         glfwPollEvents();
         // Also disarm while minimized: begin_frame may skip the later input
         // sample, and holding Space through refocus must not create a press.
@@ -6019,6 +6116,7 @@ int main() {
         matter::VulkanFrame frame{};
         if (!vulkan->begin_frame(frame, error)) {
             if (error.find("zero-sized") != std::string::npos) {
+                frame_pacer.reset();
                 glfwWaitEventsTimeout(0.05);
                 continue;
             }
@@ -6662,7 +6760,10 @@ int main() {
                 std::printf("bake %d/%d %s\n", event.done, event.total,
                             event.module.c_str());
             else if (event.type == matter::EventType::BakeFinished) {
-                std::printf("bake finished (%d errors)\n", event.errors);
+                // Share the engine log sink with background detail publication.
+                // Mixing buffered stdout with that sink could split this readiness
+                // record mid-word, leaving command-line capture drivers waiting.
+                MATTER_LOGI("bake", "bake finished (%d errors)", event.errors);
                 bake_ready = event.errors == 0;
                 if (bake_ready && apply_world_camera_after_bake) {
                     if (session->apply_authored_camera(camera)) {
@@ -6893,6 +6994,9 @@ int main() {
         options.vulkan_gi.enabled = editor_props.gi_prefs().enabled ? 1u : 0u;
         options.vulkan_gi.diffuse_multiplier =
             editor_props.gi_prefs().diffuse_multiplier;
+        options.vulkan_gi.trace_scale = editor_props.gi_prefs().trace_scale;
+        options.vulkan_gi.reflection_trace_scale =
+            editor_props.gi_prefs().reflection_trace_scale;
         // Part Workbench (W2, "modal isolation" — see part_workbench.h):
         // VulkanFrame/render() always draws the whole frame extent and
         // begin_frame() yields exactly one frame per call, so only ONE
@@ -7239,6 +7343,7 @@ int main() {
         stats.parts_baked = static_cast<int>(frame_stats.parts_baked);
         stats.cache_hits = static_cast<int>(frame_stats.cache_hits);
         stats.gpu_timers_supported   = frame_stats.gpu_timers_supported;
+        stats.gpu_timing_valid_mask  = frame_stats.gpu_timing_sample.valid_mask;
         stats.gpu_total_ms           = frame_stats.gpu_total_ms;
         stats.gpu_cull_ms            = frame_stats.gpu_cull_ms;
         stats.gpu_gbuffer_ms         = frame_stats.gpu_gbuffer_ms;
@@ -7246,6 +7351,11 @@ int main() {
         stats.gpu_tlas_ms            = frame_stats.gpu_tlas_ms;
         stats.gpu_rt_ms              = frame_stats.gpu_rt_ms;
         stats.gpu_rt_gi_ms           = frame_stats.gpu_rt_gi_ms;
+        stats.gpu_hdr_lighting_ms = frame_stats.gpu_hdr_lighting_ms;
+        stats.gpu_primary_light_cull_ms = frame_stats.gpu_primary_light_cull_ms;
+        stats.gpu_rt_gi_diffuse_ms = frame_stats.gpu_rt_gi_diffuse_ms;
+        stats.gpu_rt_gi_reflection_transmission_ms = frame_stats.gpu_rt_gi_reflection_transmission_ms;
+        stats.gpu_rt_local_direct_ms = frame_stats.gpu_rt_local_direct_ms;
         stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
@@ -7415,6 +7525,10 @@ int main() {
         // end_frame() records the queue submit and present boundary. The
         // smoothed cadence below also feeds the HUD frame time on the next frame.
         phase.present = phase_split();
+        const auto perf_present_time = std::chrono::steady_clock::now();
+        const double perf_present_interval_ms = std::chrono::duration<double, std::milli>(
+            perf_present_time - perf_previous_present).count();
+        perf_previous_present = perf_present_time;
         const double perf_frame_cadence_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - perf_frame_start).count();
         hud_frame_ms = hud_frame_ms <= 0.0
@@ -7428,6 +7542,7 @@ int main() {
                                     : prev * 0.9f + (float)sample * 0.1f;
             };
             stats.loop_poll_ms    = ema(stats.loop_poll_ms,    phase.poll);
+            stats.loop_pacing_ms  = ema(stats.loop_pacing_ms,  phase.pacing);
             stats.loop_acquire_ms = ema(stats.loop_acquire_ms, phase.acquire);
             stats.loop_ui_ms      = ema(stats.loop_ui_ms,      phase.ui);
             stats.loop_tick_ms    = ema(stats.loop_tick_ms,    phase.tick);
@@ -7889,11 +8004,40 @@ int main() {
                 perf_start_counters = capture_perf_counters(frame_stats);
                 perf_start_dlss_resets = frame_stats.dlss_reset_count;
                 perf_frame_times.clear();
+                perf_present_intervals.clear();
                 perf_water_animation_times.clear();
+                perf_gpu_pass_stats.reset(frame_stats.gpu_timing_sample.sequence);
+                if (vulkan->frame_timings().enabled)
+                    perf_frame_trace.rows.reserve(4096);
                 std::printf("perf: sampling for %.3f seconds\n",
                             perf.sample_seconds);
             } else if (perf_phase == PerfPhase::Sampling) {
                 perf_frame_times.push_back(perf_frame_cadence_ms);
+                perf_present_intervals.push_back(perf_present_interval_ms);
+                perf_gpu_pass_stats.add(frame_stats.gpu_timing_sample);
+                const auto device_timing = vulkan->frame_timings();
+                if (device_timing.enabled && device_timing.frame_serial == frame.serial) {
+                    if (perf_frame_trace.rows.size() < PerfFrameTrace::kMaxRows) {
+                        const auto& gpu_sample = frame_stats.gpu_timing_sample;
+                        perf_frame_trace.rows.push_back({
+                            static_cast<double>(frame.serial),
+                            static_cast<double>(device_timing.frame_slot),
+                            static_cast<double>(device_timing.image_index),
+                            std::chrono::duration<double, std::milli>(
+                                perf_frame_start - perf_phase_start).count(),
+                            perf_start_interval_ms, perf_frame_cadence_ms,
+                            phase.poll, phase.acquire, phase.ui, phase.tick,
+                            phase.pump, phase.lab, phase.render, phase.present,
+                            device_timing.begin_ms, device_timing.frame_fence_ms,
+                            device_timing.retained_clear_ms, device_timing.acquire_fence_ms,
+                            device_timing.acquire_ms, device_timing.present_fence_ms,
+                            device_timing.submit_ms, device_timing.present_ms,
+                            static_cast<double>(gpu_sample.sequence),
+                            (gpu_sample.valid_mask & 1u) ? gpu_sample.milliseconds[0]
+                                : std::numeric_limits<double>::quiet_NaN(),
+                            phase.pacing, perf_present_interval_ms});
+                    } else ++perf_frame_trace.dropped_rows;
+                }
                 perf_water_animation_times.push_back(
                     frame_stats.gpu_water_animation_ms);
                 if (std::chrono::duration<double>(perf_now - perf_phase_start)
@@ -7905,7 +8049,10 @@ int main() {
                     if (!write_perf_result(
                             perf, worlds[stats.world_current].world_name,
                             perf_frame_times,
+                            perf_present_intervals,
                             perf_water_animation_times,
+                            perf_gpu_pass_stats,
+                            perf_frame_trace,
                             perf_start_counters,
                             perf_finish_counters, frame_stats, stats,
                             perf_start_dlss_resets,

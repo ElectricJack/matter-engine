@@ -2,7 +2,8 @@
 // MatterEngine3/src/resolve_cache.h
 // resolve_cache.h — internal header for the resolve/manifest cache.
 // Saves and loads the full output of LocalProvider::install_graph() +
-// compose_world() so warm launches skip QuickJS script evaluation entirely.
+// compose_world(). Supported static worlds also retain a validated authored
+// definition and material snapshot; unsupported worlds re-evaluate world JS.
 //
 // File: <cache_root>/cache/<world_name>.resolve
 // Format: little-endian binary (magic, format-version, cache-key u64,
@@ -40,10 +41,11 @@ namespace resolve_cache {
 // Opaque payload restored from a cache hit.
 // Caller populates LocalProvider internals and WorldManifest from these fields.
 // Plain aggregate: no ownership, no OS or GPU resources, freely copied and
-// moved.  save() only reads it.  load() overwrites all five members on success
+// moved.  save() only reads it.  load() overwrites all six members on success
 // and, on a false return, leaves it PARTIALLY populated — discard it rather
 // than reusing it.
 struct ResolveCachePayload {
+    std::string authored_world; // versioned, checksummed declarative snapshot; empty = JS fallback
     // WorldManifest fields.
     std::vector<viewer::WorldManifestEntry> instances;
     // Local-light records are serialized; load reconstructs their index and

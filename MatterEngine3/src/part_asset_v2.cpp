@@ -37,9 +37,11 @@
 // by part_bundle's lock.
 
 #include "part_asset_v2.h"
+#include <cmath>
 #include "matter/lod_contract.h"
 #include "version_vector.h"   // M4: the one fold site for cache keys
 #include "bake_mode.h"        // runtime A/B bake modes; salted into the same key
+#include "part_render_policy.h"
 #include "part_bundle.h"      // M4: the one file a part owns
 // The FLAT section IS part_flatten's output, so its identity is part_flatten's
 // business: active_ladder_shape_digest() names the ladder shape this process
@@ -293,8 +295,7 @@ bool write_text_section(const std::string& path, uint64_t resolved_hash,
 }
 }  // namespace
 
-bool save_lod_sidecar(const std::string& path, uint64_t resolved_hash,
-                      const LodVariants& v) {
+static bool encode_lod_sidecar(const LodVariants& v, std::string& text) {
     if (v.budgets.size() != v.hashes.size() || v.hashes.empty()) return false;
     std::ostringstream out;
     out << v.anchor_size << "\n";
@@ -303,8 +304,14 @@ bool save_lod_sidecar(const std::string& path, uint64_t resolved_hash,
         snprintf(hex, sizeof hex, "%016llx", (unsigned long long)v.hashes[i]);
         out << v.budgets[i] << " " << hex << "\n";
     }
-    return write_text_section(path, resolved_hash,
-                              part_bundle::kSectionVariants, out.str());
+    text = out.str();
+    return true;
+}
+
+bool save_lod_sidecar(const std::string& path, uint64_t resolved_hash, const LodVariants& v) {
+    std::string text;
+    return encode_lod_sidecar(v, text) && write_text_section(path, resolved_hash,
+                                                          part_bundle::kSectionVariants, text);
 }
 
 bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
@@ -326,6 +333,25 @@ bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
     return true;
 }
 
+bool load_single_full_lod_policy(const std::string& path, uint64_t resolved_hash) {
+    std::string text;
+    if (!read_text_section(path, resolved_hash, part_bundle::kSectionVariants, text)) return false;
+    std::istringstream input(text);
+    double anchor = 0.0, budget = 0.0; std::string hex, trailing;
+    if (!(input >> anchor >> budget >> hex) || !std::isfinite(anchor) || anchor < 0.0 ||
+        budget != 1.0 || hex.size() != 16 || (input >> trailing)) return false;
+    uint64_t hash = 0;
+    for (char c : hex) {
+        unsigned digit;
+        if (c >= '0' && c <= '9') digit = unsigned(c-'0');
+        else if (c >= 'a' && c <= 'f') digit = unsigned(c-'a'+10);
+        else if (c >= 'A' && c <= 'F') digit = unsigned(c-'A'+10);
+        else return false;
+        hash = (hash << 4) | digit;
+    }
+    return hash == resolved_hash;
+}
+
 // Line format, one per authored level:
 //   <hash16> <mask8> <at> <gen>
 // `at` is the authored switch-in distance in metres, or -1 when the level
@@ -342,8 +368,7 @@ bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
 // with '!' (a level line always begins with a 16-hex hash, so the two grammars
 // never collide), and a plan that carries ONLY this line — an opt-out on a part
 // with no other authored levels — is valid and has zero level records.
-bool save_static_lod_plan(const std::string& path, uint64_t resolved_hash,
-                          const StaticLodPlan& plan) {
+static bool encode_static_lod_plan(const StaticLodPlan& plan, std::string& text) {
     const size_t n = plan.level_hashes.size();
     if (plan.level_exclude_masks.size() != n) return false;
     if (!plan.level_at.empty()  && plan.level_at.size()  != n) return false;
@@ -362,8 +387,14 @@ bool save_static_lod_plan(const std::string& path, uint64_t resolved_hash,
         snprintf(atbuf, sizeof atbuf, "%.17g", at);
         out << hhex << " " << mhex << " " << atbuf << " " << gen << "\n";
     }
-    return write_text_section(path, resolved_hash,
-                              part_bundle::kSectionPlan, out.str());
+    text = out.str();
+    return true;
+}
+
+bool save_static_lod_plan(const std::string& path, uint64_t resolved_hash, const StaticLodPlan& plan) {
+    std::string text;
+    return encode_static_lod_plan(plan, text) && write_text_section(path, resolved_hash,
+                                                                part_bundle::kSectionPlan, text);
 }
 
 bool load_static_lod_plan(const std::string& path, uint64_t resolved_hash,
@@ -576,7 +607,9 @@ static uint64_t flat_identity_salt(uint32_t format_version) {
 static bool write_file_atomic(const std::string& path,
                               uint32_t version,
                               uint64_t resolved_hash,
-                              const std::vector<uint8_t>& body) {
+                              const std::vector<uint8_t>& body,
+                              const matter::PartRenderPolicy* policy = nullptr,
+                              const StaticLeafMetadata* leaf_metadata = nullptr) {
     const uint64_t content_hash = fnv1a64(body.data(), body.size());
     std::vector<uint8_t> payload;
     payload.reserve(40 + body.size());
@@ -591,9 +624,28 @@ static bool write_file_atomic(const std::string& path,
     put<uint64_t>(payload, content_hash);
     payload.insert(payload.end(), body.begin(), body.end());
 
-    if (!part_bundle::write_section(path, resolved_hash,
-                                    bundle_tag_for_format(version),
-                                    payload.data(), payload.size())) {
+    std::vector<uint8_t> policy_bytes;
+    if (policy && !matter::encode_part_render_policy(resolved_hash, *policy, policy_bytes))
+        return false;
+    std::string variants_text, plan_text;
+    if (leaf_metadata) {
+        if (!policy || version != kFormatVersionV2) return false;
+        LodVariants variants;
+        variants.anchor_size = leaf_metadata->anchor_size;
+        variants.budgets = {1.0}; variants.hashes = {resolved_hash};
+        if (!encode_lod_sidecar(variants, variants_text)) return false;
+        if (leaf_metadata->no_impostor) {
+            StaticLodPlan plan; plan.no_impostor = true;
+            if (!encode_static_lod_plan(plan, plan_text)) return false;
+        }
+    }
+    std::vector<part_bundle::SectionUpdate> updates = {
+        {bundle_tag_for_format(version), payload.data(), payload.size()}
+    };
+    if (policy) updates.push_back({part_bundle::kSectionRenderPolicy, policy_bytes.data(), policy_bytes.size()});
+    if (leaf_metadata) updates.push_back({part_bundle::kSectionVariants, variants_text.data(), variants_text.size()});
+    if (!plan_text.empty()) updates.push_back({part_bundle::kSectionPlan, plan_text.data(), plan_text.size()});
+    if (!part_bundle::write_sections(path, resolved_hash, updates.data(), updates.size())) {
         MATTER_LOGE("part",
                      "  save_v2: bundle section write failed for '%s' "
                      "(format %u, hash %016llx)\n",
@@ -766,12 +818,30 @@ static bool copy_array(Reader& r, uint32_t count, std::vector<T>& out) {
     return true;
 }
 
+// Validate serialized arrays in place when only metadata is needed. Serialized
+// elements may be unaligned: callers use memcpy, never typed pointer casts.
+template <class T>
+static const uint8_t* read_common_array(Reader& r, uint32_t count,
+                                       std::vector<T>& out, bool retain) {
+    if (count > static_cast<uint64_t>(r.end - r.p) / sizeof(T)) {
+        r.ok = false;
+        return nullptr;
+    }
+    const uint8_t* data = r.take(static_cast<size_t>(count) * sizeof(T));
+    if (r.ok && retain) {
+        out.resize(count);
+        if (count) std::memcpy(out.data(), data, out.size() * sizeof(T));
+    }
+    return data;
+}
+
 // Syntactic preflight for the common body.  On success r.p is the exact first
 // byte after the LOD block, which is the only valid start of an EMIT/ANLK
 // suffix.  This function has no BLAS/TLAS side effects.
 static bool parse_common_body(Reader& r, ParsedCommonBody& out,
                               PartAssetLoadFailure* failure = nullptr,
-                              std::string* reason = nullptr) {
+                              std::string* reason = nullptr,
+                              bool retain = true, uint32_t* count_out = nullptr) {
     out = {};
 
     // --- Materials (validate against the live registry) ---
@@ -796,7 +866,8 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
     const uint32_t blas_count = r.get<uint32_t>();
     if (!r.ok || blas_count > kMaxPartBlasEntries ||
         blas_count > static_cast<uint64_t>(r.end - r.p) / (5 * sizeof(uint32_t))) return false;
-    out.blas_entries.reserve(blas_count);
+    if (count_out) *count_out = blas_count;
+    if (retain) out.blas_entries.reserve(blas_count);
     for (uint32_t i = 0; i < blas_count; ++i) {
         ParsedBlasEntry entry;
         entry.hash                = r.get<uint32_t>();
@@ -806,15 +877,21 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
         const uint32_t has_triex  = r.get<uint32_t>();
         if (!r.ok || tri_count == 0 || tri_count > static_cast<uint32_t>(INT32_MAX) ||
             nodes_used == 0 || has_triex > 1 ||
-            nodes_used > static_cast<uint64_t>(tri_count) * 2u + 1u ||
-            !copy_array(r, tri_count, entry.triangles) ||
-            (has_triex && !copy_array(r, tri_count, entry.tri_extra)) ||
-            !copy_array(r, nodes_used, entry.nodes) ||
-            !copy_array(r, tri_count, entry.tri_indices)) return false;
-        for (uint tri_index : entry.tri_indices)
+            nodes_used > static_cast<uint64_t>(tri_count) * 2u + 1u) return false;
+        if (!read_common_array(r, tri_count, entry.triangles, retain) ||
+            (has_triex && !read_common_array(r, tri_count, entry.tri_extra, retain)))
+            return false;
+        const uint8_t* nodes = read_common_array(r, nodes_used, entry.nodes, retain);
+        const uint8_t* indices = read_common_array(r, tri_count, entry.tri_indices, retain);
+        if (!r.ok) return false;
+        for (uint32_t j = 0; j < tri_count; ++j) {
+            uint tri_index;
+            std::memcpy(&tri_index, indices + static_cast<size_t>(j) * sizeof(uint), sizeof(uint));
             if (tri_index >= tri_count) return false;
+        }
         for (uint32_t node_index = 0; node_index < nodes_used; ++node_index) {
-            const BVHNode& node = entry.nodes[node_index];
+            BVHNode node;
+            std::memcpy(&node, nodes + static_cast<size_t>(node_index) * sizeof(BVHNode), sizeof(node));
             if (node.triCount != 0) {
                 if (node.leftFirst > tri_count || node.triCount > tri_count - node.leftFirst)
                     return false;
@@ -822,14 +899,14 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
                 return false;
             }
         }
-        out.blas_entries.push_back(std::move(entry));
+        if (retain) out.blas_entries.push_back(std::move(entry));
     }
 
     // --- Internal instances ---
     const uint32_t inst_count = r.get<uint32_t>();
     if (!r.ok || inst_count > kMaxPartInternalInstances ||
         inst_count > static_cast<uint64_t>(r.end - r.p) / (2 * sizeof(uint32_t) + 16 * sizeof(float))) return false;
-    out.instances.reserve(inst_count);
+    if (retain) out.instances.reserve(inst_count);
     for (uint32_t i = 0; i < inst_count; ++i) {
         ParsedDrawInstance instance;
         instance.blas_index = r.get<uint32_t>();
@@ -838,41 +915,41 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
         if (!r.ok) return false;
         if (instance.blas_index >= blas_count) return false;
         std::memcpy(instance.transform.m, tf, 16 * sizeof(float));
-        out.instances.push_back(instance);
+        if (retain) out.instances.push_back(instance);
     }
 
     // --- Child instances (passive — returned to caller) ---
     const uint32_t child_count = r.get<uint32_t>();
     if (!r.ok || child_count > kMaxPartChildren ||
         child_count > static_cast<uint64_t>(r.end - r.p) / (sizeof(uint64_t) + 16 * sizeof(float))) return false;
-    out.children.reserve(child_count);
+    if (retain) out.children.reserve(child_count);
     for (uint32_t i = 0; i < child_count; ++i) {
         ChildInstance ci{};
         ci.child_resolved_hash = r.get<uint64_t>();
         const uint8_t* tf = r.take(16 * sizeof(float));
         if (!r.ok) return false;
         std::memcpy(ci.transform, tf, 16 * sizeof(float));
-        out.children.push_back(ci);
+        if (retain) out.children.push_back(ci);
     }
 
     // --- LOD levels (passive — returned to caller) ---
     const uint32_t level_count = r.get<uint32_t>();
     if (!r.ok || level_count > kMaxPartLodLevels ||
         level_count > static_cast<uint64_t>(r.end - r.p) / (sizeof(float) + sizeof(uint32_t))) return false;
-    out.lods.reserve(level_count);
+    if (retain) out.lods.reserve(level_count);
     for (uint32_t i = 0; i < level_count; ++i) {
         LodLevel lvl;
         lvl.screen_size_threshold = r.get<float>();
         const uint32_t idx_count  = r.get<uint32_t>();
         if (!r.ok || idx_count > static_cast<uint64_t>(r.end - r.p) / sizeof(uint32_t)) return false;
-        lvl.blas_indices.reserve(idx_count);
+        if (retain) lvl.blas_indices.reserve(idx_count);
         for (uint32_t j = 0; j < idx_count; ++j) {
             const uint32_t idx = r.get<uint32_t>();
             if (!r.ok) return false;
             if (idx >= blas_count) return false; // dangling LOD index: regenerate
-            lvl.blas_indices.push_back(idx);
+            if (retain) lvl.blas_indices.push_back(idx);
         }
-        out.lods.push_back(std::move(lvl));
+        if (retain) out.lods.push_back(std::move(lvl));
     }
     return r.ok;
 }
@@ -1136,12 +1213,13 @@ bool save_v2(const std::string& path, const BLASManager& blas,
     return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
 }
 
-bool save_v2(const std::string& path, const BLASManager& blas,
+static bool save_static_v2(const std::string& path, const BLASManager& blas,
              const TLASManager& tlas,
              const ChildInstance* children, size_t child_count,
              const LodLevels& lods,
              const std::vector<VolumeEmitter>& emitters,
-             uint64_t resolved_hash) {
+             uint64_t resolved_hash, const matter::PartRenderPolicy* policy,
+             const StaticLeafMetadata* leaf_metadata = nullptr) {
     std::vector<uint8_t> body;
     std::unordered_map<BLASHandle, uint32_t> h2i;
     if (!append_common_body(body, blas, tlas, children, child_count, lods, h2i))
@@ -1152,7 +1230,27 @@ bool save_v2(const std::string& path, const BLASManager& blas,
         put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
         put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
     }
-    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
+    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body, policy, leaf_metadata);
+}
+
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas, const ChildInstance* children, size_t child_count,
+             const LodLevels& lods, const std::vector<VolumeEmitter>& emitters,
+             uint64_t resolved_hash) {
+    return save_static_v2(path, blas, tlas, children, child_count, lods, emitters,
+                          resolved_hash, nullptr);
+}
+
+bool save_v2_with_render_policy(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas, const ChildInstance* children, size_t child_count,
+             const LodLevels& lods, const std::vector<VolumeEmitter>& emitters,
+             uint64_t resolved_hash, const matter::PartRenderPolicy& policy,
+             const StaticLeafMetadata* leaf_metadata) {
+    if (policy.child_overrides.size() != child_count || (leaf_metadata && child_count)) return false;
+    if (leaf_metadata && (!std::isfinite(leaf_metadata->anchor_size) || leaf_metadata->anchor_size < 0.0))
+        return false;
+    return save_static_v2(path, blas, tlas, children, child_count, lods, emitters,
+                          resolved_hash, &policy, leaf_metadata);
 }
 
 bool save_v2(const std::string& path, const BLASManager& blas,
@@ -1472,6 +1570,82 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
     return write_file_atomic(path, kFormatVersionFlat, resolved_hash, body);
 }
 
+// Shared FLAT grammar. A null cluster output validates and discards clusters.
+// Optional emitter parsing remains owned by the emitter-aware overload below.
+static bool parse_flat_tables(Reader& r, uint32_t blas_count,
+                              std::vector<FlatCluster>* clusters_out,
+                              std::vector<FlatInstanceRef>& instance_refs_out) {
+    // --- Cluster table ---
+    const uint32_t cluster_count = r.get<uint32_t>();
+    if (!r.ok || cluster_count > static_cast<uint64_t>(r.end - r.p) / 32u) return false;
+    if (clusters_out) clusters_out->reserve(cluster_count);
+    for (uint32_t ci = 0; ci < cluster_count; ++ci) {
+        FlatCluster fc;
+        const uint8_t* amin = r.take(3 * sizeof(float));
+        const uint8_t* amax = r.take(3 * sizeof(float));
+        if (!r.ok) return false;
+        std::memcpy(fc.aabb_min, amin, 3 * sizeof(float));
+        std::memcpy(fc.aabb_max, amax, 3 * sizeof(float));
+        fc.segment = r.get<uint32_t>();                        // v6: segment tag
+        const uint32_t level_count = r.get<uint32_t>();
+        if (!r.ok) return false;
+        if (level_count > matter::kMaxSerializedLodLevels) return false;
+        if (clusters_out) fc.lods.reserve(level_count);
+        for (uint32_t li = 0; li < level_count; ++li) {
+            LodLevel lvl;
+            lvl.screen_size_threshold = r.get<float>();
+            const uint32_t idx_count = r.get<uint32_t>();
+            if (!r.ok || idx_count > static_cast<uint64_t>(r.end - r.p) / sizeof(uint32_t)) return false;
+            if (clusters_out) lvl.blas_indices.reserve(idx_count);
+            for (uint32_t j = 0; j < idx_count; ++j) {
+                const uint32_t idx = r.get<uint32_t>();
+                if (!r.ok) return false;
+                if (idx >= blas_count) return false; // dangling cluster LOD index
+                if (clusters_out) lvl.blas_indices.push_back(idx);
+            }
+            if (clusters_out) fc.lods.push_back(std::move(lvl));
+        }
+        if (clusters_out) clusters_out->push_back(std::move(fc));
+    }
+    if (!r.ok) return false;
+
+    // --- Instance refs trailer (v6) ---
+    // Every valid v6 flat has this trailer, even if empty. If the reader hits
+    // EOF before we can read the ref_count, the artifact is malformed.
+    const uint32_t ref_count = r.get<uint32_t>();
+    constexpr size_t ref_bytes = sizeof(uint64_t) + 17 * sizeof(float);
+    if (!r.ok || ref_count > static_cast<uint64_t>(r.end - r.p) / ref_bytes) return false;
+    instance_refs_out.reserve(ref_count);
+    for (uint32_t i = 0; i < ref_count; ++i) {
+        FlatInstanceRef ref{};
+        ref.child_resolved_hash = r.get<uint64_t>();
+        const uint8_t* tf = r.take(16 * sizeof(float));
+        if (!r.ok) return false;
+        std::memcpy(ref.transform, tf, 16 * sizeof(float));
+        ref.inline_cutover = r.get<float>();                   // v6: inline cutover (_pad not serialized)
+        instance_refs_out.push_back(ref);
+    }
+    return r.ok;
+}
+
+bool load_flat_instance_refs(const std::string& path, uint64_t expected_resolved_hash,
+                             std::vector<FlatInstanceRef>& instance_refs_out) {
+    std::vector<uint8_t> buf;
+    if (!read_artifact_section(path, expected_resolved_hash, kFormatVersionFlat, buf) ||
+        buf.size() < 40) return false;
+    Reader r{buf.data(), buf.data() + buf.size()};
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionFlat, content_hash) ||
+        fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash) return false;
+    ParsedCommonBody discarded;
+    uint32_t blas_count = 0;
+    if (!parse_common_body(r, discarded, nullptr, nullptr, false, &blas_count)) return false;
+    std::vector<FlatInstanceRef> refs;
+    if (!parse_flat_tables(r, blas_count, nullptr, refs)) return false;
+    instance_refs_out = std::move(refs);
+    return true;
+}
+
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out,
@@ -1498,56 +1672,7 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
 
     const uint32_t blas_count = static_cast<uint32_t>(blas.get_entries().size());
 
-    // --- Cluster table ---
-    const uint32_t cluster_count = r.get<uint32_t>();
-    if (!r.ok) return false;
-    clusters_out.reserve(cluster_count);
-    for (uint32_t ci = 0; ci < cluster_count; ++ci) {
-        FlatCluster fc;
-        const uint8_t* amin = r.take(3 * sizeof(float));
-        const uint8_t* amax = r.take(3 * sizeof(float));
-        if (!r.ok) return false;
-        std::memcpy(fc.aabb_min, amin, 3 * sizeof(float));
-        std::memcpy(fc.aabb_max, amax, 3 * sizeof(float));
-        fc.segment = r.get<uint32_t>();                        // v6: segment tag
-        const uint32_t level_count = r.get<uint32_t>();
-        if (!r.ok) return false;
-        if (level_count > matter::kMaxSerializedLodLevels) return false;
-        fc.lods.reserve(level_count);
-        for (uint32_t li = 0; li < level_count; ++li) {
-            LodLevel lvl;
-            lvl.screen_size_threshold = r.get<float>();
-            const uint32_t idx_count = r.get<uint32_t>();
-            if (!r.ok) return false;
-            lvl.blas_indices.reserve(idx_count);
-            for (uint32_t j = 0; j < idx_count; ++j) {
-                const uint32_t idx = r.get<uint32_t>();
-                if (!r.ok) return false;
-                if (idx >= blas_count) return false; // dangling cluster LOD index
-                lvl.blas_indices.push_back(idx);
-            }
-            fc.lods.push_back(std::move(lvl));
-        }
-        clusters_out.push_back(std::move(fc));
-    }
-    if (!r.ok) return false;
-
-    // --- Instance refs trailer (v6) ---
-    // Every valid v6 flat has this trailer, even if empty. If the reader hits
-    // EOF before we can read the ref_count, the artifact is malformed.
-    const uint32_t ref_count = r.get<uint32_t>();
-    if (!r.ok) return false;
-    instance_refs_out.reserve(ref_count);
-    for (uint32_t i = 0; i < ref_count; ++i) {
-        FlatInstanceRef ref{};
-        ref.child_resolved_hash = r.get<uint64_t>();
-        const uint8_t* tf = r.take(16 * sizeof(float));
-        if (!r.ok) return false;
-        std::memcpy(ref.transform, tf, 16 * sizeof(float));
-        ref.inline_cutover = r.get<float>();                   // v6: inline cutover (_pad not serialized)
-        instance_refs_out.push_back(ref);
-    }
-    return r.ok;
+    return parse_flat_tables(r, blas_count, &clusters_out, instance_refs_out);
 }
 
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
@@ -1586,52 +1711,7 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
 
     const uint32_t blas_count = static_cast<uint32_t>(blas.get_entries().size());
 
-    const uint32_t cluster_count = r.get<uint32_t>();
-    if (!r.ok) return false;
-    clusters_out.reserve(cluster_count);
-    for (uint32_t ci = 0; ci < cluster_count; ++ci) {
-        FlatCluster fc;
-        const uint8_t* amin = r.take(3 * sizeof(float));
-        const uint8_t* amax = r.take(3 * sizeof(float));
-        if (!r.ok) return false;
-        std::memcpy(fc.aabb_min, amin, 3 * sizeof(float));
-        std::memcpy(fc.aabb_max, amax, 3 * sizeof(float));
-        fc.segment = r.get<uint32_t>();
-        const uint32_t level_count = r.get<uint32_t>();
-        if (!r.ok) return false;
-        if (level_count > matter::kMaxSerializedLodLevels) return false;
-        fc.lods.reserve(level_count);
-        for (uint32_t li = 0; li < level_count; ++li) {
-            LodLevel lvl;
-            lvl.screen_size_threshold = r.get<float>();
-            const uint32_t idx_count = r.get<uint32_t>();
-            if (!r.ok) return false;
-            lvl.blas_indices.reserve(idx_count);
-            for (uint32_t j = 0; j < idx_count; ++j) {
-                const uint32_t idx = r.get<uint32_t>();
-                if (!r.ok) return false;
-                if (idx >= blas_count) return false;
-                lvl.blas_indices.push_back(idx);
-            }
-            fc.lods.push_back(std::move(lvl));
-        }
-        clusters_out.push_back(std::move(fc));
-    }
-    if (!r.ok) return false;
-
-    const uint32_t ref_count = r.get<uint32_t>();
-    if (!r.ok) return false;
-    instance_refs_out.reserve(ref_count);
-    for (uint32_t i = 0; i < ref_count; ++i) {
-        FlatInstanceRef ref{};
-        ref.child_resolved_hash = r.get<uint64_t>();
-        const uint8_t* tf = r.take(16 * sizeof(float));
-        if (!r.ok) return false;
-        std::memcpy(ref.transform, tf, 16 * sizeof(float));
-        ref.inline_cutover = r.get<float>();
-        instance_refs_out.push_back(ref);
-    }
-    if (!r.ok) return false;
+    if (!parse_flat_tables(r, blas_count, &clusters_out, instance_refs_out)) return false;
 
     // Probe for the optional EMIT trailer (EOF-tolerant).
     if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {

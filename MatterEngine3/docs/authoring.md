@@ -33,6 +33,25 @@ class Tree extends Part {
 - `simplify(keepRatio)` optionally QEM-decimates the baked result (Tree uses 0.3).
 - Children bake independently; the parent only records placements.
 
+### Attributed structural surfaces
+
+Inside a triangle, strip or fan shape, use
+`surfaceVertex(x, y, z, nx, ny, nz, u, v)` to preserve an authored shading
+normal and source UV at each corner. Coordinates and normals are part-local;
+the shape's captured transform applies to positions and its inverse transpose
+applies to normals. UVs are preserved verbatim (the castle kit uses metres).
+Nonfinite values, zero normals and polygon-session use are rejected. Ordinary
+`vertex()` retains geometric face normals and zero source UVs. Subsequent chart
+generation writes chart UVs for runtime VT; source UVs are not automatically a
+second runtime texture channel.
+
+The castle surface kit authors physical dimensions and only places parts with
+translation and proper rotation. Longer spans reuse 1/2/4 m stock instances;
+an explicitly cut endpoint fills any remainder. Instance scaling, shear and
+reflections are rejected by the kit. See
+[`castle-fast-bake-roadmap.md`](../../docs/designs/castle-fast-bake-roadmap.md)
+for the source/surface/collision separation and measured bake targets.
+
 ## Worlds
 
 `WorldData/<name>/world.manifest` lists root modules (Terrain, Tree, Grass, …). Scatter

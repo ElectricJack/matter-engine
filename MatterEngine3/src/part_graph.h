@@ -390,6 +390,7 @@ private:
     // only trusts these when last_baked_hash_ == the part it's asked about.
     std::vector<std::string> last_child_modules_placed_;
     uint64_t last_baked_hash_ = 0;
+    uint64_t last_leaf_metadata_hash_ = 0;
 };
 
 } // namespace part_graph

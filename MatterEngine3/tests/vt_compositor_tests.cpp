@@ -2,7 +2,7 @@
 // compositor (render/vt_compositor.*, shaders_vk/vt_composite.comp,
 // shaders_vk/vt_bc_encode.comp).
 //
-// Device bootstrap follows vulkan_smoke_tests.cpp: hidden GLFW window +
+// Device bootstrap follows vulkan_smoke_tests.cpp: visible GLFW window +
 // matter::VulkanDevice with validation layers; the run requires ZERO
 // validation errors. Everything else is deliberately minimal — the compositor
 // is standalone by contract, so this exe links only the device layer
@@ -29,7 +29,7 @@
 //       ids + blend; tape fills are deterministic;
 //   (i) adversarial chart orientations — downward/-X/-Z/mirrored/inverted
 //       chart frames: the BC5 normal, round-tripped through the runtime
-//       decoder's exact rotation (tileset_rotate_normal around the geometric
+//       decoder's shared local frame (vt_normal_frame around the geometric
 //       normal), must reproduce the analytic shading normal for every
 //       orientation (regression for the chart-frame/decoder-frame mismatch
 //       that blacked out slopes on StreamMountain);
@@ -236,23 +236,20 @@ void ref_wang_sample(const SynthTileset& ts, int ch, float px, float py,
     ref_bilinear(ts, ch, layer, std::min(lod, kTileMips - 1), u, v, out);
 }
 
-// CPU mirror of tileset_common.glsl's tileset_rotate_normal(): the frame the
-// runtime decoders (gbuffer.frag VT branch, rt_surface_common.glsl) rebuild
-// around the geometric normal, and therefore the frame the compositor MUST
-// encode in. t = +X projected off n, b = n x t; degenerate near n ~ +-X
-// falls back to the raw geometric normal.
+// CPU reference for the shared object-local chart normal frame.
+V3 ref_frame_tangent(V3 n) {
+    const V3 axis = std::fabs(n.x) > .999f ? v3(0, 0, 1) : v3(1, 0, 0);
+    return norm3(add(axis, mul(n, -dot3(axis, n))));
+}
 V3 ref_rotate_normal(V3 nts, V3 n) {
-    V3 t = add(v3(1, 0, 0), mul(n, -n.x));
-    const float l2 = dot3(t, t);
-    if (l2 < 1e-6f) return n;
-    t = mul(t, 1.0f / std::sqrt(l2));
+    const V3 t = ref_frame_tangent(n);
     const V3 b = norm3(cross3(n, t));
     return norm3(add(add(mul(t, nts.x), mul(b, nts.y)), mul(n, nts.z)));
 }
 
 // Full reference composite of one surface point: triplanar |n|^4, detail
 // normal accumulation, geometric-normal tangent-frame encode. Mirrors
-// vt_composite.comp (which in turn mirrors tileset_rotate_normal's frame so
+// vt_composite.comp (which uses the shared local frame so
 // the encode/decode round trip is lossless).
 struct RefResult {
     float albedo[3];
@@ -288,15 +285,11 @@ RefResult ref_composite_point(const SynthTileset& ts, V3 pos, V3 nrm,
     }
     V3 nl = norm3(add(nrm, dn));
     float tsn[3] = {0.0f, 0.0f, 1.0f};
-    V3 t = add(v3(1, 0, 0), mul(nrm, -nrm.x));
-    const float t_len2 = dot3(t, t);
-    if (t_len2 >= 1e-6f) {
-        t = mul(t, 1.0f / std::sqrt(t_len2));
-        const V3 b = norm3(cross3(nrm, t));
-        tsn[0] = dot3(nl, t);
-        tsn[1] = dot3(nl, b);
-        tsn[2] = dot3(nl, nrm);
-    }
+    const V3 t = ref_frame_tangent(nrm);
+    const V3 b = norm3(cross3(nrm, t));
+    tsn[0] = dot3(nl, t);
+    tsn[1] = dot3(nl, b);
+    tsn[2] = dot3(nl, nrm);
     if (tsn[2] < 0.05f) {
         tsn[2] = 0.05f;
         const float l = std::sqrt(tsn[0] * tsn[0] + tsn[1] * tsn[1] +
@@ -997,10 +990,10 @@ int main() {
         return 1;
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     GLFWwindow* window =
         glfwCreateWindow(320, 200, "vt-compositor", nullptr, nullptr);
-    CHECK(window != nullptr, "create hidden GLFW window");
+    CHECK(window != nullptr, "create visible GLFW window");
     std::string err;
     auto vulkan =
         window ? matter::VulkanDevice::create(window, true, err) : nullptr;
@@ -1511,7 +1504,7 @@ int main() {
             // Regression for the StreamMountain "black slopes" defect: the
             // compositor used to encode the shading normal in the CHART
             // plane's T/B/N frame while the runtime decoders rotate it around
-            // the per-pixel GEOMETRIC normal (tileset_rotate_normal). The
+            // the per-pixel OBJECT-local geometric normal (vt_normal_frame). The
             // frames only agree when the chart plane normal equals the vertex
             // normal AND the chart tangent equals the decoder's X-projection
             // — true of the friendly fixtures above, never of real terrain
@@ -1520,7 +1513,7 @@ int main() {
             // here fills a page and round-trips the stored normal through the
             // decoder's exact math; the decoded shading normal must match the
             // analytic reference for EVERY chart orientation, including
-            // downward-facing, decode-degenerate +-X, mirrored plane_basis
+            // downward-facing, stable fallback +-X, mirrored plane_basis
             // tangents, and a chart frame inverted relative to the vertex
             // normal.
             {
@@ -1536,7 +1529,7 @@ int main() {
                     {"-Y downward (plane_basis frame)",
                      v3(1, 0, 0), v3(0, 0, 1), v3(0, -1, 0),
                      v3(1, 0, 0), v3(0, 0, 1), 10, 0x2001},
-                    {"-X decode-degenerate axis",
+                    {"-X stable fallback axis",
                      v3(0, -1, 0), v3(0, 0, 1), v3(-1, 0, 0),
                      v3(0, -1, 0), v3(0, 0, 1), 11, 0x2002},
                     {"-Z (plane_basis frame)",
@@ -1571,14 +1564,6 @@ int main() {
                     std::vector<uint8_t> normal_rg;
                     decode_page_bc5(p.normal, normal_rg);
 
-                    // Is this the decoder's degenerate (+-X) orientation? The
-                    // decoder then ignores the stored texel and returns the
-                    // geometric normal; the encoder must have written the
-                    // matching identity so nothing depended on the texel.
-                    V3 t_probe =
-                        add(v3(1, 0, 0), mul(oc.normal, -oc.normal.x));
-                    const bool degenerate = dot3(t_probe, t_probe) < 1e-6f;
-
                     float min_cos = 1.0f, max_alb_err = 0.0f;
                     for (uint32_t py = 12; py < kPageStore - 12; py += 5) {
                         for (uint32_t px = 12; px < kPageStore - 12; px += 5) {
@@ -1607,7 +1592,7 @@ int main() {
                             const V3 decoded = ref_rotate_normal(
                                 v3(x, y, std::sqrt(z2)), oc.normal);
                             const V3 expected =
-                                degenerate ? oc.normal : ref.n_local;
+                                ref.n_local;
                             min_cos = std::min(min_cos,
                                                dot3(decoded, expected));
                         }

@@ -842,7 +842,14 @@ const auto s_gpu = matter::props::group<GpuPrefs>(
         .env("MATTER_DLSS_MODE")
         .doc("Native renders at output resolution; the upscaling modes render "
              "smaller and reconstruct. Watch dlss internal/output in the HUD "
-             "to see it land."));
+             "to see it land."),
+    prop(&GpuPrefs::frame_limit, "frame_limit")
+        .label("Frame rate limit (0 = unlimited)")
+        .range(0, 360)
+        .env("MATTER_FRAME_LIMIT")
+        .doc("Pace frames before input sampling. Choose a rate the scene can "
+             "sustain with some GPU headroom. Does not lower rendering quality "
+             "or change VSync; zero disables the limit."));
 
 const auto s_gi = matter::props::group<GiPrefs>(
     "render.gi", "Ray-Traced GI",
@@ -851,10 +858,24 @@ const auto s_gi = matter::props::group<GiPrefs>(
         .doc("Enables diffuse GI, reflections and transmission. Traced local "
              "direct lighting remains active when this is off."),
     prop(&GiPrefs::diffuse_multiplier, "diffuse_multiplier")
-        .label("Diffuse multiplier")
+        .label("Diffuse bounce strength")
         .range(0.0f, 4.0f)
-        .doc("Scales only diffuse indirect radiance; zero leaves local direct "
-             "lighting visible for A/B validation."));
+        .doc("Scales diffuse indirect lighting. Zero skips diffuse bounce rays "
+             "while retaining traced reflections, glass and direct shadows. "
+             "Other values change brightness, not the amount of ray work."),
+    prop(&GiPrefs::trace_scale, "trace_scale")
+        .label("Diffuse GI resolution scale")
+        .range(0.125f, 1.0f)
+        .doc("Resolution of soft diffuse bounce lighting only. 0.125 traces "
+             "one eighth of the width and height. Guided reconstruction "
+             "applies that lighting to full-resolution material detail. "
+             "Reflections, glass and direct shadows keep their own resolution."),
+    prop(&GiPrefs::reflection_trace_scale, "reflection_trace_scale")
+        .label("Reflections and glass resolution scale")
+        .range(0.125f, 1.0f)
+        .doc("Resolution of traced reflections and refraction, independent "
+             "of diffuse GI. Keep at 1 for sharp glass and reflected detail. "
+             "Reducing this can lose thin geometry and sharp highlights."));
 // ---------------------------------------------------------------------------
 // One-shot world-file migration: render.volumetrics' fog multipliers
 // (issue 80c66789)

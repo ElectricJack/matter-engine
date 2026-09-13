@@ -1,0 +1,8 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+
+#define MATTER_PRIMARY_LIGHT_CULLING 1
+#define MATTER_PRIMARY_LIGHT_AUDIT 1
+#define MATTER_RT_PRIMARY_ONLY 1
+#include "rt_lighting_impl.glsl"

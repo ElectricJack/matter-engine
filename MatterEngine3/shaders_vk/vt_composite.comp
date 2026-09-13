@@ -30,7 +30,7 @@
 //      id, secondary id, blend) to the intermediate storage images;
 //      vt_bc_encode.comp compresses them afterwards. The normal is encoded
 //      relative to the interpolated geometric normal in the exact frame
-//      tileset_rotate_normal() rebuilds at decode time (NOT the chart
+//      vt_normal_frame() rebuilds locally at decode time (NOT the chart
 //      plane's frame — see the encode step below).
 //
 // DETERMINISM: no time, no random, fixed iteration orders, ties broken by
@@ -40,6 +40,7 @@
 
 #include "wang_common.glsl"
 #include "vt_chart_types.glsl"
+#include "vt_normal_frame.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -385,33 +386,10 @@ void main() {
         vt_apply_appearance(req.app, g_tape_regs, albedo, orm);
     }
 
-    // ---- final normal, encoded relative to the interpolated GEOMETRIC
-    // normal — in EXACTLY the frame tileset_rotate_normal() reconstructs
-    // (t = +X projected off n, b = n x t; tileset_common.glsl). Both
-    // consumers (gbuffer.frag's VT branch and rt_surface_common.glsl) decode
-    // by rotating around the per-pixel / per-hit geometric normal, which
-    // interpolates the same vertex normals this pass interpolates, so the
-    // round trip is lossless. Encoding against any other frame (the chart
-    // plane's T/B/N, as this pass originally did) skews the decoded shading
-    // normal by however far the chart plane tilts from the local surface —
-    // up to the segmentation cone, or ~180 degrees for inverted chart
-    // normals — which blacked out whole charts on real terrain.
+    // Encode against the interpolated OBJECT-local normal. Consumers decode
+    // with this same frame before applying the instance normal matrix.
     vec3 n_local = normalize(nrm + dn);
-    vec3 ts;
-    vec3 t_axis = vec3(1.0, 0.0, 0.0) - nrm * nrm.x;
-    float t_len2 = dot(t_axis, t_axis);
-    if (t_len2 < 1e-6) {
-        // Geometric normal ~ +-X: the decoder falls back to the raw
-        // geometric normal here, so encode the matching identity (the
-        // detail perturbation is dropped for this orientation on both
-        // sides — consistent, and vanishingly rare on charts).
-        ts = vec3(0.0, 0.0, 1.0);
-    } else {
-        t_axis *= inversesqrt(t_len2);
-        vec3 b_axis = normalize(cross(nrm, t_axis));
-        ts = vec3(dot(n_local, t_axis), dot(n_local, b_axis),
-                  dot(n_local, nrm));
-    }
+    vec3 ts = vt_frame_encode(n_local, nrm);
     // The runtime reconstructs z = sqrt(1 - x^2 - y^2); keep z positive so
     // the BC5 pair stays decodable (n_local = nrm + a bounded detail delta,
     // so z >= 0 is the overwhelming case anyway).

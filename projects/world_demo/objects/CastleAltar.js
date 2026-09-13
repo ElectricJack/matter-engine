@@ -6,7 +6,7 @@ import { emitFurnishing, furnishingChildren, FURNISHING_DEFAULTS } from 'shared-
 class CastleAltar extends Part {
   static lodBudgets = [1];
   static noImpostor = true;
-  static params = { ...FURNISHING_DEFAULTS.altar };
+  static params = { surfaceMembers: 0, ...FURNISHING_DEFAULTS.altar };
   static requires(p) { return furnishingChildren('altar', p); }
   build(p) { emitFurnishing(this, 'altar', p); }
 }

@@ -905,7 +905,7 @@ RESOLVECACHE_C      = $(MSL)/material_registry.c
 MODAPPLY_TARGET = build/modifier_apply_tests
 MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
                ../src/retopo_blacklist.cpp \
-               $(MSL)/mesh_smooth.cpp $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp
+               $(MSL)/mesh_smooth.cpp $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp $(MSL)/mesh_transform.cpp
 
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
 TERRAINFIELD_TARGET = build/terrain_field_tests
@@ -1434,7 +1434,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
-              ../src/provider/local_provider.cpp \
+              ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/tileset_phase.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
@@ -1488,7 +1488,7 @@ GPU_RENDER_CPP = \
     ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
     ../src/render/world_state.cpp \
-    ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
+    ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
     ../src/event/event_hub.cpp \
     ../src/event/subscription.cpp \

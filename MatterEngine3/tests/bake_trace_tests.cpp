@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <thread>
 
 #include "bake_trace.h"
@@ -317,8 +318,40 @@ static void test_overhead() {
     CHECK(noop_ms < 50.0, "overhead: 10k no-op spans under 50 ms");
 }
 
+static void test_json_export() {
+    Span root;
+    root.name = "root";
+    root.begin_ms = 0;
+    root.end_ms = 1.125;
+    root.counters = {{"duplicate", 1.2345678901234567},
+                     {"duplicate", std::numeric_limits<double>::infinity()}};
+    Span child;
+    child.name = "quote\" slash\\ newline\n";
+    child.begin_ms = .125;
+    root.children.push_back(child);
+    const std::string json = bake_trace::snapshot_json(root);
+    CHECK(json == bake_trace::snapshot_json(root), "JSON: deterministic snapshot encoding");
+    CHECK(json.find("\"time_unit\":\"ms\"") != std::string::npos,
+          "JSON: explicit millisecond units");
+    CHECK(json.find("\"duration_ms\":1.125") != std::string::npos,
+          "JSON: exact fractional duration");
+    CHECK(json.find("1.2345678901234567") != std::string::npos,
+          "JSON: preserves double precision counters");
+    CHECK(json.find("\"value\":null") != std::string::npos,
+          "JSON: nonfinite counter is valid null");
+    CHECK(json.find("\"end_ms\":null,\"duration_ms\":null,\"open\":true") != std::string::npos,
+          "JSON: open spans remain explicit");
+    CHECK(json.find("quote\\\" slash\\\\ newline\\u000a") != std::string::npos,
+          "JSON: quotes, backslashes and control characters escaped");
+    std::string error;
+    CHECK(!bake_trace::write_snapshot_json(root, "relative-trace.json", error) &&
+              error.find("absolute output path") != std::string::npos,
+          "JSON: rejects relative output with clear diagnostic");
+}
+
 int main() {
     printf("bake_trace tests\n");
+    test_json_export();
     test_nesting();
     test_counters();
     test_snapshot_open_spans();

@@ -26,9 +26,9 @@ matter_read_manifest(
 list(FILTER matter_engine_viewer_sources
     INCLUDE REGEX "^MatterEngine3/src/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 20)
+if(NOT matter_engine_viewer_source_count EQUAL 22)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 20 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 22 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -51,9 +51,9 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 181)
+    set(matter_expected_viewer_product_count 188)
 else()
-    set(matter_expected_viewer_product_count 180)
+    set(matter_expected_viewer_product_count 187)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
@@ -78,8 +78,12 @@ target_compile_definitions(matter_engine_viewer_objects PRIVATE
     MATTER_HAVE_SCRIPT_HOST
     MATTER_VULKAN_VIEWER
     MATTER_VULKAN_ONLY
-    MATTER_HAVE_STREAMLINE=0
+    MATTER_HAVE_STREAMLINE=${matter_streamline_enabled}
 )
+if(MATTER_ENABLE_STREAMLINE)
+    target_include_directories(matter_engine_viewer_objects SYSTEM PRIVATE
+        "${MATTER_STREAMLINE_ROOT}/include")
+endif()
 if(MATTER_ENABLE_PHYSX)
     target_compile_definitions(matter_engine_viewer_objects PRIVATE
         MATTER_ENABLE_PHYSX)
@@ -165,6 +169,10 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/lod_trace.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp
+        MatterEngine3/src/render/gpu_meshing/gpu_solid_mesher_common.cpp
+        MatterEngine3/src/render/gpu_meshing/gpu_solid_mesher_vk.cpp
+        MatterEngine3/src/render/gpu_meshing/solid_face_projection_common.cpp
+        MatterEngine3/src/render/gpu_meshing/gpu_solid_face_projector_vk.cpp
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp
         MatterEngine3/src/render/water_field_vk.cpp
         MatterEngine3/src/render/water_field_vk_resources.cpp
@@ -177,6 +185,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/hydrology/water_mesh_animation_artifact.cpp
         MatterEngine3/src/hydrology/water_visual_products.cpp
         MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp
+        MatterEngine3/tests/gpu_solid_mesher_tests.cpp
         libs/MatterSurfaceLib/src/surface.c
         libs/MatterSurfaceLib/src/fat_primitive.c
         libs/MatterSurfaceLib/src/material_registry.c
@@ -209,6 +218,62 @@ if(BUILD_TESTING)
     matter_apply_project_defaults(matter_vulkan_smoke_objects)
     matter_apply_test_assertion_policy(matter_vulkan_smoke_objects)
     add_dependencies(matter_vulkan_smoke_objects matter_embedded_spirv)
+
+    # Integration gate uses the production viewer object graph, including
+    # QuickJS, part persistence and the renderer-owned solid source service.
+    add_executable(solid_source_host_tests
+        MatterEngine3/tests/solid_source_host_tests.cpp)
+    matter_engine_include_directories(solid_source_host_tests PRIVATE)
+    target_include_directories(solid_source_host_tests BEFORE PRIVATE
+        "${CMAKE_BINARY_DIR}/MatterEngine3"
+        "${matter_vulkan_include}"
+        "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include")
+    target_compile_definitions(solid_source_host_tests PRIVATE
+        PLATFORM_DESKTOP NOMINMAX MATTER_HAVE_SCRIPT_HOST MATTER_VULKAN_VIEWER
+        MATTER_VULKAN_ONLY MATTER_HAVE_STREAMLINE=0 VK_USE_PLATFORM_WIN32_KHR
+        "MATTER_VK_TEST_LAYER_PATH=\"${matter_vulkan_runtime}\"")
+    target_link_libraries(solid_source_host_tests PRIVATE
+        matter_engine_viewer_objects
+        gdi32 winmm user32 shell32 ws2_32 dbghelp)
+    matter_apply_project_defaults(solid_source_host_tests)
+    matter_apply_test_assertion_policy(solid_source_host_tests)
+    add_dependencies(solid_source_host_tests matter_embedded_spirv)
+    if(MATTER_ENABLE_PHYSX)
+        matter_stage_physx_runtime(solid_source_host_tests)
+    endif()
+    add_custom_target(castle_fast_bake_viewer_tools DEPENDS
+        matter_editor solid_source_host_tests)
+    add_executable(solid_face_projection_gpu_tests
+        MatterEngine3/tests/solid_face_projection_gpu_tests.cpp)
+    matter_engine_include_directories(solid_face_projection_gpu_tests PRIVATE)
+    target_include_directories(solid_face_projection_gpu_tests BEFORE PRIVATE
+        "${CMAKE_BINARY_DIR}/MatterEngine3" "${matter_vulkan_include}"
+        "${CMAKE_SOURCE_DIR}/third_party/glfw/include")
+    target_compile_definitions(solid_face_projection_gpu_tests PRIVATE
+        PLATFORM_DESKTOP NOMINMAX MATTER_HAVE_SCRIPT_HOST MATTER_VULKAN_VIEWER
+        MATTER_VULKAN_ONLY MATTER_HAVE_STREAMLINE=0 VK_USE_PLATFORM_WIN32_KHR
+        "MATTER_VK_TEST_LAYER_PATH=\"${matter_vulkan_runtime}\"")
+    target_link_libraries(solid_face_projection_gpu_tests PRIVATE
+        matter_engine_viewer_objects gdi32 winmm user32 shell32 ws2_32 dbghelp)
+    matter_apply_project_defaults(solid_face_projection_gpu_tests)
+    matter_apply_test_assertion_policy(solid_face_projection_gpu_tests)
+    add_dependencies(solid_face_projection_gpu_tests matter_embedded_spirv)
+    if(MATTER_ENABLE_PHYSX)
+        matter_stage_physx_runtime(solid_face_projection_gpu_tests)
+    endif()
+    add_custom_target(castle_surface_parallax_checks DEPENDS
+        matter_editor material_registry_tests world_definition_tests vulkan_smoke_tests)
+
+    add_custom_target(castle_cached_startup_checks DEPENDS
+        matter_editor partstore_tests resolve_cache_tests bake_trace_tests
+        authored_world_cache_tests authored_world_provider_cache_tests
+        part_asset_v2_tests part_asset_flat_refs_tests)
+
+    add_custom_target(castle_startup_diagnostics DEPENDS
+        matter_editor world_definition_tests bake_trace_tests partstore_tests
+        solid_source_evaluation_tests solid_face_projection_tests
+        brick_bond_atlas_tests brick_bond_detail_tests castle_singleton_tests solid_face_projection_gpu_tests script_host_tests vt_compositor_tests
+        vulkan_smoke_tests)
 
     add_executable(vulkan_smoke_tests
         MatterEngine3/tests/vulkan_smoke_tests.cpp

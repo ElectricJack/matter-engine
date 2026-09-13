@@ -56,6 +56,8 @@ void main() {
     // smooth refraction path is deterministic and spatial filtering it would
     // break the byte-compatibility gate for existing glass).
     bool localDirect = pc.signalMode == 3u;
+    bool reducedDiffuse = pc.signalMode == 0u &&
+        any(notEqual(textureSize(reactivityTex, 0), ivec2(pc.extent)));
     bool secondary = pc.signalMode == 1u || pc.signalMode == 2u;
     if (pc.signalMode > 3u ||
         (pc.signalMode == 0u && pc.kernelRadius != 2u) ||
@@ -98,7 +100,8 @@ void main() {
             // impostor's edge even when both share a material, which is the
             // behaviour this compare wants anyway.
             if (identity.x != centerIdentity.x ||
-                (localDirect && identity.y != centerIdentity.y)) continue;
+                ((localDirect || reducedDiffuse) &&
+                 identity.y != centerIdentity.y)) continue;
             vec3 signal = texelFetch(signalTex, q, 0).rgb;
             float depth = texelFetch(depthTex, q, 0).r;
             vec3 normal = texelFetch(normalTex, q, 0).xyz;

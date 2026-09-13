@@ -46,6 +46,31 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [Castle frame pacing](frame-pacing-2026-09-12.md) records acquisition stalls,
+  Remote Desktop limits, presentation comparisons, the live FPS limiter and
+  CPU interval diagnostics.
+- [Primary light culling](primary-light-culling-2026-09-12.md) records conservative
+  receiver masks, shader isolation, rejection audits and visible comparisons.
+- [Lighting quality, adaptive shadows and pass costs](lighting-quality-and-adaptive-shadows-2026-09-12.md)
+  records output-aware material sampling, optional adaptive primary shadows,
+  profiling timers, and the descriptor-layout regression investigation.
+- [DLSS build and remaining optimizations](dlss-build-and-next-optimizations-2026-09-12.md)
+  documents the native Streamline build, staged runtime, visible comparison
+  and next performance priorities.
+- [GI reconstruction and independent reflection resolution](gi-reconstruction-2026-09-12.md)
+
+- [GI quality options](gi-quality-options-2026-09-12.md)
+  compares full GI, reduced indirect resolution, diffuse-off and direct-only
+  lighting, including measured cost and glass/reflection tradeoffs.
+- [RT lighting roadmap status](rt-lighting-roadmap-status-2026-09-12.md)
+  compares all eight original optimization items with current code and
+  acceptance evidence, and orders the remaining implementation work.
+- [RT lighting implementation and measurements](rt-lighting-implementation-2026-09-12.md)
+  records the first optimization milestone, visible benchmark methodology,
+  raw per-pass timing, and the limits of weighted secondary light sampling.
+- [RT, GI, and lighting performance review](rt-gi-lighting-performance-review-2026-09-11.md)
+  audits the castle worktree's renderer, distinguishes measured costs from
+  shader-cost hypotheses, and ranks proposed lighting optimizations.
 - [Water-field interpolation at mesh edges](findings/water-field-fringe-interpolation-2026-08-30.md)
   records the bounded wet-neighbor fix and its remaining visual limits.
 - [River character integration acceptance](findings/river-character-controller-integration-acceptance-2026-08-30.md)
