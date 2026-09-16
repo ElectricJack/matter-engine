@@ -1,0 +1,18 @@
+module AlpineFlower
+resolved_hash 2e52a9815665dbde
+lod 0
+lod_count 2
+texture_size 256
+vertices 228
+triangles 76
+charts 42
+atlas 256
+inlined_subtree_refs 0
+skipped_subtree_refs 0
+material mat_17 17 48
+material mat_29 29 28
+map albedo 8ddc6cb8a4c8d2ca
+map normal 20471cf91776a555
+map roughness 12ad016545c06a19
+map metallic e1f3cdd36ed438d4
+map ao 872cc60622a338d4

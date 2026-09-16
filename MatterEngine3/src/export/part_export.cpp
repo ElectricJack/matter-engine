@@ -131,13 +131,31 @@ bool gather_flat(const std::vector<part_asset::FlatCluster>& clusters,
     }
 
     const size_t first = state.tris->size();
+    size_t contributing_clusters = 0;
     for (const part_asset::FlatCluster& cluster : clusters) {
         if (cluster.lods.empty()) continue;
+        ++contributing_clusters;
         const size_t use = std::min(static_cast<size_t>(lod), cluster.lods.size() - 1u);
         gather_rung_triangles(blas, cluster.lods[use].blas_indices, -1,
                               *state.tris, *state.triex);
     }
     transform_range(*state.tris, *state.triex, first, xform);
+
+    // THE TERMINAL BILLBOARD. part_flatten ends most ladders with a two-triangle
+    // impostor quad per cluster whose appearance lives in the bundle's IMPO
+    // atlas section, NOT in the mesh — and this exporter does not read that
+    // section, so the rung exports as untextured quads carrying only their
+    // material colour. Say so rather than letting someone wonder why --lod 2
+    // produced two triangles. Detected by shape (last rung, <= 2 triangles per
+    // cluster) instead of by reading IMPO, which would pull impostor_bake into
+    // a layer that otherwise needs no bake code at all.
+    if (lod + 1u == static_cast<uint32_t>(max_rungs) && contributing_clusters > 0 &&
+        state.tris->size() - first <= contributing_clusters * 2u) {
+        warn(state, "LOD " + std::to_string(lod) + " of " + format_hex64(hash) +
+                        " is the flatten stage's terminal impostor billboard; its "
+                        "atlas is not exported, so the quads carry only their "
+                        "material colour. Use a finer --lod for a mesh.");
+    }
 
     for (const part_asset::FlatInstanceRef& ref : refs) {
         mat4 child_local;
