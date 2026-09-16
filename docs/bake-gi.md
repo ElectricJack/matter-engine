@@ -109,8 +109,9 @@ and the store misses. Re-run the tool; unchanged scenes are cache hits.
 
 The lightmap store lives at `<project>/.cache/<world>/gi_store` (AssetStoreLib
 `BlobStore` + `RefTable`). Keys fold the bake version, part hash, instance
-placement, scene hash, lighting hash and settings hash, so any change to any of
-them is a miss and nothing stale is ever returned.
+placement, scene hash, lighting hash, settings hash and the packed atlas
+dimensions, so any change to any of them is a miss and nothing stale is ever
+returned.
 
 ## Quality controls, in order of application
 

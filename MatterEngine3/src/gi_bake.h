@@ -162,7 +162,8 @@ uint64_t hash_lighting(const Lighting& l);
 uint64_t hash_part(const Part& p);             // resolved hash, or content for synthetic parts
 uint64_t hash_placement(const Instance& i);    // transform bits
 uint64_t hash_scene(const Scene& s);           // every (part, placement): moving one moves all
-// "gi<version>|part=<hex>|inst=<hex>|scene=<hex>|light=<hex>|set=<hex>"
+// "gi<version>|part=<hex>|inst=<hex>|scene=<hex>|light=<hex>|set=<hex>";
+// bake_scene appends "|atlas=<w>x<h>" (the packed layout) before using it.
 std::string cache_key(const Scene& s, uint32_t instance, const Settings& st, const Lighting& l);
 
 // ---- pipeline ---------------------------------------------------------------

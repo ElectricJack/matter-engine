@@ -891,7 +891,10 @@ bool bake_scene(Scene& scene, const Settings& s, const Lighting& l, BakeResult& 
         const PartAtlas& atlas = out.atlases[inst.part];
         Lightmap& map = out.lightmaps[ii];
 
-        const std::string key = cache_key(scene, ii, s, l);
+        // The atlas layout is part of the key: the same settings on a different
+        // packer (or a later chart-pipeline change) must never alias a blob.
+        const std::string key = cache_key(scene, ii, s, l) + "|atlas=" +
+                                std::to_string(atlas.width) + "x" + std::to_string(atlas.height);
         if (cache && cache->lookup) {
             Lightmap cached;
             if (cache->lookup(key, cached) && cached.width == atlas.width &&
