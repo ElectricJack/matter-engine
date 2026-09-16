@@ -108,4 +108,13 @@ bool run_export_obj(const ExportObjRequest& request, ExportObjReport& report,
 // address a different part.
 bool parse_resolved_hash(const std::string& text, uint64_t& out);
 
+// What a BARE target name (no `scene:` prefix, not a hash) refers to in this
+// project. A module wins over a scene of the same name, because a part is the
+// thing `matter export obj <name>` is overwhelmingly asked for and the `scene:`
+// prefix is always available to say otherwise. `Unknown` means neither exists,
+// which the caller should report naming both places it looked.
+enum class TargetProbe : uint32_t { Unknown = 0, Module, Scene };
+TargetProbe probe_target(const std::string& project_dir, const std::string& name,
+                         const std::string& engine_shared_lib_dir);
+
 } // namespace matter_export

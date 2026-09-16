@@ -29,12 +29,15 @@ Linux/WSL).
 | Form | Meaning |
 | --- | --- |
 | `CastleStone` | A part module, resolved against the project's object tiers (scene tier first, then project tier). Baked if the cache misses, then flattened. |
-| `scene:CastleMasonry` | Every root of `scenes/<Name>/<Name>.js` (or the legacy `worlds/<Name>.js`). One OBJ per distinct resolved hash; two roots of the same part with the same params export once, with two placements in the manifest. |
+| `CornellBox` | A bare name that is not a module but *is* a scene exports that scene. A module wins when both exist. |
+| `scene:CastleMasonry` | Every root of `scenes/<Name>/<Name>.js` (or the legacy `worlds/<Name>.js`). One OBJ per distinct resolved hash; two roots of the same part with the same params export once, with two placements in the manifest. Use the prefix to pick the scene when a module shares its name. |
 | `0bc1d80be7ca849d` | Exactly sixteen hex digits: a bundle already in the cache. Nothing is evaluated, baked, flattened or written into that cache. |
 
-The `scene:` prefix is required rather than inferred, because a scene and a part
-module can legitimately share a name and guessing from the filesystem would make
-the command mean different things in different checkouts.
+A bare name is probed against the project and a **module wins over a scene of
+the same name**, because a part is what the command is overwhelmingly asked for.
+The `scene:` prefix is always available to say otherwise, so that tie-break never
+leaves a scene unreachable. A name that is neither is an error naming every
+place it was looked for.
 
 ### Options
 

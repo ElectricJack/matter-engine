@@ -38,6 +38,8 @@ const char* const kUsage =
     "  <Module>            a part module in the project's object tiers; baked on a\n"
     "                      cache miss. --world names the cache bucket and defaults\n"
     "                      to the module name.\n"
+    "  <Scene>             a bare name that is not a module but is a scene exports\n"
+    "                      that scene; use scene:<Name> when both exist.\n"
     "  scene:<Name>        every root of scenes/<Name>/<Name>.js (or worlds/<Name>.js),\n"
     "                      one OBJ per distinct part, placements in manifest.json.\n"
     "  <16 hex digits>     a bundle already in the cache. Nothing is evaluated,\n"
@@ -229,11 +231,18 @@ int export_obj_command(int argc, char** argv) {
         return 1;
     }
 
-    // Target form. A bare 16-hex-digit token is a resolved hash; `scene:` is
-    // explicit; anything else is a module name. The `scene:` prefix exists
-    // because a scene and a part module can legitimately share a name, and
-    // guessing between them from the filesystem would make the command's
-    // meaning depend on which files happen to exist.
+    const std::string repo_root = guess_repo_root();
+    if (request.project_dir.empty())
+        request.project_dir = (std::filesystem::path(repo_root) / "projects" / "world_demo").string();
+    if (request.engine_shared_lib_dir.empty())
+        request.engine_shared_lib_dir =
+            (std::filesystem::path(repo_root) / "MatterEngine3" / "shared-lib").string();
+
+    // Target form. A bare 16-hex-digit token is a resolved hash; `scene:` says
+    // explicitly which of the two a name means; anything else is probed against
+    // the project, with a module beating a scene of the same name. The prefix
+    // stays available precisely because that tie-break is a choice — someone who
+    // wants the scene should be able to say so rather than rename a part.
     if (target.rfind("scene:", 0) == 0) {
         request.kind = matter_export::ExportTargetKind::Scene;
         const std::string name = target.substr(6);
@@ -246,17 +255,25 @@ int export_obj_command(int argc, char** argv) {
         request.kind = matter_export::ExportTargetKind::Hash;
         if (request.world_name.empty()) request.world_name = "parts";
     } else {
-        request.kind = matter_export::ExportTargetKind::Module;
-        request.module = target;
+        const matter_export::TargetProbe probe = matter_export::probe_target(
+            request.project_dir, target, request.engine_shared_lib_dir);
+        if (probe == matter_export::TargetProbe::Unknown) {
+            MATTER_LOGE("export",
+                        "'%s' is neither a part module nor a scene under %s "
+                        "(looked in objects/, scenes/%s/objects/, scenes/%s/%s.js and "
+                        "worlds/%s.js); a 16-hex-digit resolved hash also works",
+                        target.c_str(), request.project_dir.c_str(), target.c_str(),
+                        target.c_str(), target.c_str(), target.c_str());
+            return 1;
+        }
+        if (probe == matter_export::TargetProbe::Scene) {
+            request.kind = matter_export::ExportTargetKind::Scene;
+        } else {
+            request.kind = matter_export::ExportTargetKind::Module;
+            request.module = target;
+        }
         if (request.world_name.empty()) request.world_name = target;
     }
-
-    const std::string repo_root = guess_repo_root();
-    if (request.project_dir.empty())
-        request.project_dir = (std::filesystem::path(repo_root) / "projects" / "world_demo").string();
-    if (request.engine_shared_lib_dir.empty())
-        request.engine_shared_lib_dir =
-            (std::filesystem::path(repo_root) / "MatterEngine3" / "shared-lib").string();
 
     // A hash target names a cache the caller only asked us to read.
     request.flatten =

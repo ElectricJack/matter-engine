@@ -60,6 +60,21 @@ bool parse_resolved_hash(const std::string& text, uint64_t& out) {
     return true;
 }
 
+TargetProbe probe_target(const std::string& project_dir, const std::string& name,
+                         const std::string& engine_shared_lib_dir) {
+    if (project_dir.empty() || name.empty()) return TargetProbe::Unknown;
+    // The layout is derived with world_name == name so the probe sees the same
+    // object search path an export of that name would: the scene tier
+    // (<project>/scenes/<name>/objects) before the project tier.
+    const viewer::LocalProviderConfig layout =
+        viewer::LocalProviderConfig::for_project(project_dir, name, engine_shared_lib_dir);
+    if (!layout.resolve_object_path(name).empty()) return TargetProbe::Module;
+    std::error_code code;
+    if (std::filesystem::is_regular_file(std::filesystem::path(layout.world_path), code))
+        return TargetProbe::Scene;
+    return TargetProbe::Unknown;
+}
+
 bool run_export_obj(const ExportObjRequest& request, ExportObjReport& report,
                     std::string& error) {
     error.clear();
