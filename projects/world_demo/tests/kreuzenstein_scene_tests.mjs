@@ -10,6 +10,22 @@ const root = path.resolve(
   "../../..",
 );
 const scene = path.join(root, "projects/world_demo/scenes/Kreuzenstein");
+// Object lookup mirrors the engine's search path: a scene owns its own
+// objects/ over the shared project tier. KreuzensteinBrick lives in the
+// project tier because shared-lib/kreuzenstein.js places it by name, and a
+// shared-lib module is reachable from every scene (world_definition_tests
+// rejects shared-lib references to scene-local objects).
+const objectDirs = [
+  path.join(scene, "objects"),
+  path.join(root, "projects/world_demo/objects"),
+];
+function readObject(module) {
+  for (const dir of objectDirs) {
+    const file = path.join(dir, module + ".js");
+    if (fs.existsSync(file)) return fs.readFileSync(file, "utf8");
+  }
+  throw new Error(`${module}.js not found under ${objectDirs.join(", ")}`);
+}
 const prelude = fs
   .readFileSync(path.join(root, "MatterEngine3/src/part_base.js.h"), "utf8")
   .split('R"JS(')[1]
@@ -91,9 +107,10 @@ function evaluate(module, params) {
     };
   }
   vm.runInContext(prelude, context);
-  const source = fs
-    .readFileSync(path.join(scene, "objects", module + ".js"), "utf8")
-    .replace(/^import .*;$/m, "const Geo=CastleGeometry;");
+  const source = readObject(module).replace(
+    /^import .*;$/m,
+    "const Geo=CastleGeometry;",
+  );
   vm.runInContext(
     helper + "\n" + source + "\nglobalThis.Ctor=" + module + ";",
     context,
