@@ -58,8 +58,8 @@ Two-room fixture at 48 spp, 2 bounces, 4 texels/m, 2 threads:
 | WSL2 Ubuntu, 2 vCPUs, g++ 13 -O2 | 773 ms | 513 ms |
 | Windows native MSVC RelWithDebInfo | 123 ms | 83 ms |
 
-Both hosts produce identical texels (courtyard 1.686/1.646/1.587, seam step
-0.0195 on a 2.341 level), which is the determinism contract.
+Both hosts produce identical texels (courtyard 1.687/1.647/1.588, seam step
+0.0197 on a 2.341 level), which is the determinism contract.
 
 ## Method notes
 

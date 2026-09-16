@@ -507,7 +507,6 @@ JSValue gi_bake_declare(JSContext* context, JSValueConst, int argc, JSValueConst
     if (argc == 1 && JS_IsObject(argv[0])) {
         JSValueConst o = argv[0];
         float samples = float(settings.samples), bounces = float(settings.bounces);
-        float seed = float(settings.seed);
         if (!optional_number(context, o, "samples", samples) || !std::isfinite(samples) ||
             samples < 1.0f || samples > 4096.0f || samples != std::floor(samples))
             return gi_bake_failure(context, collector, "giBake.samples",
@@ -521,10 +520,19 @@ JSValue gi_bake_declare(JSContext* context, JSValueConst, int argc, JSValueConst
             settings.texel_density > 1024.0f)
             return gi_bake_failure(context, collector, "giBake.texelDensity",
                                    "giBake.texelDensity must be a positive number of texels per metre (<= 1024)");
-        if (!optional_number(context, o, "seed", seed) || !std::isfinite(seed) ||
-            seed < 0.0f || seed > 4294967295.0f || seed != std::floor(seed))
-            return gi_bake_failure(context, collector, "giBake.seed",
-                                   "giBake.seed must be an unsigned 32-bit integer");
+        // The seed is read in double precision: a float would round any
+        // value above 2^24 to a different stream than the author wrote.
+        double seed = double(settings.seed);
+        {
+            JSValue value = JS_GetPropertyStr(context, o, "seed");
+            const bool ok = JS_IsUndefined(value) ||
+                            (JS_IsNumber(value) && JS_ToFloat64(context, &seed, value) == 0);
+            JS_FreeValue(context, value);
+            if (!ok || !std::isfinite(seed) || seed < 0.0 || seed > 4294967295.0 ||
+                seed != std::floor(seed))
+                return gi_bake_failure(context, collector, "giBake.seed",
+                                       "giBake.seed must be an unsigned 32-bit integer");
+        }
         if (!optional_bool(context, o, "denoise", settings.denoise))
             return gi_bake_failure(context, collector, "giBake.denoise",
                                    "giBake.denoise must be a boolean");
@@ -4318,10 +4326,6 @@ class World {}
         definition.terrain_collision = load_collector.terrain_collision_settings;
     }
     JS_FreeValue(context, collision_method);
-    // giBake() may have been called anywhere up to here (module scope, statics,
-    // hydrology()/collision()); buildEntities() below runs after the copy, so a
-    // call from there is still recorded through the same collector.
-    definition.gi_bake = load_collector.gi_bake;
 
     JSValue build = JS_GetPropertyStr(context, instance, "buildEntities");
     if (JS_IsException(build)) {
@@ -4364,6 +4368,10 @@ class World {}
     JS_FreeValue(context, instance);
 
     ok = extract_entities(context, canonicalizer, desc, definition, error);
+    // giBake() is a data declaration legal in every phase — module scope,
+    // statics, hydrology()/collision() and buildEntities() — so the copy
+    // happens after the last script code has run.
+    definition.gi_bake = load_collector.gi_bake;
     JS_FreeValue(context, canonicalizer);
     JS_FreeValue(context, world_class);
     cleanup();

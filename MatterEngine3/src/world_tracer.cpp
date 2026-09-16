@@ -842,6 +842,15 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
             hit.emission_color[0] = mat->emissionColor[0];
             hit.emission_color[1] = mat->emissionColor[1];
             hit.emission_color[2] = mat->emissionColor[2];
+            // Same rule as MaterialRegistryPackRtForGPU: a legacy emissive
+            // material authors emission > 0 with a black emission colour and
+            // means "emit the albedo".
+            if (mat->emission > 0.f && mat->emissionColor[0] <= 0.f &&
+                mat->emissionColor[1] <= 0.f && mat->emissionColor[2] <= 0.f) {
+                hit.emission_color[0] = mat->albedo[0];
+                hit.emission_color[1] = mat->albedo[1];
+                hit.emission_color[2] = mat->albedo[2];
+            }
         } else {
             hit.albedo[0] = hit.albedo[1] = hit.albedo[2] = 0.5f;
         }

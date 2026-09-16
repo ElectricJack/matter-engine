@@ -54,7 +54,7 @@ void add_quad(gi_bake::Part& part, float3 p0, float3 p1, float3 p2, float3 p3,
         t.centroid = (a + b + c) * (1.0f / 3.0f);
         TriEx e{};
         e.N0 = e.N1 = e.N2 = normalize(n);
-        e.materialId = 0;
+        e.materialId = 1;   // builtin 1: emission 0 (builtin 0 is faintly emissive)
         e.tint = make_float4(albedo.x, albedo.y, albedo.z, 1.0f);
         e.uv0 = e.uv1 = e.uv2 = make_float2(0.0f);
         part.tris.push_back(t);
@@ -76,7 +76,7 @@ void add_quad_smooth(gi_bake::Part& part, float3 p0, float3 p1, float3 p2, float
         t.centroid = (a + b + c) * (1.0f / 3.0f);
         TriEx e{};
         e.N0 = normalize(na); e.N1 = normalize(nb); e.N2 = normalize(nc);
-        e.materialId = 0;
+        e.materialId = 1;   // builtin 1: emission 0 (builtin 0 is faintly emissive)
         e.tint = make_float4(albedo.x, albedo.y, albedo.z, 1.0f);
         e.uv0 = e.uv1 = e.uv2 = make_float2(0.0f);
         part.tris.push_back(t);

@@ -3300,6 +3300,24 @@ class GiDefaults extends World {
               "giBake() with no options records the defaults");
     }
     {
+        // A call from buildEntities() — the last hook to run — is recorded too,
+        // and a large seed survives with full 32-bit precision.
+        Fixture fixture;
+        const fs::path path = fixture.write("GiLate.js", R"JS(
+class GiLate extends World {
+  static settings = { sectorSize: 64 };
+  buildEntities() { giBake({ samples: 256, seed: 4294967295 }); }
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value() && definition.gi_bake->samples == 256 &&
+                  definition.gi_bake->seed == 4294967295u,
+              "giBake() inside buildEntities() is recorded with an exact u32 seed");
+    }
+    {
         Fixture fixture;
         const fs::path path = fixture.write("NoGi.js", R"JS(
 class NoGi extends World { static settings = { sectorSize: 64 }; }
@@ -3330,6 +3348,8 @@ void test_world_loader_rejects_invalid_gi_bake() {
     rejects("GiBounces.js", "giBake({ bounces: 9 });", "giBake.bounces");
     rejects("GiDensity.js", "giBake({ texelDensity: -1 });", "giBake.texelDensity");
     rejects("GiDensityNaN.js", "giBake({ texelDensity: 'dense' });", "giBake.texelDensity");
+    rejects("GiSeedBig.js", "giBake({ seed: 4294967296 });", "giBake.seed");
+    rejects("GiSeedFrac.js", "giBake({ seed: 1.5 });", "giBake.seed");
     rejects("GiPrelit.js", "giBake({ prelit: 'yes' });", "giBake.prelit");
     rejects("GiOut.js", "giBake({ out: 7 });", "giBake.out");
     rejects("GiTwice.js", "giBake({}); giBake({ samples: 8 });", "giBake");

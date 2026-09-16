@@ -119,9 +119,11 @@ returned.
    `sun(x, n) + path(x, n)`; the sun direction is jittered inside the sun disc
    (`sun.size` in the world script, default 0.53 degrees) so shadow edges are
    soft; the path is a cosine-weighted random walk that adds `sky_color` on
-   escape and `albedo * (emission + sun)` at each bounce. Albedo is
-   `resolveBaseColor(material.albedo, TriEx.tint)` — the same blend
-   `material_common.glsl` uses.
+   escape and, at each bounce, the hit's own emission plus `albedo * sun`
+   (emission is not scaled by the emitter's albedo, as in `composite.frag`).
+   Albedo and emission colour are `resolveBaseColor(material colour,
+   TriEx.tint)` — the same blend `material_common.glsl` and
+   `rt_lighting_impl.glsl` use.
 2. **Firefly ceiling**: the `gi-firefly-filtering` policy ported to texel space
    (centre-excluded 3x3 luminance median/MAD over same-chart neighbours, outer
    5x5 ring when fewer than three, ceiling `max(0.25, 4*median, median + 6*MAD)`,
@@ -198,11 +200,11 @@ same UVs.
 
 - **Two-room fixture**: a 40 m courtyard floor and a closed 8x4x8 m room with
   one doorway on the sun-facing wall. Asserts the open courtyard floor equals
-  `sun*cos + sky` within 8 % (measured 1.686/1.646/1.587 vs 1.680/1.642/1.583),
-  the deep room floor is below 15 % of it (3 %), the sunlit strip through the
-  doorway carries the direct term (77 %), the room's cast shadow on the
+  `sun*cos + sky` within 8 % (measured 1.687/1.647/1.588 vs 1.680/1.642/1.583),
+  the deep room floor is below 15 % of it (1.5 %), the sunlit strip through the
+  doorway carries the direct term (79 %), the room's cast shadow on the
   courtyard is sky-lit only (23 %), the door-facing interior wall is more than
-  1.5x brighter with bounces than direct-only (18x), and dilation only adds
+  1.5x brighter with bounces than direct-only (7x), and dilation only adds
   texels.
 - **Seam test**: a half-cylinder vault the 45-degree normal cone splits into
   charts; the p95 luminance step across chart-boundary edges must stay within

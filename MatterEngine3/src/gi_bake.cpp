@@ -337,10 +337,15 @@ float3 trace_texel(const TraceCtx& c, const TexelRec& rec, Rng& rng, uint64_t& r
             const float3 hp = o + w * hit.t;
             const float3 hn = safe_normalize(make_float3(hit.normal[0], hit.normal[1], hit.normal[2]),
                                              w * -1.0f);
+            // Emission is the surface's own radiance: it rides the throughput
+            // INTO the hit, not the hit's albedo (composite.frag adds
+            // emission independently of base colour). Its colour takes the
+            // same tint blend the renderer applies (rt_lighting_impl.glsl:
+            // mix(emission colour, tint.rgb, tint.a)).
+            const float3 e = resolve_base_color(hit.emission_color, hit.tint) * hit.emission;
+            v += T * e;
             T = T * resolve_base_color(hit.albedo, hit.tint);
-            const float3 e = make_float3(hit.emission_color[0], hit.emission_color[1],
-                                         hit.emission_color[2]) * hit.emission;
-            v += T * (e + sun_term(c, hp, hn, hn, rng, rays));
+            v += T * sun_term(c, hp, hn, hn, rng, rays);
             x = hp; n = hn; gn = hn;
         }
         sum += v;
@@ -858,14 +863,11 @@ bool bake_scene(Scene& scene, const Settings& s, const Lighting& l, BakeResult& 
     });
     std::vector<world_tracer::TraceInstance> trace_instances;
     trace_instances.reserve(scene.instances.size());
-    float max_coord = 1.0f;
     for (const Instance& i : scene.instances) {
         world_tracer::TraceInstance ti;
         ti.part_hash = hash_part(scene.parts[i.part]);
         std::memcpy(ti.transform, i.transform, sizeof ti.transform);
         trace_instances.push_back(ti);
-        max_coord = std::max(max_coord, std::max(std::fabs(i.transform[3]),
-                             std::max(std::fabs(i.transform[7]), std::fabs(i.transform[11]))));
     }
     {
         std::string terr;
@@ -874,12 +876,18 @@ bool bake_scene(Scene& scene, const Settings& s, const Lighting& l, BakeResult& 
             return false;
         }
     }
-    for (const Part& p : scene.parts)
-        for (const Tri& t : p.tris) {
-            max_coord = std::max(max_coord, std::fabs(t.vertex0.x));
-            max_coord = std::max(max_coord, std::fabs(t.vertex0.y));
-            max_coord = std::max(max_coord, std::fabs(t.vertex0.z));
+    // Part-local extent (max |component| over every corner), for the
+    // per-instance float-precision term of the ray epsilon below.
+    std::vector<float> part_extent(scene.parts.size(), 0.0f);
+    for (size_t p = 0; p < scene.parts.size(); ++p) {
+        float ext = 0.0f;
+        for (const Tri& t : scene.parts[p].tris) {
+            const float3* vs[3] = {&t.vertex0, &t.vertex1, &t.vertex2};
+            for (const float3* v : vs)
+                ext = std::max(ext, std::max(std::fabs(v->x), std::max(std::fabs(v->y), std::fabs(v->z))));
         }
+        part_extent[p] = ext;
+    }
 
     const uint32_t thread_count = s.threads ? s.threads
         : std::max(1u, std::thread::hardware_concurrency());
@@ -934,7 +942,17 @@ bool bake_scene(Scene& scene, const Settings& s, const Lighting& l, BakeResult& 
         ctx.sun = make_sun(l);
         ctx.samples = s.samples;
         ctx.bounces = s.bounces;
-        ctx.eps = std::max(1e-4f, std::max(1e-3f * texel_m, 2e-6f * max_coord));
+        // Ray offset: a thousandth of a texel, floored at 0.1 mm, plus a
+        // float-precision term from THIS instance's world coordinate
+        // magnitude (its translation plus its scaled part extent) — never
+        // the scene's, so a prop near the origin keeps its contact shadows
+        // in a large world.
+        float scale3 = 0.0f;
+        for (int k = 0; k < 12; ++k) if ((k & 3) != 3) scale3 = std::max(scale3, std::fabs(inst.transform[k]));
+        const float inst_coord = std::max(std::fabs(inst.transform[3]), std::max(std::fabs(inst.transform[7]),
+                                          std::fabs(inst.transform[11]))) +
+                                 part_extent[inst.part] * scale3 * 3.0f;
+        ctx.eps = std::max(1e-4f, std::max(1e-3f * texel_m, 2e-6f * inst_coord));
         ctx.seed = s.seed ^ (hash_part(part) * 0x9E3779B97F4A7C15ull) ^ hash_placement(inst);
 
         const auto t0 = std::chrono::steady_clock::now();

@@ -23,8 +23,10 @@
 //   path       : T = 1; for d = 0..bounces:
 //                  w ~ cosine hemisphere(n); hit = trace(x, w)
 //                  miss -> value += T * sky_color; stop
-//                  hit  -> if d == bounces stop;  T *= albedo(hit);
-//                          value += T * (emission(hit) + sun(hit)); x = hit
+//                  hit  -> if d == bounces stop;  value += T * emission(hit);
+//                          T *= albedo(hit); value += T * sun(hit); x = hit
+// (emission is the hit's own radiance and is not scaled by its albedo; both
+// albedo and emission colour take the TriEx tint blend the renderer uses)
 // so `bounces = 0` is direct sun plus sky visibility (the occlusion term), and
 // every extra bounce adds one diffuse interreflection.
 //
