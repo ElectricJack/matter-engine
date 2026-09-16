@@ -163,6 +163,39 @@ if(MATTER_ENABLE_PHYSX)
 endif()
 matter_apply_project_defaults(matter_engine_headless)
 
+# ---------------------------------------------------------------------------
+# `matter` — the headless command (MatterEngine3/tools/matter_cli.cpp).
+#
+# Today it carries one command, `export obj` (docs/export-obj.md). It is a
+# PRODUCT tool, not a test, so it is built unconditionally; everything it needs
+# is already in matter_engine_headless, because src/export rides in
+# engine-core.sources.
+#
+# OUTPUT_NAME is `matter` so the documented `matter export obj ...` spelling is
+# literally what the binary is called; the CMake target keeps the _cli suffix so
+# it cannot collide with a future library of the same name.
+# ---------------------------------------------------------------------------
+add_executable(matter_cli
+    MatterEngine3/tools/matter_cli.cpp
+    MatterEngine3/cli/matter_cli.cpp)
+set_target_properties(matter_cli PROPERTIES
+    OUTPUT_NAME matter
+    # Beside the engine it belongs to, mirroring how matter_editor lands in
+    # MatterEditor/build/windows-msvc rather than in the preset's binary dir.
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/build/windows-msvc"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/build/windows-msvc"
+)
+matter_engine_include_directories(matter_cli PRIVATE)
+target_compile_definitions(matter_cli PRIVATE
+    PLATFORM_DESKTOP
+    GRAPHICS_API_OPENGL_43
+    MATTER_VULKAN_ONLY
+    MATTER_HAVE_SCRIPT_HOST
+    MATTER_ENABLE_GI_CLI
+)
+target_link_libraries(matter_cli PRIVATE matter_engine_headless)
+matter_apply_project_defaults(matter_cli)
+
 if(BUILD_TESTING)
     # Shared normal math is header-only; keep its correctness gate independent
     # of the engine archive, graphics/device setup and generated asset caches.
@@ -345,16 +378,6 @@ if(BUILD_TESTING)
     target_link_libraries(castle_part_bench PRIVATE matter_engine_headless)
     matter_apply_project_defaults(castle_part_bench)
     matter_apply_test_assertion_policy(castle_part_bench)
-    # `matter` command-line tool (matter bake gi ...): headless, kernel archive
-    # only. Target name matter_cli; the binary is matter[.exe].
-    add_executable(matter_cli MatterEngine3/cli/matter_cli.cpp)
-    matter_engine_include_directories(matter_cli PRIVATE)
-    target_compile_definitions(matter_cli PRIVATE
-        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
-    target_link_libraries(matter_cli PRIVATE matter_engine_headless)
-    set_target_properties(matter_cli PROPERTIES OUTPUT_NAME matter)
-    matter_apply_project_defaults(matter_cli)
-    matter_apply_test_assertion_policy(matter_cli)
     add_executable(castle_dependency_bench MatterEngine3/tests/castle_dependency_bench.cpp)
     matter_engine_include_directories(castle_dependency_bench PRIVATE)
     target_include_directories(castle_dependency_bench PRIVATE
@@ -400,6 +423,13 @@ if(BUILD_TESTING)
         MatterEngine3/tests/part_asset_v2_tests.cpp)
     matter_add_engine_cpu_test(part_asset_flat_refs_tests
         MatterEngine3/tests/part_asset_flat_refs_tests.cpp)
+    # OBJ export: the structural gate (no bake) and the golden-fixture gate
+    # (bakes three world_demo parts). Both run from MatterEngine3/tests, which
+    # is where tests/fixtures/export/ is rooted.
+    matter_add_engine_cpu_test(obj_export_tests
+        MatterEngine3/tests/obj_export_tests.cpp)
+    matter_add_engine_cpu_test(obj_export_golden_tests
+        MatterEngine3/tests/obj_export_golden_tests.cpp)
     matter_add_engine_cpu_test(eval_world_tests
         MatterEngine3/tests/eval_world_tests.cpp)
     matter_add_engine_cpu_test(lod_distance_tests

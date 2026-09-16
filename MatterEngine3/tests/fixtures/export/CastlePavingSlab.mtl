@@ -1,0 +1,24 @@
+# Wavefront MTL exported by MatterEngine3
+# part: CastlePavingSlab
+# resolved_hash: 6fc0e819cd769001
+# colour keys (Kd, Ke) are sRGB-encoded; Pr/Pm/map_Ka are linear
+# Kd is white because map_Kd carries the colour; see the base_albedo comment on each material
+
+newmtl mat_9
+# engine_material_id: 9
+# base_albedo: 0.6 0.584314 0.576471
+Kd 1 1 1
+Ks 0 0 0
+Ke 0 0 0
+Ns 1.048316
+Ni 1
+d 1
+illum 2
+Pr 0.9
+Pm 0
+map_Kd CastlePavingSlab_albedo.png
+map_Ka CastlePavingSlab_ao.png
+norm CastlePavingSlab_normal.png
+map_Bump CastlePavingSlab_normal.png
+map_Pr CastlePavingSlab_roughness.png
+map_Pm CastlePavingSlab_metallic.png

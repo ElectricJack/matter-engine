@@ -1,0 +1,44 @@
+# Wavefront MTL exported by MatterEngine3
+# part: AlpineFlower
+# resolved_hash: 9fd57fdb5699f695
+# colour keys (Kd, Ke) are sRGB-encoded; Pr/Pm/map_Ka are linear
+# Kd is white because map_Kd carries the colour; see the base_albedo comment on each material
+
+newmtl mat_17
+# engine_material_id: 17
+# base_albedo: 0.952941 0.952941 0.976471
+Kd 1 1 1
+Ks 0 0 0
+Ke 0 0 0
+Ns 2.882812
+Ni 1
+d 1
+illum 2
+Pr 0.8
+Pm 0
+map_Kd AlpineFlower_albedo.png
+map_Ka AlpineFlower_ao.png
+norm AlpineFlower_normal.png
+map_Bump AlpineFlower_normal.png
+map_Pr AlpineFlower_roughness.png
+map_Pm AlpineFlower_metallic.png
+
+newmtl mat_29
+# engine_material_id: 29
+# base_albedo: 0.380392 0.6 0.313726
+Kd 1 1 1
+Ks 0 0 0
+Ke 0 0 0
+Ns 4.320988
+Ni 1
+d 1
+illum 2
+Pr 0.75
+Pm 0
+# double_sided: 1
+map_Kd AlpineFlower_albedo.png
+map_Ka AlpineFlower_ao.png
+norm AlpineFlower_normal.png
+map_Bump AlpineFlower_normal.png
+map_Pr AlpineFlower_roughness.png
+map_Pm AlpineFlower_metallic.png

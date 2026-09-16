@@ -805,14 +805,15 @@ $(VIEWER_LIB): $(VIEWER_ALL_OBJ) | check-me3-source-basenames
 
 viewer-lib: $(VIEWER_LIB)
 
-# `matter` command-line tool (matter bake gi ...), rollback/Unix build: links
-# the headless kernel archive plus the vendored physics/animation archives the
-# script host needs (ozz .a files are prebuilt per checkout -- see CLAUDE.md
-# "Worktree setup"). The canonical build is the CMake `matter_cli` target.
+# `matter` command-line tool (matter bake gi / export obj), rollback/Unix
+# build: links the headless kernel archive plus the vendored physics/animation
+# archives the script host needs (ozz .a files are prebuilt per checkout -- see
+# CLAUDE.md "Worktree setup"). The canonical build is CMake's `matter_cli`.
 CLI_BIN = build/matter
 cli: $(CLI_BIN)
-$(CLI_BIN): cli/matter_cli.cpp $(LIB) $(BOX3D_LIB) | build
-	$(CC) cli/matter_cli.cpp -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LIB) \
+$(CLI_BIN): tools/matter_cli.cpp cli/matter_cli.cpp $(LIB) $(BOX3D_LIB) | build
+	$(CC) tools/matter_cli.cpp cli/matter_cli.cpp -o $@ $(CFLAGS) \
+	    -DMATTER_ENABLE_GI_CLI $(INCLUDE_PATHS) $(LIB) \
 	    $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(RAYLIB_PATH)/libraylib.a -lpthread -lm -ldl
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).

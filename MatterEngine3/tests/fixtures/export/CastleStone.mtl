@@ -1,0 +1,24 @@
+# Wavefront MTL exported by MatterEngine3
+# part: CastleStone
+# resolved_hash: 8e3a0967ba2d2dc4
+# colour keys (Kd, Ke) are sRGB-encoded; Pr/Pm/map_Ka are linear
+# Kd is white because map_Kd carries the colour; see the base_albedo comment on each material
+
+newmtl mat_8
+# engine_material_id: 8
+# base_albedo: 0.768627 0.74902 0.737255
+Kd 1 1 1
+Ks 0 0 0
+Ke 0 0 0
+Ns 1.831372
+Ni 1
+d 1
+illum 2
+Pr 0.85
+Pm 0
+map_Kd CastleStone_albedo.png
+map_Ka CastleStone_ao.png
+norm CastleStone_normal.png
+map_Bump CastleStone_normal.png
+map_Pr CastleStone_roughness.png
+map_Pm CastleStone_metallic.png

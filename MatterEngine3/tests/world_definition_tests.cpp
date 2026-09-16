@@ -1938,6 +1938,143 @@ void test_props_validation_paths() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// World.exports — the DSL binding for offline asset export (docs/export-obj.md).
+//
+// Worth stating what these tests are protecting, because the field is inert at
+// runtime: `static exports` is the only place a scene can record HOW it wants
+// to be exported, so the exporter reads it as its defaults. A silently dropped
+// or silently clamped value would produce an export nobody asked for and
+// nobody could trace, which is why the loader rejects instead of coercing and
+// why the rejection paths below are enumerated one by one.
+// ---------------------------------------------------------------------------
+
+bool load_exports_world(Fixture& fixture, const char* body,
+                        matter::WorldDefinition& definition,
+                        matter::WorldLoadError& error) {
+    const std::string source = std::string(
+        "class ExportsWorld extends World {\n"
+        "  static roots = [{ module: 'Terrain' }];\n"
+        "  static exports = ") + body + ";\n}\n";
+    const fs::path path = fixture.write("ExportsWorld.js", source);
+    return matter::load_world_definition(fixture.desc(path), definition, error);
+}
+
+void test_exports_extraction() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    const bool loaded = load_exports_world(
+        fixture,
+        "[{ format: 'obj', out: 'export/web', lod: 1, textureSize: 1024,\n"
+        "   textureFormat: 'none', chartCone: 30, normalSpace: 'flat',\n"
+        "   modules: ['Terrain', 'Rock'] },\n"
+        " { out: 'export/full' }]",
+        definition, error);
+    CHECK(loaded, error.message.c_str());
+    if (!loaded) return;
+
+    CHECK(definition.exports.size() == 2, "every declared export entry is recorded");
+    if (definition.exports.size() != 2) return;
+
+    const matter::WorldExportRequest& first = definition.exports[0];
+    CHECK(first.format == "obj", "format carried through");
+    CHECK(first.out_dir == "export/web", "out carried through");
+    CHECK(first.lod == 1u, "lod carried through");
+    CHECK(first.texture_size == 1024u, "textureSize carried through");
+    CHECK(first.texture_format == "none", "textureFormat carried through");
+    CHECK(nearly_equal(first.chart_cone_deg, 30.0f), "chartCone carried through");
+    CHECK(first.normal_space == "flat", "normalSpace carried through");
+    CHECK(first.modules.size() == 2u && first.modules[0] == "Terrain" &&
+              first.modules[1] == "Rock",
+          "modules carried through in declaration order");
+
+    // An entry that declares only `out` takes every other default, which is
+    // what makes the common case one line.
+    const matter::WorldExportRequest& second = definition.exports[1];
+    CHECK(second.format == "obj" && second.lod == 0u && second.texture_size == 2048u &&
+              second.texture_format == "png" && second.normal_space == "smooth" &&
+              nearly_equal(second.chart_cone_deg, 45.0f) && second.modules.empty(),
+          "an entry with only `out` takes the documented defaults");
+}
+
+void test_exports_single_object_form() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    const bool loaded =
+        load_exports_world(fixture, "{ out: 'export/one' }", definition, error);
+    CHECK(loaded, error.message.c_str());
+    CHECK(definition.exports.size() == 1 && definition.exports[0].out_dir == "export/one",
+          "a bare object is accepted as a single export entry");
+}
+
+void test_exports_absent() {
+    Fixture fixture;
+    const fs::path path = fixture.write("NoExports.js", R"JS(
+class NoExports extends World {
+  static roots = [{ module: 'Terrain' }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.exports.empty(),
+          "a world that declares no exports records none");
+}
+
+void test_exports_validation_paths() {
+    struct Case {
+        const char* body;
+        const char* property_path;
+        const char* what;
+    };
+    const Case cases[] = {
+        {"'export/web'", "exports",
+         "a bare string is not an export entry"},
+        {"[7]", "exports[0]", "a non-object entry is rejected"},
+        {"[{ }]", "exports[0].out", "a missing out is rejected"},
+        {"[{ out: '' }]", "exports[0].out", "an empty out is rejected"},
+        {"[{ out: 'x', format: 'gltf' }]", "exports[0].format",
+         "an unimplemented format is rejected rather than ignored"},
+        {"[{ out: 'x', textureSize: 8 }]", "exports[0].textureSize",
+         "a textureSize below the atlas minimum is rejected, not clamped"},
+        {"[{ out: 'x', textureSize: 16384 }]", "exports[0].textureSize",
+         "a textureSize above the atlas maximum is rejected, not clamped"},
+        {"[{ out: 'x', lod: -1 }]", "exports[0].lod", "a negative lod is rejected"},
+        {"[{ out: 'x', textureFormat: 'jpeg' }]", "exports[0].textureFormat",
+         "an unknown textureFormat is rejected"},
+        {"[{ out: 'x', chartCone: 90 }]", "exports[0].chartCone",
+         "a chartCone at 90 degrees is rejected"},
+        {"[{ out: 'x', chartCone: 0 }]", "exports[0].chartCone",
+         "a chartCone of 0 is rejected"},
+        {"[{ out: 'x', normalSpace: 'object' }]", "exports[0].normalSpace",
+         "an unknown normalSpace is rejected"},
+        {"[{ out: 'x', modules: 'Rock' }]", "exports[0].modules",
+         "a non-array modules is rejected"},
+        {"[{ out: 'x', modules: ['Rock', 7] }]", "exports[0].modules[1]",
+         "a non-string module name is rejected"},
+        {"[{ out: 'x', textureSizes: 1024 }]", "exports[0]",
+         "a mistyped key is rejected rather than silently defaulted"},
+    };
+
+    for (const Case& item : cases) {
+        Fixture fixture;
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        const bool loaded = load_exports_world(fixture, item.body, definition, error);
+        CHECK(!loaded, item.what);
+        CHECK(error.property_path == item.property_path,
+              (std::string(item.what) + " -> property_path '" + item.property_path +
+               "' (got '" + error.property_path + "')")
+                  .c_str());
+        CHECK(!error.message.empty(), "an export rejection carries a message");
+        CHECK(definition.exports.empty(),
+              "a rejected exports block leaves no partial entries behind");
+    }
+}
+
 void test_props_getprop_diagnostics() {
     Fixture fixture;
     // Unknown name from buildEntities.
@@ -3403,6 +3540,10 @@ int main() {
     test_props_absent_and_empty();
     test_props_validation_paths();
     test_props_getprop_diagnostics();
+    test_exports_extraction();
+    test_exports_single_object_form();
+    test_exports_absent();
+    test_exports_validation_paths();
     test_define_material_round_trip();
     test_define_material_reset_between_worlds();
     test_define_material_name_collision_rules();

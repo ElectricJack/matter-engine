@@ -85,6 +85,17 @@ MatterEngine3/src/tileset_metrics.cpp|all
 MatterEngine3/src/tileset_gtex.cpp|all
 MatterEngine3/src/tileset_torus_bvh.cpp|all
 MatterEngine3/src/shader_source.cpp|all
+# Asset export (docs/export-obj.md): the format-agnostic extraction layer, the
+# CPU texture bake, the Wavefront writer and the `matter export obj` command.
+# export_cli.cpp is the only one that touches the script host; the rest take
+# baked artifacts, which is why MatterEngine3/tests' run-obj-export gate links
+# without QuickJS.
+MatterEngine3/src/export/mesh_export.cpp|all
+MatterEngine3/src/export/texture_bake.cpp|all
+MatterEngine3/src/export/export_image.cpp|all
+MatterEngine3/src/export/obj_writer.cpp|all
+MatterEngine3/src/export/part_export.cpp|all
+MatterEngine3/src/export/export_cli.cpp|all
 MatterEngine3/src/render/raster_mesh.cpp|all
 MatterEngine3/src/render/indexed_part_geometry.cpp|all
 MatterEngine3/src/render/matrix_math.cpp|all
