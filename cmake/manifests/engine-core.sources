@@ -63,6 +63,16 @@ MatterEngine3/src/sector_grid.cpp|all
 MatterEngine3/src/lod_select.cpp|all
 MatterEngine3/src/world_lights.cpp|all
 MatterEngine3/src/world_tracer.cpp|all
+MatterEngine3/src/gi_bake.cpp|all
+MatterEngine3/src/gi_bake_image.cpp|all
+MatterEngine3/src/gi_bake_scene.cpp|all
+# AssetStoreLib (content-addressed lightmap store for gi_bake_scene). CMake
+# links the matter_asset_store target instead; the Make archive compiles these
+# from their source-of-truth directory (compile-from-source rule, CLAUDE.md).
+libs/AssetStoreLib/src/blob_store.cpp|all
+libs/AssetStoreLib/src/ref_table.cpp|all
+libs/AssetStoreLib/src/store_hash.cpp|all
+libs/AssetStoreLib/src/store_os.cpp|all
 MatterEngine3/src/part_cluster.cpp|all
 MatterEngine3/src/tileset_layout.cpp|all
 MatterEngine3/src/tileset_collider.cpp|all

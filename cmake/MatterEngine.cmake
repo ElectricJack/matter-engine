@@ -297,6 +297,10 @@ if(BUILD_TESTING)
         MatterEngine3/tests/bake_trace_tests.cpp)
     matter_add_engine_cpu_test(world_definition_tests
         MatterEngine3/tests/world_definition_tests.cpp)
+    # GI lightmap bake (docs/bake-gi.md): synthetic two-room / vault fixtures on
+    # the CPU world tracer -- irradiance ratios, seam continuity, determinism.
+    matter_add_engine_cpu_test(gi_bake_tests
+        MatterEngine3/tests/gi_bake_tests.cpp)
     matter_add_engine_cpu_test(local_light_index_tests
         MatterEngine3/tests/local_light_index_tests.cpp)
     matter_add_engine_cpu_test(primary_light_culling_tests
@@ -341,6 +345,16 @@ if(BUILD_TESTING)
     target_link_libraries(castle_part_bench PRIVATE matter_engine_headless)
     matter_apply_project_defaults(castle_part_bench)
     matter_apply_test_assertion_policy(castle_part_bench)
+    # `matter` command-line tool (matter bake gi ...): headless, kernel archive
+    # only. Target name matter_cli; the binary is matter[.exe].
+    add_executable(matter_cli MatterEngine3/cli/matter_cli.cpp)
+    matter_engine_include_directories(matter_cli PRIVATE)
+    target_compile_definitions(matter_cli PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(matter_cli PRIVATE matter_engine_headless)
+    set_target_properties(matter_cli PROPERTIES OUTPUT_NAME matter)
+    matter_apply_project_defaults(matter_cli)
+    matter_apply_test_assertion_policy(matter_cli)
     add_executable(castle_dependency_bench MatterEngine3/tests/castle_dependency_bench.cpp)
     matter_engine_include_directories(castle_dependency_bench PRIVATE)
     target_include_directories(castle_dependency_bench PRIVATE

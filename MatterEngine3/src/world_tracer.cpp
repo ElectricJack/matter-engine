@@ -605,11 +605,13 @@ struct WorldTracer::Impl {
     // which the BVH tolerates.
     //
     // best_mat is the registry index, or -1 when the entry carries no per-tri
-    // extras.
+    // extras. best_ex, when the caller supplies it, receives the hit triangle's
+    // TriEx (null when the entry has none) so trace() can report its tint.
     bool intersect_instance(const ExpandedInst& ei,
                             const float worldO[3], const float worldD[3],
                             float& best_t,
-                            float best_normal[3], int& best_mat) const {
+                            float best_normal[3], int& best_mat,
+                            const TriEx** best_ex = nullptr) const {
         // Transform to local space WITHOUT normalizing direction — preserves world t.
         float localO[3], localD[3];
         xform_point(ei.inv, worldO, localO);
@@ -675,8 +677,10 @@ struct WorldTracer::Impl {
                     if (!s.entry->tri_extra.empty() &&
                         tri_idx < (uint32_t)s.entry->tri_extra.size()) {
                         best_mat = s.entry->tri_extra[tri_idx].materialId % 1000000;
+                        if (best_ex) *best_ex = &s.entry->tri_extra[tri_idx];
                     } else {
                         best_mat = -1;
+                        if (best_ex) *best_ex = nullptr;
                     }
                 }
             }
@@ -701,7 +705,7 @@ struct WorldTracer::Impl {
                        const float rD_world[3],
                        float& best_t,
                        float best_normal[3], int& best_mat,
-                       int& best_inst) const {
+                       int& best_inst, const TriEx** best_ex = nullptr) const {
         const IBVHNode& node = ibvh_[node_idx];
         if (!aabb_hit(node.bmin, node.bmax, worldO, rD_world, best_t)) return;
 
@@ -711,15 +715,16 @@ struct WorldTracer::Impl {
                 int inst_idx = order[i];
                 const ExpandedInst& ei = expanded_[inst_idx];
                 if (!aabb_hit(ei.world_mn, ei.world_mx, worldO, rD_world, best_t)) continue;
-                if (intersect_instance(ei, worldO, worldD, best_t, best_normal, best_mat)) {
+                if (intersect_instance(ei, worldO, worldD, best_t, best_normal, best_mat,
+                                       best_ex)) {
                     best_inst = inst_idx;
                 }
             }
         } else {
             traverse_ibvh(node.left,  order, worldO, worldD, rD_world,
-                          best_t, best_normal, best_mat, best_inst);
+                          best_t, best_normal, best_mat, best_inst, best_ex);
             traverse_ibvh(node.right, order, worldO, worldD, rD_world,
-                          best_t, best_normal, best_mat, best_inst);
+                          best_t, best_normal, best_mat, best_inst, best_ex);
         }
     }
 
@@ -801,6 +806,7 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     float best_normal[3] = {0,0,1};
     int   best_mat = -1;
     int   best_inst = -1;
+    const TriEx* best_ex = nullptr;
 
     float rD_world[3];
     rD_world[0] = (std::fabs(dir[0]) > 1e-30f) ? 1.f/dir[0] : 1e30f;
@@ -808,7 +814,7 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     rD_world[2] = (std::fabs(dir[2]) > 1e-30f) ? 1.f/dir[2] : 1e30f;
 
     im.traverse_ibvh(0, im.ibvh_order_, origin, dir, rD_world,
-                     best_t, best_normal, best_mat, best_inst);
+                     best_t, best_normal, best_mat, best_inst, &best_ex);
 
     if (best_t >= max_t - 1e-7f) return false;
 
@@ -818,7 +824,14 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     hit.normal[2] = best_normal[2];
     hit.material_id = best_mat;
     hit.instance = (best_inst >= 0) ? (uint32_t)best_inst : 0xffffffffu;
+    if (best_ex) {
+        hit.tint[0] = best_ex->tint.x; hit.tint[1] = best_ex->tint.y;
+        hit.tint[2] = best_ex->tint.z; hit.tint[3] = best_ex->tint.w;
+    } else {
+        hit.tint[0] = hit.tint[1] = hit.tint[2] = 1.f; hit.tint[3] = 0.f;
+    }
 
+    hit.emission_color[0] = hit.emission_color[1] = hit.emission_color[2] = 0.f;
     if (best_mat >= 0) {
         const MaterialDef* mat = MaterialRegistryGet(best_mat);
         hit.emission = mat ? mat->emission : 0.f;
@@ -826,6 +839,9 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
             hit.albedo[0] = mat->albedo[0];
             hit.albedo[1] = mat->albedo[1];
             hit.albedo[2] = mat->albedo[2];
+            hit.emission_color[0] = mat->emissionColor[0];
+            hit.emission_color[1] = mat->emissionColor[1];
+            hit.emission_color[2] = mat->emissionColor[2];
         } else {
             hit.albedo[0] = hit.albedo[1] = hit.albedo[2] = 0.5f;
         }

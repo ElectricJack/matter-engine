@@ -65,6 +65,7 @@ WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../libs/MatterSurfaceLib
 PROFILE_DIR = ../libs/ProfileLib
+ASSET_STORE_DIR = ../libs/AssetStoreLib
 FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
 SQL_DIR     = ../libs/SpatialQueryLib
@@ -93,6 +94,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
                 -I$(PROFILE_DIR)/include \
+                -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
                 -I$(RAYLIB_PATH) \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
                 -I$(IMGUIZMO_PATH) \
@@ -626,6 +628,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I$(BC7ENC_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
@@ -708,6 +711,7 @@ build/windows/vt_compositor_tests.exe: \
 	    -I$(ME3_DIR)/src/render \
 	    -I$(ME3_DIR)/tests \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I$(FLECS_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
@@ -1348,6 +1352,7 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 	    -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include -I../libs/MathLib/include \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I../third_party/imgui -I../third_party/ImGuizmo \
 	    -I../third_party/Vulkan-Headers/include -I../third_party/flecs \
 	    -I../libs/ParticleFlowLib/include -I../third_party/box3d/include \

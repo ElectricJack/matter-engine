@@ -553,6 +553,21 @@ inline bool operator!=(const WorldPropSpec& a, const WorldPropSpec& b) {
     return !(a == b);
 }
 
+// Authored GI lightmap bake request (docs/bake-gi.md), declared by the world
+// script's `giBake({...})` call. Every field is optional in the script and
+// defaults to the bake's own default here; the CLI's flags override these.
+// The world script chooses WHETHER a bake is meaningful for this world and
+// its default quality; the CLI (`matter bake gi`) is what actually runs it.
+struct GiBakeSettings {
+    std::uint32_t samples = 64;        // paths per texel
+    std::uint32_t bounces = 2;         // diffuse interreflections
+    float texel_density = 8.0f;        // lightmap texels per metre
+    std::uint32_t seed = 0x5EEDu;
+    bool denoise = true;
+    bool prelit = false;               // also emit albedo x lightmap textures
+    std::string out;                   // output directory, "" = the CLI decides
+};
+
 // Everything one successful world load produced. Filled by
 // load_world_definition (world_definition_loader.cpp) and then treated as
 // immutable by its consumers; a reload or a live-edit rebake builds a fresh
@@ -573,6 +588,8 @@ struct WorldDefinition {
     std::optional<HydrologyWorldSettings> hydrology;
     std::optional<RiverNetworkDefinition> river_network;
     std::optional<TerrainCollisionDefinition> terrain_collision;
+    // Present when the script called giBake({...}); absent = the CLI defaults.
+    std::optional<GiBakeSettings> gi_bake;
 };
 
 // The inputs to one world load. EngineContext::open_world derives these from

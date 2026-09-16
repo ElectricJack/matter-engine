@@ -475,7 +475,83 @@ struct LoadCollector {
     bool terrain_collision_active = false;
     bool terrain_collision_created = false;
     bool terrain_collision_built = false;
+    // giBake({...}): at most one call per world, in any phase.
+    std::optional<GiBakeSettings> gi_bake;
+    std::string gi_bake_error_path;
 };
+
+// giBake(options) — declare the world's GI lightmap bake request
+// (docs/bake-gi.md). Unlike terrainCollision() it is not tied to a lifecycle
+// hook: it may be called at module scope, in a static initializer or inside
+// any hook, because it declares data rather than driving a build. Every
+// option is optional; a second call is an error so two declarations cannot
+// silently overwrite each other. Returns a frozen copy of the effective
+// settings so a script can read back what it declared.
+JSValue gi_bake_failure(JSContext* context, LoadCollector* collector,
+                        const std::string& path, const std::string& message) {
+    if (collector) collector->gi_bake_error_path = path;
+    return JS_ThrowTypeError(context, "%s", message.c_str());
+}
+
+JSValue gi_bake_declare(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* collector = static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector)
+        return JS_ThrowTypeError(context, "giBake() called outside a world load");
+    if (collector->gi_bake)
+        return gi_bake_failure(context, collector, "giBake",
+                               "giBake() may be called at most once per world");
+    if (argc > 1 || (argc == 1 && !JS_IsUndefined(argv[0]) && !JS_IsObject(argv[0])))
+        return gi_bake_failure(context, collector, "giBake",
+                               "giBake(options) takes one optional options object");
+    GiBakeSettings settings;
+    if (argc == 1 && JS_IsObject(argv[0])) {
+        JSValueConst o = argv[0];
+        float samples = float(settings.samples), bounces = float(settings.bounces);
+        float seed = float(settings.seed);
+        if (!optional_number(context, o, "samples", samples) || !std::isfinite(samples) ||
+            samples < 1.0f || samples > 4096.0f || samples != std::floor(samples))
+            return gi_bake_failure(context, collector, "giBake.samples",
+                                   "giBake.samples must be an integer in [1, 4096]");
+        if (!optional_number(context, o, "bounces", bounces) || !std::isfinite(bounces) ||
+            bounces < 0.0f || bounces > 8.0f || bounces != std::floor(bounces))
+            return gi_bake_failure(context, collector, "giBake.bounces",
+                                   "giBake.bounces must be an integer in [0, 8]");
+        if (!optional_number(context, o, "texelDensity", settings.texel_density) ||
+            !std::isfinite(settings.texel_density) || settings.texel_density <= 0.0f ||
+            settings.texel_density > 1024.0f)
+            return gi_bake_failure(context, collector, "giBake.texelDensity",
+                                   "giBake.texelDensity must be a positive number of texels per metre (<= 1024)");
+        if (!optional_number(context, o, "seed", seed) || !std::isfinite(seed) ||
+            seed < 0.0f || seed > 4294967295.0f || seed != std::floor(seed))
+            return gi_bake_failure(context, collector, "giBake.seed",
+                                   "giBake.seed must be an unsigned 32-bit integer");
+        if (!optional_bool(context, o, "denoise", settings.denoise))
+            return gi_bake_failure(context, collector, "giBake.denoise",
+                                   "giBake.denoise must be a boolean");
+        if (!optional_bool(context, o, "prelit", settings.prelit))
+            return gi_bake_failure(context, collector, "giBake.prelit",
+                                   "giBake.prelit must be a boolean");
+        JSValue out = JS_GetPropertyStr(context, o, "out");
+        const bool out_ok = JS_IsUndefined(out) || string_value(context, out, settings.out);
+        JS_FreeValue(context, out);
+        if (!out_ok)
+            return gi_bake_failure(context, collector, "giBake.out",
+                                   "giBake.out must be a string");
+        settings.samples = static_cast<std::uint32_t>(samples);
+        settings.bounces = static_cast<std::uint32_t>(bounces);
+        settings.seed = static_cast<std::uint32_t>(seed);
+    }
+    collector->gi_bake = settings;
+    JSValue result = JS_NewObject(context);
+    JS_SetPropertyStr(context, result, "samples", JS_NewInt32(context, int(settings.samples)));
+    JS_SetPropertyStr(context, result, "bounces", JS_NewInt32(context, int(settings.bounces)));
+    JS_SetPropertyStr(context, result, "texelDensity", JS_NewFloat64(context, settings.texel_density));
+    JS_SetPropertyStr(context, result, "seed", JS_NewFloat64(context, double(settings.seed)));
+    JS_SetPropertyStr(context, result, "denoise", JS_NewBool(context, settings.denoise));
+    JS_SetPropertyStr(context, result, "prelit", JS_NewBool(context, settings.prelit));
+    JS_SetPropertyStr(context, result, "out", JS_NewString(context, settings.out.c_str()));
+    return result;
+}
 
 struct RiverNetworkHandle {
     LoadCollector* collector = nullptr;
@@ -3979,6 +4055,8 @@ class World {}
                       JS_NewCFunction(context, river_network, "riverNetwork", 1));
     JS_SetPropertyStr(context, global, "terrainCollision",
                       JS_NewCFunction(context, terrain_collision_builder, "terrainCollision", 1));
+    JS_SetPropertyStr(context, global, "giBake",
+                      JS_NewCFunction(context, gi_bake_declare, "giBake", 1));
     JS_FreeValue(context, global);
 
     const std::string wrapped = source +
@@ -3998,8 +4076,10 @@ class World {}
         const std::string message = exception_message(context);
         JS_FreeValue(context, evaluated);
         cleanup();
-        const std::string path = load_collector.terrain_collision_error_path.empty()
-            ? "source" : load_collector.terrain_collision_error_path;
+        const std::string path = !load_collector.terrain_collision_error_path.empty()
+            ? load_collector.terrain_collision_error_path
+            : !load_collector.gi_bake_error_path.empty() ? load_collector.gi_bake_error_path
+                                                          : std::string("source");
         return fail(desc, error, path, message);
     }
     JS_FreeValue(context, evaluated);
@@ -4238,6 +4318,10 @@ class World {}
         definition.terrain_collision = load_collector.terrain_collision_settings;
     }
     JS_FreeValue(context, collision_method);
+    // giBake() may have been called anywhere up to here (module scope, statics,
+    // hydrology()/collision()); buildEntities() below runs after the copy, so a
+    // call from there is still recorded through the same collector.
+    definition.gi_bake = load_collector.gi_bake;
 
     JSValue build = JS_GetPropertyStr(context, instance, "buildEntities");
     if (JS_IsException(build)) {

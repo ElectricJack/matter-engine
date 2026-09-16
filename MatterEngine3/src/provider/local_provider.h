@@ -423,6 +423,7 @@ struct ProviderWorldDefinition {
     std::optional<matter::HydrologyWorldSettings> hydrology;
     std::optional<matter::RiverNetworkDefinition> river_network;
     std::optional<matter::TerrainCollisionDefinition> terrain_collision;
+    std::optional<matter::GiBakeSettings> gi_bake;
 };
 
 inline std::optional<matter::HydrologyWorldSettings>
@@ -521,6 +522,7 @@ inline bool adapt_world_definition(const matter::WorldDefinition& definition,
     out.hydrology = adapt_hydrology_definition(definition);
     out.river_network = adapt_river_network_definition(definition);
     out.terrain_collision = adapt_terrain_collision_definition(definition);
+    out.gi_bake = definition.gi_bake;
     out.lights.sun_dir[0] = definition.settings.sun_direction.x;
     out.lights.sun_dir[1] = definition.settings.sun_direction.y;
     out.lights.sun_dir[2] = definition.settings.sun_direction.z;
@@ -795,6 +797,10 @@ public:
     const std::optional<matter::TerrainCollisionDefinition>& terrain_collision() const {
         return terrain_collision_;
     }
+    // The world script's giBake({...}) declaration, if any (docs/bake-gi.md).
+    const std::optional<matter::GiBakeSettings>& gi_bake() const {
+        return gi_bake_;
+    }
     // Build the canonical first-section geometry and its immutable terrain
     // overlay together. The provider owns the authored network; callers own
     // the resulting shared overlay and must pass that exact instance to the
@@ -869,6 +875,7 @@ private:
     std::optional<matter::HydrologyWorldSettings> hydrology_settings_;
     std::optional<matter::RiverNetworkDefinition> river_network_;
     std::optional<matter::TerrainCollisionDefinition> terrain_collision_;
+    std::optional<matter::GiBakeSettings> gi_bake_;
     std::vector<hydrology::AuthoredFluidCollider> authored_fluid_colliders_;
     std::optional<hydrology::HydrologyNetworkBakeResult>
         accepted_fluid_network_;

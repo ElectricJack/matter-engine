@@ -3254,6 +3254,88 @@ void test_slot_binder_reset_union_is_exact() {
 
 } // namespace
 
+// giBake({...}) — the GI lightmap bake declaration (docs/bake-gi.md). A data
+// call, not a lifecycle hook: legal at module scope, in a static initializer
+// and inside hooks; every field optional; at most one call per world.
+void test_world_loader_accepts_gi_bake_call() {
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("GiWorld.js", R"JS(
+const gi = giBake({ samples: 128, bounces: 3, texelDensity: 12.5, seed: 42, prelit: true, denoise: false, out: 'gi-out' });
+if (gi.samples !== 128 || gi.bounces !== 3 || gi.texelDensity !== 12.5 || gi.prelit !== true || gi.out !== 'gi-out')
+  throw new Error('giBake did not echo its settings');
+class GiWorld extends World {
+  static settings = { sectorSize: 64 };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value(), "giBake() publishes a GI bake declaration");
+        if (definition.gi_bake) {
+            const matter::GiBakeSettings& g = *definition.gi_bake;
+            CHECK(g.samples == 128 && g.bounces == 3 && g.texel_density == 12.5f && g.seed == 42,
+                  "giBake numeric fields are retained");
+            CHECK(g.prelit && !g.denoise && g.out == "gi-out", "giBake flags and out dir are retained");
+        }
+    }
+    {
+        // Static-initializer call with no options: every field defaults.
+        Fixture fixture;
+        const fs::path path = fixture.write("GiDefaults.js", R"JS(
+class GiDefaults extends World {
+  static settings = { sectorSize: 64 };
+  static gi = giBake();
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value() && definition.gi_bake->samples == 64 &&
+                  definition.gi_bake->bounces == 2 && definition.gi_bake->texel_density == 8.0f &&
+                  definition.gi_bake->denoise && !definition.gi_bake->prelit &&
+                  definition.gi_bake->out.empty(),
+              "giBake() with no options records the defaults");
+    }
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("NoGi.js", R"JS(
+class NoGi extends World { static settings = { sectorSize: 64 }; }
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(!definition.gi_bake.has_value(), "a world without giBake() has no declaration");
+    }
+}
+
+void test_world_loader_rejects_invalid_gi_bake() {
+    const auto rejects = [](const char* filename, const std::string& body, const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            filename, body + "\nclass Bad extends World { static settings = { sectorSize: 64 }; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid giBake authoring is rejected");
+        CHECK(error.property_path.find(expected_path) != std::string::npos,
+              (std::string("giBake diagnostic names the field: ") + expected_path +
+               " (got '" + error.property_path + "')").c_str());
+    };
+    rejects("GiSamples.js", "giBake({ samples: 0 });", "giBake.samples");
+    rejects("GiSamplesBig.js", "giBake({ samples: 5000 });", "giBake.samples");
+    rejects("GiBounces.js", "giBake({ bounces: 9 });", "giBake.bounces");
+    rejects("GiDensity.js", "giBake({ texelDensity: -1 });", "giBake.texelDensity");
+    rejects("GiDensityNaN.js", "giBake({ texelDensity: 'dense' });", "giBake.texelDensity");
+    rejects("GiPrelit.js", "giBake({ prelit: 'yes' });", "giBake.prelit");
+    rejects("GiOut.js", "giBake({ out: 7 });", "giBake.out");
+    rejects("GiTwice.js", "giBake({}); giBake({ samples: 8 });", "giBake");
+    rejects("GiArg.js", "giBake(12);", "giBake");
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     ScopedCacheRootEnv clean_cache_environment(nullptr);
@@ -3329,6 +3411,8 @@ int main() {
     test_world_loader_rejects_terrain_collision_outside_collision_phase();
     test_world_loader_rejects_invalid_terrain_collision_builder_lifecycle();
     test_terrain_collision_adapter_preserves_optional_definition();
+    test_world_loader_accepts_gi_bake_call();
+    test_world_loader_rejects_invalid_gi_bake();
     test_slot_binder_reset_union_is_exact();
     return check_summary();
 }

@@ -95,6 +95,7 @@ SQL_DIR     = ../libs/SpatialQueryLib
 MEMLIB_DIR  = ../libs/MemoryLib
 MATHLIB_DIR = ../libs/MathLib
 MCL_DIR     = ../libs/MeshChartingLib
+ASSET_STORE_DIR = ../libs/AssetStoreLib
 PROFILE_DIR = ../libs/ProfileLib
 OZZ_DIR     = ../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
@@ -119,6 +120,7 @@ INCLUDE_PATHS = -I. -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
                 -I$(PROFILE_DIR)/include \
+                -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(BC7ENC_DIR) \
                 -I$(PFL_DIR)/include \
@@ -537,7 +539,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/animation src/render src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src
+vpath %.cpp src src/animation src/render src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_STORE_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
@@ -802,6 +804,16 @@ $(VIEWER_LIB): $(VIEWER_ALL_OBJ) | check-me3-source-basenames
 	$(VIEWER_AR) rcs $@ $(VIEWER_ALL_OBJ)
 
 viewer-lib: $(VIEWER_LIB)
+
+# `matter` command-line tool (matter bake gi ...), rollback/Unix build: links
+# the headless kernel archive plus the vendored physics/animation archives the
+# script host needs (ozz .a files are prebuilt per checkout -- see CLAUDE.md
+# "Worktree setup"). The canonical build is the CMake `matter_cli` target.
+CLI_BIN = build/matter
+cli: $(CLI_BIN)
+$(CLI_BIN): cli/matter_cli.cpp $(LIB) $(BOX3D_LIB) | build
+	$(CC) cli/matter_cli.cpp -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LIB) \
+	    $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(RAYLIB_PATH)/libraylib.a -lpthread -lm -ldl
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:
