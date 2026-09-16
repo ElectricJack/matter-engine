@@ -344,6 +344,14 @@ bool build_export_model(const std::vector<Tri>& tris,
         double covered_texels = 0.0;
         for (int t = 0; t < tri_count; ++t) {
             const int c = frames.chart_of_tri[static_cast<size_t>(t)];
+            // segment_charts documents dense ids with no -1, and the packer
+            // returns one placement per chart. Check anyway rather than index
+            // out of bounds: this tool reads arbitrary cached artifacts, and a
+            // silent heap read is a worse failure than a named one.
+            if (c < 0 || static_cast<size_t>(c) >= placements.size()) {
+                error = "internal: chart segmentation produced an out-of-range chart id";
+                return false;
+            }
             const mesh_charting::ChartPlacement& pl = placements[static_cast<size_t>(c)];
             const float* T = &frames.tangent[static_cast<size_t>(c) * 3u];
             const float* B = &frames.bitangent[static_cast<size_t>(c) * 3u];

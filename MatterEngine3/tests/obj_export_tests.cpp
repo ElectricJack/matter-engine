@@ -93,6 +93,11 @@ void push_triangle(Soup& soup, const float a[3], const float b[3], const float c
 }
 
 // Axis-aligned unit cube centred on the origin, counter-clockwise when seen
+// from outside, with one material per face. `face_materials` is indexed in the
+// quad order below: -Y, +Y, -Z, +Z, +X, -X.
+Soup make_faceted_cube(float half, const int face_materials[6]);
+
+// Axis-aligned unit cube centred on the origin, counter-clockwise when seen
 // from outside. The +Y face takes `top_material` so the export has two
 // materials and therefore two submeshes and two `usemtl` groups.
 Soup make_cube(float half, int side_material, int top_material, float top_ao) {
@@ -120,6 +125,26 @@ Soup make_cube(float half, int side_material, int top_material, float top_ao) {
     for (const Quad& q : quads) {
         push_triangle(soup, p[q.a], p[q.b], p[q.c], q.material, q.ao, q.tint);
         push_triangle(soup, p[q.a], p[q.c], p[q.d], q.material, q.ao, q.tint);
+    }
+    return soup;
+}
+
+Soup make_faceted_cube(float half, const int face_materials[6]) {
+    Soup soup;
+    const float p[8][3] = {
+        {-half, -half, -half}, {half, -half, -half}, {half, -half, half}, {-half, -half, half},
+        {-half,  half, -half}, {half,  half, -half}, {half,  half, half}, {-half,  half, half},
+    };
+    const float no_tint[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    const int quads[6][4] = {
+        {0, 1, 2, 3}, {7, 6, 5, 4}, {1, 0, 4, 5},
+        {3, 2, 6, 7}, {2, 1, 5, 6}, {0, 3, 7, 4},
+    };
+    for (int q = 0; q < 6; ++q) {
+        push_triangle(soup, p[quads[q][0]], p[quads[q][1]], p[quads[q][2]],
+                      face_materials[q], 1.0f, no_tint);
+        push_triangle(soup, p[quads[q][0]], p[quads[q][2]], p[quads[q][3]],
+                      face_materials[q], 1.0f, no_tint);
     }
     return soup;
 }
@@ -375,6 +400,72 @@ void test_texture_content() {
     CHECK(roughness.content_hash != 0u, "textures: roughness map hashed");
     CHECK(model.maps[static_cast<uint32_t>(MapKind::Normal)].content_hash != 0u,
           "textures: normal map hashed");
+}
+
+// Six faces, six materials, six charts: sample the baked albedo at every
+// triangle's UV centroid and demand it carry that triangle's own material
+// colour. This is the assertion that ties the writer's UVs, the rasteriser's
+// texel addressing and the chart packer's placements together — if any two of
+// them disagreed, or if two charts overlapped in the atlas, some face would
+// read a neighbour's colour and every structural check would still pass.
+void test_uv_to_texel_agreement() {
+    const int face_materials[6] = {1, 2, 8, 9, 16, 19};
+    const Soup soup = make_faceted_cube(0.5f, face_materials);
+
+    ExportModel model;
+    std::string error;
+    ExportOptions options;
+    options.texture_size = 256;
+    options.gutter_texels = 4;
+    if (!matter_export::build_export_model(soup.tris, soup.triex, "faceted", 1, 0, 1,
+                                           options, model, error)) {
+        printf("FAIL: uv agreement build: %s\n", error.c_str());
+        ++g_failures;
+        return;
+    }
+    matter_export::TextureBakeOptions bake;
+    bake.size = 256;
+    bake.dilate_texels = 4;
+    if (!matter_export::bake_maps(model, bake, error)) {
+        printf("FAIL: uv agreement bake: %s\n", error.c_str());
+        ++g_failures;
+        return;
+    }
+    CHECK(model.materials.size() == 6u, "uv agreement: six distinct materials");
+    CHECK(model.charts.chart_count == 6u,
+          "uv agreement: six planar faces segment into six charts");
+
+    const matter_export::ExportImage& albedo =
+        model.maps[static_cast<uint32_t>(MapKind::Albedo)];
+    uint32_t checked = 0;
+    bool all_match = true;
+    for (const matter_export::ExportSubmesh& sub : model.mesh.submeshes) {
+        const matter_export::ExportMaterial& material = model.materials[sub.material_slot];
+        const uint8_t want[3] = {matter_export::encode_srgb_u8(material.albedo[0]),
+                                 matter_export::encode_srgb_u8(material.albedo[1]),
+                                 matter_export::encode_srgb_u8(material.albedo[2])};
+        for (uint32_t i = 0; i < sub.index_count; i += 3u) {
+            float u = 0.0f, v = 0.0f;
+            for (uint32_t k = 0; k < 3u; ++k) {
+                const uint32_t vertex = model.mesh.indices[sub.first_index + i + k];
+                u += model.mesh.uvs[static_cast<size_t>(vertex) * 2u + 0u];
+                v += model.mesh.uvs[static_cast<size_t>(vertex) * 2u + 1u];
+            }
+            u /= 3.0f;
+            v /= 3.0f;
+            const uint32_t x = std::min<uint32_t>(255u, static_cast<uint32_t>(u * 256.0f));
+            const uint32_t y =
+                std::min<uint32_t>(255u, static_cast<uint32_t>((1.0f - v) * 256.0f));
+            const size_t texel = static_cast<size_t>(y) * 256u + x;
+            for (int c = 0; c < 3; ++c)
+                all_match = all_match && albedo.texels[texel * 3u + static_cast<size_t>(c)] ==
+                                             want[static_cast<size_t>(c)];
+            ++checked;
+        }
+    }
+    CHECK(checked == 12u, "uv agreement: every triangle sampled");
+    CHECK(all_match,
+          "uv agreement: each triangle's UV centroid reads its own material colour");
 }
 
 void test_determinism(const std::string& root) {
@@ -733,6 +824,7 @@ int main() {
     test_number_formatting();
     test_round_trip(root);
     test_texture_content();
+    test_uv_to_texel_agreement();
     test_determinism(root);
     test_artifact_export(root);
     test_texture_format_reservation(root);

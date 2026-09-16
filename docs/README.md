@@ -43,6 +43,8 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 - **[Debugging feedback loop](debugging-feedback-loop.md)** — visual GPU bug
   diagnosis workflow.
 - **[Baselines](baselines/README.md)** — screenshot baseline policy and tools.
+- **[OBJ export](export-obj.md)** — `matter export obj`: taking a baked Part out
+  of the engine as OBJ + MTL + PBR maps, and what that format cannot carry.
 
 ## Findings and measurements
 

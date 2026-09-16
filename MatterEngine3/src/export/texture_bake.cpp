@@ -159,6 +159,20 @@ bool bake_maps(ExportModel& model, const TextureBakeOptions& options,
         error = "texture size does not match the atlas the UVs were packed for";
         return false;
     }
+    // Every submesh indexes this list, and the inner loop trusts that. Reject a
+    // model that was hand-assembled without it rather than reading index 0 of
+    // an empty vector.
+    if (model.materials.empty() || mesh.submeshes.empty()) {
+        error = "cannot bake textures: the model has no materials";
+        return false;
+    }
+    for (const ExportSubmesh& sub : mesh.submeshes) {
+        if (sub.material_slot >= model.materials.size()) {
+            error = "cannot bake textures: a submesh names a material slot that does "
+                    "not exist";
+            return false;
+        }
+    }
 
     const uint32_t w = options.size;
     const uint32_t h = options.size;
@@ -233,10 +247,7 @@ bool bake_maps(ExportModel& model, const TextureBakeOptions& options,
             }
         }
 
-        const ExportMaterial& material =
-            model.materials[material_slot_of_triangle[t] < model.materials.size()
-                                ? material_slot_of_triangle[t]
-                                : 0u];
+        const ExportMaterial& material = model.materials[material_slot_of_triangle[t]];
 
         // Per-triangle tangent frame from the UV derivatives (Lengyel). The
         // atlas UV is a planar projection, so this is well conditioned except

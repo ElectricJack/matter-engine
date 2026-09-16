@@ -73,6 +73,10 @@ struct TextureBakeOptions {
     // Per-channel opt-out; all true by default.
     bool bake[kMapCount] = {true, true, true, true, true, true};
 };
+// The initializer above is written out, so a new MapKind would silently leave
+// its channel disabled. Fail the build instead.
+static_assert(kMapCount == 6u,
+              "TextureBakeOptions::bake's default initializer must list every MapKind");
 
 // Rasterise every enabled channel into model.maps. Fails (false, `error` set)
 // when the model has no UVs, when `size` disagrees with the packed atlas, or

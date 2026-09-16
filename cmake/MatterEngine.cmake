@@ -176,7 +176,13 @@ matter_apply_project_defaults(matter_engine_headless)
 # it cannot collide with a future library of the same name.
 # ---------------------------------------------------------------------------
 add_executable(matter_cli MatterEngine3/tools/matter_cli.cpp)
-set_target_properties(matter_cli PROPERTIES OUTPUT_NAME matter)
+set_target_properties(matter_cli PROPERTIES
+    OUTPUT_NAME matter
+    # Beside the engine it belongs to, mirroring how matter_editor lands in
+    # MatterEditor/build/windows-msvc rather than in the preset's binary dir.
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/build/windows-msvc"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/build/windows-msvc"
+)
 matter_engine_include_directories(matter_cli PRIVATE)
 target_compile_definitions(matter_cli PRIVATE
     PLATFORM_DESKTOP
