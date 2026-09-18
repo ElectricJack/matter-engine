@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Matter Engine">
+  <rect width="64" height="64" rx="14" fill="#101815"/>
+  <path d="m32 10 22 12-22 12-22-12z" fill="#d6e985"/>
+  <path d="m10 26 20 11v19L10 45z" fill="#91ae57"/>
+  <path d="m34 37 20-11v19L34 56z" fill="#bdd66c"/>
+  <path d="m32 15 13 7-13 7-13-7z" fill="#101815"/>
+  <path d="m32 20 4 2-4 2-4-2z" fill="#d6e985"/>
+</svg>
