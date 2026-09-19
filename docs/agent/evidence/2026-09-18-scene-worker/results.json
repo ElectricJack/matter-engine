@@ -1,0 +1,74 @@
+{
+  "movement": {
+    "count": 959,
+    "median_ms": 37.794200000000274,
+    "p95_ms": 50.79080000000249,
+    "max_ms": 79.3466000000044
+  },
+  "stages": {
+    "update_cpu": {
+      "count": 2966,
+      "total_ms": 26145.543,
+      "max_ms": 60.284,
+      "mean_ms": 8.815085300067432
+    },
+    "snapshot": {
+      "count": 15543,
+      "total_ms": 2164.306,
+      "max_ms": 3.154,
+      "mean_ms": 0.13924634883870554
+    },
+    "cpu_cut": {
+      "count": 828827,
+      "total_ms": 1357.633,
+      "max_ms": 0.335,
+      "mean_ms": 0.0016380173425817452
+    },
+    "hierarchy_worker": {
+      "count": 14758,
+      "total_ms": 278.50399999999996,
+      "max_ms": 0.151,
+      "mean_ms": 0.01887139178750508
+    },
+    "hierarchy_pack": {
+      "count": 828827,
+      "total_ms": 6110.593000000001,
+      "max_ms": 0.756,
+      "mean_ms": 0.0073725795612353375
+    },
+    "scene_worker": {
+      "count": 1060,
+      "total_ms": 1140.949,
+      "max_ms": 6.205,
+      "mean_ms": 1.0763669811320755
+    },
+    "cut_upload_cpu": {
+      "count": 1117,
+      "total_ms": 3384.8229999999994,
+      "max_ms": 7.314,
+      "mean_ms": 3.030280214861235
+    }
+  },
+  "scene": {
+    "submitted": 1060,
+    "published": 1047,
+    "discarded": 12,
+    "reused": 1060
+  },
+  "queues": {
+    "reads_sampled_peak": 1023,
+    "decode_queue_sampled_peak": 36,
+    "completions_sampled_peak": 107,
+    "prepared_sampled_peak": 0,
+    "uploads_sampled_peak": 123,
+    "published": 51321,
+    "reservation_stalls": 0,
+    "upload_limit_frames": 61,
+    "cpu_deferrals": 0,
+    "failures": 0,
+    "watchdogs": 0,
+    "gpu_stalls": 0,
+    "scratch_stalls": 0,
+    "evictions": 0
+  }
+}

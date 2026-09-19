@@ -1,0 +1,18 @@
+{
+  "pid": 68324,
+  "world": "ClayBrickMaze",
+  "ui_hidden": false,
+  "camera": [
+    5.6,
+    1.35,
+    4.9,
+    4.4,
+    0.7,
+    3.4
+  ],
+  "vt_queue": 0,
+  "rejected_variants": 0,
+  "evictions": 0,
+  "source_manifest": "../2026-09-15-wall-surface/alignment-irregular-runoff-source.json",
+  "image": "alignment-editor-ui.png"
+}

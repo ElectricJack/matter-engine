@@ -1,0 +1,15 @@
+{
+  "stage": "owner-scoped material/source/surface invalidation; candidate replacement still open",
+  "sha256": {
+    "MatterEngine3/src/render/vt_residency.cpp": "2e649929c07630b92ff80bd791967c1c2b6f31209149340abc8f71bbf0fcedc3",
+    "MatterEngine3/src/render/vt_residency.h": "2d525112354da7e3a733c2197679a33a8c63dc0e48a77d4e7201725fdf8972a6",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "7d04b87daaa2219d71e344453453958952e512c8b942de5089d669379fd86deb",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "d052479458531ec704afefecadf84b728f109aec7d9d5ae046a0d5eee505938b",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "7c6fb67b5f8d79831334363de7b9c4168a3c252750a75d04895234779cb1695e",
+    "MatterEngine3/tests/vt_queue_tests.h": "f5c881abd6f3288ea262c37fd313815e90ff144857fd944991fc921e722a5dc0",
+    "MatterEngine3/src/render/vt_compositor.cpp": "9c222595364432105a164d5ad97cba69ac8242a51e53105aaa94fb0c85565050",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "2f68aba2fce56875179cb74d0b97868f1e8ed63d78271b80f4805cd5fba1dfcf",
+    "MatterEngine3/src/render/vt_chart_gpu.h": "c1ec0b8d5ec3a33db17f77446a6960af94d8078b84199fa5e6328d78ff4897a0"
+  },
+  "smoke_binary_sha256": "08bca1cd87898b2512ec0d6a8a61f0c5d01047e23e755409f7f61a4e38962aa1"
+}

@@ -1,0 +1,32 @@
+{
+  "runs": [
+    {
+      "mode": "vt-sector-seam",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-sector-seam\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 1,
+      "seconds": 41.172795188002056,
+      "binary_sha256": "82878457f9da0c11b35620705a7f5a71de47b3b0725c96dbc4650934a7781469",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": false,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "4cb64c8661ebfcbf7403fa2e7efe22ac7a3005bc49f3ea47ebd9357918196b38",
+      "passed": false
+    },
+    {
+      "mode": "vt-composed-seam",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-seam\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 20.758526128003723,
+      "binary_sha256": "82878457f9da0c11b35620705a7f5a71de47b3b0725c96dbc4650934a7781469",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "14d6396e3eee0c843c0e0cd1cd09125e2b1ed566a3369721ab0ec0f2e513697f",
+      "passed": true
+    }
+  ]
+}

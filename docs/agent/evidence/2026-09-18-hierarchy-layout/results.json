@@ -1,0 +1,56 @@
+{
+  "movement": {
+    "count": 959,
+    "median_ms": 32.38850000000093,
+    "p95_ms": 49.747699999999895,
+    "max_ms": 72.80200000000332
+  },
+  "stages": {
+    "update_cpu": {
+      "count": 3004,
+      "total_ms": 24309.494,
+      "max_ms": 54.441,
+      "mean_ms": 8.09237483355526
+    },
+    "snapshot": {
+      "count": 14545,
+      "total_ms": 1869.756,
+      "max_ms": 3.058,
+      "mean_ms": 0.12854974217944312
+    },
+    "hierarchy_worker": {
+      "count": 13760,
+      "total_ms": 256.13100000000003,
+      "max_ms": 0.145,
+      "mean_ms": 0.01861417151162791
+    },
+    "hierarchy_pack": {
+      "count": 793749,
+      "total_ms": 6358.26,
+      "max_ms": 0.782,
+      "mean_ms": 0.008010416391075768
+    },
+    "cut_upload_cpu": {
+      "count": 1086,
+      "total_ms": 3087.955,
+      "max_ms": 8.428,
+      "mean_ms": 2.8434208103130754
+    }
+  },
+  "queues": {
+    "reads_sampled_peak": 1023,
+    "decode_queue_sampled_peak": 0,
+    "completions_sampled_peak": 26,
+    "prepared_sampled_peak": 0,
+    "uploads_sampled_peak": 122,
+    "published": 51189,
+    "reservation_stalls": 0,
+    "upload_limit_frames": 64,
+    "cpu_deferrals": 0,
+    "failures": 0,
+    "watchdogs": 0,
+    "gpu_stalls": 0,
+    "scratch_stalls": 0,
+    "evictions": 0
+  }
+}

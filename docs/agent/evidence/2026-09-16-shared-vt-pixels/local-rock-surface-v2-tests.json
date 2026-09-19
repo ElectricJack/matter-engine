@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "mode": "vt-part-source",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-part-source\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 28.467159103005542,
+      "binary_sha256": "5d07ee1ca38c1ee321d6531faa3ce2fce4f4eec6a5be5cb86e6ac3fd693a9248",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "ab54446124bfd3d18ac51e1d8c655a4cd6eb493a7d19713da911fe833719bb59",
+      "passed": true
+    }
+  ]
+}

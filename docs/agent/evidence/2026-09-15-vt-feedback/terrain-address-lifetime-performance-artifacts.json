@@ -1,0 +1,204 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 407.91168829899834,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/native-environment.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "1200",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/profile.json",
+    "--env",
+    "MATTER_PIPELINE_PROFILE=1"
+  ],
+  "changed_inputs_during_run": [],
+  "validation_enabled": false,
+  "page_event_logging": false,
+  "pipeline_creation_logging": true,
+  "full_vt_acceptance": false,
+  "analysis_file": "terrain-address-lifetime-performance-summary.json",
+  "gpu_total_ms": {
+    "samples": 601,
+    "p50_ms": 74.08921813964844,
+    "p95_ms": 83.24463653564453,
+    "p99_ms": 87.40982055664062,
+    "max_ms": 94.05010986328125
+  },
+  "end_counters": {
+    "active": 1,
+    "variants": 789,
+    "pool_used": 1513,
+    "pool_capacity": 33024,
+    "replacement_reserve_pages": 64,
+    "dirty_pages": 0,
+    "fills_stale_total": 0,
+    "pinned": 789,
+    "queue": 0,
+    "mandatory_queue": 0,
+    "detail_queue": 0,
+    "oldest_mandatory_age_frames": 0,
+    "oldest_detail_age_frames": 0,
+    "fills_total": 1513,
+    "evictions_total": 0,
+    "invalidations_total": 0,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "requests_dropped_total": 0,
+    "enrich_total": 0,
+    "enrich_queue": 0,
+    "shared_refs_total": 0,
+    "finer_rebuilds_total": 0,
+    "mesh_bytes": 288107279,
+    "pool_bytes": 4275683328,
+    "resident_sectors": 2586,
+    "vertex_uploads": 587,
+    "cluster_uploads": 587,
+    "dlss_resets": 0,
+    "output_width": 1920,
+    "output_height": 1080,
+    "internal_width": 1920,
+    "internal_height": 1080,
+    "cpu_begin_ms": 0.1527,
+    "cpu_pre_pass_ms": 0.0264,
+    "cpu_post_pass_ms": 0.0043,
+    "cpu_registration_ms": 0,
+    "gpu_readback_sequence": 4113,
+    "gpu_total_ms": 74.27436828613281,
+    "gpu_vt_page_ms": 0.0010239999974146485,
+    "gpu_vt_feedback_ms": 0.2431039959192276,
+    "gpu_vt_ms": 0.24412798881530762,
+    "fills_per_frame": 8,
+    "tail_fills_per_frame": 8,
+    "enrich_per_frame": 0,
+    "queue_cap": 256,
+    "request_budget_ms": 5.090000152587891,
+    "linger_frames": 4,
+    "evict_protect_frames": 16
+  },
+  "stats_lines": [
+    "STATS,startup_ready,2676.91,0.00,0.00,0.00,0,0,0,0,0,0,0,0,0.0,0.0,0,0,0,0.00,0,0.000,0.000,0.000,0.000,0.000,0.00,0.000,0.000,0.000",
+    "STATS,settle_begin,80.34,2.30,0.34,1.73,789,63,151991,687,39,789,0,32768,274.8,3512.0,320,180,256,478.12,2,0.000,0.239,0.206,3.949,0.173,84.00,79.747,0.045,37.062",
+    "STATS,settle_end,73.97,2.25,0.18,2.05,789,63,151991,687,39,789,0,32768,274.8,3512.0,320,180,256,478.12,2,0.000,0.239,0.210,3.980,0.177,84.00,73.956,0.031,34.891"
+  ],
+  "gpu_distinct_sequences": 601,
+  "source_manifest": "address-lifetime-candidate-source.json",
+  "settled_cpu_target_pass": false,
+  "comparison_limits": [
+    "One run per shader candidate, not repeated performance acceptance.",
+    "Drawn triangles, mesh bytes, resident sectors, owner/page counts match the current-build baseline.",
+    "Dedicated VT GPU time excludes draw sampling.",
+    "Profile counter capacity overflows into its final registered counter; do not interpret vt.fb_texels as actual texel count."
+  ],
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/command.json",
+      "bytes": 1694,
+      "sha256": "d334a74c624d857e5ab622c9018bbe712c77a86d99e2fe0d2cdaebb78b3e1a86"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/driver.log",
+      "bytes": 515808,
+      "sha256": "7564d49da7a88beed84fd1f408db546016d5641fa0808b62ec0d6bb3f859ce3a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/launch-source.json",
+      "bytes": 55881,
+      "sha256": "81bc0698f25b219e43cffc5306754f811dcd39b75400bdf3bc7d9100cb058813"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/native-environment.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/profile.json",
+      "bytes": 3658025,
+      "sha256": "b7d2f470a056a5ffff3251eb1f1c964c89fb06687f58943c652bdd06c8d70146"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/result.json",
+      "bytes": 2043,
+      "sha256": "457a839d57ac7d3b38dfbc6196cf6001d9d433926a1a68115ea49ef2975fefdb"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/run/cmd.txt",
+      "bytes": 247,
+      "sha256": "7b35ad0324f2a3609de7f7a3b2ad6d78b867819987cc01a4eda4934bb5266d18"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/run/log.txt",
+      "bytes": 515309,
+      "sha256": "7271f9b1271b3440848f5ff1a2f01e631c740176b1e53cea604f046fb41273f7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/settled.png",
+      "bytes": 5887391,
+      "sha256": "54e127a85b42f38c6751183b07bd12797b63125a1f72f73ac032d3153c05e388"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/timeline.txt",
+      "bytes": 247,
+      "sha256": "7b35ad0324f2a3609de7f7a3b2ad6d78b867819987cc01a4eda4934bb5266d18"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-address-lifetime-performance/vt.jsonl",
+      "bytes": 1775577,
+      "sha256": "f4b2a091e85221c5916ef6c4a8528fffe95d9f631a5c22378e7593fcfb1b83e4"
+    }
+  ],
+  "visual_review": "Final 1920x1080 image inspected: forest/valley framing and broad lighting preserved; granular ground and noisy foliage remain. No material-authoring improvement or intermediate continuity proof claimed."
+}

@@ -1,0 +1,35 @@
+[
+  {
+    "kind": "build",
+    "name": "vulkan_smoke_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "seconds": 83.73738077499729,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/pom-boundary-diagnostic-v1-build-vulkan_smoke_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "vt-composed-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-composed-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "seconds": 67.62864882600843,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/pom-boundary-diagnostic-v1-test-vt-composed-parallax.log",
+    "source_changes": [],
+    "validation_errors": [
+      "The Vulkan spec states: If a a bound shader was created with a pipeline layout and statically uses a set n, a descriptor set must have been bound to n at the same pipeline bind point, with layouts compatible for set n with the layout(s) used to create the shader, as described in Pipeline Layout Compatibility (https://docs.vulkan.org/spec/latest/chapters/raytracing.html#VUID-vkCmdTraceRaysKHR-None-08600)",
+      "validation errors: 1"
+    ]
+  }
+]

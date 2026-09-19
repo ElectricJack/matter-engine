@@ -1,0 +1,6 @@
+{
+  "pid": 878726,
+  "result": "docs/agent/evidence/2026-09-17-mountain-rocks/sunlit-v1-result.json",
+  "log": "docs/agent/evidence/2026-09-17-mountain-rocks/sunlit-v1-supervisor.log",
+  "waits_for_pid": 875637
+}

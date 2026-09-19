@@ -1,0 +1,15 @@
+{
+  "cpu": "AMD Ryzen 9 5900X",
+  "physical_cores": 12,
+  "logical_processors": 24,
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "windows_driver_version": "32.0.16.1074",
+  "os": "Windows 11 Pro 10.0.26200",
+  "visible_memory_kib": 67026632,
+  "remote_display_adapter_present": true,
+  "msvc_tools": "14.44.35207",
+  "windows_sdk": "10.0.26100.0",
+  "vulkan_sdk": "1.4.357.0",
+  "native_python": "3.13.14",
+  "note": "Host fields observed from native PowerShell CIM; tool versions from supported wrapper preflight. Display scanout cadence is not inferred from CPU or GPU timers."
+}

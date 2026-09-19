@@ -1,0 +1,73 @@
+{
+  "valid": true,
+  "exit_code": 0,
+  "completed": true,
+  "elapsed_seconds": 26.915433400004986,
+  "streamer_idle_seconds": 9.247195599993574,
+  "first_cache_seconds": 1.1561641000007512,
+  "last_cache_seconds": 4.7930731999949785,
+  "outcomes": {
+    "hit": 815
+  },
+  "compilations": 0,
+  "identity_sources": {
+    "manifest": 2441
+  },
+  "prepared_surface_reuse": {
+    "reused": 815
+  },
+  "geometry_coverage": [
+    0,
+    0,
+    0
+  ],
+  "readiness_phases": [
+    {
+      "ready_seconds": 9.247195599993574,
+      "confirmed_seconds": 24.29618049999408,
+      "camera_turn_seconds": null
+    }
+  ],
+  "failures": [],
+  "first_visible_sector_samples": {
+    "seconds": 3.002939099998912,
+    "revision": 1,
+    "valid": true,
+    "desired": 251,
+    "pending": 0
+  },
+  "first_visible_detail_samples": {
+    "seconds": 8.386746200005291,
+    "cut_generation": 421,
+    "requests": 0,
+    "request_overflow": false,
+    "refinement_fallback": false,
+    "snapshot_matches": true,
+    "frame": 1485,
+    "view": 1,
+    "current_view": 1,
+    "current_cut": 421
+  },
+  "first_vt_samples": {
+    "seconds": 7.263567200003308,
+    "ready": true,
+    "values": {
+      "active": "1",
+      "rejected": "0",
+      "queue": "0"
+    }
+  },
+  "final_encoded_cache": {
+    "seconds": 24.295624000005773,
+    "hits": 1061,
+    "misses": 0,
+    "errors": 0,
+    "pending": 1348,
+    "captured": 0,
+    "persisted": 0,
+    "rejected": 0,
+    "pending_pages": 0
+  },
+  "clock": "seconds since native editor process launch; includes startup",
+  "acceptance": "cache validity passed; sub-second all-visible readiness not established"
+}

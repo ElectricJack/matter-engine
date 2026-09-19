@@ -1,0 +1,3 @@
+render_path native_rt
+set render.gi.enabled true
+set render.pom.enabled false

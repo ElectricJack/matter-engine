@@ -1,0 +1,28 @@
+{
+  "steps": [
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-mountain-rocks/capture_scale.py",
+        "sunlit-v2",
+        "rock-metric-v2"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-receiver-height/audit_paths.py",
+        "docs/agent/evidence/2026-09-17-mountain-rocks/sunlit-v2"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-mountain-rocks/analyze_sunlit.py",
+        "docs/agent/evidence/2026-09-17-mountain-rocks/sunlit-v2"
+      ],
+      "exit": 0
+    }
+  ],
+  "exit": 0,
+  "finished": true
+}

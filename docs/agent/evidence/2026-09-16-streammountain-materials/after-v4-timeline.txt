@@ -1,0 +1,20 @@
+wait_event bake.finished 900
+wait_idle 3 45
+render_path raster
+cam 380 90 1600 420 55 1420
+wait_frames 300
+stats after-v4-overview
+shot C:/tmp/matter-mountain-material-v4/overview.png
+cam 380 20.25 1600 380 18.25 1593
+wait_frames 450
+stats after-v4-close
+shot C:/tmp/matter-mountain-material-v4/close.png
+wait_idle 8 180
+wait_frames 150
+stats after-v4-close-refined
+shot C:/tmp/matter-mountain-material-v4/close-refined.png
+cam 380 20.25 1600 400 20.25 1550
+wait_frames 90
+stats after-v4-grazing
+shot C:/tmp/matter-mountain-material-v4/grazing.png
+quit

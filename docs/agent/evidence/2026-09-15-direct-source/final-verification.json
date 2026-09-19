@@ -1,0 +1,9 @@
+{
+  "native_checks": 10,
+  "native_checks_pass": true,
+  "native_source_count": 83,
+  "native_source_mismatches": [],
+  "native_binary_mismatches": [],
+  "proof_source_mismatches": [],
+  "proof_image_sha256": "18b868c5195a21f63cd17b790dd70451d94213ee940bdbe6bbfef525f3a39a3c"
+}

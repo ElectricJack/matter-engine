@@ -1,0 +1,46 @@
+[
+  {
+    "kind": "build",
+    "name": "eval_world_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "eval_world_tests"
+    ],
+    "exit": 0,
+    "seconds": 10.825064709002618,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/weathering-occlusion-build-eval_world_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "cpu",
+    "name": "eval_world_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/eval_world_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.0309159069875022,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/weathering-occlusion-cpu-eval_world_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 5.3701188120030565,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/weathering-occlusion-build-matter_editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

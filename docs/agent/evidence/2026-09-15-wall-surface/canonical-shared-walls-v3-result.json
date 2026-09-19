@@ -1,0 +1,27 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 52.963092512,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [
+    "canonical-shared-walls-v3-pom-status.png: nearly uniform capture; receiver may be absent",
+    "canonical-shared-walls-v3-pom-charts.png: nearly uniform capture; receiver may be absent"
+  ],
+  "vt_stats": [
+    "STATSVT,canonical-shared-walls-v3-group,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=53/25600,pinned=3,queue=0,fills=53,evictions=0,ind=0.01/64 MiB,material_pages=53,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v3-close,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=98/25600,pinned=3,queue=0,fills=98,evictions=0,ind=0.01/64 MiB,material_pages=98,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v3-grazing,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=124,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v3-rt,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=124,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v3-pom-status,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=124,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v3-pom-charts,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=124,shared_material_refs=0"
+  ],
+  "images": {
+    "canonical-shared-walls-v3-group.png": "993fa06fb85ccef5489a8de39118906886f7e8f0fd7c8cbda8a0df1daa623d64",
+    "canonical-shared-walls-v3-close.png": "d00aecc94083a9874901771b2915a0e789bd617b2e7053e9f05a1f305df81c42",
+    "canonical-shared-walls-v3-grazing.png": "ede853f5f30db7913e341c8ffe7f10c21d46dae6ea8379113c25608fabf04b19",
+    "canonical-shared-walls-v3-rt.png": "69ed76b28b8fd84af9265ae2c499c2e2c9ae7848390e788cac6a0b78926efc41",
+    "canonical-shared-walls-v3-pom-status.png": "70dcd41d7520f1823fe3659d431bed1e7376b85a92a45c9557eb10215eed0dde",
+    "canonical-shared-walls-v3-pom-charts.png": "03de938c397a45c8f886d462577016ee060075dafdb94cce91c9ea518ea260e4"
+  },
+  "passed": false
+}

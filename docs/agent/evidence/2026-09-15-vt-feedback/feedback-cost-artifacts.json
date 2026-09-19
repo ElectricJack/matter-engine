@@ -1,0 +1,290 @@
+{
+  "full_vt_acceptance": false,
+  "source_manifest": "feedback-cost-integration-source.json",
+  "verification": "feedback-cost-final-verification.json",
+  "implementation": "Demand timing transport and complete declared-stage CPU reporting; packed-feedback scan candidate and native benchmark/regression coverage.",
+  "candidate_status": "Retained provisionally with measured empty-buffer regression.",
+  "task_diff_whitespace_check_exit": 0,
+  "artifacts": [
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/control-surface.md",
+      "bytes": 67194,
+      "sha256": "a77d8dddf676936e18133ae117938d513445f19d3a21028e20111293cee6938f"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/README.md",
+      "bytes": 121666,
+      "sha256": "d8e6f3469fd6c2a87bc9b3c63f75404710526f5dc3f783702585b5dd5ff278eb"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/castle-feedback-cost-performance-artifacts.json",
+      "bytes": 15123,
+      "sha256": "325ae94a3c662cd681007c51fa9e3a674db122175f17ff3162fa546b30967b2c"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/castle-feedback-cost-performance-summary.json",
+      "bytes": 2380,
+      "sha256": "72b87da0cefe2cda151796a49f6d1fafec073a23aeeb78cc23a7d51210f94332"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-baseline-checks.json",
+      "bytes": 2267,
+      "sha256": "d8ec21e762041ad802b8695e790435e39887f9fb718404281a32c195a45d9b18"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-baseline-cpu-build.log",
+      "bytes": 2670,
+      "sha256": "e8b5931aba10ef480b89f444ed5d41af247f6f0ad84904b6536094ff65a3092b"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-baseline-source.json",
+      "bytes": 7992,
+      "sha256": "b1f85d222277b348c8d62c8c8e7a933b36043cd87acbdeaa81f389b24e491994"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-baseline-test-residency-cpu-0.log",
+      "bytes": 224,
+      "sha256": "0dd43e7d739d5d291db20306d30e6093f1ad8d31aa6403b40314f8d579da101d"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-baseline-test-residency-cpu-1.log",
+      "bytes": 224,
+      "sha256": "d31737403714aabe3c0cab31e53651b01f632a85762a61e18912ab4e38a9d3e7"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-baseline-test-residency-cpu-2.log",
+      "bytes": 225,
+      "sha256": "d66e8306e5573a3f5aba8015706a478ad0b50f5538e61872906c16abcc6c403f"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-final-verification.json",
+      "bytes": 2196,
+      "sha256": "907a163d4b91a2b57a8f4f56b5c82d01d7142d8a8460928b285f68dba6a1a87d"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-build-matter_editor-1.log",
+      "bytes": 3003,
+      "sha256": "7fade076a51c7ba42483e0c76894403e5023d4030518cf88d7ce92d477eff526"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-build-vt_compositor_tests-2.log",
+      "bytes": 7001,
+      "sha256": "9b727596167ee72c3cca691d46a22c25fd35efb2fcb47c34339920568ae73a27"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-build-vulkan_smoke_tests-0.log",
+      "bytes": 87528,
+      "sha256": "75f958b320af7b29b84663d951ed96ae25db0402f94712225e1ba9062ac8fcc2"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-checks.json",
+      "bytes": 5789,
+      "sha256": "d79ca397c304b44c415f68c34feac113295757d7726d49e33c95aff27bad2ab1"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-source.json",
+      "bytes": 7992,
+      "sha256": "0e678f337f416134cac706ee8a5b11e5ffb239036dc155fa4768d78b10a1401b"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-test-compositor-7.log",
+      "bytes": 2929,
+      "sha256": "a225dd25c23394858850810d5afe771534376e4915baee432fabb7a1bf1762d3"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-test-raster-8.log",
+      "bytes": 5179,
+      "sha256": "1d5ae1edd1927b5f73ec5967443a14459953bba3953d90e0cd08c1d3d33386e4"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-test-surface-parallax-6.log",
+      "bytes": 5939,
+      "sha256": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-test-vt-feedback-3.log",
+      "bytes": 7510,
+      "sha256": "738c87e51eba5a4ba7399ba23fd3f669ae9cb43675cad554af8cf841c929dfbb"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-test-vt-input-snapshot-5.log",
+      "bytes": 8791,
+      "sha256": "63a460cc0da70abff54e89d90ab25af98ec6e56ed57eb8ad8e5888e9fa5b75e4"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-integration-test-vt-queue-4.log",
+      "bytes": 1989,
+      "sha256": "e8e167c0a42d4f969e7cb6e7b1f01fd0edb0e1db0103fc24e5fb1b4e207985d9"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-legacy-reanalysis.json",
+      "bytes": 1209,
+      "sha256": "34b97833952d1c34557d43643e070d30b5f253f06652328f166469e889aa2893"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-microbench.json",
+      "bytes": 7983,
+      "sha256": "f3672e2240c90cf74656a474136612d86ff6729654598a8c3df592437c07dc6a"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-build-vt_residency_tests-0.log",
+      "bytes": 2670,
+      "sha256": "7ab45d3282931bb15969435e9cee67061b359bd8e982c5ec5798f6bad8af5d95"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-checks.json",
+      "bytes": 2678,
+      "sha256": "3f1aa37613f26e88db5f0e6f2aa2d940512d11495ded36f81a5c97617a22a7fe"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-load-build-vt_residency_tests-0.log",
+      "bytes": 2670,
+      "sha256": "2cb10e8898a24701d70f1ea5f2ad300fced076256c947ec5ba12f454a03d470a"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-load-checks.json",
+      "bytes": 2701,
+      "sha256": "37a44f7b791e1ffdfcb4fc6d17ae290d577c0bb3eee05a1e151c7a8e6a8403d8"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-load-source.json",
+      "bytes": 7992,
+      "sha256": "f22d603e4506d195fa74bed49b69dd3378367fb07191b61483c464b0c581c91b"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-load-test-residency-cpu-1.log",
+      "bytes": 224,
+      "sha256": "1c54aa0cd36914224f95e59e306bd228ba529e802c0090af169727eaa8d4cad2"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-load-test-residency-cpu-2.log",
+      "bytes": 224,
+      "sha256": "4ead138e2ac65096bae7b37e0844f6cfcf9747e2d79606876972118296121661"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-load-test-residency-cpu-3.log",
+      "bytes": 224,
+      "sha256": "11df5db9a84349713e849b5c3dbe9f3d58224b51a579b0fddafb90153c88d2c5"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-source.json",
+      "bytes": 7992,
+      "sha256": "6364043a22fbcad1fc200af43b8f55cb63a62e13028e9f7de95e2251863e9727"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-test-residency-cpu-1.log",
+      "bytes": 224,
+      "sha256": "cfd4b4e6f41dcbb7bb8074c2ee0dcf18d98cbef2e104507db9d61f31c31b54bb"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-test-residency-cpu-2.log",
+      "bytes": 224,
+      "sha256": "a80671ac69b764d585a7253dd6b7a8cf6181b57cc068126a04cbfa24caeed96a"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-packed-test-residency-cpu-3.log",
+      "bytes": 224,
+      "sha256": "4b8a6b0f46d1f177cf7a1fc3ffdaa1e883d3d106b086a43892955a46b535cd7a"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-parser-checks.json",
+      "bytes": 451,
+      "sha256": "0638e72fe74a0db88f67cf538691d2e2edd90dfd936d37b90cefb1ba2fb5a9ec"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-timing-parser-green.log",
+      "bytes": 110,
+      "sha256": "0dfbe8f7b540f34b14aecc799c2a926bac769b6dd0543155b042ae32b5bce0b3"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/feedback-cost-timing-parser-red.log",
+      "bytes": 1484,
+      "sha256": "b6da459248dc41c351dc3894c086d2e928fc6666576c96ea118365c83f421dbb"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-feedback-cost-performance-artifacts.json",
+      "bytes": 15197,
+      "sha256": "14a84637069d2c977f076045cefd8d7f39cd443528cbc710a87f0833fcc214da"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-feedback-cost-performance-summary.json",
+      "bytes": 2326,
+      "sha256": "26654c8a073d4d70e43e692b7efb88c53b1227b2035b66309979f194d16bd55c"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-performance-full-cpu-reanalysis.json",
+      "bytes": 2275,
+      "sha256": "dc77c09bc84767d89491abc2d3d471046d93a8dd3d990ed6c78e97ecb471bbdb"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-repeat-full-cpu-reanalysis.json",
+      "bytes": 2273,
+      "sha256": "0bfe4ded6dcaf50e991d9152389840b191c82275d3eee305360ff42a8c99d099"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/qa-cookbook.md",
+      "bytes": 34651,
+      "sha256": "596e248b74c71d7d56bf4c663c61508f07c822efb2a85f6ad9aafed0962e4f89"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/superpowers/plans/2026-09-14-vt-reliability-and-throughput.md",
+      "bytes": 24252,
+      "sha256": "c708d7d29defa3d4cf4cc76e1911da47c470e86d84a9fd606e748ed6c081290b"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/superpowers/specs/2026-09-14-vt-reliability-and-throughput-design.md",
+      "bytes": 16600,
+      "sha256": "31c4fd5f8bebe3be7e22f1068a7471672107d42976323704f312ec9590c746e9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/baseline-cpu-build.log",
+      "bytes": 2670,
+      "sha256": "e8b5931aba10ef480b89f444ed5d41af247f6f0ad84904b6536094ff65a3092b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/before-source.json",
+      "bytes": 1113,
+      "sha256": "5b34c3feb754c49ebe8457e40bef8dd0a25ee95afbda3875177187c135e48619"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/feedback-cost-production-and-tests.patch",
+      "bytes": 16451,
+      "sha256": "eb899d5f291dfc934057950baf8006d698aed04da805219cff82a0718d98c3a9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/legacy-reanalysis.json",
+      "bytes": 1209,
+      "sha256": "34b97833952d1c34557d43643e070d30b5f253f06652328f166469e889aa2893"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/packed-first-vt_feedback.h",
+      "bytes": 3905,
+      "sha256": "73346f163cfd1a290f3ff17bc3bdf2c6e68dddd120e36268bb2eeaebfd003edc"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/report-draft.md",
+      "bytes": 4164,
+      "sha256": "13963f57bbdf1bfe55b8858aa7a6a790eedc4d3b1394ffc160d2de1c00d7de63"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/run_checks.py",
+      "bytes": 3363,
+      "sha256": "dec4a25ba3c21665619ea5307ba670aaf30d5c6914d35dfab660fd45e2bb63aa"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/summarize_performance.py",
+      "bytes": 3901,
+      "sha256": "fb175e722f234148edb8507cdb443811a22199be615a84c17ac41a70a5794797"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/timing-parser-green.log",
+      "bytes": 110,
+      "sha256": "0dfbe8f7b540f34b14aecc799c2a926bac769b6dd0543155b042ae32b5bce0b3"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/timing-parser-red.log",
+      "bytes": 1484,
+      "sha256": "b6da459248dc41c351dc3894c086d2e928fc6666576c96ea118365c83f421dbb"
+    }
+  ]
+}

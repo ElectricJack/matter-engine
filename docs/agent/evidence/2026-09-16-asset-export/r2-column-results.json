@@ -1,0 +1,303 @@
+[
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "export-attempt-0",
+        "command":  "asset.export",
+        "ticket_id":  "2",
+        "ok":  true,
+        "code":  "ok",
+        "message":  "",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "198"
+                                  },
+                        "view":  {
+                                     "id":  "198"
+                                 }
+                    },
+        "result":  {
+                       "directory":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-handoff\\2026-09-16-r2\\validation\\column-confirm\\asset",
+                       "source_hash":  "9654828149174052927",
+                       "lod":  0,
+                       "triangles":  8680,
+                       "vertices":  26040,
+                       "materials":  1,
+                       "files":  [
+                                     "material_0-basecolor.png",
+                                     "material_0-normal.png",
+                                     "material_0-orm.png",
+                                     "material_0-clearcoat.png",
+                                     "material_0-normal-obj.png",
+                                     "material_0-occlusion.png",
+                                     "material_0-roughness.png",
+                                     "material_0-metallic.png",
+                                     "material_0-height.png",
+                                     "asset.obj",
+                                     "asset.mtl",
+                                     "asset.glb",
+                                     "manifest.json"
+                                 ]
+                   }
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "existing",
+        "command":  "asset.export",
+        "ticket_id":  "4",
+        "ok":  false,
+        "code":  "execution_failure",
+        "message":  "choose a new export directory; existing destinations are never overwritten",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "229"
+                                  },
+                        "view":  {
+                                     "id":  "229"
+                                 }
+                    },
+        "result":  null
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "bad-lod",
+        "command":  "asset.export",
+        "ticket_id":  "6",
+        "ok":  false,
+        "code":  "invalid_input",
+        "message":  "lod must be an integer between 0 and 15",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "230"
+                                  },
+                        "view":  {
+                                     "id":  "230"
+                                 }
+                    },
+        "result":  null
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "hash-export",
+        "command":  "asset.export",
+        "ticket_id":  "8",
+        "ok":  true,
+        "code":  "ok",
+        "message":  "",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "231"
+                                  },
+                        "view":  {
+                                     "id":  "231"
+                                 }
+                    },
+        "result":  {
+                       "directory":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-handoff\\2026-09-16-r2\\validation\\column-confirm\\asset-hash",
+                       "source_hash":  "9654828149174052927",
+                       "lod":  0,
+                       "triangles":  8680,
+                       "vertices":  26040,
+                       "materials":  1,
+                       "files":  [
+                                     "material_0-basecolor.png",
+                                     "material_0-normal.png",
+                                     "material_0-orm.png",
+                                     "material_0-clearcoat.png",
+                                     "material_0-normal-obj.png",
+                                     "material_0-occlusion.png",
+                                     "material_0-roughness.png",
+                                     "material_0-metallic.png",
+                                     "material_0-height.png",
+                                     "asset.obj",
+                                     "asset.mtl",
+                                     "asset.glb",
+                                     "manifest.json"
+                                 ]
+                   }
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "capture",
+        "command":  "viewport.capture",
+        "ticket_id":  "10",
+        "ok":  true,
+        "code":  "ok",
+        "message":  "",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "234"
+                                  },
+                        "view":  {
+                                     "id":  "234"
+                                 }
+                    },
+        "result":  {
+                       "path":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-handoff\\2026-09-16-r2\\validation\\column-confirm\\engine.png",
+                       "completion_marker":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-handoff\\2026-09-16-r2\\validation\\column-confirm\\engine.png.done",
+                       "image":  {
+                                     "format":  "png",
+                                     "width":  1200,
+                                     "height":  900,
+                                     "framebuffer_origin":  {
+                                                                "x":  0,
+                                                                "y":  0
+                                                            }
+                                 },
+                       "viewport":  {
+                                        "logical":  {
+                                                        "x":  0,
+                                                        "y":  0,
+                                                        "width":  1200,
+                                                        "height":  900
+                                                    },
+                                        "framebuffer":  {
+                                                            "x":  0,
+                                                            "y":  0,
+                                                            "width":  1200,
+                                                            "height":  900
+                                                        },
+                                        "image":  {
+                                                      "x":  0,
+                                                      "y":  0,
+                                                      "width":  1200,
+                                                      "height":  900
+                                                  },
+                                        "framebuffer_scale":  {
+                                                                  "x":  1,
+                                                                  "y":  1
+                                                              },
+                                        "production_view":  true
+                                    },
+                       "pick_mapping":  {
+                                            "target_space":  "viewport_local_logical_pixels",
+                                            "image_offset":  {
+                                                                 "x":  0,
+                                                                 "y":  0
+                                                             },
+                                            "divide_by":  {
+                                                              "x":  1,
+                                                              "y":  1
+                                                          },
+                                            "formula":  "viewport_x = (image_x - image_offset.x) / divide_by.x; same for y"
+                                        },
+                       "camera":  {
+                                      "position":  [
+                                                       3.5999999046325684,
+                                                       2.9000000953674316,
+                                                       5.5
+                                                   ],
+                                      "target":  [
+                                                     0,
+                                                     1.9500000476837158,
+                                                     0
+                                                 ],
+                                      "up":  [
+                                                 0,
+                                                 1,
+                                                 0
+                                             ],
+                                      "vertical_fov_radians":  0.78539818525314331,
+                                      "near_plane":  0.10000000149011612,
+                                      "far_plane":  10241
+                                  },
+                       "captured":  {
+                                        "session":  {
+                                                        "id":  "1",
+                                                        "generation":  "1"
+                                                    },
+                                        "scene":  {
+                                                      "generation":  "1",
+                                                      "revision":  "1",
+                                                      "ready":  true
+                                                  },
+                                        "selection":  {
+                                                          "revision":  "0"
+                                                      },
+                                        "frame":  {
+                                                      "id":  "234"
+                                                  },
+                                        "view":  {
+                                                     "id":  "234"
+                                                 }
+                                    },
+                       "presented":  {
+                                         "id":  "234",
+                                         "view_id":  "234"
+                                     },
+                       "annotations":  {
+                                           "available":  false,
+                                           "reason":  "annotate_selection was not requested"
+                                       }
+                   }
+    }
+]

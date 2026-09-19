@@ -1,0 +1,106 @@
+[
+  {
+    "kind": "build",
+    "name": "finite_surface_recipe_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "finite_surface_recipe_tests"
+    ],
+    "exit": 0,
+    "seconds": 35.78111732999969,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v2-build-finite_surface_recipe_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "finite_surface_recipe_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/finite_surface_recipe_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.1756791159859858,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v2-rootcpu-finite_surface_recipe_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "part_surface_provider_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "part_surface_provider_tests"
+    ],
+    "exit": 0,
+    "seconds": 10.47197226100252,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v2-build-part_surface_provider_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "part_surface_provider_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.3341954560019076,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v2-rootcpu-part_surface_provider_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "seconds": 56.571897909001564,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v2-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "clay",
+    "name": "compositor",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VT_CLAY_FIXTURE='D:/tmp/matter-vt/20260915-stamp-vt/faces'; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 7.854634825998801,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v2-clay-compositor.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 65.44560490400181,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v2-build-matter_editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

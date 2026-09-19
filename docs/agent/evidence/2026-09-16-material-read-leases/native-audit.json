@@ -1,0 +1,35 @@
+{
+  "prefix": "material-read-v2",
+  "scope": "material read ownership, exact dependency admission, native pixel retention and VT regressions; not sparse layer integration or visual/performance acceptance",
+  "source_count": 998,
+  "source_changes": [],
+  "binary_changes": [],
+  "log_changes": [],
+  "build_manifest": "docs/agent/evidence/2026-09-16-shared-vt-pixels/material-read-v2-build-manifest.json",
+  "build_manifest_sha256": "c89e5e875d544086f9188faa56395d33ffe491dd4898a140aac795a102daffea",
+  "test_manifest": "docs/agent/evidence/2026-09-16-shared-vt-pixels/material-read-v2-tests.json",
+  "test_manifest_sha256": "30a3dda2923b247d589e4d09fc1bee532429878bf8da030d0e3c0b93ed66543f",
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe": "f8d9481666bad0e98bf1e755c133d4de1605e9a1d97f4986fcfa8eb0b8838412",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "f456e8196e14a9310649f6fc3752f130a8f29111f2037dd00a9eefa6874c71fe",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "f1dd623cd7a72f9265cebeadc0f3c1965e10a4ed360290602511b14ce3791efc",
+    "MatterEditor/build/windows-msvc/editor.exe": "8d662cc8088b70a9399af34878096dc5f207b40524d63fe40cfbea2b36b4d9e8"
+  },
+  "passed_modes": [
+    "cpu",
+    "vt-module-residency",
+    "vt-receiver-material",
+    "vt-queue",
+    "vt-input-snapshot",
+    "compositor",
+    "vt-export"
+  ],
+  "gpu_validation_errors": 0,
+  "rt_skips": false,
+  "retained_pixels": {
+    "wrapped_fine_pages": 2,
+    "evicted_receiver_pages": 2,
+    "bc7_color_and_r16_height": "identical before and after eviction pressure",
+    "source_edit": "stale publication and new consumption rejected"
+  }
+}

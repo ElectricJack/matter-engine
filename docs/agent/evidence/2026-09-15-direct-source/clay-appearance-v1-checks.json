@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 5.267855255995528,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/clay-appearance-v1-build-matter_editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

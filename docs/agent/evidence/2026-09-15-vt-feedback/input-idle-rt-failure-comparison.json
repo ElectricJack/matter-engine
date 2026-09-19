@@ -1,0 +1,35 @@
+{
+  "comparisons": [
+    {
+      "mode": "rt",
+      "current_exit": 1,
+      "archived_exit": 1,
+      "same_failure_list": true,
+      "failures": [
+        "FAIL: GPU temporal variance bounds reject radiance outlier"
+      ],
+      "current_validation_error_count": 0,
+      "archived_validation_error_count": 0
+    },
+    {
+      "mode": "primary-light-cull",
+      "current_exit": 1,
+      "archived_exit": 1,
+      "same_failure_list": true,
+      "failures": [
+        "FAIL: GPU tile mask covers partial tiles and more than64 lights",
+        "FAIL: GPU tile mask covers partial tiles and more than64 lights",
+        "FAIL: GPU tile mask covers partial tiles and more than64 lights",
+        "FAIL: GPU tile mask covers partial tiles and more than64 lights",
+        "FAIL: GPU tile mask covers partial tiles and more than64 lights",
+        "FAIL: moving an ordinary light removes its ID without reordering oversized lights"
+      ],
+      "current_validation_error_count": 0,
+      "archived_validation_error_count": 0
+    }
+  ],
+  "limits": [
+    "Exact assertion-list agreement proves these checks also fail on the archived evaluation build. It does not diagnose the rendering causes or certify every other RT behavior."
+  ],
+  "shader_source_changes_from_archive": {}
+}

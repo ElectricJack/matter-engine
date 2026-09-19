@@ -1,0 +1,37 @@
+{
+  "prefix": "receiver-map-v3",
+  "source_count": 924,
+  "source_changes": [],
+  "build_manifest": "docs/agent/evidence/2026-09-16-shared-vt-pixels/receiver-map-v3-build-manifest.json",
+  "build_manifest_sha256": "c1b6d29c3d9b0e0ef3e077fe0cbc44f5987efa856c7bc37cdf3504876f62ea63",
+  "test_manifest": "docs/agent/evidence/2026-09-16-shared-vt-pixels/receiver-map-v3-tests.json",
+  "test_manifest_sha256": "50e536391116f8995820675000c39e06f2e25c06de9d72887b91cf989021037c",
+  "builds_passed": 5,
+  "tests_passed": 13,
+  "test_modes": [
+    "chart",
+    "cpu",
+    "compositor",
+    "vt-receiver-material",
+    "vt-material-domain",
+    "vt-module-residency",
+    "vt-feedback-pair",
+    "vt-feedback",
+    "vt-input-snapshot",
+    "vt-composed-parallax",
+    "vt-composed-seam",
+    "vt-direct-source",
+    "surface-parallax"
+  ],
+  "all_native_logs_verified": true,
+  "zero_validation_errors": true,
+  "no_rt_skips": true,
+  "frozen_asset_runtime_unchanged": true,
+  "frozen_runtime_files_verified": 17,
+  "new_mapping_fixture": {
+    "receivers": 3,
+    "comparisons": 6,
+    "maximum_channel_error": 0
+  },
+  "scope": "Native planar receiver sampling and production chart POM; existing raster/RT regressions. JS scene binding and mapped connected-wall visual acceptance remain open."
+}

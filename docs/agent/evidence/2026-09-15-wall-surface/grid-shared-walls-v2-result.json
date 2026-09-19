@@ -1,0 +1,28 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 54.190301196999826,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,grid-shared-walls-v2-group,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=35/25600,pinned=3,queue=0,fills=35,evictions=0,ind=0.01/64 MiB,material_pages=35,shared_material_refs=0",
+    "STATSVT,grid-shared-walls-v2-close-left,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=79/25600,pinned=3,queue=0,fills=79,evictions=0,ind=0.01/64 MiB,material_pages=79,shared_material_refs=0",
+    "STATSVT,grid-shared-walls-v2-close,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=102,shared_material_refs=22",
+    "STATSVT,grid-shared-walls-v2-close-right,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=169/25600,pinned=3,queue=0,fills=169,evictions=0,ind=0.01/64 MiB,material_pages=115,shared_material_refs=54",
+    "STATSVT,grid-shared-walls-v2-grazing,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=195/25600,pinned=3,queue=0,fills=195,evictions=0,ind=0.01/64 MiB,material_pages=141,shared_material_refs=54",
+    "STATSVT,grid-shared-walls-v2-rt,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=195/25600,pinned=3,queue=0,fills=195,evictions=0,ind=0.01/64 MiB,material_pages=141,shared_material_refs=54",
+    "STATSVT,grid-shared-walls-v2-pom-status,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=195/25600,pinned=3,queue=0,fills=195,evictions=0,ind=0.01/64 MiB,material_pages=141,shared_material_refs=54",
+    "STATSVT,grid-shared-walls-v2-pom-charts,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=195/25600,pinned=3,queue=0,fills=195,evictions=0,ind=0.01/64 MiB,material_pages=141,shared_material_refs=54"
+  ],
+  "images": {
+    "grid-shared-walls-v2-group.png": "fec430470cc35e7a665ac937f3a7cbb1c3929f41d0fa4d11baa09d182a9487c0",
+    "grid-shared-walls-v2-close-left.png": "5bd02f95cd1b4ea6e3cd976355036696f1d9ae978cda5c7c54ebf12869335990",
+    "grid-shared-walls-v2-close.png": "bc936e543e5bc7b028bd01194ca68a2df24babfd14660691915d1c82d5739e81",
+    "grid-shared-walls-v2-close-right.png": "1abc8209a74411953901ad04eca4fc55e20b86dbcc6de9be6d889bf5a701654d",
+    "grid-shared-walls-v2-grazing.png": "1a89406d2ca27135eb860d791cd339925e7cd539fafeba649cf47ae9b26cc345",
+    "grid-shared-walls-v2-rt.png": "72bf5800e88d87634d5435127d5a52a6b4118dcbe3fbb534ec6f008bab3821c3",
+    "grid-shared-walls-v2-pom-status.png": "70dcd41d7520f1823fe3659d431bed1e7376b85a92a45c9557eb10215eed0dde",
+    "grid-shared-walls-v2-pom-charts.png": "03de938c397a45c8f886d462577016ee060075dafdb94cce91c9ea518ea260e4"
+  },
+  "passed": true
+}

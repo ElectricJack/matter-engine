@@ -1,0 +1,351 @@
+--- /dev/null
++++ b/MatterEngine3/shaders_vk/vt_visible_input.glsl
+@@ -0,0 +1,14 @@
++#ifndef MATTER_VT_VISIBLE_INPUT_GLSL
++#define MATTER_VT_VISIBLE_INPUT_GLSL
++// RGBA16_UINT visibility: w bits 0..3 hold mip, bits 4..7 hold snapshot+1.
++// Zero means no captured inputs. CPU feedback strips the snapshot tag.
++const uint VT_VISIBLE_MIP_MASK = 15u;
++uint vt_visible_input_word(uint mip, uint snapshot) {
++    uint tag = snapshot < 8u ? snapshot + 1u : 0u;
++    return (mip & VT_VISIBLE_MIP_MASK) | (tag << 4u);
++}
++uint vt_visible_input_snapshot(uint word) {
++    uint tag = (word >> 4u) & 15u;
++    return tag >= 1u && tag <= 8u ? tag - 1u : 0xffffffffu;
++}
++#endif
+--- /dev/null
++++ b/MatterEngine3/shaders_vk/rt_primary_inputs.glsl
+@@ -0,0 +1,16 @@
++#ifndef MATTER_RT_PRIMARY_INPUTS_GLSL
++#define MATTER_RT_PRIMARY_INPUTS_GLSL
++#include "vt_visible_input.glsl"
++// Primary raygen reads the exact G-buffer source pixel, also for scaled GI.
++layout(set = 0, binding = 29, rgba16ui)
++uniform readonly uimage2D primary_visible_inputs;
++bool rt_primary_material(ivec2 source_pixel, uint material_index,
++                         out RtMaterialGpu material) {
++    uint snapshot = vt_visible_input_snapshot(
++        imageLoad(primary_visible_inputs, source_pixel).w);
++    if (vt_draw_material(snapshot, material_index, material)) return true;
++    if (material_index >= rt_materials.length()) return false;
++    material = rt_materials[material_index];
++    return true;
++}
++#endif
+--- a/MatterEngine3/shaders_vk/gbuffer.frag
++++ b/MatterEngine3/shaders_vk/gbuffer.frag
+@@ -23,6 +23,7 @@
+ #define VT_DRAW_MATERIAL_TYPE MaterialGpu
+ #define VT_DRAW_INPUT_BINDING 26
+ #include "vt_draw_inputs.glsl"
++#include "vt_visible_input.glsl"
+ #include "vt_normal_frame.glsl"
+ 
+ #define WATER_SET 1
+@@ -1221,6 +1222,10 @@
+     // OR is then a no-op and that fragment keeps the pre-fix behaviour. That is
+     // a fragment with no material at all, so there is nothing to lose and no
+     // new failure mode -- every reader fails its bounds test either way.
++    // Finished surfaces carry their captured version without requesting pages.
++    // Chartless and impostor fragments keep the no-version tag.
++    out_vt_feedback.w = vt_visible_input_word(out_vt_feedback.w,
++        !is_impostor && vt_page.valid ? vt_page.input_snapshot : 0xffffffffu);
+     out_material_instance =
+         uvec2(in_material_index |
+                   (is_impostor ? IMPOSTOR_IDENTITY_BIT : 0u),
+--- a/MatterEngine3/shaders_vk/vt_feedback.comp
++++ b/MatterEngine3/shaders_vk/vt_feedback.comp
+@@ -1,4 +1,6 @@
+ #version 460
++#extension GL_GOOGLE_include_directive : require
++#include "vt_visible_input.glsl"
+ 
+ // Only the final depth-visible request reaches this image. Keep the original
+ // fixed (0,0) sample in each 8x8 block, including partial right/bottom blocks.
+@@ -12,6 +14,9 @@
+     uvec2 cell = gl_GlobalInvocationID.xy;
+     if (any(greaterThanEqual(cell, blocks))) return;
+     uvec4 request = imageLoad(visible_feedback, ivec2(cell * 8u));
++    // Primary-shading metadata must never become mip demand.
++    request.w &= VT_VISIBLE_MIP_MASK;
++    if (request.x == 0u) request = uvec4(0u);
+     // The CPU transport is four consecutive little-endian uint16 values.
+     requests[cell.y * blocks.x + cell.x] =
+         uvec2(request.x | (request.y << 16u),
+--- a/MatterEngine3/shaders_vk/rt_lighting_impl.glsl
++++ b/MatterEngine3/shaders_vk/rt_lighting_impl.glsl
+@@ -1,5 +1,6 @@
+ // Shared implementation for the fixed lighting and primary-only adaptive stages.
+ #include "rt_surface_common.glsl"
++#include "rt_primary_inputs.glsl"
+ #define WATER_SET 0
+ #define WATER_A_BINDING 21
+ #define WATER_B_BINDING 22
+@@ -298,8 +299,10 @@
+     vec3 p=unproject(uv,texelFetch(depth_texture,pixel,0).x);
+     uint identity=texelFetch(identity_texture,pixel,0).x;
+     uint material=impostor_identity_material(identity);
+-    if (!impostor_identity_is_card(identity) && material < rt_materials.length() &&
+-        (rt_materials[material].flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) != 0u) {
++    RtMaterialGpu displayed;
++    if (!impostor_identity_is_card(identity) &&
++        rt_primary_material(pixel, material, displayed) &&
++        (displayed.flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) != 0u) {
+         float ray_t=texelFetch(orm_texture,pixel,0).a;
+         if (!isnan(ray_t) && !isinf(ray_t) && ray_t > 0.0)
+             p -= normalize(p-unproject(uv,1.0))*ray_t;
+@@ -1030,13 +1033,9 @@
+     float normal_length_squared = dot(normal_sample, normal_sample);
+     vec4 orm = texelFetch(orm_texture, source_pixel, 0);
+     uvec2 identity = texelFetch(identity_texture, source_pixel, 0).rg;
+-    // .x carries the material index in its low bits and gbuffer.frag's impostor
+-    // marker in bit 31. Derive the index ONCE here; every rt_materials[] lookup
+-    // below uses this and never identity.x directly. Reading the raw word would
+-    // not crash -- the `< rt_materials.length()` guards would simply all fail --
+-    // it would quietly drop subsurface, the POM roof escape, the reflection
+-    // lane, the metal floor and transmission on impostor pixels, which is the
+-    // kind of wrong that looks like a plausible material instead of a bug.
++    // Keep the original logical material index for identity and water lookup.
++    // Bit 31 marks impostor cards. Primary shading selects the captured row
++    // separately from the same G-buffer source pixel below.
+     const uint material_id = impostor_identity_material(identity.x);
+     // Reversed-Z: far/cleared background is now 0.0 (was 1.0 under standard-Z).
+     if (depth <= 0.0 || albedo.a <= 0.0 || normal_length_squared < 0.5) {
+@@ -1052,6 +1051,9 @@
+             imageStore(raw_local_direct_image, pixel, vec4(0.0));
+         return;
+     }
++    RtMaterialGpu displayed_material;
++    const bool has_displayed_material =
++        rt_primary_material(source_pixel, material_id, displayed_material);
+     vec3 normal = normal_sample * inversesqrt(normal_length_squared);
+     vec4 world_h = constants.clip_to_world *
+                    vec4(source_uv.x * 2.0 - 1.0,
+@@ -1089,8 +1091,8 @@
+     bool primary_surface_detail = false;
+     WaterSurfaceState primary_water_state;
+     bool primary_water_evaluated = false;
+-    if (material_id < rt_materials.length()) {
+-        RtMaterialGpu roof_mat = rt_materials[material_id];
++    if (has_displayed_material) {
++        RtMaterialGpu roof_mat = displayed_material;
+         if ((roof_mat.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
+             primary_water_evaluated = water_evaluate_surface_for_material(
+                 material_id, shading_world.xz, normal,
+@@ -1125,8 +1127,8 @@
+     vec3 direct_normal = primary_water_evaluated
+         ? primary_water_state.shading_normal : normal;
+     float primary_transmission = 0.0;
+-    if (material_id < rt_materials.length()) {
+-        RtMaterialGpu primary_material = rt_materials[material_id];
++    if (has_displayed_material) {
++        RtMaterialGpu primary_material = displayed_material;
+         primary_transmission = clamp(
+             primary_material.transmission.x, 0.0, 1.0);
+         if (primary_water_evaluated) {
+@@ -1404,9 +1406,9 @@
+     // regression gate).
+     float texel_metallic = clamp(orm.y, 0.0, 1.0);
+     if (constants.reflection_multiplier != 0.0 &&
+-        material_id < rt_materials.length() && orm.x <=
++        has_displayed_material && orm.x <=
+         constants.max_reflection_roughness) {
+-        RtMaterialGpu primary = rt_materials[material_id];
++        RtMaterialGpu primary = displayed_material;
+         vec3 base_color = mix(primary.base_roughness.rgb, albedo.rgb,
+                               clamp(albedo.a, 0.0, 1.0));
+         float base_roughness = clamp(primary.base_roughness.w, 0.02, 1.0);
+@@ -1492,7 +1494,7 @@
+                                 roughness);
+         }
+     } else if (constants.reflection_multiplier != 0.0 &&
+-               material_id < rt_materials.length() && texel_metallic > 0.0) {
++               has_displayed_material && texel_metallic > 0.0) {
+         // Reflection lane capped off (orm.x > max_reflection_roughness) but
+         // the texel is metallic: diffuse is killed by orm.y everywhere, so
+         // without this the texel goes black. Tier-1 floor, no rays: the same
+@@ -1501,7 +1503,7 @@
+         // continuously at metalness 0 (where skipping the lane is the
+         // legitimate legacy behaviour). primary_view was computed above off
+         // the (possibly POM-lifted) shading point.
+-        RtMaterialGpu primary = rt_materials[material_id];
++        RtMaterialGpu primary = displayed_material;
+         vec3 base_color = mix(primary.base_roughness.rgb, albedo.rgb,
+                               clamp(albedo.a, 0.0, 1.0));
+         float n_dot_v = max(dot(normal, primary_view), 1e-4);
+@@ -1525,8 +1527,8 @@
+     // Denoiser aux lane: (hit distance, lobe roughness), same contract as
+     // specular_aux above. Stays (0, 0) for pixels with no transmission.
+     vec2 transmission_aux = vec2(0.0);
+-    if (material_id < rt_materials.length()) {
+-        RtMaterialGpu trans_material = rt_materials[material_id];
++    if (has_displayed_material) {
++        RtMaterialGpu trans_material = displayed_material;
+         transmission_weight = clamp(trans_material.transmission.x, 0.0, 1.0);
+         if (primary_water_evaluated) {
+             float clear_coherent = max(
+--- a/MatterEngine3/shaders_vk/rt_shadow.rgen
++++ b/MatterEngine3/shaders_vk/rt_shadow.rgen
+@@ -45,6 +45,12 @@
+ layout(set = 0, binding = 4, std430) readonly buffer RtMaterialTable {
+     RtMaterialGpu rt_materials[];
+ };
++
++#define VT_SET 0
++#define VT_DRAW_MATERIAL_TYPE RtMaterialGpu
++#define VT_DRAW_INPUT_BINDING 28
++#include "vt_draw_inputs.glsl"
++#include "rt_primary_inputs.glsl"
+ 
+ layout(set = 0, binding = 11) uniform usampler2D identity_texture;
+ 
+@@ -113,8 +119,10 @@
+     vec3 world=world_from_depth(p,extent);
+     uint identity=texelFetch(identity_texture,p,0).x;
+     uint material=impostor_identity_material(identity);
+-    if (!impostor_identity_is_card(identity) && material < rt_materials.length() &&
+-        (rt_materials[material].flags_misc.x & 32u) != 0u) {
++    RtMaterialGpu displayed;
++    if (!impostor_identity_is_card(identity) &&
++        rt_primary_material(p, material, displayed) &&
++        (displayed.flags_misc.x & 32u) != 0u) {
+         float ray_t=texelFetch(orm_texture,p,0).a;
+         if (!isnan(ray_t) && !isinf(ray_t) && ray_t > 0.0) {
+             vec2 uv=(vec2(p)+.5)/vec2(extent);
+@@ -169,9 +177,11 @@
+     // sun angles instead of blowing up toward the horizon.
+     uvec2 identity = texelFetch(identity_texture, pixel, 0).rg;
+     uint receiver_material=impostor_identity_material(identity.x);
++    RtMaterialGpu receiver_input;
++    const bool has_receiver_input =
++        rt_primary_material(pixel, receiver_material, receiver_input);
+     bool surface_receiver=!impostor_identity_is_card(identity.x) &&
+-        receiver_material<rt_materials.length() &&
+-        (rt_materials[receiver_material].flags_misc.x & 32u)!=0u;
++        has_receiver_input && (receiver_input.flags_misc.x & 32u)!=0u;
+     if (surface_receiver) world=proxy_world_from_depth(pixel,extent);
+     // The 2r ray skip is GONE, and so is the reason for it.
+     //
+@@ -235,7 +245,6 @@
+     // the impostor bit masked off. It cannot be set on this path (the early
+     // return above took it), so the mask is defence against a future edit that
+     // moves or weakens that return, not against today's control flow.
+-    const uint shadow_material = impostor_identity_material(identity.x);
+     // Water's transmission RT lane shades the terrain below the surface and
+     // performs its own sun-visibility trace there.  Applying this primary
+     // GBuffer visibility at the water surface as well produces two displaced
+@@ -243,8 +252,8 @@
+     // Leave the primary target neutral; water remains an RT occluder and the
+     // physically useful riverbed shadow remains in rt_lighting.rgen.
+     const bool is_water_receiver =
+-        shadow_material < rt_materials.length() &&
+-        (rt_materials[shadow_material].flags_misc.x &
++        has_receiver_input &&
++        (receiver_input.flags_misc.x &
+          WATER_SURFACE_MATERIAL_FLAG) != 0u;
+     if (is_water_receiver) {
+         imageStore(visibility_image, pixel, vec4(1.0));
+@@ -254,8 +263,8 @@
+     // this if block (it previously only tested `!= 0u` inline) so the
+     // horizon-occlusion test below can reuse it.
+     int shadow_tileset_slot = -1;
+-    if (shadow_material < rt_materials.length()) {
+-        RtMaterialGpu roof_mat = rt_materials[shadow_material];
++    if (has_receiver_input) {
++        RtMaterialGpu roof_mat = receiver_input;
+         shadow_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
+         if ((roof_mat.flags_misc.x & 32u) != 0u) {
+             // Already at the recovered proxy; range-based lifts would move it
+--- a/MatterEngine3/src/render/vk_scene_renderer.cpp
++++ b/MatterEngine3/src/render/vk_scene_renderer.cpp
+@@ -3778,7 +3778,9 @@
+                            VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR),
+         descriptor_binding(28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+-                           VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR)};
++                           VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR),
++        descriptor_binding(29, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
++                           VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
+     bindings[15].descriptorCount =
+         kTilesetSourceDescriptors;
+     bindings[17].descriptorCount = vt::kVtChannelCount;
+@@ -3789,7 +3791,7 @@
+     VkDescriptorSetLayoutCreateInfo set_info{
+         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+     // Original scene set is identical in both modes. Adaptive history is set 3.
+-    set_info.bindingCount = 29u;
++    set_info.bindingCount = static_cast<uint32_t>(std::size(bindings));
+     set_info.pBindings = bindings;
+     VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
+                                                    &rt_set_layout_);
+@@ -5720,9 +5722,8 @@
+                  (5 + (rt_primary_adaptive_ ? 8u : 0u) +
+                   kTilesetSourceDescriptors +
+                   vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
+-            // 7 storage images: visibility, raw diffuse, raw specular + aux,
+-            // raw transmission + aux, and traced local direct.
+-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 7},
++            // Visibility, six raw lighting lanes and primary input metadata.
++            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 8},
+             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 9},
+             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
+         VkDescriptorPoolCreateInfo rt_pool{
+@@ -16225,6 +16226,12 @@
+     PFN_vkCmdTraceRaysKHR cmd_trace,
+     std::string& error) {
+     FrameResources& selected = frames_[frame.frame_slot];
++    // This target exists even without VT/extraction. Order color writes and
++    // any extraction layout transition before primary RT storage reads.
++    transition_for_use(frame.command_buffer, vt_feedback_, VK_IMAGE_LAYOUT_GENERAL,
++                       VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
++                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
++                       VK_IMAGE_ASPECT_COLOR_BIT);
+     if (primary_light_audit_) {
+         if (!matter::map_buffer(selected.rt_test_output, error)) return false;
+         auto* words = static_cast<uint32_t*>(selected.rt_test_output.mapped);
+@@ -16392,7 +16399,9 @@
+         vt_live ? vt_->input_snapshot_buffer() : vt_dummy_storage_.buffer, 0,
+         vt_live ? vt_->input_snapshot_buffer_size() : VkDeviceSize{64}};
+     VkDescriptorBufferInfo vt_draw_info{selected.vt_draw_inputs.buffer, 0, selected.vt_draw_inputs.size};
+-    VkWriteDescriptorSet writes[24]{};
++    VkDescriptorImageInfo primary_input_info{
++        VK_NULL_HANDLE, vt_feedback_.view, VK_IMAGE_LAYOUT_GENERAL};
++    VkWriteDescriptorSet writes[25]{};
+     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+     writes[0].pNext = &as_write;
+     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
+@@ -16494,7 +16503,13 @@
+         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+         writes[i].pBufferInfo = i == 22 ? &vt_input_info : &vt_draw_info;
+     }
+-    vkUpdateDescriptorSets(vulkan_->device(), 24, writes, 0, nullptr);
++    writes[24].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++    writes[24].dstSet = rt_descriptor_sets_[frame.frame_slot];
++    writes[24].dstBinding = 29;
++    writes[24].descriptorCount = 1;
++    writes[24].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
++    writes[24].pImageInfo = &primary_input_info;
++    vkUpdateDescriptorSets(vulkan_->device(), 25, writes, 0, nullptr);
+     if (rt_primary_adaptive_) {
+         VkWriteDescriptorSet history_writes[8]{};
+         for (uint32_t i = 0; i < 8; ++i) {
+--- a/MatterEngine3/Makefile
++++ b/MatterEngine3/Makefile
+@@ -848,3 +848,15 @@
+ build/shaders_vk/surface_proxy.vert.spv build/shaders_vk/surface_proxy.frag.spv: shaders_vk/sparse_voxel_common.glsl shaders_vk/surface_proxy_common.glsl
+ build/shaders_vk/surface_query.frag.spv: shaders_vk/sparse_voxel_common.glsl shaders_vk/surface_proxy_common.glsl shaders_vk/sparse_voxel_optics.glsl shaders_vk/surface_filter.glsl
+ build/shaders_vk/surface_proxy.frag.spv: shaders_vk/surface_filter.glsl
++
++# Primary RT consumes visible VT input tags; compact feedback strips them.
++build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_feedback.comp.spv \
++    build/shaders_vk/rt_shadow.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
++    build/shaders_vk/rt_primary_adaptive.rgen.spv: shaders_vk/vt_visible_input.glsl
++build/shaders_vk/rt_shadow.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
++    build/shaders_vk/rt_primary_adaptive.rgen.spv: shaders_vk/rt_primary_inputs.glsl
++build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
++    build/shaders_vk/rt_lighting.rgen.spv build/shaders_vk/rt_primary_adaptive.rgen.spv \
++    build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
++    build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
++    build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_draw_inputs.glsl

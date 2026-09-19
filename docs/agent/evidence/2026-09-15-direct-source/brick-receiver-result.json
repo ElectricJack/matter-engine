@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "$env:MATTER_WORLD='ProceduralBrickProof'; $env:MATTER_HIDE_UI='1'; $env:MATTER_HIDE_WINDOW='1'; $env:MATTER_WINDOW_WIDTH='1280'; $env:MATTER_WINDOW_HEIGHT='800'; $env:MATTER_SCREENSHOT='D:/tmp/matter-vt/20260915-direct-source/brick-receiver.png'; $env:MATTER_SCREENSHOT_SETTLE='120'; $env:MATTER_CMD_FIFO='D:/tmp/matter-vt/20260915-direct-source/brick-commands.txt'; $env:MATTER_VK_VALIDATION='1'; Set-Location -LiteralPath 'D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor'; & './build/windows-msvc/editor.exe'; Write-Output \"native_exit=$LASTEXITCODE\"; exit $LASTEXITCODE"
+  ],
+  "exit": 0,
+  "seconds": 49.881566595999175,
+  "source_changes": [],
+  "binary_changed": false,
+  "image_exists": true
+}

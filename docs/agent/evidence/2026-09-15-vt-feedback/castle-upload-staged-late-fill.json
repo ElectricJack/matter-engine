@@ -1,0 +1,19 @@
+{
+  "capture": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-upload-staged-validation",
+  "marker_serials": [
+    2710,
+    3310
+  ],
+  "late_fill_frames": [
+    {
+      "serial": 3203,
+      "vt_serial": 3178,
+      "elapsed_ms": 154674.0871,
+      "fills_total": 4114,
+      "queue": 0,
+      "invalidations_total": 2,
+      "dirty_pages": 0
+    }
+  ],
+  "limitation": "Page-event logging was disabled. Virtual page identity and whether it is a new visibility request are unknown."
+}

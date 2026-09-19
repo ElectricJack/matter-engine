@@ -1,0 +1,13 @@
+{
+  "MatterEditor/build/windows-msvc/editor.exe": "e1be9881ef36f76d2b927123dc9dbb5646b921490129634ebeaee7d39b8d38c0",
+  "MatterEngine3/src/render/geometry_world_runtime.cpp": "bbae9e5b7a20ed66641488eb8cc4e40b9c15070cdfbe279f4ffda8e5b0697b0b",
+  "MatterEngine3/src/render/vk_scene_renderer.cpp": "8f3964936ffba3abc334a40d0944acee1f7324c854c592027389177d7800d689",
+  "MatterEngine3/src/geometry/geometry_residency.cpp": "d9fa371fc4fdbb22434fad451cd7da4205a33206f5e1511fef7822ad504ebacd",
+  "MatterEngine3/src/render/part_store.cpp": "5ff78f7ea597b343652393e89e3408c508927d1734b23e26879e24bf5cc08297",
+  "MatterEngine3/src/geometry/geometry_asset.cpp": "23da94b72597bd5237628a7e0dfdd9a75cfe7abfe108f795d5e27800457a23ea",
+  "MatterEngine3/src/render/vt_residency.cpp": "3197c363967d31f1e2cf47ede1ee5caffbf439d630aced8cd15d31671941ee2a",
+  "MatterEngine3/shaders_vk/geometry_select.comp": "c88685754c49d6bfe70622cce42fafd61c4bb68aaa77040d4414386911beb837",
+  "MatterEngine3/shaders_vk/cull.comp": "036a4971fe7dd95f6d1e45671d841b05062ee1e5e34daa6a7a9f17349a60910f",
+  "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js": "d7c2305c63766c3d294854c04b23f43437b118e64339be5f145cbf939e40b7a3",
+  "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js": "99960a729eb38c79d6b3b8f01ea245834d3703c1bef425492d7d9e87e103038a"
+}

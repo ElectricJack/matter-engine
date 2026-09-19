@@ -1,0 +1,46 @@
+[
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "seconds": 40.745811279004556,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v2-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "gpu",
+    "name": "compositor",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 2.597548364006798,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v2-gpu-compositor.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vt_residency_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_residency_tests"
+    ],
+    "exit": 1,
+    "seconds": 6.38674604400876,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v2-build-vt_residency_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

@@ -1,0 +1,32 @@
+Microsoft (R) COFF/PE Dumper Version 14.44.35211.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+
+Dump of file D:\Shared With Desktop\AI\matter-engine-cpp\MatterEditor\build\asset-handoff\2026-09-16-r1\editor.exe
+
+File Type: EXECUTABLE IMAGE
+
+  Image has the following dependencies:
+
+    GDI32.dll
+    USER32.dll
+    SHELL32.dll
+    WS2_32.dll
+    dbghelp.dll
+    vulkan-1.dll
+    KERNEL32.dll
+    ADVAPI32.dll
+    IMM32.dll
+
+  Summary
+
+        1000 .00cfg
+      1D4000 .data
+        1000 .fptable
+        6000 .idata
+      10E000 .pdata
+      960000 .rdata
+       25000 .reloc
+        1000 .rsrc
+     19F1000 .text
+        1000 .tls

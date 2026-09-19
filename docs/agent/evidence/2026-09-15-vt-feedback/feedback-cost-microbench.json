@@ -1,0 +1,290 @@
+{
+  "patterns": [
+    "empty",
+    "six-texel-runs over 735 keys",
+    "interleaved 6000 keys"
+  ],
+  "runs": {
+    "feedback-cost-baseline": [
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-0.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 13.9,
+        "scan_p95_us": 20.9,
+        "total_p50_us": 14.2,
+        "total_p95_us": 21.2,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-0.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 33.9,
+        "scan_p95_us": 45.6,
+        "total_p50_us": 45.1,
+        "total_p95_us": 59.4,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-0.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 125.4,
+        "scan_p95_us": 133.2,
+        "total_p50_us": 988.4,
+        "total_p95_us": 1025.8,
+        "checksum": 6152128
+      },
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-1.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 14.2,
+        "scan_p95_us": 14.3,
+        "total_p50_us": 14.5,
+        "total_p95_us": 14.6,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-1.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 34.4,
+        "scan_p95_us": 57.1,
+        "total_p50_us": 45.7,
+        "total_p95_us": 76.2,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-1.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 124.9,
+        "scan_p95_us": 149.7,
+        "total_p50_us": 989.1,
+        "total_p95_us": 1108.7,
+        "checksum": 6152128
+      },
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-2.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 14.1,
+        "scan_p95_us": 16.2,
+        "total_p50_us": 14.4,
+        "total_p95_us": 16.6,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-2.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 33.8,
+        "scan_p95_us": 41.8,
+        "total_p50_us": 45.2,
+        "total_p95_us": 56.6,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-baseline-test-residency-cpu-2.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 126.9,
+        "scan_p95_us": 161.3,
+        "total_p50_us": 1000.5,
+        "total_p95_us": 1105.0,
+        "checksum": 6152128
+      }
+    ],
+    "feedback-cost-packed": [
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-1.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 21.1,
+        "scan_p95_us": 21.3,
+        "total_p50_us": 21.3,
+        "total_p95_us": 21.6,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-1.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 27.8,
+        "scan_p95_us": 28.5,
+        "total_p50_us": 38.7,
+        "total_p95_us": 39.8,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-1.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 105.6,
+        "scan_p95_us": 113.8,
+        "total_p50_us": 967.8,
+        "total_p95_us": 1000.3,
+        "checksum": 6152128
+      },
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-2.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 20.9,
+        "scan_p95_us": 26.4,
+        "total_p50_us": 21.2,
+        "total_p95_us": 26.8,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-2.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 27.9,
+        "scan_p95_us": 34.6,
+        "total_p50_us": 38.8,
+        "total_p95_us": 46.8,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-2.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 106.4,
+        "scan_p95_us": 114.6,
+        "total_p50_us": 974.8,
+        "total_p95_us": 1009.9,
+        "checksum": 6152128
+      },
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-3.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 20.7,
+        "scan_p95_us": 23.4,
+        "total_p50_us": 21.0,
+        "total_p95_us": 23.8,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-3.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 27.8,
+        "scan_p95_us": 31.6,
+        "total_p50_us": 38.7,
+        "total_p95_us": 43.0,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-packed-test-residency-cpu-3.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 106.3,
+        "scan_p95_us": 115.9,
+        "total_p50_us": 971.5,
+        "total_p95_us": 1015.0,
+        "checksum": 6152128
+      }
+    ],
+    "feedback-cost-packed-load": [
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-1.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 20.8,
+        "scan_p95_us": 22.5,
+        "total_p50_us": 21.1,
+        "total_p95_us": 23.0,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-1.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 28.1,
+        "scan_p95_us": 28.4,
+        "total_p50_us": 39.2,
+        "total_p95_us": 39.7,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-1.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 105.8,
+        "scan_p95_us": 128.2,
+        "total_p50_us": 978.7,
+        "total_p95_us": 1116.1,
+        "checksum": 6152128
+      },
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-2.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 20.7,
+        "scan_p95_us": 22.4,
+        "total_p50_us": 21.0,
+        "total_p95_us": 22.7,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-2.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 27.7,
+        "scan_p95_us": 30.7,
+        "total_p50_us": 38.7,
+        "total_p95_us": 43.6,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-2.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 106.0,
+        "scan_p95_us": 143.8,
+        "total_p50_us": 983.3,
+        "total_p95_us": 1230.0,
+        "checksum": 6152128
+      },
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-3.log",
+        "pattern": 0,
+        "samples": 1000,
+        "scan_p50_us": 20.8,
+        "scan_p95_us": 21.0,
+        "total_p50_us": 21.1,
+        "total_p95_us": 21.3,
+        "checksum": 0
+      },
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-3.log",
+        "pattern": 1,
+        "samples": 1000,
+        "scan_p50_us": 27.8,
+        "scan_p95_us": 28.1,
+        "total_p50_us": 38.8,
+        "total_p95_us": 43.4,
+        "checksum": 1034726
+      },
+      {
+        "log": "feedback-cost-packed-load-test-residency-cpu-3.log",
+        "pattern": 2,
+        "samples": 1000,
+        "scan_p50_us": 105.1,
+        "scan_p95_us": 115.8,
+        "total_p50_us": 982.9,
+        "total_p95_us": 1022.5,
+        "checksum": 6152128
+      }
+    ]
+  },
+  "limits": [
+    "Synthetic CPU-only timings with cached input memory; not a scene or GPU-memory readback speedup proof.",
+    "The packed candidates improve populated scans but regress the empty case.",
+    "Canonical tuple-set tests, not checksums alone, verify exact request equivalence."
+  ]
+}

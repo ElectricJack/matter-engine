@@ -1,0 +1,26 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 39.62903698599257,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,clay-textured-v2-group,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB",
+    "STATSVT,clay-textured-v2-close,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=36/25600,pinned=1,queue=0,fills=36,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v2-grazing,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=50/25600,pinned=1,queue=0,fills=50,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v2-rt,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=50/25600,pinned=1,queue=0,fills=50,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v2-albedo,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=50/25600,pinned=1,queue=0,fills=50,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v2-normals,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=50/25600,pinned=1,queue=0,fills=50,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v2-wireframe,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=80/25600,pinned=1,queue=0,fills=80,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "clay-textured-v2-group.png": "8c161d7232172dd7da7f8d40b37e2a1a826f9544af9f9ca6b7bd79fe3acaaece",
+    "clay-textured-v2-close.png": "0264b2662ea1cde3de663e354c71b5e41beed11c6f2f27543812f2d5deeac278",
+    "clay-textured-v2-grazing.png": "07685ace5c269a7fd0720e171a517ee2be923aa1a4306bb615d075ba458d177d",
+    "clay-textured-v2-rt.png": "ed76f4e2ee4601657641801716aa337d3aa5415bc51dc95b0857e0b87820c85f",
+    "clay-textured-v2-albedo.png": "66524a189ed9cbd7ee533e17f76088f83601dcc0b718f552e842b85c804b066d",
+    "clay-textured-v2-normals.png": "e25ebc9836034e0ef6567d5be5976aacbfb1e4994308c652e8bfd593c1322996",
+    "clay-textured-v2-wireframe.png": "d99db2fa0d7d3e67fba9dd158722a05465ff47321b07db23e4881db6448ed4a0"
+  },
+  "passed": true
+}

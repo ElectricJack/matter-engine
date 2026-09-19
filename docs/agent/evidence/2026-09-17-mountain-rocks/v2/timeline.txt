@@ -1,0 +1,64 @@
+wait_event bake.finished 180
+render_path raster
+set render.fog.density 0
+set render.clouds.layer0_max_density 0
+set render.cloud_shadows.enabled false
+set render.lighting.sun_elevation_deg 55
+set render.lighting.sun_azimuth_deg 30
+set render.lighting.sun_tint [1,1,1]
+set render.lighting.sun_multiplier 1
+set render.lighting.sky_irradiance_multiplier 0.5
+set render.lighting.day_ambient_multiplier 0.5
+cam 10 9 14 0 .4 0
+wait_frames 120
+stats overview
+wait_frames 30
+shot C:/tmp/matter-mountain-rock-gallery-v2/overview-lit.png
+wireframe on
+wait_frames 30
+shot C:/tmp/matter-mountain-rock-gallery-v2/overview-wireframe.png
+wireframe off
+render_path native_rt
+wait_frames 90
+shot C:/tmp/matter-mountain-rock-gallery-v2/overview-rt-lit.png
+render_path raster
+cam 1.3 2.4 -.4 -1.7 .6 -3.6
+wait_frames 120
+stats block
+wait_frames 30
+shot C:/tmp/matter-mountain-rock-gallery-v2/block-lit.png
+wireframe on
+wait_frames 30
+shot C:/tmp/matter-mountain-rock-gallery-v2/block-wireframe.png
+wireframe off
+render_path native_rt
+wait_frames 90
+shot C:/tmp/matter-mountain-rock-gallery-v2/block-rt-lit.png
+render_path raster
+cam 1.3 2.4 3.2 -1.7 .35 0
+wait_frames 120
+stats slab
+wait_frames 30
+shot C:/tmp/matter-mountain-rock-gallery-v2/slab-lit.png
+wireframe on
+wait_frames 30
+shot C:/tmp/matter-mountain-rock-gallery-v2/slab-wireframe.png
+wireframe off
+render_path native_rt
+wait_frames 90
+shot C:/tmp/matter-mountain-rock-gallery-v2/slab-rt-lit.png
+render_path raster
+cam 1.3 2.4 6.8 -1.7 .7 3.6
+wait_frames 120
+stats weathered
+wait_frames 30
+shot C:/tmp/matter-mountain-rock-gallery-v2/weathered-lit.png
+wireframe on
+wait_frames 30
+shot C:/tmp/matter-mountain-rock-gallery-v2/weathered-wireframe.png
+wireframe off
+render_path native_rt
+wait_frames 90
+shot C:/tmp/matter-mountain-rock-gallery-v2/weathered-rt-lit.png
+render_path raster
+quit

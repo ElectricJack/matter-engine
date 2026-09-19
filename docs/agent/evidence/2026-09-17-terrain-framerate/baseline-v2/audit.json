@@ -1,0 +1,183 @@
+{
+  "exit": 0,
+  "seconds": 392.84613170899684,
+  "summary": {
+    "valley-flat": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 7.305,
+        "p95": 8.88
+      },
+      "resolve_ms": {
+        "median": 1.8250000000000002,
+        "p95": 2.8
+      },
+      "build_ms": {
+        "median": 0.37,
+        "p95": 0.57
+      },
+      "draw_ms": {
+        "median": 3.54,
+        "p95": 5.26
+      },
+      "gpu_total_ms": {
+        "median": 5.5565,
+        "p95": 6.489
+      },
+      "gpu_cull_ms": {
+        "median": 0.037,
+        "p95": 0.044
+      },
+      "gpu_gbuffer_ms": {
+        "median": 3.1845,
+        "p95": 3.773
+      }
+    },
+    "valley-pom": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 28.375,
+        "p95": 30.43
+      },
+      "resolve_ms": {
+        "median": 2.1799999999999997,
+        "p95": 2.68
+      },
+      "build_ms": {
+        "median": 0.33,
+        "p95": 0.44
+      },
+      "draw_ms": {
+        "median": 4.235,
+        "p95": 5.67
+      },
+      "gpu_total_ms": {
+        "median": 28.323999999999998,
+        "p95": 30.474
+      },
+      "gpu_cull_ms": {
+        "median": 0.042,
+        "p95": 0.063
+      },
+      "gpu_gbuffer_ms": {
+        "median": 26.08,
+        "p95": 28.057
+      }
+    },
+    "cliff-flat": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 14.780000000000001,
+        "p95": 19.12
+      },
+      "resolve_ms": {
+        "median": 3.6950000000000003,
+        "p95": 5.04
+      },
+      "build_ms": {
+        "median": 0.69,
+        "p95": 1.11
+      },
+      "draw_ms": {
+        "median": 8.145,
+        "p95": 10.86
+      },
+      "gpu_total_ms": {
+        "median": 11.2625,
+        "p95": 15.204
+      },
+      "gpu_cull_ms": {
+        "median": 0.064,
+        "p95": 0.084
+      },
+      "gpu_gbuffer_ms": {
+        "median": 7.0145,
+        "p95": 9.522
+      }
+    },
+    "cliff-pom": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 138.495,
+        "p95": 140.79
+      },
+      "resolve_ms": {
+        "median": 3.31,
+        "p95": 4.24
+      },
+      "build_ms": {
+        "median": 0.56,
+        "p95": 0.99
+      },
+      "draw_ms": {
+        "median": 7.31,
+        "p95": 9.67
+      },
+      "gpu_total_ms": {
+        "median": 138.101,
+        "p95": 140.435
+      },
+      "gpu_cull_ms": {
+        "median": 0.073,
+        "p95": 0.085
+      },
+      "gpu_gbuffer_ms": {
+        "median": 133.72750000000002,
+        "p95": 135.573
+      }
+    }
+  },
+  "settles": [
+    {
+      "phase": "valley-flat",
+      "seconds": 171.5686460029974,
+      "state": [
+        "791",
+        "791",
+        "0",
+        "1603"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "valley-pom",
+      "seconds": 14.28269297600491,
+      "state": [
+        "791",
+        "791",
+        "0",
+        "1603"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "cliff-flat",
+      "seconds": 55.944692252000095,
+      "state": [
+        "1054",
+        "807",
+        "0",
+        "3969"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "cliff-pom",
+      "seconds": 14.3141810560046,
+      "state": [
+        "1054",
+        "807",
+        "0",
+        "3990"
+      ],
+      "settled": true
+    }
+  ],
+  "binary_unchanged": true,
+  "shader_changes": [],
+  "missing_shots": [],
+  "wrong_dimensions": [],
+  "errors": [],
+  "connection_warning_count": 1053,
+  "acceptance_passed": false
+}

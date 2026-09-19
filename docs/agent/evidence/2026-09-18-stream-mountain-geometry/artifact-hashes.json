@@ -1,0 +1,10 @@
+{
+  "MatterEditor/build/windows-msvc/editor.exe": "56d2d7527ad23052499af274496a4d194ed5f84bc0a3b212132f8cd5483dbdbb",
+  "MatterEngine3/src/render/geometry_world_runtime.cpp": "f422f781b4f9abc196d2bb696168e2d718e42933bbc568a93856c456bc2d947e",
+  "MatterEngine3/src/geometry/geometry_compiler.cpp": "641a3ab1578f3a282eff17403a7c23adbc89bcda4fafb38b124a57255a797320",
+  "MatterEngine3/src/mesh_error.cpp": "54d66155b2c1eb64f9bf587d27c824118fe5d873eef8159365a747af9b793385",
+  "projects/world_demo/shared-lib/mountain_detail_rocks.js": "fb76939a1b7e167e7caa5fba16535a86b584739b2587399007e4bc238778c0ec",
+  "projects/world_demo/shared-lib/mountain_geometry_site.js": "e9dc9ca4abdc3150bac9b0e50d865537919138f39e4d51ff294201f6b65baebb",
+  "projects/world_demo/objects/terrain/MountainDetailRock.js": "5ec3ef4208cf0370a6b6590e425707856f1b10afd0c2299534a808714869945c",
+  "tools/launch-mountain-geometry.ps1": "8e587e0965bb9a7fdb2606b69219282b74d9b835dd8091235475d74e63d9193b"
+}

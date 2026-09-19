@@ -1,0 +1,9 @@
+{
+  "stage": "corrected in-bounds red material snapshot fixture; shared buffers",
+  "sha256": {
+    "MatterEngine3/src/render/vt_compositor.cpp": "9c222595364432105a164d5ad97cba69ac8242a51e53105aaa94fb0c85565050",
+    "MatterEngine3/src/render/vt_compositor.h": "7bb45af791a86e2fbcc958faf246c577a21e2108378e2d690d34f678e42278b9",
+    "MatterEngine3/tests/vt_compositor_tests.cpp": "c2237b0c0f64d28757dd68f63b4222f145b5eecd39816e08a54e315120316bad",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "3dde1bbb9e9733f173393566b8bb5fdfb9fbd0d0422e7973a5f00258b8fc0163"
+  }
+}

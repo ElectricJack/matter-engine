@@ -1,0 +1,49 @@
+{
+  "status": "progress",
+  "retained_candidate": "mountain_surface-candidate-v3.js",
+  "capture": "../2026-09-17-mountain-layering/v4",
+  "native_prefix": "mountain-organic-v3",
+  "visual_approval": "not_obtained",
+  "runtime_implementation_changed": false,
+  "review": [
+    "Less pale stone speckling and flatter-crown uniformity; stones appear more embedded in soil.",
+    "Shallow clods add near ground structure; soil and moss still read soft.",
+    "Cliff plates, chart/LOD seams, blue lighting and forest presentation remain unresolved."
+  ],
+  "timings": {
+    "overview": {
+      "before_ms": 32.962500000000006,
+      "after_ms": 33.7565,
+      "delta_percent": 2.4087978763746687
+    },
+    "grazing": {
+      "before_ms": 16.837,
+      "after_ms": 18.012500000000003,
+      "delta_percent": 6.981647561917215
+    },
+    "cliff": {
+      "before_ms": 27.866,
+      "after_ms": 27.525,
+      "delta_percent": -1.2237134859685694
+    },
+    "cliff-grazing": {
+      "before_ms": 36.7255,
+      "after_ms": 36.078500000000005,
+      "delta_percent": -1.7617186968182597
+    },
+    "close": {
+      "before_ms": 5.5275,
+      "after_ms": 6.098000000000001,
+      "delta_percent": 10.321121664405265
+    }
+  },
+  "performance_acceptance": false,
+  "remaining": [
+    "Final material realism and user visual approval",
+    "Terrain chart/LOD continuity",
+    "Moving-camera and actual-scene RT review",
+    "Sparse per-instance overlays and finite-base composition",
+    "Original correctness, memory, frame-time and edit-latency gates"
+  ],
+  "next": "Investigate near-detail resolution/filtering and cliff fracture structure; retain full-scene comparisons and POM quality."
+}

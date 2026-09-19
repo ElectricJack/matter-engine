@@ -1,0 +1,40 @@
+wait_event bake.finished 900
+render_path raster
+cam 380 20.25 1600 380 18.25 1593
+wait_idle 6 180
+wait_frames 150
+stats mountain-pom-close
+shot C:/tmp/matter-mountain-pom-v1/close-pom.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-mountain-pom-v1/close-flat.png
+set render.pom.enabled true
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-mountain-pom-v1/albedo-pom.png
+set render.pom.enabled false
+wait_frames 30
+shot C:/tmp/matter-mountain-pom-v1/albedo-flat.png
+set render.pom.enabled true
+set render.pom.horizon_debug 7
+wait_frames 30
+shot C:/tmp/matter-mountain-pom-v1/pom-status.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+cam 380 20.25 1600 400 20.25 1550
+wait_frames 150
+stats mountain-pom-grazing
+shot C:/tmp/matter-mountain-pom-v1/grazing-pom.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-mountain-pom-v1/grazing-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+shot C:/tmp/matter-mountain-pom-v1/grazing-native-rt.png
+render_path raster
+cam 380 90 1600 420 55 1420
+wait_frames 150
+stats mountain-pom-overview
+shot C:/tmp/matter-mountain-pom-v1/overview.png
+quit

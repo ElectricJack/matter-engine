@@ -1,0 +1,159 @@
+{
+  "isolation": "Frozen r2 editor PID 9056 independently open; matched development comparison, not isolated acceptance.",
+  "views": {
+    "overview": {
+      "terrain_roi_xyxy": [
+        128,
+        520,
+        1152,
+        800
+      ],
+      "images": {
+        "lit": {
+          "full_frame": {
+            "mean_abs_rgb_255": 0.8534466145833334,
+            "max_abs_channel_255": 142,
+            "fraction_pixels_changed": 0.186736328125,
+            "fraction_pixels_over_3": 0.08708984375
+          },
+          "terrain": {
+            "mean_abs_rgb_255": 0.9180245535714285,
+            "max_abs_channel_255": 27,
+            "fraction_pixels_changed": 0.126611328125,
+            "fraction_pixels_over_3": 0.08690011160714285
+          }
+        },
+        "albedo": {
+          "full_frame": {
+            "mean_abs_rgb_255": 6.8359375e-06,
+            "max_abs_channel_255": 1,
+            "fraction_pixels_changed": 1.953125e-05,
+            "fraction_pixels_over_3": 0.0
+          },
+          "terrain": {
+            "mean_abs_rgb_255": 0.0,
+            "max_abs_channel_255": 0,
+            "fraction_pixels_changed": 0.0,
+            "fraction_pixels_over_3": 0.0
+          }
+        },
+        "normal": {
+          "full_frame": {
+            "mean_abs_rgb_255": 1.6276041666666668e-06,
+            "max_abs_channel_255": 1,
+            "fraction_pixels_changed": 4.8828125e-06,
+            "fraction_pixels_over_3": 0.0
+          },
+          "terrain": {
+            "mean_abs_rgb_255": 1.1625744047619049e-06,
+            "max_abs_channel_255": 1,
+            "fraction_pixels_changed": 3.487723214285714e-06,
+            "fraction_pixels_over_3": 0.0
+          }
+        }
+      },
+      "timings": {
+        "before": {
+          "samples": 30,
+          "gbuffer_median_ms": 78.225,
+          "gbuffer_p95_ms": 80.823
+        },
+        "after": {
+          "samples": 30,
+          "gbuffer_median_ms": 31.6,
+          "gbuffer_p95_ms": 32.872
+        }
+      },
+      "residency": {
+        "before": [
+          "789",
+          "1196",
+          "10.04"
+        ],
+        "after": [
+          "789",
+          "1196",
+          "10.04"
+        ]
+      },
+      "median_reduction_percent": 59.60370725471395
+    },
+    "grazing": {
+      "terrain_roi_xyxy": [
+        128,
+        520,
+        1152,
+        800
+      ],
+      "images": {
+        "lit": {
+          "full_frame": {
+            "mean_abs_rgb_255": 0.1895537109375,
+            "max_abs_channel_255": 206,
+            "fraction_pixels_changed": 0.327337890625,
+            "fraction_pixels_over_3": 0.0003173828125
+          },
+          "terrain": {
+            "mean_abs_rgb_255": 0.33266950334821427,
+            "max_abs_channel_255": 3,
+            "fraction_pixels_changed": 0.6773856026785714,
+            "fraction_pixels_over_3": 0.0
+          }
+        },
+        "albedo": {
+          "full_frame": {
+            "mean_abs_rgb_255": 4.557291666666667e-06,
+            "max_abs_channel_255": 1,
+            "fraction_pixels_changed": 1.26953125e-05,
+            "fraction_pixels_over_3": 0.0
+          },
+          "terrain": {
+            "mean_abs_rgb_255": 4.6502976190476195e-06,
+            "max_abs_channel_255": 1,
+            "fraction_pixels_changed": 1.3950892857142857e-05,
+            "fraction_pixels_over_3": 0.0
+          }
+        },
+        "normal": {
+          "full_frame": {
+            "mean_abs_rgb_255": 3.5807291666666666e-06,
+            "max_abs_channel_255": 1,
+            "fraction_pixels_changed": 1.07421875e-05,
+            "fraction_pixels_over_3": 0.0
+          },
+          "terrain": {
+            "mean_abs_rgb_255": 2.3251488095238097e-06,
+            "max_abs_channel_255": 1,
+            "fraction_pixels_changed": 6.975446428571428e-06,
+            "fraction_pixels_over_3": 0.0
+          }
+        }
+      },
+      "timings": {
+        "before": {
+          "samples": 30,
+          "gbuffer_median_ms": 55.956,
+          "gbuffer_p95_ms": 57.192
+        },
+        "after": {
+          "samples": 30,
+          "gbuffer_median_ms": 18.500500000000002,
+          "gbuffer_p95_ms": 18.979
+        }
+      },
+      "residency": {
+        "before": [
+          "789",
+          "1309",
+          "10.03"
+        ],
+        "after": [
+          "789",
+          "1309",
+          "10.03"
+        ]
+      },
+      "median_reduction_percent": 66.9374151118736
+    }
+  }
+}

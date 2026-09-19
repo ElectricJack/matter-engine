@@ -1,0 +1,16 @@
+{
+  "exit": 1,
+  "reason": "Metadata comparison initially required equal cumulative startup uploads as well as equal final geometry. Upload totals differ; final geometry/page counters match. This is a comparison-assumption failure, not a capture/settled-gate failure.",
+  "startup_uploads": {
+    "vertex_uploads": [
+      587,
+      608,
+      623
+    ],
+    "cluster_uploads": [
+      587,
+      608,
+      623
+    ]
+  }
+}

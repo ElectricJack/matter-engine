@@ -1,0 +1,440 @@
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=1280x800
+worlds available (71):
+  [0] AnimatedRigGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [1] AtmospherePresentationFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [2] BranchGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [3] CastleAngledBailey  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [4] CastleBentPalace  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [5] CastleCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [6] CastleClusteredCourt  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [7] CastleConnectorFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [8] CastleCourtyard  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [9] CastleFastBakeProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [10] CastleFurnishings  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [11] CastleGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [12] CastleMasonry  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [13] CastleMasonryPreview  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [14] CastleMaterials  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [15] CastleRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [16] CastleSiteGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [17] CastleStructure  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [18] CastleTimberProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [19] CastleUpgraded  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [20] CastleWalkProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [21] CastleWalkProbeCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [22] CastleWalkProbeRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [23] CastleWallBakeProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [24] CastleWingStudy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [25] ChartVtProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [26] ClayBrickGeometryProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [27] ClayBrickMaterialProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [28] ClayBrickMaze  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [29] ClayBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [30] ClayBrickWallSurfaceProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [31] CloudLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [32] CloudLegacy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [33] ConiferForest  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [34] ConiferLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [35] CornellBox  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [36] Demo  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [37] FloorDemo  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [38] FogLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [39] Kreuzenstein  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [40] LightingGarden  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [41] LocalLightGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [42] LocalLightPointIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [43] LocalLightRtGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [44] LocalLightSpotIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [45] Meadow  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [46] MetalProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [47] PeriodicBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [48] PhysicsPlayground  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [49] PomProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [50] PomProofBrick  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [51] Primitives  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\primitive_demo)
+  [52] ProceduralBrickProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [53] ProceduralTerrainProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [54] RedwoodGrove  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [55] RiverFloatLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [56] RiverHydrology  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [57] RockFormationProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [58] RockGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [59] RockScaleProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [60] SeamLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [61] SharedBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [62] StreamCaverns  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [63] StreamMeadow  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [64] StreamMountain  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [65] SurfaceContactProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [66] TilesetGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [67] VegetationGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [68] VillaDoricColumnStudy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [69] VillaGoldTreasury  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [70] VillaWebsiteKit  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+Vulkan RT available=true enabled=true reason=none
+Vulkan wireframe available=true reason=none
+issues: reports go to D:\Shared With Desktop\AI\matter-engine-cpp\issues
+viewer: UI hidden by MATTER_HIDE_UI
+MATTER_CMD_FIFO: polling command file C:\tmp\matter-rock-scale-v2\cmd.txt
+DLSS selected=Native active=Native internal=1280x800 output=1280x800 resets=0 reason=Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS
+Vulkan RT observed effective=false dispatches=0 reason=world session disconnected
+[resolve] resolve cache: hit 7286cfbfb571676a
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=18ms
+Vulkan RT observed effective=false dispatches=0 reason=no drawable instances
+[part-surface] part=54450563f4ddc6d4 direct recipe_bytes=1092 source_images=0
+[part-surface] part=c6aee501fedd8399 direct recipe_bytes=1094 source_images=0
+[part-surface] part=561edbe632cd2753 direct recipe_bytes=1098 source_images=0
+[part-surface] part=3ae77ee0347fdb8d direct recipe_bytes=1102 source_images=0
+[part-store] loaded v3 FLAT part 92631788661d083e (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 54450563f4ddc6d4 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+bake 1/5 RockScaleGallery
+bake 2/5 
+[local-light] published 0 lights, 0 cells/0 buckets, 48 index bytes, max 0 candidates
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=0
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+Vulkan RT observed effective=true dispatches=2 reason=none
+[part-store] loaded v3 FLAT part c6aee501fedd8399 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 561edbe632cd2753 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 3ae77ee0347fdb8d (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 9 cache hits, version digest 144cdeb99c68f1a7
+bake 3/5 
+bake 4/5 
+bake 5/5 
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=1330ms total=1348ms (resolve-cache-hit)
+[vk] chart-space VT online: 25600 page pool (4064 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 3512 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (8 rays/texel, 0 pages/frame)
+event: bake.finished
+render_path: raster
+set: render.fog.density = 0
+set: render.clouds.layer0_max_density = 0
+set: render.cloud_shadows.enabled = false
+set: render.lighting.sun_elevation_deg = 55
+set: render.lighting.sun_azimuth_deg = 30
+set: render.lighting.sun_tint = (1, 1, 1)
+set: render.lighting.sun_multiplier = 1
+set: render.lighting.sky_irradiance_multiplier = 0.5
+set: render.lighting.day_ambient_multiplier = 0.5
+[bake] bake finished (0 errors)
+world camera: eye(110.0,50.0,95.0) target(40.0,5.0,0.0)
+selected world RockScaleProof hash 92631788661d083e
+viewer: bake ready
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=136
+STATS,overview,31.23,0.01,0.15,0.75,5,5,1298,0,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.206,0.000,0.000,0.000,14.25,0.783,0.021,0.354
+STATSVT,overview,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=67/25600,pinned=5,queue=0,fills=67,evictions=0,ind=0.13/64 MiB,material_pages=67,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=196
+screenshot written to C:/tmp/matter-rock-scale-v2/overview-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=259
+screenshot written to C:/tmp/matter-rock-scale-v2/overview-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=322
+screenshot written to C:/tmp/matter-rock-scale-v2/overview-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=385
+screenshot written to C:/tmp/matter-rock-scale-v2/overview-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=448
+screenshot written to C:/tmp/matter-rock-scale-v2/overview-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=541
+wait_frames: complete 60 frame_serial=601
+screenshot written to C:/tmp/matter-rock-scale-v2/overview-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=664
+screenshot written to C:/tmp/matter-rock-scale-v2/overview-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=787
+STATS,size-0p5-near,31.25,0.01,0.18,0.67,5,5,1298,0,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.087,0.000,0.000,0.000,14.25,10.925,0.016,10.708
+STATSVT,size-0p5-near,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=127/25600,pinned=5,queue=0,fills=127,evictions=0,ind=0.13/64 MiB,material_pages=127,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=847
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-near-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=910
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-near-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=973
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-near-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=1036
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-near-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=1099
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-near-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=1192
+wait_frames: complete 60 frame_serial=1252
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-near-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=1315
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-near-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=1438
+STATS,size-0p5-grazing,31.32,0.01,0.23,1.04,5,2,326,3,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.103,0.000,0.000,0.000,14.25,10.369,0.014,10.134
+STATSVT,size-0p5-grazing,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=130/25600,pinned=5,queue=0,fills=130,evictions=0,ind=0.13/64 MiB,material_pages=130,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=1498
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-grazing-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=1561
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-grazing-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=1624
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-grazing-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=1687
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-grazing-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=1750
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-grazing-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=1843
+wait_frames: complete 60 frame_serial=1903
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-grazing-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=1966
+screenshot written to C:/tmp/matter-rock-scale-v2/size-0p5-grazing-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=2089
+STATS,size-2-near,31.20,0.01,0.19,0.74,5,1,324,1,3,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.157,0.000,0.000,0.000,14.25,7.140,0.025,6.766
+STATSVT,size-2-near,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=131/25600,pinned=5,queue=0,fills=131,evictions=0,ind=0.13/64 MiB,material_pages=131,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=2149
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-near-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=2212
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-near-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=2275
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-near-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=2338
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-near-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=2401
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-near-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=2494
+wait_frames: complete 60 frame_serial=2554
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-near-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=2617
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-near-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=2740
+STATS,size-2-grazing,31.22,0.01,0.14,0.85,5,2,326,3,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.113,0.000,0.000,0.000,14.25,9.526,0.016,9.264
+STATSVT,size-2-grazing,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=134/25600,pinned=5,queue=0,fills=134,evictions=0,ind=0.13/64 MiB,material_pages=134,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=2800
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-grazing-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=2863
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-grazing-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=2926
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-grazing-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=2989
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-grazing-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=3052
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-grazing-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=3145
+wait_frames: complete 60 frame_serial=3205
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-grazing-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=3268
+screenshot written to C:/tmp/matter-rock-scale-v2/size-2-grazing-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=3391
+STATS,size-8-near,31.27,0.01,0.19,0.77,5,1,324,2,2,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.204,0.000,0.000,0.000,14.25,2.732,0.024,2.264
+STATSVT,size-8-near,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=138/25600,pinned=5,queue=0,fills=138,evictions=0,ind=0.13/64 MiB,material_pages=138,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=3451
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-near-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=3514
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-near-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=3577
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-near-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=3640
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-near-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=3703
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-near-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=3796
+wait_frames: complete 60 frame_serial=3856
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-near-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=3919
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-near-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=4042
+STATS,size-8-grazing,31.30,0.01,0.15,0.70,5,2,326,3,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.210,0.000,0.000,0.000,14.25,3.370,0.018,2.918
+STATSVT,size-8-grazing,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=147/25600,pinned=5,queue=0,fills=147,evictions=0,ind=0.13/64 MiB,material_pages=147,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=4102
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-grazing-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=4165
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-grazing-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=4228
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-grazing-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=4291
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-grazing-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=4354
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-grazing-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=4447
+wait_frames: complete 60 frame_serial=4507
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-grazing-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=4570
+screenshot written to C:/tmp/matter-rock-scale-v2/size-8-grazing-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=4693
+STATS,size-32-near,31.26,0.01,0.18,0.71,5,1,324,4,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.205,0.000,0.000,0.000,14.25,2.650,0.025,2.180
+STATSVT,size-32-near,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=151/25600,pinned=5,queue=0,fills=151,evictions=0,ind=0.13/64 MiB,material_pages=151,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=4753
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-near-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=4816
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-near-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=4879
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-near-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=4942
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-near-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=5005
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-near-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=5098
+wait_frames: complete 60 frame_serial=5158
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-near-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=5221
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-near-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 120 frame_serial=5344
+STATS,size-32-grazing,31.26,0.01,0.20,0.81,5,1,324,4,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.209,0.000,0.000,0.000,14.25,2.184,0.019,1.733
+STATSVT,size-32-grazing,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=168/25600,pinned=5,queue=0,fills=168,evictions=0,ind=0.13/64 MiB,material_pages=168,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+wait_frames: complete 60 frame_serial=5404
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-grazing-lit.png
+set: viewer.debug.debug_view_mode = Raw albedo
+wait_frames: complete 60 frame_serial=5467
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-grazing-albedo.png
+set: viewer.debug.debug_view_mode = Normals
+wait_frames: complete 60 frame_serial=5530
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-grazing-normal.png
+set: viewer.debug.debug_view_mode = Raw albedo
+set: render.pom.horizon_debug = VT proxy density (raster)
+wait_frames: complete 60 frame_serial=5593
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-grazing-density.png
+set: render.pom.horizon_debug = Off
+set: viewer.debug.debug_view_mode = None
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=5656
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-grazing-flat.png
+set: render.pom.enabled = true
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 90 frame_serial=5749
+wait_frames: complete 60 frame_serial=5809
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-grazing-rt-lit.png
+set: render.pom.enabled = false
+wait_frames: complete 60 frame_serial=5872
+screenshot written to C:/tmp/matter-rock-scale-v2/size-32-grazing-rt-flat.png
+set: render.pom.enabled = true
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options

@@ -1,0 +1,42 @@
+{
+  "editor_exit": 0,
+  "seconds": 65.75555228399753,
+  "settles": [],
+  "editor_sha256": "40a981e90cf054681d59de746b5a2179ce984023e1da19eb3cad61d21cd9addd",
+  "binary_unchanged": true,
+  "source_changes": [],
+  "missing_shots": [
+    "overview-raster-lit.png",
+    "overview-albedo.png",
+    "overview-connections.png",
+    "overview-native-rt.png",
+    "overview-flat.png",
+    "sector-close-raster-lit.png",
+    "sector-close-albedo.png",
+    "sector-close-connections.png",
+    "sector-close-native-rt.png",
+    "sector-close-flat.png",
+    "sector-grazing-raster-lit.png",
+    "sector-grazing-albedo.png",
+    "sector-grazing-connections.png",
+    "sector-grazing-native-rt.png",
+    "sector-grazing-flat.png"
+  ],
+  "wrong_dimensions": [],
+  "validation_errors": [
+    "[vk] Vulkan device disabled: frame fence wait failed: vkWaitForFences failed: VK_ERROR_DEVICE_LOST (-4)",
+    "[editor] FATAL: begin_frame: Vulkan device disabled: frame fence wait failed: vkWaitForFences failed: VK_ERROR_DEVICE_LOST (-4)",
+    "[vk] Vulkan device disabled: frame fence wait failed: vkWaitForFences failed: VK_ERROR_DEVICE_LOST (-4)",
+    "[vk] Vulkan device disabled: frame fence wait failed: vkWaitForFences failed: VK_ERROR_DEVICE_LOST (-4)",
+    "[vk] Vulkan device disabled: frame fence wait failed: vkWaitForFences failed: VK_ERROR_DEVICE_LOST (-4)",
+    "[vk] Vulkan device disabled: frame fence wait failed: vkWaitForFences failed: VK_ERROR_DEVICE_LOST (-4)"
+  ],
+  "connection_warnings": [],
+  "command_failures": [],
+  "rt_effective": false,
+  "visual_approval": false,
+  "automatic_connections_proven": false,
+  "scope": "Development capture under neutral diagnostic lighting; native per-border continuity still needs inspection and instrumentation.",
+  "stats": [],
+  "capture_passed": false
+}

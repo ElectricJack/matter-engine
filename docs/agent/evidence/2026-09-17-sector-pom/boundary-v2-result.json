@@ -1,0 +1,23 @@
+{
+  "steps": [
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py",
+        "sector-boundary-v2",
+        "vulkan_smoke_tests",
+        "matter_editor"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py",
+        "sector-boundary-v2",
+        "vt-pom-work"
+      ],
+      "exit": 0
+    }
+  ],
+  "finished": true,
+  "exit": 0
+}

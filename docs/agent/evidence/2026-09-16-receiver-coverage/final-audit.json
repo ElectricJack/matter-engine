@@ -1,0 +1,35 @@
+{
+  "checkpoint": "coverage-v2",
+  "source_count": 994,
+  "source_changes": [],
+  "binary_changes": [],
+  "log_changes": [],
+  "build_manifest": {
+    "path": "docs/agent/evidence/2026-09-16-shared-vt-pixels/coverage-v2-build-manifest.json",
+    "sha256": "3f3e942575038c83be8ae4fe9b694e62675c95ee3eb717ee3e3c0f0d50d96cd7"
+  },
+  "test_manifest": {
+    "path": "docs/agent/evidence/2026-09-16-shared-vt-pixels/coverage-v2-tests.json",
+    "sha256": "22d6f6e4520d227a263cf57547f5bcc10c758fce609e92becdb33b93dfc2974a"
+  },
+  "build_targets": [
+    "vt_residency_tests",
+    "vulkan_smoke_tests",
+    "vt_compositor_tests",
+    "matter_editor"
+  ],
+  "passed_modes": [
+    "cpu",
+    "vt-receiver-material",
+    "compositor",
+    "vt-direct-source",
+    "surface-parallax",
+    "vt-export",
+    "vt-composed-seam"
+  ],
+  "r2_editor_sha256": "3aac176acbea521dfc6f1c0b017c5f376a2dc5ae7e1b4c7e18bdfc5db932b615",
+  "r2_editor_unchanged": true,
+  "isolated_performance_run": false,
+  "visual_acceptance": false,
+  "default_ao_integration_complete": false
+}

@@ -1,0 +1,60 @@
+{
+  "limitations": "Development comparison with different asset/cache histories and uncontrolled other GPU workloads. Root setup and initial fill overlap; do not sum them. These measurements do not establish a causal speedup.",
+  "runs": {
+    "v11": {
+      "audit_pass": true,
+      "renderer_pass": true,
+      "shots": 37,
+      "native_rt_shots": 4,
+      "direct_source_count": 12,
+      "gbuffer_median_ms": {
+        "overview": 32.348,
+        "grazing": 21.4165,
+        "cliff": 28.182000000000002,
+        "cliff-grazing": 40.326,
+        "close": 8.731
+      },
+      "root_setup_ms": 53635,
+      "initial_fill_s": 171.87,
+      "peak_pages": 1486.0,
+      "peak_variants": 1010.0,
+      "peak_indirection_MiB": 36.96,
+      "evictions": 0.0,
+      "image_dimensions": [
+        1280,
+        800
+      ]
+    },
+    "v12": {
+      "audit_pass": true,
+      "renderer_pass": true,
+      "shots": 37,
+      "native_rt_shots": 4,
+      "direct_source_count": 48,
+      "gbuffer_median_ms": {
+        "overview": 33.299,
+        "grazing": 19.216,
+        "cliff": 25.776,
+        "cliff-grazing": 38.064,
+        "close": 8.6445
+      },
+      "root_setup_ms": 75045,
+      "initial_fill_s": 173.13,
+      "peak_pages": 1557.0,
+      "peak_variants": 1038.0,
+      "peak_indirection_MiB": 48.36,
+      "evictions": 0.0,
+      "image_dimensions": [
+        1280,
+        800
+      ]
+    }
+  },
+  "v12_frame_change_percent": {
+    "overview": 2.9399035489056535,
+    "grazing": -10.274788130646929,
+    "cliff": -8.537364275069203,
+    "cliff-grazing": -5.609284332688591,
+    "close": -0.9907227121749962
+  }
+}

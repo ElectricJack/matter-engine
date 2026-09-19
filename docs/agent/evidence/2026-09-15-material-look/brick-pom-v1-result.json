@@ -1,0 +1,32 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 83.5917902939982,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,brick-pom-v1-middle-off,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/25600,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-middle,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/25600,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-close-off,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/25600,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-close,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/25600,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-far-off,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/25600,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-far,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/25600,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-grazing-off,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/25600,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-grazing,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/25600,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-rt-off,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/25600,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-pom-v1-rt,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/25600,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "brick-pom-v1-middle-off.png": "a016dd979dabdbf52d18471a33afe20ee08623155d1b34b1ee71b6bd3e3f395d",
+    "brick-pom-v1-middle.png": "353f181e33a9f6876a39a51b7544cbd0b6e9b30c59d3bbdb1ff68ed15d117ff2",
+    "brick-pom-v1-close-off.png": "10023d12bc1234b360cfe1ce9782ee79b22e367307aebd7c14051168f08f53a1",
+    "brick-pom-v1-close.png": "713da3ef43e82c57ea665df204934258687d4977bdf81b3d3bc7751031b8ec05",
+    "brick-pom-v1-far-off.png": "34d1a6053d62033d82f89d79225ffc279592b30011cc5a61e784ffe48bced741",
+    "brick-pom-v1-far.png": "87b436d28361e5dc816388b598e22bc1de8bf6fe0cae403131e0e3c566a2b97d",
+    "brick-pom-v1-grazing-off.png": "faeee40459fe508e47331a08105bcd55f34ec1b4eeffc1bd49f0d0c708aa19b2",
+    "brick-pom-v1-grazing.png": "4893288f48177a36d336748f23033e14e393e0865f86627bc4efedc6ca2e7733",
+    "brick-pom-v1-rt-off.png": "b05c83231b80860cfe2848cf25226efddbabb0f2bd520e208757660ea9c35179",
+    "brick-pom-v1-rt.png": "77e8e6998c01b31893b271a68be5ddb2647c8502aba0f4bcdae4ffce14a43d11"
+  },
+  "passed": true
+}

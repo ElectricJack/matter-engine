@@ -1,0 +1,127 @@
+ M MatterEditor/Makefile
+ M MatterEditor/src/editor_props.cpp
+ M MatterEditor/src/editor_props.h
+ M MatterEditor/src/main.cpp
+ M MatterEngine3/Makefile
+ M MatterEngine3/include/matter/vulkan_device.h
+ M MatterEngine3/include/matter/world_session.h
+ M MatterEngine3/shaders_vk/cull.comp
+ M MatterEngine3/shaders_vk/gbuffer.frag
+ M MatterEngine3/shaders_vk/rt_shadow.rgen
+ M MatterEngine3/shaders_vk/tileset_bake_ao.comp
+ M MatterEngine3/shaders_vk/tileset_bake_primary.comp
+ M MatterEngine3/src/dsl_bindings.cpp
+ M MatterEngine3/src/lod_select.cpp
+ M MatterEngine3/src/lod_select.h
+ M MatterEngine3/src/matter_engine.cpp
+ M MatterEngine3/src/part_flatten.cpp
+ M MatterEngine3/src/part_flatten.h
+ M MatterEngine3/src/part_render_policy.h
+ M MatterEngine3/src/provider/local_provider.cpp
+ M MatterEngine3/src/provider/resolvers.cpp
+ M MatterEngine3/src/provider/sector_resolver.h
+ M MatterEngine3/src/render/part_store.cpp
+ M MatterEngine3/src/render/part_store.h
+ M MatterEngine3/src/render/tileset_bake_vk.cpp
+ M MatterEngine3/src/render/tileset_bake_vk.h
+ M MatterEngine3/src/render/vk_instance_cache.cpp
+ M MatterEngine3/src/render/vk_instance_cache.h
+ M MatterEngine3/src/render/vk_scene_renderer.cpp
+ M MatterEngine3/src/render/vk_scene_renderer.h
+ M MatterEngine3/src/render/world_state.cpp
+ M MatterEngine3/src/script_host.cpp
+ M MatterEngine3/src/tileset_bake.cpp
+ M MatterEngine3/src/tileset_base.js.h
+ M MatterEngine3/src/tileset_spec.h
+ M MatterEngine3/src/version_vector.h
+ M MatterEngine3/tests/part_flatten_tests.cpp
+ M MatterEngine3/tests/script_host_tests.cpp
+ M MatterEngine3/tests/vulkan_smoke_tests.cpp
+ M ROADMAP.md
+ M cmake/MatterEngine.cmake
+ M cmake/MatterViewer.cmake
+ M cmake/manifests/engine-core.sources
+ M cmake/manifests/engine-viewer.sources
+ M docs/README.md
+ M docs/agent/control-surface.md
+ M projects/world_demo/scenes/CastleUpgraded/props.json
+ M projects/world_demo/scenes/StreamMountain/StreamMountain.js
+ M projects/world_demo/scenes/StreamMountain/objects/WorldSector.js
+ M projects/world_demo/scenes/StreamMountain/props.json
+?? MatterEngine3/shaders_vk/sparse_hierarchy.comp
+?? MatterEngine3/shaders_vk/sparse_voxel.frag
+?? MatterEngine3/shaders_vk/sparse_voxel.vert
+?? MatterEngine3/shaders_vk/sparse_voxel_common.glsl
+?? MatterEngine3/shaders_vk/sparse_voxel_optics.glsl
+?? MatterEngine3/shaders_vk/sparse_voxel_select.comp
+?? MatterEngine3/shaders_vk/sparse_voxel_shadow.comp
+?? MatterEngine3/shaders_vk/surface_filter.glsl
+?? MatterEngine3/shaders_vk/surface_proxy.frag
+?? MatterEngine3/shaders_vk/surface_proxy.vert
+?? MatterEngine3/shaders_vk/surface_proxy_common.glsl
+?? MatterEngine3/shaders_vk/surface_query.frag
+?? MatterEngine3/shaders_vk/surface_query.vert
+?? MatterEngine3/src/mesh_error.cpp
+?? MatterEngine3/src/mesh_error.h
+?? MatterEngine3/src/render/impostor_mips.h
+?? MatterEngine3/src/render/shared_surface_asset.h
+?? MatterEngine3/src/render/shared_surface_compile.h
+?? MatterEngine3/src/render/vk_sparse_placement_update.inl
+?? MatterEngine3/src/render/vk_sparse_voxel.cpp
+?? MatterEngine3/src/render/vk_sparse_voxel.h
+?? MatterEngine3/src/sparse_voxel_bake.cpp
+?? MatterEngine3/src/sparse_voxel_bake.h
+?? MatterEngine3/src/sparse_voxel_hierarchy.cpp
+?? MatterEngine3/src/sparse_voxel_hierarchy.h
+?? MatterEngine3/src/surface_proxy.cpp
+?? MatterEngine3/src/surface_proxy.h
+?? MatterEngine3/src/surface_proxy_lod.cpp
+?? MatterEngine3/tests/conifer_lod_provider_tests.cpp
+?? MatterEngine3/tests/mesh_error_tests.cpp
+?? MatterEngine3/tests/sector_lod_tests.cpp
+?? MatterEngine3/tests/sparse_forest_preview.cpp
+?? MatterEngine3/tests/sparse_hierarchy_fixture_io.h
+?? MatterEngine3/tests/sparse_reference_scene.h
+?? MatterEngine3/tests/sparse_surface_query_tests.h
+?? MatterEngine3/tests/sparse_voxel_bake_tests.cpp
+?? MatterEngine3/tests/sparse_voxel_fixture_io.h
+?? MatterEngine3/tests/sparse_voxel_hierarchy_tests.cpp
+?? MatterEngine3/tests/sparse_voxel_shadow_tests.h
+?? MatterEngine3/tests/sparse_voxel_temporal_tests.h
+?? MatterEngine3/tests/sparse_voxel_vk_tests.h
+?? MatterEngine3/tests/surface_proxy_tests.cpp
+?? MatterEngine3/tests/triangle_reference_fixture_io.h
+?? MatterEngine3/tests/world_state_delta_tests.cpp
+?? docs/agent/evidence/2026-09-14-texturing-review/
+?? docs/findings/texturing-system-review-2026-09-14.md
+?? docs/findings/vt-stability-and-latency-review-2026-09-14.md
+?? docs/superpowers/plans/2026-09-13-sparse-voxel-forest.md
+?? docs/superpowers/plans/2026-09-14-layered-surface-texturing.md
+?? docs/superpowers/plans/2026-09-14-vt-reliability-and-throughput.md
+?? docs/superpowers/specs/2026-09-14-layered-surface-texturing-design.md
+?? docs/superpowers/specs/2026-09-14-vt-reliability-and-throughput-design.md
+?? projects/world_demo/objects/ConiferBarkDetail.js
+?? projects/world_demo/objects/ConiferBarkRelief.js
+?? projects/world_demo/objects/ConiferBough.js
+?? projects/world_demo/objects/ConiferBranchDetail.js
+?? projects/world_demo/objects/ConiferClump.js
+?? projects/world_demo/objects/ConiferCone.js
+?? projects/world_demo/objects/ConiferGround.js
+?? projects/world_demo/objects/ConiferNeedles.js
+?? projects/world_demo/objects/ConiferRootCrown.js
+?? projects/world_demo/objects/ConiferTree.js
+?? projects/world_demo/objects/ConiferWood.js
+?? projects/world_demo/objects/MountainEvergreen.js
+?? projects/world_demo/objects/RedwoodBarkDetail.js
+?? projects/world_demo/scenes/ConiferForest/
+?? projects/world_demo/scenes/ConiferLab/
+?? projects/world_demo/scenes/RedwoodGrove/
+?? projects/world_demo/shared-lib/conifer.js
+?? projects/world_demo/shared-lib/conifer_bark.js
+?? projects/world_demo/shared-lib/conifer_clump.js
+?? projects/world_demo/shared-lib/conifer_forest.js
+?? projects/world_demo/shared-lib/mountain_forest.js
+?? projects/world_demo/tests/conifer_tests.mjs
+?? projects/world_demo/tests/mountain_forest_tests.mjs
+?? tools/forest_perf.py
+?? vulkan_device_fault.log

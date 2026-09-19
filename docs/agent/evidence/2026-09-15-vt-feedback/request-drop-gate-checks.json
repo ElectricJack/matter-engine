@@ -1,0 +1,23 @@
+{
+  "red_exit": 1,
+  "green_exit": 0,
+  "green_suite": "python3 -m unittest tools.tests.test_vt_acceptance",
+  "traces": {
+    "terrain-production-timing": {
+      "settled_gate": true,
+      "request_drop_changes": 0
+    },
+    "castle-production-timing": {
+      "settled_gate": true,
+      "request_drop_changes": 0
+    },
+    "terrain-draw-bindings-performance": {
+      "settled_gate": true,
+      "request_drop_changes": 0
+    }
+  },
+  "sources": {
+    "tools/vt_acceptance.py": "b2ca10dc8e685fa98149d50780a9fea44662cfdcedcb5bec4a438e4a84ee1bb2",
+    "tools/tests/test_vt_acceptance.py": "4087f8b0b95bac1a14ccfdc9c1b4382759e96d5dc7d6792825a2b3c1ebd56d57"
+  }
+}

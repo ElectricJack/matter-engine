@@ -1,0 +1,72 @@
+{
+  "verified_at_utc": "2026-09-15T22:37:09.455577+00:00",
+  "build_manifest": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v4-source.json",
+  "sources": {
+    "count": 85,
+    "mismatches": []
+  },
+  "binaries": {
+    "count": 5,
+    "mismatches": []
+  },
+  "native_steps": {
+    "count": 8,
+    "failed": []
+  },
+  "captures": {
+    "brick-pom-v1": {
+      "passed": true,
+      "sources": {
+        "count": 87,
+        "mismatches": []
+      },
+      "images": {
+        "count": 10,
+        "mismatches": []
+      },
+      "binary_matches": true
+    },
+    "terrain-pom-v1": {
+      "passed": true,
+      "sources": {
+        "count": 87,
+        "mismatches": []
+      },
+      "images": {
+        "count": 10,
+        "mismatches": []
+      },
+      "binary_matches": true
+    }
+  },
+  "checkpoint_native_changes": {
+    "MatterEngine3/shaders_vk/gbuffer.frag": "5990267b92d8c864200751574ff8c48ef44cc573859641b3f3ad78236d581b86",
+    "MatterEngine3/shaders_vk/rt_lighting_impl.glsl": "d7a568306bbc2d147465de90e1b11179a08eb90a69af9f97e06f5bc46b0ca285",
+    "MatterEngine3/shaders_vk/rt_primary_inputs.glsl": "e68f4a9c723cb3f3cc0b8216df463ee65aab1bdb6e11da7de3817eada63e00b7",
+    "MatterEngine3/shaders_vk/rt_shadow.rgen": "e69d16b4bcc8d68777f5a6e04a79c99c8cdda9b279ca88a84b9dfca206c45082",
+    "MatterEngine3/shaders_vk/rt_surface_common.glsl": "f6bc41ffef3f9b3e41708ebe2ce3de0a89a1ec7f62d99ec40144fc4ec4abc81b",
+    "MatterEngine3/shaders_vk/vt_chart_resolve.glsl": "18b0f67235206cd63e2816f311fbdf11050baaa6ac4c8422cb147e2431c8a2e7",
+    "MatterEngine3/shaders_vk/vt_common.glsl": "2d06db3b883bbafede0b02fda4f52e4f90fa6d4cc5d0202d21e619ad5eac366b",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "d4b8d20a103f2590edb8229b44a9b6f8c1a3cba444096486cc6c06aadfefe286",
+    "MatterEngine3/shaders_vk/vt_visible_input.glsl": "6f6d7f52bcecda8604ef979c5bdf311be61a03673ab2588b698cb194a3142308",
+    "MatterEngine3/tests/vt_compositor_tests.cpp": "7fc64584f4f2212635222720f19d980aadf55d75635c69304abbc7488f80876b",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "c1539d6c4029cae215c98e9446ffe577fcc8d1f70a96eea387337b368b2fc03f",
+    "MatterEngine3/src/render/vt_types.h": "9dce4c4f60fe6dc2425ea2c33cde1ec9ace14f5991f83d186e521e9d95a28187",
+    "MatterEngine3/shaders_vk/vt_parallax.glsl": "c1fe9904e6930e64acfb25ab69a79defe819264952e0f67a514ca85fa70fad58"
+  },
+  "changes_missing_from_build_manifest": [],
+  "artifact_hashes": {
+    "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v4-checks.json": "b1166b0ddf352b3aefc9e728aca0f81aa0a059a5c30a0e9b32b2727d026777aa",
+    "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v4-source.json": "bdc2638a4a28a1d839a2eda32d3519270712a010e04f4a1654f4a9b849b7d824",
+    "docs/agent/evidence/2026-09-15-material-look/capture.py": "29c7fbafe3d980f494d8dd2c1d8f357d4a49ed985582dd292b34da72ba119631",
+    "docs/agent/evidence/2026-09-15-composed-pom/README.md": "7c835d8107ce0fe1747ec8f00fc7d47c1d5ca624411ad15d57d8bfd8e5ab4ec5",
+    "docs/superpowers/plans/2026-09-14-layered-surface-texturing.md": "40393b30fb827dcaba9c3066ff399959317402ec04fd066c6305e4ee0de874df",
+    "docs/superpowers/specs/2026-09-14-layered-surface-texturing-design.md": "ddfe9261a22569cc4973ff87278af1f93e37406a1e1a8cf131db8ce2905a2abd",
+    "docs/agent/evidence/2026-09-15-material-look/brick-pom-v1-source.json": "cb9ce6816c777cdbc2c490a565a70efe150d3a3b3e8f5495442aa038070707f2",
+    "docs/agent/evidence/2026-09-15-material-look/brick-pom-v1-result.json": "3df8d5607ad8bcc426e9f9ea38e6058d373b107eed6bfed403a5b9eca7ddc881",
+    "docs/agent/evidence/2026-09-15-material-look/terrain-pom-v1-source.json": "37830c05d7293d3dfb0ad29337fea132e57d43cecd4c63f75c40a5fbeaae48ea",
+    "docs/agent/evidence/2026-09-15-material-look/terrain-pom-v1-result.json": "7590b9262040043654668de9b84bd78490b0d02daea51b708b8d8d4843e3094c"
+  },
+  "errors": [],
+  "passed": true
+}

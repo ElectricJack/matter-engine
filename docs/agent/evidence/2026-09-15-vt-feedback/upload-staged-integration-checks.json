@@ -1,0 +1,161 @@
+[
+  {
+    "name": "compositor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 20.435772942997573,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-compositor-build.log"
+  },
+  {
+    "name": "compositor-test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:TMP=\"C:/Users/webde/AppData/Local/Temp\"; $env:TEMP=\"C:/Users/webde/AppData/Local/Temp\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.752028324001003,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-compositor-test.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "smoke-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 26.412040110997623,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-smoke-build.log"
+  },
+  {
+    "name": "vt-queue",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.6544034279941116,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-vt-queue.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "vt",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.822143353005231,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-vt.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "vt-surfaces",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-surfaces\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.7562052459979896,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-vt-surfaces.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "vt-enrich",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.7661447599966777,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-vt-enrich.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "vt-enrich-nort",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich-nort\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.4402945670008194,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-vt-enrich-nort.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "vt-normal-frame",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-normal-frame\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 4.955723250997835,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-vt-normal-frame.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "vt-rt",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-rt\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.2073770739953034,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-vt-rt.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "surface-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 5.511035246003303,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-surface-parallax.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "editor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "editor"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 29.927562889999535,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/upload-staged-editor-build.log"
+  }
+]

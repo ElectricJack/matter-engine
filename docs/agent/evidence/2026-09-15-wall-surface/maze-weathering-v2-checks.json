@@ -1,0 +1,76 @@
+[
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "seconds": 65.28122396000254,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v2-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "solid_face_projection_gpu_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "solid_face_projection_gpu_tests"
+    ],
+    "exit": 0,
+    "seconds": 106.73941026299144,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v2-build-solid_face_projection_gpu_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "editor"
+    ],
+    "exit": 0,
+    "seconds": 76.01165498098999,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v2-build-editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "clay",
+    "name": "compositor",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VT_CLAY_FIXTURE='D:/tmp/matter-vt/20260915-stamp-vt/faces'; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 11.973321262994432,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v2-clay-compositor.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "projection",
+    "name": "clay",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_VALIDATION='1'; $env:MATTER_CLAY_FACE_DUMP='D:/tmp/matter-vt/20260915-stamp-vt/faces'; Set-Location -LiteralPath 'D:/Shared With Desktop/AI/matter-engine-cpp'; & './MatterEditor/build/cmake/windows-msvc/relwithdebinfo/solid_face_projection_gpu_tests.exe'; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 17.02004817199486,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v2-projection-clay.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

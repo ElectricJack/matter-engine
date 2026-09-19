@@ -1,0 +1,126 @@
+{
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-after/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-after/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-after/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "MATTER_VK_VALIDATION=1",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-after/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-after/profile.json"
+  ],
+  "driver_exit": 0,
+  "elapsed_seconds": 358.2016055583954,
+  "source_manifest": "fallback-source.json",
+  "validation_effective": true,
+  "visual_review": "1920x1080 screenshot reviewed: reference terrain framing retained.",
+  "full_vt_acceptance": false,
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/command.json",
+      "bytes": 1408,
+      "sha256": "7f28a8e95739052707c4c73ce47d1a972654515e0d169b66ce7cfdf7172716b9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/timeline.txt",
+      "bytes": 204,
+      "sha256": "4dba43a24b37c7c217381d8632ce19891faf095e3da9b98d8a6deaf0c73d29ff"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/result.json",
+      "bytes": 1587,
+      "sha256": "0f114ab232ccafbf07097bb28afa52eeca6c5d53186d69c993e07bfdaa7f51a1"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/launch-source.json",
+      "bytes": 1647,
+      "sha256": "19e4c26d6546f6ac567edafa0a1c972fc56bd199810f0863868cfc8674e32ef7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/driver.log",
+      "bytes": 642014,
+      "sha256": "1935604f6f1f58c26c5e224b38ec3f5a32e5d0b4ac2c51bd53c8248ae4aa7943"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/run/log.txt",
+      "bytes": 641561,
+      "sha256": "6cc29553f039f393f9decc00a34c38437e971f4b6f31d44d89ca640a079874d7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/vt.jsonl",
+      "bytes": 1773637,
+      "sha256": "786b8e3284c9cf19fd4dca65cc9db9b9199c06938549c47111a2705434aa9bb2"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/profile.json",
+      "bytes": 3711831,
+      "sha256": "f126d483e62b79b14c4f5b0d0b71312c1eb2b98d542df18535d1971ef423afeb"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/settled.png",
+      "bytes": 5909834,
+      "sha256": "db3b27e433d2dd98a61da4c6e66b83e287314a8e319678f18b78467faefc6584",
+      "dimensions": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-after/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    }
+  ],
+  "validation_error_lines": 0,
+  "markers": [
+    "STATSVT,settle_begin,active=1,variants=789/32768,rejected=0,mesh=225.9/3512.0 MiB,pool=1631/33024,pinned=789,queue=0,fills=1631,evictions=0,ind=2.40/64 MiB",
+    "STATSVT,settle_end,active=1,variants=789/32768,rejected=0,mesh=225.9/3512.0 MiB,pool=1631/33024,pinned=789,queue=0,fills=1631,evictions=0,ind=2.40/64 MiB"
+  ]
+}

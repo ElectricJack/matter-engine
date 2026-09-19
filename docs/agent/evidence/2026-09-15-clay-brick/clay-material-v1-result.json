@@ -1,0 +1,16 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 148.44541158400534,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,clay-material-v1-group,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB",
+    "STATSVT,clay-material-v1-close,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB",
+    "STATSVT,clay-material-v1-grazing,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB",
+    "STATSVT,clay-material-v1-rt,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB",
+    "STATSVT,clay-material-v1-albedo,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB"
+  ],
+  "images": {},
+  "passed": false
+}

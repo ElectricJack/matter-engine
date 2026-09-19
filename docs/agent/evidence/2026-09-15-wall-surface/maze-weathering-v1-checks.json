@@ -1,0 +1,106 @@
+[
+  {
+    "kind": "build",
+    "name": "finite_surface_recipe_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "finite_surface_recipe_tests"
+    ],
+    "exit": 0,
+    "seconds": 47.95088956700056,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v1-build-finite_surface_recipe_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "finite_surface_recipe_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/finite_surface_recipe_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 2.6545441939961165,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v1-rootcpu-finite_surface_recipe_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "face_material_bake_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "face_material_bake_tests"
+    ],
+    "exit": 0,
+    "seconds": 7.561293585997191,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v1-build-face_material_bake_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "cpu",
+    "name": "face_material_bake_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/face_material_bake_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.6492158390028635,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v1-cpu-face_material_bake_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "surface_field_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "surface_field_tests"
+    ],
+    "exit": 0,
+    "seconds": 8.239267312004813,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v1-build-surface_field_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "cpu",
+    "name": "surface_field_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/surface_field_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.4158212959882803,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v1-cpu-surface_field_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 1,
+    "seconds": 9.895995217986638,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-weathering-v1-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

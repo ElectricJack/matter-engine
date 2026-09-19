@@ -1,0 +1,100 @@
+{
+  "source_manifest": "input-idle-integration-source.json",
+  "source_count": 57,
+  "binary_count": 3,
+  "changed_tested_inputs": [],
+  "process_census_command": [
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "$processes = @(Get-Process -Name editor,vulkan_smoke_tests,vt_compositor_tests,cl,link,ninja,cmake,ctest -ErrorAction SilentlyContinue | Select-Object ProcessName,Id); ConvertTo-Json -InputObject $processes -Compress; exit 0"
+  ],
+  "process_census_exit": 0,
+  "native_processes": [],
+  "comparison_order": [
+    "terrain-address-lifetime-performance",
+    "terrain-input-idle-performance",
+    "terrain-input-idle-repeat"
+  ],
+  "geometry_and_pool": {
+    "variants": [
+      789,
+      789,
+      789
+    ],
+    "pool_used": [
+      1513,
+      1513,
+      1513
+    ],
+    "pinned": [
+      789,
+      789,
+      789
+    ],
+    "mesh_bytes": [
+      288107279,
+      288107279,
+      288107279
+    ],
+    "pool_bytes": [
+      4275683328,
+      4275683328,
+      4275683328
+    ],
+    "resident_sectors": [
+      2586,
+      2586,
+      2586
+    ],
+    "output_width": [
+      1920,
+      1920,
+      1920
+    ],
+    "output_height": [
+      1080,
+      1080,
+      1080
+    ],
+    "internal_width": [
+      1920,
+      1920,
+      1920
+    ],
+    "internal_height": [
+      1080,
+      1080,
+      1080
+    ]
+  },
+  "drawn_triangles": [
+    151991,
+    151991,
+    151991
+  ],
+  "cumulative_startup_uploads": {
+    "vertex_uploads": [
+      587,
+      608,
+      623
+    ],
+    "cluster_uploads": [
+      587,
+      608,
+      623
+    ]
+  },
+  "project_inputs_match_across_runs": true,
+  "project_input_count": 255,
+  "camera_path_sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5",
+  "full_vt_acceptance": false,
+  "remaining": [
+    "Settled CPU target misses in both current runs.",
+    "Slower whole-GPU timing than the preceding one-run candidate; shader-cost attribution remains open.",
+    "Cumulative startup upload counts differ, although final geometry/page counts match and uploads stay unchanged throughout each settled interval.",
+    "Filtered history at delayed publication, adapter/source-memory limits and active/edit/return/pressure acceptance remain open.",
+    "Broad RT and light-culling failures reproduce on archived evaluation executable."
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 59.00275638800031,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,periodic-module-v1-group,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=21/25600,pinned=3,queue=0,fills=21,evictions=0,ind=0.01/64 MiB,material_pages=21,shared_material_refs=0",
+    "STATSVT,periodic-module-v1-close-left,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=41/25600,pinned=3,queue=0,fills=41,evictions=0,ind=0.01/64 MiB,material_pages=41,shared_material_refs=0",
+    "STATSVT,periodic-module-v1-close,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=53/25600,pinned=3,queue=0,fills=53,evictions=0,ind=0.01/64 MiB,material_pages=53,shared_material_refs=0",
+    "STATSVT,periodic-module-v1-close-right,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=101/25600,pinned=3,queue=0,fills=101,evictions=0,ind=0.01/64 MiB,material_pages=93,shared_material_refs=8",
+    "STATSVT,periodic-module-v1-grazing,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=116,shared_material_refs=8",
+    "STATSVT,periodic-module-v1-rt,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=116,shared_material_refs=8",
+    "STATSVT,periodic-module-v1-pom-status,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=116,shared_material_refs=8",
+    "STATSVT,periodic-module-v1-pom-charts,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=124/25600,pinned=3,queue=0,fills=124,evictions=0,ind=0.01/64 MiB,material_pages=116,shared_material_refs=8"
+  ],
+  "images": {
+    "periodic-module-v1-group.png": "d7d9cb2ee6c0075ba74e52c2fdfd0090d1417b950df094edc33014bb839ebe63",
+    "periodic-module-v1-close-left.png": "32edd569062130b78d67defb15f6b9457989e88bc03972630bc43f76f311acab",
+    "periodic-module-v1-close.png": "565181db75784b624a922cf416e1755aba0ad9787c6a26572682fc17ea3c62ac",
+    "periodic-module-v1-close-right.png": "f2abe00c03a19347ca5474ea685a6c104771d6da01a917c2e27e112102555b01",
+    "periodic-module-v1-grazing.png": "972e73012d7fea8638554f69fc7f2cc1fc6da9b3078a71f696712679135fed81",
+    "periodic-module-v1-rt.png": "e4a183059208776757d5d4f2526afe4f8e0477ae8b6e744df77f9638118fbcf9",
+    "periodic-module-v1-pom-status.png": "70dcd41d7520f1823fe3659d431bed1e7376b85a92a45c9557eb10215eed0dde",
+    "periodic-module-v1-pom-charts.png": "03de938c397a45c8f886d462577016ee060075dafdb94cce91c9ea518ea260e4"
+  },
+  "passed": true
+}

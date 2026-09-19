@@ -1,0 +1,1 @@
+INVALID PERFORMANCE CONTROL: camera framing changed during valley capture; census changed from the expected working set. Do not use timings as matched evidence. Quit requested; next harness disables live input on the exact driver-owned native window.

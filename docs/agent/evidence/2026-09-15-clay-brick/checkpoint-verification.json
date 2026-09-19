@@ -1,0 +1,24 @@
+{
+  "runtime_sources_match": true,
+  "editor_binary_matches": true,
+  "capture_images_match": true,
+  "projection_geometry_sources_match": true,
+  "documentation_links_exist": true,
+  "accepted_populated_views": [
+    "close",
+    "grazing",
+    "rt",
+    "albedo",
+    "normals",
+    "wireframe"
+  ],
+  "unaccepted_view": "group: streamed geometry was not drawable yet",
+  "geometry_face_count": 16,
+  "goal_complete": false,
+  "artifact_sha256": {
+    "clay-detail-v4-faces.zip": "31aa51183e250f8c920259b749e489b1fcbe34c2f90d29b8e629359d036306a6",
+    "clay-detail-v4-geometry.png": "1e8f9dea6c8d47936b95758ddc299b5f9a4947ed9928fa4c3d69a7b5138abe9f",
+    "clay-textured-v3-result.json": "beacafe580356a8361506bf91d8a164795eb13eafbf3e4a2ada32a8824e4b207",
+    "clay-textured-v3-source.json": "ef8e19093dd2dfc387413c373d2606930ff7664d2292961aac70f1fab901578d"
+  }
+}

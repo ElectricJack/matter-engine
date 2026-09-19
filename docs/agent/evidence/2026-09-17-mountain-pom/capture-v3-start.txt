@@ -1,0 +1,3 @@
+wait_event bake.finished 900
+render_path raster
+cam 380 20.25 1600 380 18.25 1593

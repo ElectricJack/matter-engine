@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "build",
+    "name": "editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "editor"
+    ],
+    "exit": 0,
+    "seconds": 5.245864087002701,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/maze-v2-build-editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

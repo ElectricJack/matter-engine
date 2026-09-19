@@ -1,0 +1,30 @@
+{
+  "editor_exit": 1,
+  "seconds": 67.53436069999589,
+  "editor_sha256": "ced060ff290c6859b749863240d6f12434b71ea75c6440711ca1bba0b388fea6",
+  "binary_unchanged": true,
+  "source_changes": [],
+  "missing_shots": [
+    "overview-lit.png",
+    "overview-wireframe.png",
+    "overview-rt-lit.png",
+    "block-lit.png",
+    "block-wireframe.png",
+    "block-rt-lit.png",
+    "slab-lit.png",
+    "slab-wireframe.png",
+    "slab-rt-lit.png",
+    "weathered-lit.png",
+    "weathered-wireframe.png",
+    "weathered-rt-lit.png"
+  ],
+  "validation_errors": [],
+  "command_failures": [],
+  "files": {
+    "cmd.txt": "f2708a77da97444068ed5048fc92a11a7dc487ea398b741d99bf4afdccf46077",
+    "driver.log": "bc6ab4de953ddeb944b334df8b66596f52b69a84821723602c7fa9d8bd5f42d8",
+    "log.txt": "82b31a95803fb81c4cc7b336a8773882d14c6ebc2c3ca12775c0cad50e1c0f24",
+    "timeline.txt": "f2708a77da97444068ed5048fc92a11a7dc487ea398b741d99bf4afdccf46077"
+  },
+  "passed": false
+}

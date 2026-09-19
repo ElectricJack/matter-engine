@@ -1,0 +1,69 @@
+--- a/MatterEngine3/tests/vulkan_smoke_tests.cpp
++++ b/MatterEngine3/tests/vulkan_smoke_tests.cpp
+@@ -6912,6 +6912,66 @@
+         const auto latest = settle();
+         CHECK(!renderer.test_vt_input_update_pending() && close4(latest.normal, pressure_detail.normal, .002f),
+               "input snapshot: newest coalesced edit recovers after version pressure");
++        // F0 in the raw reflection alpha is selected from the primary
++        // material before stochastic rays. It exposes live-table/captured-page
++        // mismatch without depending on denoising or sample noise.
++        materials[kMaterialA].base_roughness[3] = .2f;
++        materials[kMaterialA].metal_opacity_spec_coat[2] = 1.f;
++        for (int c = 0; c < 3; ++c)
++            materials[kMaterialA].specular_tint_coat_roughness[c] = 1.f;
++        CHECK(renderer.update_materials(materials, 40, 1, error), error.c_str());
++        before = settle();
++        CHECK(std::fabs(before.raw_specular.w - .04f) < .001f,
++              "input snapshot: primary reflection F0 control is 0.04");
++        renderer.test_pause_vt_page_fills(true);
++        fills = renderer.vt_stats().fills_total;
++        materials[kMaterialA].metal_opacity_spec_coat[2] = 3.f;
++        CHECK(renderer.update_materials(materials, 41, 1, error), error.c_str());
++        for (int i = 0; i < 4; ++i) {
++            const auto held = draw_pixel();
++            CHECK(renderer.vt_stats().fills_total == fills &&
++                      renderer.vt_stats().dirty_pages > 0,
++                  "input snapshot: primary RT material edit retains old pages");
++            CHECK(close4(before.albedo, held.albedo, 1e-5f) &&
++                      close4(before.normal, held.normal, 1e-5f) &&
++                      close4(before.orm, held.orm, 1e-5f),
++                  "input snapshot: primary RT edit retains G-buffer inputs");
++            std::printf("input snapshot primary RT frame=%d F0 before=%.5f held=%.5f\n",
++                        i, before.raw_specular.w, held.raw_specular.w);
++            CHECK(std::fabs(before.raw_specular.w - held.raw_specular.w) < .001f,
++                  "input snapshot: primary RT keeps displayed material F0");
++        }
++        const auto reflected = settle();
++        CHECK(std::fabs(reflected.raw_specular.w - .12f) < .001f,
++              "input snapshot: completed primary material edit publishes F0 0.12");
++
++        // Finished-surface POM still resolves captured inputs, even though it
++        // emits no refinement request. A source-height edit must retain the
++        // old displacement until the replacement page/input version publishes.
++        materials[kMaterialA].flags_misc[0] |= 32u;
++        CHECK(renderer.update_materials(materials, 42, 1, error), error.c_str());
++        pom.enabled = true;
++        pom.steps = 64;
++        pom.relief_cap_m = .06f;
++        pom.max_march_m = .12f;
++        renderer.set_tileset_pom_settings(pom);
++        before = settle();
++        CHECK(before.orm.w > .005f,
++              "input snapshot: held-POM control has measurable displacement");
++        renderer.test_pause_vt_page_fills(true);
++        fills = renderer.vt_stats().fills_total;
++        header.height_max = .06f;
++        ++header.content_hash;
++        CHECK(tileset::save_gtex(path, header, px, px, alb.data(), nrm.data(),
++                                orm.data(), heights.data(), error), error.c_str());
++        CHECK(renderer.load_tileset_slot(0, path, error), error.c_str());
++        std::remove(path.c_str());
++        compare_held(before, fills, "POM height replacement");
++        const auto displaced = settle();
++        CHECK(displaced.depth < before.depth &&
++                  displaced.orm.w > before.orm.w + .005f,
++              "input snapshot: completed source-height edit updates POM depth");
++
+         budgets = saved_budgets;
+         renderer.release_part(0x7611);
+         return;
