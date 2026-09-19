@@ -37,6 +37,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace viewer {
@@ -56,14 +57,14 @@ static uint64_t child_stable_id(uint64_t parent, uint64_t part_hash,
     return hash == 0 ? 1 : hash;
 }
 
-std::vector<ResolvedInstance>
+const std::vector<ResolvedInstance>&
 SectorLodResolver::resolve(const WorldState& state,
                            const lod_select::PartLodTable& lods,
                            const float3& cam_pos) {
     // 1+2. (Re)build the sector binning only when the world content changed.
     // LOD selection below stays exact per frame — identical output to the
     // uncached implementation (Stage 1 constraint).
-    if (state.version() != cached_version_) {
+    if (&state != cached_state_ || state.version() != cached_version_) {
         std::vector<world_flatten::FlatInstance> flat;
         flat.reserve(state.entries().size());
         for (const auto& e : state.entries()) {
@@ -75,12 +76,20 @@ SectorLodResolver::resolve(const WorldState& state,
         }
         sector_grid::SectorGrid grid(pitch_);
         sectors_ = sector_grid::bin_instances(flat, grid);
+        distinct_parts_.clear();
+        for (const auto& sector : sectors_) {
+            std::set<uint64_t> hashes;
+            for (const auto& instance : sector.second) hashes.insert(instance.resolved_hash);
+            distinct_parts_[sector.first].assign(hashes.begin(), hashes.end());
+        }
+        cached_state_ = &state;
         cached_version_ = state.version();
+        output_reusable_ = false;
         ++rebin_count_;
     }
     const sector_grid::Sectors& sectors = sectors_;
     auto chosen = lod_select::select_sector_lods_ex(sectors, lods, cam_pos,
-                                                    min_projected_size_, pixel_budget_);
+        min_projected_size_, pixel_budget_, &distinct_parts_);
 
     // 3. Emit instances only for sectors within the activation sphere.
     //
@@ -101,19 +110,49 @@ SectorLodResolver::resolve(const WorldState& state,
     //
     // The child is the one site with a real instance scale; the parent's own
     // selection keeps scale 1.0f, exactly as before.
-    std::vector<ResolvedInstance> out;
+    const auto sector_active = [&](const sector_grid::SectorCoord& c) {
+        const float dx = (c.x + 0.5f) * pitch_ - cam_pos.x;
+        const float dy = (c.y + 0.5f) * pitch_ - cam_pos.y;
+        const float dz = (c.z + 0.5f) * pitch_ - cam_pos.z;
+        return !(std::sqrt(dx*dx + dy*dy + dz*dz) > active_radius_);
+    };
+    size_t active_count = 0;
+    Selection selection;
+    for (const auto& sector : sectors) {
+        if (!sector_active(sector.first)) continue;
+        active_count += sector.second.size();
+        // Keep even an empty/unknown-part sector in the activation signature:
+        // the resolver emits its unknown instances at the default rung.
+        auto& levels = selection[sector.first];
+        auto found = chosen.find(sector.first);
+        if (found != chosen.end())
+            for (const auto& part : found->second) levels.emplace(part.first, part.second.level);
+    }
+    bool reusable = true;
+    for (const auto& part : lods)
+        if (part.second.inline_cutover > 0.0f) { reusable = false; break; }
+    // Without inline expansion, output is determined entirely by world
+    // content, active sectors and chosen rungs. Distance may change each frame
+    // without changing any of those values. Inline children depend on extra
+    // distance/ref data and deliberately keep the full expansion path.
+    if (reusable && output_reusable_ && selection == output_selection_) return output_;
+    output_reusable_ = false;
+    output_selection_ = std::move(selection);
+    ++output_rebuild_count_;
+    auto& out = output_;
+    out.clear();
+    // Reserve the active source count once. Growing a multi-million-entry
+    // forest vector from zero copied hundreds of megabytes each frame.
+    // Inline children may grow it further through the normal vector policy.
+    out.reserve(active_count);
     std::vector<float> child_switch_distances;   // scratch, reused across refs
     for (const auto& sk : sectors) {
         const sector_grid::SectorCoord& c = sk.first;
-        float sx = (c.x + 0.5f) * pitch_;
-        float sy = (c.y + 0.5f) * pitch_;
-        float sz = (c.z + 0.5f) * pitch_;
-        float dx = sx - cam_pos.x, dy = sy - cam_pos.y, dz = sz - cam_pos.z;
         // Activation is a sphere test on the sector CENTRE, not on its bounds:
         // a sector is dropped as soon as its centre leaves active_radius_, even
         // if part of it is still inside. That is why active_radius_ is derived
         // from the outermost terrain LOD band rather than dialled by hand.
-        if (std::sqrt(dx*dx + dy*dy + dz*dz) > active_radius_) continue;
+        if (!sector_active(c)) continue;
 
         static const std::map<uint64_t, lod_select::LodChoice> kNoLods;
         auto cit = chosen.find(c);
@@ -193,6 +232,7 @@ SectorLodResolver::resolve(const WorldState& state,
             out.push_back(r);
         }
     }
+    output_reusable_ = reusable;
     return out;
 }
 

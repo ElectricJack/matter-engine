@@ -44,6 +44,11 @@
 
 namespace matter_stream {
 
+// Conservative world-space view. Changes affect priority, never residency.
+struct StreamingView { bool valid=false; float planes[6][4]{}; uint64_t revision=0; };
+struct VisibleSectorStatus { bool valid=false; uint32_t desired=0, pending=0; };
+
+
 // One row of a radial table: everything closer than `radius` metres from the
 // anchor gets `rung`. Both tables in Config are vectors of these and both are
 // INNERMOST FIRST, so a lookup is a linear walk outwards that stops at the
@@ -412,6 +417,9 @@ public:
     // of cylinders, where an anchor plumbing mistake would be indistinguishable
     // from a selection-rule mistake.
     void update(float anchor_x, float anchor_y, float anchor_z);
+    // Call after update: classifies current cube candidates once per tick.
+    // Camera changes alter priority without resetting residency.
+    void set_view(const StreamingView& view);
 
     // Next bake to launch: holes (nothing resident) before upgrades, nearest
     // first within each class. Returns false when nothing is needed or
@@ -449,6 +457,7 @@ public:
     // bookkeeping resets (their on_published will return false).
     void clear();
 
+    VisibleSectorStatus visible_status() const;
     size_t resident_count() const;
     size_t inflight_count() const;
 
@@ -463,6 +472,7 @@ public:
 
 private:
     Config cfg_;
+    StreamingView view_;
 
     struct SectorState {
         int   resident_rung = -1;   // -1 = nothing resident
@@ -470,6 +480,7 @@ private:
         int   desired_rung  = -1;   // recomputed each update(); -1 = not desired
         int   desired_lod   = -1;   // transient terrain LOD during update()
         int   desired_level = -1;   // transient nesting level during update()
+        bool view_visible = true;
         float dist          = 0.0f; // anchor distance at last update
         int   cooldown      = 0;    // updates remaining before re-request allowed
     };

@@ -7,6 +7,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <future>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -358,6 +359,33 @@ static void test_pop_wait_times_out_then_delivers() {
 }
 
 // A consumer blocked in pop_wait is released by shut_down() with timed_out=false.
+static void test_idle_wake_priority_and_coalescing() {
+    CommandQueue cq;Command out;bool idle=false;
+    auto original=cq.push({CommandKind::RebakeCone,{"original"},nullptr});
+    CHECK(cq.pop_wait(out,0,idle),"initial command delivered");
+    cq.wake_idle();cq.wake_idle();
+    CHECK(!original->is_cancelled(),"idle wake does not cancel in-flight work");
+    auto replacement=cq.push({CommandKind::Reload,{},nullptr});
+    CHECK(original->is_cancelled(),"real reload retains supersession");
+    CHECK(cq.pop_wait(out,1000,idle) && !idle && out.kind==CommandKind::Reload,"real command wins over pending idle wake");
+    CHECK(!cq.pop_wait(out,1000,idle) && idle,"coalesced idle wake survives preceding command");
+    auto start=std::chrono::steady_clock::now();
+    CHECK(!cq.pop_wait(out,20,idle) && idle,"empty queue still times out");
+    CHECK(std::chrono::steady_clock::now()-start>=std::chrono::milliseconds(10),"repeated wake notifications coalesce rather than accumulating work");
+    cq.wake_idle();cq.push({CommandKind::Shutdown,{},nullptr});
+    CHECK(!cq.pop_wait(out,1000,idle) && !idle,"shutdown wins over pending idle wake");
+    CHECK(replacement->is_cancelled(),"shutdown cancels last real command");
+}
+static void test_idle_wake_releases_parked_consumer() {
+    CommandQueue cq;std::promise<bool> result;auto future=result.get_future();
+    std::thread consumer([&]{Command out;bool idle=false;bool got=cq.pop_wait(out,60000,idle);result.set_value(!got && idle);});
+    cq.wake_idle(); // Also valid if it arrives just before the consumer waits.
+    const bool woke=future.wait_for(std::chrono::seconds(2))==std::future_status::ready;
+    CHECK(woke,"idle notification releases long wait without waiting for polling timeout");
+    if(!woke)cq.shut_down();
+    consumer.join();CHECK(future.get(),"idle wake is not mistaken for shutdown or a real command");
+}
+
 static void test_pop_wait_wakes_on_shutdown() {
     std::printf("[test_pop_wait_wakes_on_shutdown]\n");
     CommandQueue cq;
@@ -418,6 +446,8 @@ int main() {
     test_rebake_cone_fifo_preserved();
     test_pop_wait_times_out_then_delivers();
     test_pop_wait_wakes_on_shutdown();
+    test_idle_wake_priority_and_coalescing();
+    test_idle_wake_releases_parked_consumer();
     test_event_struct_shape();
     if (g_failures) {
         std::printf("\n%d FAILURES\n", g_failures);
