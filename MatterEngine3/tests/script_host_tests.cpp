@@ -150,6 +150,16 @@ static void test_resolve_hash_matches_and_skips_build() {
         " build(p){ globalThis.__built2 = true; } }", "{}", nullptr, 0);
     CHECK(hp.last_merged_params().find("__built2") == std::string::npos,
           "resolve_hash did not run build()");
+    // Compiled base reuse must never reuse a Part class or mutable realm.
+    const char* isolated = "class Isolated extends Part { static params = { n: (Part.__probe = (Part.__probe || 0) + 1) }; build(p) {} }";
+    const auto expected = hb.bake_source(isolated, "{}", {});
+    CHECK(expected.error.ok, "isolated base reference bake succeeds");
+    for (int i = 0; i < 8; ++i) {
+        script_host::ScriptHost fresh;
+        CHECK(fresh.resolve_hash(isolated, "{}", nullptr, 0) == expected.resolved_hash &&
+              fresh.last_merged_params() == "{\"n\":1}",
+              "compiled Part base preserves hashes and fresh mutable globals");
+    }
 }
 
 static void test_bindings_record_ops_and_misuse() {
@@ -695,6 +705,17 @@ static void test_ray_tracing_policy_authoring_roundtrip() {
         CHECK(policy.child_overrides[2] == RayTracingOverride::Enabled,
               "true child rayTraced enables the placement");
     }
+
+    const BakeResult shared = host.bake_source(
+        "class Shared extends Part { static sharedSurfaces=true; build() { this.placeChild('Leaf'); } }",
+        "{}", {}, child_hashes, 1, child_names);
+    CHECK(shared.error.ok, "shared assembly metadata bakes");
+    CHECK(matter::load_part_render_policy(part_asset::cache_path_resolved(shared.resolved_hash),
+        shared.resolved_hash,1,policy) && policy.shared_surfaces && policy.ray_traced,
+        "shared assembly flag round trips without changing ray eligibility");
+    const BakeResult bad_shared = host.bake_source(
+        "class Bad extends Part { static sharedSurfaces=1; build() {} }", "{}", {});
+    CHECK(!bad_shared.error.ok, "sharedSurfaces requires an explicit boolean");
 
     const BakeResult bad_default = host.bake_source(
         "class Bad extends Part { build(p) { this.rayTraced(1); } }",
@@ -1398,8 +1419,8 @@ static void test_eval_lods_authored_ladder() {
         {"class A extends Part { static lods = [{at:0},LOD.impostor({at:50}),"
          "LOD.impostor({at:90})]; build(p){} }",
          "two impostors -> empty"},
-        {"class A extends Part { static lods = [LOD.impostor({at:0})]; build(p){} }",
-         "impostor with no mesh rung to depict -> empty"},
+        {"class A extends Part { static lods = [LOD.impostor({at:1})]; build(p){} }",
+         "a sole impostor must start at the camera -> empty"},
         {"class A extends Part { static lods = [{at:0},"
          "{at:50,impostor:true,gen:'decimate',error:1}]; build(p){} }",
          "impostor with a generator -> empty"},
@@ -1419,6 +1440,10 @@ static void test_eval_lods_authored_ladder() {
          "impostor not a boolean -> empty"},
     };
     for (const auto& c : bad_imp) CHECK(host.eval_lods(c.src).empty(), c.why);
+    const auto baked_only = host.eval_lods(
+        "class A extends Part { static lods = [LOD.impostor({at:0})]; build(p){} }");
+    CHECK(baked_only.size() == 1 && baked_only[0].impostor && baked_only[0].at == 0,
+          "a sole impostor treats build() as bake input, with no runtime source mesh");
 
     // Fail-closed, one violation per source. Each discards the WHOLE block.
     struct Case { const char* src; const char* why; };
