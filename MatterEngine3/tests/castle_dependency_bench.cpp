@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // Bounded native QuickJS diagnosis: one module, no build(), no DAG walk.
 #include "script_host.h"
 #include <chrono>
@@ -25,7 +26,7 @@ int main(int argc, char **argv) {
         host.set_shared_lib_roots({(repo / "projects/world_demo/shared-lib").string(),
                                    (repo / "MatterEngine3/shared-lib").string()});
         for (const char *module : {"CastleStone", "CastleWingMasonry"}) {
-            std::ifstream f(repo / "projects/world_demo/objects" / (std::string(module) + ".js"),
+            std::ifstream f(matter::project_layout::object_source({(repo / "projects/world_demo/objects").string()}, module),
                             std::ios::binary);
             if (!f)
                 throw std::runtime_error("module missing");

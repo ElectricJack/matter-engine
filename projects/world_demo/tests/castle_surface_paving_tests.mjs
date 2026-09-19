@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 await import('./castle_shared_lib_hooks.mjs');
@@ -40,7 +41,7 @@ const apron={x:15,z:40,width:6,depth:2.5,material:8},shells=entranceApronSurface
 assert.equal(shells.length,60);check(shells);
 assert.deepEqual(shells[0].polygon,[[15.005,40.005],[15.495,40.005],[15.495,40.495],[15.005,40.495]]);
 for(const name of ['CastleSiteSurfacePaving','CastleSurfaceEntranceApron']){
- const source=fs.readFileSync(new URL('../objects/'+name+'.js',import.meta.url),'utf8');
+ const source=fs.readFileSync(objectFile(name),'utf8');
  assert.ok(!/requires\s*\(|placeChild|beginVoxels|applyMatrix|\.scale\(/.test(source));assert.match(source,/lodBudgets=\[1\]/);
 }
 console.log('castle_surface_paving_tests: PASS '+JSON.stringify({slabs,triangles,children:0}));

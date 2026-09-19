@@ -22,12 +22,12 @@
 ## File Map
 
 - Create `projects/world_demo/shared-lib/vegetation.js`: parameter, palette, frame, blade, leaf, petal, and cluster helpers.
-- Create `projects/world_demo/objects/AlpineGrass.js`: four grass forms.
-- Create `projects/world_demo/objects/AlpineFlower.js`: three flower forms.
-- Create `projects/world_demo/objects/AlpineShrub.js`: four shrub forms.
-- Create `projects/world_demo/objects/AlpineGroundCover.js`: two creeping forms.
-- Create `projects/world_demo/objects/AlpineConifer.js`: three conifer forms.
-- Create `projects/world_demo/objects/AlpineDeciduous.js`: three deciduous forms.
+- Create `projects/world_demo/objects/vegetation/alpine/AlpineGrass.js`: four grass forms.
+- Create `projects/world_demo/objects/vegetation/alpine/AlpineFlower.js`: three flower forms.
+- Create `projects/world_demo/objects/vegetation/alpine/AlpineShrub.js`: four shrub forms.
+- Create `projects/world_demo/objects/vegetation/alpine/AlpineGroundCover.js`: two creeping forms.
+- Create `projects/world_demo/objects/vegetation/alpine/AlpineConifer.js`: three conifer forms.
+- Create `projects/world_demo/objects/vegetation/alpine/AlpineDeciduous.js`: three deciduous forms.
 - Create `projects/world_demo/objects/VegetationGalleryGround.js`: neutral gallery ground.
 - Create `projects/world_demo/objects/VegetationGallery.js`: fixed comparison layout and requirements.
 - Create `projects/world_demo/worlds/VegetationGallery.js`: standalone world, camera, and lighting.
@@ -71,8 +71,8 @@ changes in `git status --short`.
 ### Task 2: Grasses and Flowers
 
 **Files:**
-- Create: `projects/world_demo/objects/AlpineGrass.js`
-- Create: `projects/world_demo/objects/AlpineFlower.js`
+- Create: `projects/world_demo/objects/vegetation/alpine/AlpineGrass.js`
+- Create: `projects/world_demo/objects/vegetation/alpine/AlpineFlower.js`
 
 **Interfaces:**
 - Consumes: `vegetationParams`, dryness palette utilities, and direct-geometry
@@ -99,8 +99,8 @@ forms route from a clamped `form` and all random choices originate from `seed`.
 ### Task 3: Shrubs and Ground Cover
 
 **Files:**
-- Create: `projects/world_demo/objects/AlpineShrub.js`
-- Create: `projects/world_demo/objects/AlpineGroundCover.js`
+- Create: `projects/world_demo/objects/vegetation/alpine/AlpineShrub.js`
+- Create: `projects/world_demo/objects/vegetation/alpine/AlpineGroundCover.js`
 
 **Interfaces:**
 - Consumes: shared vegetation helpers and `rng`.
@@ -128,8 +128,8 @@ ground, and no leaf clusters are disconnected from a stem.
 ### Task 4: Conifer and Deciduous Trees
 
 **Files:**
-- Create: `projects/world_demo/objects/AlpineConifer.js`
-- Create: `projects/world_demo/objects/AlpineDeciduous.js`
+- Create: `projects/world_demo/objects/vegetation/alpine/AlpineConifer.js`
+- Create: `projects/world_demo/objects/vegetation/alpine/AlpineDeciduous.js`
 
 **Interfaces:**
 - Consumes: shared vegetation helpers and `rng`.

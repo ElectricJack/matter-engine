@@ -3,7 +3,7 @@
 
 The companion to crack_scan.py, and the sharper of the two instruments. It is
 only valid on a world whose density is a heightfield with no caves -- SeamLab is
-built to be exactly that (see projects/world_demo/scenes/SeamLab/SeamLab.js).
+built to be exactly that (see projects/world_demo/scenes/texturing/virtual_texture/SeamLab/SeamLab.js).
 There, every solid point below the surface is solid all the way down, so a
 camera above the terrain has nothing legitimate to see except the surface and
 the sky above the horizon. A background pixel that is NOT the sky is therefore a

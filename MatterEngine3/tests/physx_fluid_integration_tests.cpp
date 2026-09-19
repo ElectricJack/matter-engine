@@ -667,7 +667,7 @@ void test_checked_in_ravine_collision_covers_the_validation_collar() {
     const fs::path project = fs::path("../../projects/world_demo");
     matter::WorldLoadDesc load{};
     load.world_path =
-        (project / "scenes/RiverHydrology/RiverHydrology.js").string();
+        (project / "scenes/water/RiverHydrology/RiverHydrology.js").string();
     load.objects_dir = (project / "objects").string();
     load.project_shared_lib_dir = (project / "shared-lib").string();
     load.engine_shared_lib_dir = "../shared-lib";

@@ -302,7 +302,7 @@ int main() {
     // Resolve asset paths before any chdir.
     const std::string schemas = abspath("../../projects/world_demo/objects");
     g_shared_lib = abspath("../shared-lib");
-    const std::string grass_path = schemas + "/Grass.js";
+    const std::string grass_path = schemas + "/vegetation/groundcover/Grass.js";
     g_grass_source = read_text(grass_path);
     if (g_grass_source.empty()) {
         printf("FAIL: could not read %s\n", grass_path.c_str());

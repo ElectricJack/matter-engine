@@ -9,7 +9,7 @@ const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../..",
 );
-const scene = path.join(root, "projects/world_demo/scenes/Kreuzenstein");
+const scene = path.join(root, "projects/world_demo/scenes/castles/layouts/Kreuzenstein");
 const prelude = fs
   .readFileSync(path.join(root, "MatterEngine3/src/part_base.js.h"), "utf8")
   .split('R"JS(')[1]

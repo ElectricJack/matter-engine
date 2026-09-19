@@ -1,65 +1,94 @@
-# world_demo — scene layout
+# world_demo — scenes and shared objects
 
-```
+Scenes and objects are grouped by purpose. Folder names organize the browser;
+**scene names and object module names stay unchanged**. For example,
+`MATTER_WORLD=ClayBrickMaze` and `placeChild('ClayBrickWallSurface', ...)` work
+regardless of the grouping folders.
+
+```text
 projects/world_demo/
-  scenes/<Name>/
-      <Name>.js          the scene script (a `class <Name> extends World`)
-      objects/*.js       objects ONLY this scene uses
-      props.json         authored property overrides (editor-written)
-      README.md          optional per-scene notes
-  objects/*.js           objects SHARED by two or more scenes
-  shared-lib/*.js        importable JS modules (`import ... from 'shared-lib/x'`)
-  tests/                 JS-level tests
-  .cache/<Name>/         generated; never edit, safe to delete
+  scenes/<category>/[<family>/]<Name>/
+    <Name>.js          scene script (`class <Name> extends World`)
+    objects/          scene-local objects; optional grouping folders
+    props.json        authored settings, saved by the editor
+    README.md         optional scene notes
+    capture.*         optional capture helpers
+  objects/<family>/[<group>/]*.js   shared object modules
+  shared-lib/*.js                   importable JS libraries
+  tests/                           JS checks
+  .cache/<Name>/                   generated cache, keyed by scene name
 ```
 
-## The one rule
+## Scenes
 
-**A file's location is its blast radius.**
+| Folder | Contents |
+| --- | --- |
+| [texturing/bricks](scenes/texturing/bricks/) | Brick geometry, material and wall proofs, POM brick proof, brick maze |
+| [texturing/materials](scenes/texturing/materials/) | Metal and tileset examples |
+| [texturing/pom](scenes/texturing/pom/) | General parallax occlusion mapping proof |
+| [texturing/terrain](scenes/texturing/terrain/) | Procedural terrain material proof |
+| [texturing/virtual_texture](scenes/texturing/virtual_texture/) | Chart VT and seam proofs |
+| [castles/layouts](scenes/castles/layouts/) | Castle layouts, assemblies, galleries and Kreuzenstein |
+| [castles/materials](scenes/castles/materials/) | Masonry and material studies |
+| [castles/furnishings](scenes/castles/furnishings/) | Furnishings gallery |
+| [castles/proofs](scenes/castles/proofs/) | Bake, connector, timber and walk probes |
+| [vegetation](scenes/vegetation/) | Trees, branches, forests, meadow and vegetation galleries |
+| [terrain](scenes/terrain/) | Rock gallery |
+| [streaming](scenes/streaming/) | Streaming mountains, caverns and meadow |
+| [lighting](scenes/lighting/) | Cornell box, light galleries and isolated light fixtures |
+| [atmosphere](scenes/atmosphere/) | Clouds, fog and atmosphere fixtures |
+| [water](scenes/water/) | River hydrology and floating objects |
+| [physics](scenes/physics/) | Physics playground |
+| [examples](scenes/examples/) | General demo, floor and animation gallery |
 
-* `scenes/<Name>/objects/Foo.js` — changing it can affect `<Name>` and nothing else.
-* `objects/Foo.js` — changing it can affect *any* scene in the project. Check
-  before you edit. This tier is deliberately small.
+## Shared objects
 
-Object lookup is a **search path**: the scene's own `objects/` is consulted
-first, then the project-wide `objects/`. First match wins, so a scene-local file
-**shadows** a project-wide one of the same name.
+| Folder | Contents |
+| --- | --- |
+| [texturing/bricks](objects/texturing/bricks/) | Clay brick sources, surfaces and wall generators |
+| [castle](objects/castle/) | `materials/`, `structure/`, `furnishings/`, `fixtures/` |
+| [vegetation](objects/vegetation/) | `alpine/`, `conifer/`, `trees/`, `groundcover/` |
+| [terrain](objects/terrain/) | Rocks, scree, pebbles and snow |
+| [props](objects/props/) | Shared props and playground floor |
+| [lighting](objects/lighting/) | Shared lighting fixture |
+| [templates](objects/templates/) | WorldSector starting template |
 
-## Adding an object
+The Assets pane mirrors these folders. Objects are separated into **Shared**
+and **Scenes**, with each scene's own objects under its scene folder. Filtering
+matches folder names as well as scene/object names.
 
-Put it in `scenes/<YourScene>/objects/`. That is the default and it is always
-safe. Promote it to the project tier only when a second scene actually needs it
-— and once promoted, understand you have taken on every scene as a caller.
+## Ownership and lookup
 
-## WorldSector.js
+A scene-local object affects only its owning scene. Shared objects can affect
+any scene that uses them. Put new objects in the scene's `objects/` folder by
+default; promote them to the appropriate shared family when another scene needs
+them.
 
-Every streaming scene has **its own** `scenes/<Name>/objects/WorldSector.js`. It
-describes how that one scene's sectors are populated (scatter, biome gates,
-density), which is scene-specific by nature — sharing it would couple unrelated
-worlds together.
+Object lookup searches recursively within the scene's `objects/` tier, then the
+project's `objects/` tier. A scene-local module shadows a shared module with the
+same name. **Module filename stems must be unique within each tier.** Two
+`Rock.js` files in separate shared groups are an error; a local `Rock.js` and a
+shared `Rock.js` are allowed. Scene names must also be unique across groups.
+Hidden folders and directory symlinks are excluded from discovery.
 
-The engine loads it by the fixed *name* `WorldSector`, resolved through the
-search path above, so the scene's copy is what runs. `objects/WorldSector.js` is
-a **template** that no shipped scene resolves to; it is what a new streaming
-scene starts from. Editing the template changes nothing about existing scenes.
+`shared-lib/` remains flat; imports such as `shared-lib/clay_brick_source`
+are unchanged. Scene-local objects, settings and helpers move with their scene.
 
 ## Adding a scene
 
-1. `mkdir scenes/MyScene && $EDITOR scenes/MyScene/MyScene.js`
-2. For a streaming scene, `cp objects/WorldSector.js scenes/MyScene/objects/`
-   and edit *that* copy.
-3. It appears in the editor's world list automatically — the scan walks
-   `scenes/*/` and matches `<dir>/<dir>.js`. A folder whose script is missing or
-   misnamed is skipped silently, so check the name matches if a scene does not
-   show up.
+1. Pick a category and create `scenes/<category>/MyScene/MyScene.js`.
+2. For a streaming scene, copy [objects/templates/WorldSector.js](objects/templates/WorldSector.js)
+   into that scene's `objects/` folder and edit the copy.
+3. The editor discovers any `<Name>/<Name>.js` below `scenes/`. It stops at a
+   recognized scene folder, so scene-local objects and helpers cannot become
+   accidental scenes.
+4. Keep capture helper repository-root paths correct if adding folder depth.
 
-`MatterEngine3/tests/world_definition_tests.cpp` walks this directory and loads
-every scene, so a new one is covered without touching the test.
+The engine's `world_definition_tests` loads every discovered scene. Node tools
+use [tools/project_layout.mjs](../../tools/project_layout.mjs) to resolve grouped
+scenes and objects rather than rebuilding paths by hand.
 
-## Legacy flat layout
-
-`worlds/<Name>.js` with no scene folder still resolves (`LocalProviderConfig::
-for_project` falls back to it), which is what the sandbox projects built by
-`async_bake_tests` / `demand_bake_tests` use. It is the *script* that selects
-the layout, not the presence of `scenes/`, so a project can migrate one scene
-at a time.
+Legacy `scenes/<Name>/<Name>.js` and `worlds/<Name>.js` projects still work.
+The scene script takes precedence over a legacy world with the same name.
+Cache directories remain `.cache/<Name>/`; moving source paths can invalidate
+resolve metadata once, while content-addressed baked assets keep their identity.

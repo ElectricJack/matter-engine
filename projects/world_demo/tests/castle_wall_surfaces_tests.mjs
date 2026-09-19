@@ -83,7 +83,7 @@ measure(curvedDoor);assert.ok(curvedDoor.sockets[0].clearWidth>.9&&curvedDoor.so
 const empty=wallSurfaceDescriptor({length:2,openings:[{start:0,end:2,bottom:0,top:3}]});
 assert.equal(empty.faces.length,0);assert.equal(empty.collision.length,0);assert.ok(empty.bounds.min.every(Number.isFinite));
 
-const text=fs.readFileSync(new URL('../objects/CastleWallSurface.js',import.meta.url),'utf8').replace(/^import .*;\n/m,'');
+const text=fs.readFileSync(new URL('../objects/castle/structure/CastleWallSurface.js',import.meta.url),'utf8').replace(/^import .*;\n/m,'');
 const context=vm.createContext({Part:Recorder,MAT:{stone:1},CASTLE_WALL_SURFACES,buildWallSurface,emitWallSurface});vm.runInContext(`${text}\nglobalThis.Result=CastleWallSurface;`,context);
 for(let shape=0;shape<10;shape++){const part=new context.Result();part.build({...context.Result.params,shape});assert.ok(part.triangles>0);}
 console.log('castle_wall_surfaces_tests: PASS (10physical shells, closed portals/reveals/miter joins/arcs, exact collision voids, metric frames, attributed emission)');

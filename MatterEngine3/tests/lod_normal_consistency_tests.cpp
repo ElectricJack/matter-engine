@@ -618,7 +618,7 @@ int run_tree(int form) {
     // the VegetationGallery scene; Leaf and the rest of its children are in the
     // project tier, so a single root would resolve one and not the other.
     const std::vector<std::string> schemas = {
-        abspath("../../projects/world_demo/scenes/VegetationGallery/objects"),
+        abspath("../../projects/world_demo/scenes/vegetation/VegetationGallery/objects"),
         abspath("../../projects/world_demo/objects"),
     };
     // Both shared-lib roots: the engine's (shared-lib/rng) and the project's

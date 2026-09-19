@@ -120,7 +120,7 @@ void test_animated_rig_gallery_source_bakes() {
     // while Crate.js -- the child this bake resolves -- stayed in the shared
     // tier, so a single-directory lookup can no longer find both.
     const std::filesystem::path roots[] = {
-        std::filesystem::path("..") / ".." / "projects" / "world_demo" / "scenes" /
+        std::filesystem::path("..") / ".." / "projects" / "world_demo" / "scenes" / "examples" /
             "AnimatedRigGallery" / "objects",
         std::filesystem::path("..") / ".." / "projects" / "world_demo" / "objects",
     };
