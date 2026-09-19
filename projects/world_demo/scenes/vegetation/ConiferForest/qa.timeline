@@ -1,0 +1,26 @@
+wait_idle 3 1800
+cam 72 42 95 0 26 0
+wait_frames 45
+shot C:/tmp/conifer-forest/overview.png
+stats forest-overview
+cam 2 1.8 18 0 7 0
+wait_frames 45
+shot C:/tmp/conifer-forest/ground.png
+stats forest-ground
+cam -0.284896 22.167187 14.821979 -0.404896 22.007187 14.221979
+wait_frames 45
+shot C:/tmp/conifer-forest/redwood-needles.png
+stats forest-redwood-needles
+cam 1.797304 1.7 10.286906 -0.062696 1.7 8.426906
+wait_frames 45
+shot C:/tmp/conifer-forest/bark.png
+stats forest-bark
+cam 7.534112 5 -0.627686 0.534112 2 -9.627686
+wait_frames 45
+shot C:/tmp/conifer-forest/clump.png
+stats forest-clump
+cam 100 65 145 0 26 0
+wait_frames 45
+shot C:/tmp/conifer-forest/distant.png
+stats forest-distant
+cam 72 42 95 0 26 0
