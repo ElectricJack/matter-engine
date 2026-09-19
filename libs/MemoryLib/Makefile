@@ -45,7 +45,7 @@ SANITIZE_FLAGS = -fsanitize=address,undefined
 endif
 
 TEST_FLAGS = -Wall -Wextra -g -I./include $(SANITIZE_FLAGS)
-TEST_CC_OBJS = $(OBJ_DIR)/t_mem_pool.o $(OBJ_DIR)/t_mem_arena.o $(OBJ_DIR)/t_mem_array.o
+TEST_CC_OBJS = $(OBJ_DIR)/t_mem_bank.o $(OBJ_DIR)/t_mem_pool.o $(OBJ_DIR)/t_mem_arena.o $(OBJ_DIR)/t_mem_array.o
 
 $(OBJ_DIR)/t_%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(TEST_FLAGS) -c $< -o $@
@@ -59,3 +59,12 @@ test: $(TEST_CC_OBJS) tests/memory_tests.c tests/memory_hpp_tests.cpp
 -include $(OBJS:.o=.d)
 
 .PHONY: all clean test
+
+# GNU ld interposition is a Linux-only allocation regression check.
+ifneq ($(IS_WINDOWS),Windows_NT)
+test: bank-noalloc-test
+.PHONY: bank-noalloc-test
+bank-noalloc-test:
+	$(CC) -std=c11 -Wall -Wextra -g -Iinclude tests/bank_noalloc_tests.c src/mem_bank.c -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free -o build/bank_noalloc_tests
+	./build/bank_noalloc_tests
+endif

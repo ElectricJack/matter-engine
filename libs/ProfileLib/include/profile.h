@@ -55,9 +55,9 @@
 // between runs (they are assigned in first-seen order).
 //
 // Capacity: at most kMaxZones distinct zone names and kMaxCounters counters.
-// Registration past either cap does not grow and does not fail — it returns the
-// LAST slot, so every further name silently merges into one zone. If a profile
-// looks like one huge mystery zone, check zone_count() against kMaxZones first.
+// Registration past either cap returns -1; deposits/scopes for that id are
+// ignored. Chrome traces disclose rejected registration counts, so missing
+// instrumentation cannot masquerade as time/counts for another named metric.
 #ifndef MATTER_PROFILE_ENABLED
 #define MATTER_PROFILE_ENABLED 1
 #endif
@@ -74,7 +74,7 @@ namespace profile {
 // persisted with reports and the window the stats are computed over.
 // ---------------------------------------------------------------------------
 constexpr int kMaxZones = 128;
-constexpr int kMaxCounters = 32;
+constexpr int kMaxCounters = 64;
 constexpr int kFrameHistory = 512;
 
 // One monotonic source for CPU scopes, the frame clock, and (P2) GPU/worker
@@ -262,7 +262,8 @@ bool dump_chrome_trace(const char* path);
 class Scope {
 public:
 #if MATTER_PROFILE_ENABLED
-    explicit Scope(int zone) : zone_(zone), active_(enabled()) {
+    explicit Scope(int zone)
+        : zone_(zone), active_(zone >= 0 && zone < kMaxZones && enabled()) {
         if (active_) {
             start_ = now_ns();
             prev_ = scope_enter(zone);

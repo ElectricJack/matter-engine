@@ -4,6 +4,7 @@
 #include <vector>
 #include <array>
 #include <map>
+#include <set>
 #include <utility>
 
 #include "raylib.h"
@@ -410,6 +411,31 @@ static void test_simplify_meshindexed_over_65535_verts() {
     printf("PASSED\n");
 }
 
+static void test_group_border_edges() {
+    printf("=== test_group_border_edges ===\n");
+    Mesh input=makeGrid(12,12.0f);
+    using Point=std::array<float,3>;
+    using Edge=std::pair<Point,Point>;
+    const auto border_edges=[](const Mesh& mesh) {
+        std::set<Edge> result;
+        const auto locked=[](Point p){return p[0]==0||p[0]==12||p[1]==0||p[1]==12;};
+        for(int t=0;t<mesh.triangleCount;++t)for(int c=0;c<3;++c) {
+            Point a{},b{};const auto ia=mesh.indices[t*3+c],ib=mesh.indices[t*3+(c+1)%3];
+            for(int k=0;k<3;++k){a[k]=mesh.vertices[ia*3+k];b[k]=mesh.vertices[ib*3+k];}
+            if(locked(a)&&locked(b))result.insert(a<b?Edge{a,b}:Edge{b,a});
+        }
+        return result;
+    };
+    const auto original=border_edges(input);
+    SimplifyOptions options;options.target_ratio=.1f;options.preserve_locked_edges=true;
+    Mesh output=simplify_mesh(input,options);
+    assert(output.triangleCount<input.triangleCount);
+    assert(border_edges(output)==original);
+    assertIndicesInRange(output,"group border");
+    UnloadMesh(input);UnloadMesh(output);
+    printf("PASSED\n");
+}
+
 int main() {
     printf("=== Mesh Simplifier Tests ===\n");
     test_indices_in_range_sphere();
@@ -423,6 +449,7 @@ int main() {
     test_determinism();
     test_no_degenerate_triangles();
     test_boundary_preserved();
+    test_group_border_edges();
     test_watertight_seam();
     test_simplify_meshindexed_overload_delegates();
     test_simplify_meshindexed_over_65535_verts();
