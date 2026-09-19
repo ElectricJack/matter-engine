@@ -54,6 +54,9 @@ struct PartLod {
     std::vector<PartLodRef> refs;    // instanced-children refs (cutover>0 only)
 };
 using PartLodTable = std::map<uint64_t, PartLod>;     // resolved_hash -> PartLod
+// Optional reusable list of distinct hashes per sector, including hashes not
+// yet in PartLodTable. Rebuild with the sector binning, not on camera movement.
+using SectorParts = std::map<sector_grid::SectorCoord, std::vector<uint64_t>>;
 
 struct LodChoice {
     // Index into the part's LodLevels, 0 = finest. -1 means floor-culled:
@@ -84,7 +87,8 @@ std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>>
 select_sector_lods_ex(const sector_grid::Sectors& sectors,
                       const PartLodTable& parts, const float3& cam_pos,
                       float min_projected_size = 0.0f,
-                      float pixel_budget = 1.0f);
+                      float pixel_budget = 1.0f,
+                      const SectorParts* distinct_parts = nullptr);
 
 // Thin wrapper: returns sector -> (part hash -> chosen level index, or -1).
 std::map<sector_grid::SectorCoord, std::map<uint64_t,int>>
