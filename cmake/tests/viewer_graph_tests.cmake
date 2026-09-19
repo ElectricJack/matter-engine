@@ -48,10 +48,21 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         get_target_property(headless_surface_sources matter_engine_surface_objects SOURCES)
         list(LENGTH headless_core_sources headless_core_count)
         list(LENGTH headless_surface_sources headless_surface_count)
-        if(NOT headless_core_count EQUAL 139 OR NOT headless_surface_count EQUAL 21)
+        if(NOT headless_core_count EQUAL 159 OR NOT headless_surface_count EQUAL 21)
             message(FATAL_ERROR
                 "accepted headless graph changed: core=${headless_core_count}, surface=${headless_surface_count}")
         endif()
+        foreach(required_source IN ITEMS
+                MatterEngine3/src/projected_face_cache.cpp
+                MatterEngine3/src/face_material_bake.cpp
+                MatterEngine3/src/finite_surface_stamp.cpp
+                MatterEngine3/src/part_surface.cpp)
+            assert_list_contains("${headless_core_sources}" "${required_source}"
+                "CPU surface preparation source is missing")
+        endforeach()
+        assert_list_excludes("${headless_core_sources}"
+            MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp
+            "headless core must not compile the renderer-owned material baker")
         get_target_property(headless_core_definitions matter_engine_core COMPILE_DEFINITIONS)
         get_target_property(headless_surface_definitions matter_engine_surface_objects COMPILE_DEFINITIONS)
         get_target_property(headless_links matter_engine_headless LINK_LIBRARIES)
@@ -68,10 +79,21 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(LENGTH viewer_sources viewer_count)
         list(LENGTH viewer_sources_unique viewer_unique_count)
         if(MATTER_EXPECT_RETOPO)
-            set(expected_viewer_count 181)
+            set(expected_viewer_count 208)
         else()
-            set(expected_viewer_count 180)
+            set(expected_viewer_count 207)
         endif()
+        foreach(required_source IN ITEMS
+                MatterEngine3/src/projected_face_cache.cpp
+                MatterEngine3/src/face_material_bake.cpp
+                MatterEngine3/src/finite_surface_stamp.cpp
+                MatterEngine3/src/part_surface.cpp
+                MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp
+                MatterEngine3/src/render/vt_compositor.cpp
+                MatterEngine3/src/render/vt_residency.cpp)
+            assert_list_contains("${viewer_sources}" "${required_source}"
+                "viewer surface preparation/composition source is missing")
+        endforeach()
         if(NOT viewer_count EQUAL expected_viewer_count OR
                 NOT viewer_unique_count EQUAL expected_viewer_count)
             message(FATAL_ERROR
@@ -162,4 +184,4 @@ foreach(retopo IN ITEMS ON OFF)
     endif()
 endforeach()
 
-message(STATUS "viewer graph preserves 47-source editor, isolated 139+21 headless, and coherent 180/181-source viewer boundaries")
+message(STATUS "viewer graph preserves 47-source editor, isolated 159+21 headless, and coherent 207/208-source viewer boundaries")

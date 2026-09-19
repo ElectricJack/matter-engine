@@ -93,6 +93,7 @@ FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
 SQL_DIR     = ../libs/SpatialQueryLib
 MEMLIB_DIR  = ../libs/MemoryLib
+ASSET_DIR   = ../libs/AssetStoreLib
 MATHLIB_DIR = ../libs/MathLib
 MCL_DIR     = ../libs/MeshChartingLib
 PROFILE_DIR = ../libs/ProfileLib
@@ -116,7 +117,7 @@ BOX3D_DIR     = ../third_party/box3d
 BOX3D_LIB     = $(BOX3D_DIR)/libbox3d.a
 INCLUDE_PATHS = -I. -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
-                -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
+                -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(ASSET_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
                 -I$(PROFILE_DIR)/include \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
@@ -162,8 +163,9 @@ MSL_CPP = $(filter %.cpp,$(call manifest_engine_paths,$(SURFACE_MANIFEST_ALL))) 
 # spatial_hash.c and mem_pool.c are compiled from their source-of-truth libs
 # (SpatialQueryLib / MemoryLib) rather than from copies under MatterSurfaceLib.
 MSL_C   = $(filter $(MSL_DIR)/src/surface.c $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c,$(call manifest_engine_paths,$(SURFACE_MANIFEST_ALL)))
+MSL_C += $(MEMLIB_DIR)/src/mem_arena.c $(MEMLIB_DIR)/src/mem_bank.c
 MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o spatial_hash.o \
-            mem_pool.o material_registry.o fat_primitive.o)
+            mem_pool.o mem_arena.o mem_bank.o material_registry.o fat_primitive.o)
 
 # ME3_OBJ is DERIVED from ME3_CPP -- never hand-maintained.
 #
@@ -310,6 +312,7 @@ GLSLC ?= glslc
 # shaders_gen/embedded_shaders.h) instead of keeping its own copy, so there
 # is only ever one list to update when a shader is added.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/vt_material_domain_probe.comp.spv \
          build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
          build/shaders_vk/gpu_mesh_scan_add.comp.spv \
          build/shaders_vk/gpu_mesh_bin_count.comp.spv \
@@ -321,6 +324,8 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gpu_mesh_emit.comp.spv \
          build/shaders_vk/solid_field.comp.spv \
          build/shaders_vk/solid_face_project.comp.spv \
+         build/shaders_vk/face_material.comp.spv \
+         build/shaders_vk/finite_stamp_probe.comp.spv \
          build/shaders_vk/solid_classify.comp.spv \
          build/shaders_vk/solid_scan.comp.spv \
          build/shaders_vk/solid_emit.comp.spv \
@@ -331,6 +336,8 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
+         build/shaders_vk/geometry_cut_probe.comp.spv \
+         build/shaders_vk/geometry_select.comp.spv \
          build/shaders_vk/primary_light_cull.comp.spv \
          build/shaders_vk/visible_ids.comp.spv \
          build/shaders_vk/visibility_id.vert.spv \
@@ -339,6 +346,15 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/raster_skin.vert.spv \
          build/shaders_vk/raster_water.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
+         build/shaders_vk/sparse_voxel.vert.spv \
+         build/shaders_vk/sparse_voxel.frag.spv \
+         build/shaders_vk/sparse_voxel_shadow.comp.spv \
+         build/shaders_vk/surface_proxy.vert.spv \
+         build/shaders_vk/surface_query.vert.spv \
+         build/shaders_vk/surface_query.frag.spv \
+         build/shaders_vk/surface_proxy.frag.spv \
+         build/shaders_vk/sparse_voxel_select.comp.spv \
+         build/shaders_vk/sparse_hierarchy.comp.spv \
          build/shaders_vk/water_forward.frag.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv \
@@ -368,6 +384,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
+         build/shaders_vk/vt_feedback.comp.spv \
          build/shaders_vk/vt_bc_encode.comp.spv \
          build/shaders_vk/vt_enrich_ao.comp.spv \
          build/shaders_vk/selection_line.vert.spv \
@@ -396,7 +413,11 @@ build/shaders_vk/solid_field.comp.spv \
     build/shaders_vk/solid_scan.comp.spv \
     build/shaders_vk/solid_emit.comp.spv: shaders_vk/solid_field.glsl
 build/shaders_vk/solid_classify.comp.spv \
-    build/shaders_vk/solid_emit.comp.spv: shaders_vk/gpu_mesh_mc_tables.glsl
+build/shaders_vk/solid_emit.comp.spv: shaders_vk/gpu_mesh_mc_tables.glsl
+
+build/shaders_vk/face_material.comp.spv: shaders_vk/vt_chart_types.glsl shaders_vk/vt_surface_tape.glsl shaders_vk/vt_noise.glsl shaders_vk/vt_normal_frame.glsl
+build/shaders_vk/finite_stamp_probe.comp.spv: shaders_vk/finite_surface_stamp.glsl
+build/shaders_vk/vt_composite.comp.spv: shaders_vk/finite_surface_stamp.glsl
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
@@ -455,6 +476,9 @@ build/shaders_vk/composite.frag.spv build/shaders_vk/rt_primary_adaptive.rgen.sp
     shaders_vk/local_lighting.glsl shaders_vk/local_light_types.glsl
 
 build/shaders_vk/primary_light_cull.comp.spv: shaders_vk/local_light_types.glsl
+build/shaders_vk/geometry_cut_probe.comp.spv: shaders_vk/geometry_cut.glsl
+build/shaders_vk/cull.comp.spv: shaders_vk/scene_instance.glsl
+build/shaders_vk/geometry_select.comp.spv: shaders_vk/geometry_cut.glsl shaders_vk/scene_instance.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     shaders_vk/gi_common.glsl
@@ -507,6 +531,8 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
     build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_common.glsl
 
+build/shaders_vk/vt_material_domain_probe.comp.spv: shaders_vk/vt_material_domain.glsl shaders_vk/vt_common.glsl shaders_vk/vt_visible_input.glsl
+
 # M2.5 impostors: impostor_common.glsl is the ONE place the view grid is
 # written down, and BOTH stages that touch a billboard read it -- raster.vert
 # to pick the cell, gbuffer.frag to sample it. It had no rule here, so the
@@ -537,7 +563,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/animation src/render src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src
+vpath %.cpp src src/geometry src/animation src/render src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
@@ -560,6 +586,12 @@ $(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
 	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 $(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
+	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+
+$(OBJDIR)/mem_arena.o: $(MEMLIB_DIR)/src/mem_arena.c | $(OBJDIR)
+	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+
+$(OBJDIR)/mem_bank.o: $(MEMLIB_DIR)/src/mem_bank.c | $(OBJDIR)
 	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 $(OBJDIR)/profile.o: $(PROFILE_CPP) | $(OBJDIR)
@@ -782,12 +814,17 @@ $(VIEWER_FLECS_OBJ): $(VIEWER_OBJDIR)/%.o: $(FLECS_DIR)/%.c | $(VIEWER_OBJDIR)
 # spatial_hash and mem_pool come from their source-of-truth libraries, so they
 # cannot share the MSL static pattern rule -- same split as the $(OBJDIR) rules.
 VIEWER_PIPC_COMPILE = $(VIEWER_CC) -c $< -o $@ -DPLATFORM_DESKTOP $(VIEWER_INCLUDE_PATHS) $(VIEWER_C_COMMON)
-VIEWER_MSL_C_ONLY_OBJ = $(filter-out $(VIEWER_OBJDIR)/spatial_hash.o $(VIEWER_OBJDIR)/mem_pool.o,$(VIEWER_MSL_C_OBJ))
+VIEWER_MSL_C_ONLY_OBJ = $(filter-out $(VIEWER_OBJDIR)/spatial_hash.o $(VIEWER_OBJDIR)/mem_pool.o $(VIEWER_OBJDIR)/mem_arena.o $(VIEWER_OBJDIR)/mem_bank.o,$(VIEWER_MSL_C_OBJ))
 $(VIEWER_MSL_C_ONLY_OBJ): $(VIEWER_OBJDIR)/%.o: $(MSL_DIR)/src/%.c | $(VIEWER_OBJDIR)
 	$(VIEWER_PIPC_COMPILE)
 $(VIEWER_OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(VIEWER_OBJDIR)
 	$(VIEWER_PIPC_COMPILE)
 $(VIEWER_OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(VIEWER_OBJDIR)
+	$(VIEWER_PIPC_COMPILE)
+$(VIEWER_OBJDIR)/mem_arena.o: $(MEMLIB_DIR)/src/mem_arena.c | $(VIEWER_OBJDIR)
+	$(VIEWER_PIPC_COMPILE)
+
+$(VIEWER_OBJDIR)/mem_bank.o: $(MEMLIB_DIR)/src/mem_bank.c | $(VIEWER_OBJDIR)
 	$(VIEWER_PIPC_COMPILE)
 
 # Header dependency tracking for the viewer objects, same flat-dir wildcard as
@@ -830,3 +867,23 @@ build/shaders_vk/rt_lighting_culled.rgen.spv build/shaders_vk/rt_lighting_culled
     build/shaders_vk/rt_primary_adaptive_culled.rgen.spv build/shaders_vk/rt_primary_adaptive_culled_audit.rgen.spv \
     build/shaders_vk/rt_primary_fixed.rgen.spv: \
     $(wildcard shaders_vk/*.glsl)
+
+# Sparse-brick GPU ABI and shared projected-coverage model.
+build/shaders_vk/sparse_voxel.vert.spv build/shaders_vk/sparse_voxel.frag.spv: shaders_vk/sparse_voxel_common.glsl
+build/shaders_vk/sparse_voxel.vert.spv build/shaders_vk/sparse_voxel.frag.spv build/shaders_vk/sparse_voxel_shadow.comp.spv build/shaders_vk/surface_proxy.vert.spv build/shaders_vk/surface_proxy.frag.spv: shaders_vk/sparse_voxel_optics.glsl
+
+build/shaders_vk/surface_proxy.vert.spv build/shaders_vk/surface_proxy.frag.spv: shaders_vk/sparse_voxel_common.glsl shaders_vk/surface_proxy_common.glsl
+build/shaders_vk/surface_query.frag.spv: shaders_vk/sparse_voxel_common.glsl shaders_vk/surface_proxy_common.glsl shaders_vk/sparse_voxel_optics.glsl shaders_vk/surface_filter.glsl
+build/shaders_vk/surface_proxy.frag.spv: shaders_vk/surface_filter.glsl
+
+# Primary RT consumes visible VT input tags; compact feedback strips them.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_feedback.comp.spv \
+    build/shaders_vk/rt_shadow.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv: shaders_vk/vt_visible_input.glsl
+build/shaders_vk/rt_shadow.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv: shaders_vk/rt_primary_inputs.glsl
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
+    build/shaders_vk/rt_lighting.rgen.spv build/shaders_vk/rt_primary_adaptive.rgen.spv \
+    build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_draw_inputs.glsl
