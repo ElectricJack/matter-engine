@@ -946,3 +946,27 @@ resets both the file offset and partial line, preventing bytes from disconnected
 writers from being joined. Lines beyond the request bound are discarded through
 their newline and reported explicitly in stderr plus a request-less JSON error
 when a result file is configured.
+
+## Asset export
+
+`asset.export` writes a completed static asset to a new directory. Arguments:
+
+| Argument | Type | Meaning |
+| --- | --- | --- |
+| `directory` | string, required | New output folder, in the editor host's path format. Existing folders are refused. |
+| `source` | string | `world` (default) or `workbench`. |
+| `module` | string | Published world-root module or root key; optional for Workbench. |
+| `part_hash` | decimal uint64 string | Select one published world-root variant; can replace or constrain `module`. World only. |
+| `lod` | integer | Root mesh LOD ordinal, 0–15; default 0. The requested LOD must exist. |
+
+For `source:world`, supply `module` or `part_hash`. Ambiguous root-module variants
+are rejected. For `source:workbench`, open and finish baking the part in the
+Workbench preview; an optional module must match it. Output includes OBJ/MTL,
+GLB, PBR/height PNGs and a manifest. The success receipt contains `directory`,
+`source_hash` (decimal string), `lod`, `triangles`, `vertices`, `materials`, and
+`files`. Failure never publishes a partial destination.
+
+Export is an offline operation on the app thread and may pause presentation.
+Use a 30-second client timeout; if the client times out, inspect its correlated
+terminal result before retrying. See [asset export](asset-export.md) for supported
+materials, height conventions, memory limits and examples.

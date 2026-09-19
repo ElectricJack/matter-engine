@@ -147,7 +147,7 @@ ends onto one command registry.
 | `wait_idle` | `wait_idle <seconds> [timeout_seconds]` (`<seconds>` float > 0; `[timeout_seconds]`, if given, float > 0) | **Blocking.** Releases once `resident_sectors` has held steady for `<seconds>` of wall-clock time AND the bake is ready; prints `idle: settled after N.Ns`. If the optional `timeout_seconds` elapses first, releases anyway and prints `idle: timeout after N.Ns` (not a failure — the script continues, mirroring `wait_event`'s timeout). |
 | `wait_event` | `wait_event <name> [timeout_seconds]` | **Blocking.** Releases when the named engine event fires (prints `event: <name>`) or the optional timeout expires (prints `event: <name> timeout after Xs` and continues — a timeout is not a failure). See the event-name table below. |
 | `world` | `world <name>` | Switches the active world (same case-insensitive resolution as `MATTER_WORLD`). **Not** itself a blocking wait — pair it with `wait_idle` to sequence a multi-world sweep. Prints `world: unknown '<name>'` for an unrecognized name. |
-| `render_path` | `render_path raster\|native_rt` | Switches the render path. `native_rt` fails loudly (`render_path: native_rt unavailable`, command result `failed`) if the device has no ray tracing. |
+| `render_path` | `render_path raster\|native_rt` | Sets the same live `render.gpu.ray_tracing` preference as the UI checkbox; subsequent UI or `set` changes take effect normally. Honors property environment locks. `native_rt` fails loudly (`render_path: native_rt unavailable`, command result `failed`) if the device has no ray tracing. |
 | `history_reset` | `history_reset` (no args) | Calls `session->request_atmosphere_history_reset()`. |
 | `stats` | `stats <label>` | Arms one `STATS,<label>,...` row (see below), emitted on the next frame. |
 | `budget` | `budget <float>` | Sets `stats.pixel_budget`, clamped to `[0.05, 4.0]`. Shorthand for `set viewer.budget.pixel_budget <f>`. |
@@ -267,6 +267,80 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
 
 ### Editor/QA (startup + capture control)
 
+Geometry-page integration is opt-in during development:
+
+- `MATTER_GEOMETRY_PAGES=1` — static standalone leaf parts use binary hierarchy
+  pages. Roots follow world admission; finer pages use dedicated I/O and preparation workers.
+  Raster hierarchy traversal emits indexed indirect draws; the CPU reference
+  supplies matching RT membership. Other part types retain their existing path.
+- `MATTER_GEOMETRY_TERRAIN=1` — experimental terrain-owned hierarchy compilation
+  during sector preparation, independent of the module filter. Keeps the source
+  sector's single VT receiver rung and boundary record; page draws reuse that
+  sector's VT slot and chart UVs. Requires `MATTER_GEOMETRY_PAGES=1`. RT page proxies reuse the source sector atlas for hit shading.
+  `MATTER_GEOMETRY_RASTER_ONLY=1` skips their BLAS work when RT/GI are off.
+  Cold sector charting/hierarchy preparation is still runtime work; this
+  flag does not yet provide sub-second loading or additional displacement.
+- `MATTER_GEOMETRY_RASTER_ONLY=1` — immutable page registration policy: skip
+  RT input buffers, BLAS cache/build and scratch; publish after raster upload.
+  Use with `render_path raster` and GI disabled. Restart without the flag to
+  restore RT participation for these pages.
+- `MATTER_GEOMETRY_PAGES_PROFILE=1` — log residency and BLAS cache counters every 120 frames.
+- `MATTER_GEOMETRY_BLAS_CACHE=0` — disable the device-derived BLAS disk cache for a matched A/B run. Enabled by default for paged geometry; compatible cached data lives in `geometry-pages/blas`. Capture counts mean queued writes; restored counts mean recorded deserializations.
+- `MATTER_GEOMETRY_SNAPSHOT_CACHE=0` — reconstruct resident hierarchy snapshots every frame for a CPU-cost A/B; default caches them until page publication, eviction or asset detachment.
+- `MATTER_GEOMETRY_HIERARCHY_ASYNC=0` — disable background hierarchy descriptor
+  preparation for comparison. Enabled by default for raster replacements;
+  initial coverage and memory-pressure rebuilds remain synchronous.
+- `MATTER_GEOMETRY_SCENE_ASYNC=1` — opt into background scene node/root/job
+  assembly. Disabled by default pending a demonstrated speedup. Uses one bounded in-flight build for matching
+  raster scene membership, retaining the previous valid scene during preparation.
+  Changed membership, initial coverage and pressure use the synchronous path.
+  With geometry profiling enabled, `hierarchy_worker` and `scene_worker` report
+  worker CPU time; `paging_scene` reports submission/publication/discard/reuse
+  counters and pending status. These counters do not prove visible-detail readiness.
+- `MATTER_GEOMETRY_MODULE=<module>` — restrict paging to that installed module
+  in the world draw catalog. Other modules retain normal loading and materials.
+  The mountain demo selects `MountainDetailRock`; its legacy flatten is skipped.
+- `MATTER_GEOMETRY_MIN_TRIANGLES` — minimum source size admitted to geometry
+  paging, default 256, accepted range 256..1048576. The Streaming Mountains
+  rock demo uses 16384 to preserve ordinary terrain/material and foliage paths.
+- `MATTER_GEOMETRY_GPU_MB` — page geometry/BLAS reservation budget, default 256 MiB.
+- `MATTER_GEOMETRY_CPU_MB` — worker page-payload cache, default 64 MiB. PartStore
+  separately shares a root-payload cache across its assets.
+- `MATTER_PREPARED_SECTOR_CACHE=0` — disable early prepared-sector lookup/write
+  for an A/B run. Enabled by default for opted-in paged terrain without declared
+  child dependencies. Records live in `prepared-sectors` beneath the world cache.
+- `MATTER_PREPARED_SECTOR_CACHE_ONLY=1` — audit mode: a missing/invalid prepared
+  sector emits a bake error instead of running procedural generation. Combine
+  with `MATTER_GEOMETRY_CACHE_ONLY=1` to forbid hierarchy compilation too.
+  `tools/terrain_cache_audit.py --prepared-sectors` enables this on reopen/load.
+- `MATTER_GEOMETRY_CACHE_ONLY=1` — terrain geometry cache audit: forbid hierarchy
+  compilation on misses; log the missing key with `MATTER_GEOMETRY_PAGES_PROFILE`.
+  Source fallback can still render, so any miss/failure invalidates cache-only
+  acceptance. This does not bypass source loading/chart preparation or forbid
+  other engine cache writes.
+- `MATTER_GEOMETRY_PREPARE_ONLY=1` — prepare terrain geometry caches normally,
+  but display source receivers without registering hierarchy pages. For cooking
+  and cache diagnosis only; not a virtual-geometry performance result.
+- `MATTER_TERRAIN_CACHE_AUDIT=1` — editor emits streaming state, resident count,
+  in-flight sector count and bake readiness once per second. Used by
+  `tools/terrain_cache_audit.py` to avoid mistaking a worker stall for completion.
+- `MATTER_GEOMETRY_ROOT_MB` — preallocated root-payload bank, default 16 MiB;
+  the terrain launcher uses 1024 MiB. Accepts whole MiB in [1, 4096].
+  Root reads are grouped within this bank; capacity errors are reported before
+  decoding and are not reported as corrupt geometry.
+- `MATTER_GEOMETRY_SCRATCH_MB` — simultaneous scheduled BLAS scratch reservation,
+  default 64 MiB. These three limits accept whole MiB in [1, 4096]; invalid values
+  retain defaults. Use small values for pressure/fallback QA. They exclude shared
+  renderer arena capacity, persistent frame scratch pools and cache metadata.
+
+`GeometryDetailProof` is the initial geometry-page scene. This mode is not yet
+the default terrain path; production terrain/VT integration remains in progress.
+`tools/launch-mountain-geometry.ps1` launches the targeted StreamMountain terrain
+baseline with the editor UI, terrain paging, raster-only pages, GI/POM/cloud shadows
+disabled and immediate presentation. StreamMountain defaults to `terrainOnly`
+to omit scatter and its required asset catalogs. See [demo evidence](evidence/2026-09-18-stream-mountain-geometry/README.md)
+for source counts, cameras, memory boundaries and remaining work.
+
 - `MATTER_CMD_FIFO` — command file path (§b).
 - `MATTER_AGENT_RESULT_FILE` — append-only JSONL terminal results for `agent`
   requests. Kept separate from stdout/stderr logs. See `agent-protocol.md`.
@@ -364,7 +438,72 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
   zero-cost to collect, used by `seam_suite.sh` check 3.
 - `MATTER_PROFILE_TRACE=<path>` — on exit, dumps the profiler's FrameRecord tail
   as a Chrome trace (`chrome://tracing`-loadable) — the same data every issue
-  report embeds as `profile_tail.json`.
+  report embeds as `profile_tail.json`. `profileRegistry` reports registered
+  zones/counters, their bounded capacities (128/64), and rejected registration
+  attempts. Nonzero rejection counts mean some instrumentation is absent;
+  excess names never merge into another metric. Older traces lack this metadata
+  and their final named counter/zone may include overflow from other names.
+- `MATTER_VT_PREPARATION_PROFILE=1` — emit at most one compositor preparation
+  census per second: CPU jobs submitted/consumed/cancelled, reserved bytes,
+  pending GPU jobs, completed GPU preparations, cumulative allocations/uploads,
+  and the preceding frame's usage and limits. CPU `consumed` counts results
+  released by composition, not worker execution completions. This is opt-in
+  diagnostic logging; use alongside VT trace to separate preparation from fills.
+- `MATTER_VT_ENCODED_CACHE=<directory>` — opt-in finished GPU-format VT page
+  cache for geometry-only terrain validation. Allocates a 512 MiB read bank and
+  three fixed staging buffers at initialization. Forces POM off for the session;
+  cached pages do not yet carry POM draw geometry. Missing pages use composition.
+  Logs `[vt-cache]` hit/miss/error and capture/write counters once per second.
+- `MATTER_VT_ENCODED_COOK=1` — with the cache directory, capture newly composed
+  pages after GPU fence retirement and persist on the disk worker. Wait for
+  `pending_pages=0`, zero errors/rejections, and all requested VT pages resident
+  before ending a cook; teardown does not flush unretired captures. Omit this
+  variable to reopen read-only. `tools/terrain_cache_audit.py load --vt-cache
+  <directory> --vt-cook ...` enforces this drain; without `--vt-cook`, the audit
+  requires zero VT cache misses in addition to the normal geometry checks.
+- `MATTER_VT_TRACE=<path>` — opt-in bounded VT diagnostic capture, independent
+  of perf mode's static-geometry gate. Stores up to 32,768 successfully presented
+  frames in memory and writes JSONL after the frame loop; create the output
+  directory first. The schema header names columns, each row includes presentation
+  and VT serials plus the active `stats` marker, and the final record reports row
+  count and dropped rows. Includes residency counters, mandatory/detail queue
+  depths and oldest waiting ages in frames, replacement-reserve capacity,
+  durable dirty-page count and rejected stale fills, CPU demand/hook/registration time,
+  geometry uploads, DLSS resets, extents and effective live VT budgets. GPU total
+  time is the latest retired readback. VT GPU time sums the pre-pass and feedback
+  readback (the latter is also inside the G-buffer interval); either unavailable
+  query makes the sum null, never zero. Shader feedback writes and surface sampling
+  remain part of G-buffer time. Initial runtime creation and source loading
+  are outside these per-frame timings. The analyzer preserves the older hook-only
+  comparison scope and reports a combined CPU result only when demand and all
+  hook/registration samples are present; old traces leave that result unavailable.
+  This diagnostic performs no disk I/O
+  during frame sampling; incomplete/missing captures do not establish acceptance.
+  Like perf mode, it uses an undecorated window so explicit width/height requests
+  can match the framebuffer without decoration-induced desktop clamping.
+- `MATTER_VT_EVENT_LOG=1` — separate, opt-in per-page diagnosis through the normal
+  logger. `vt-page` records owner key, allocation generation, desired content
+  revision, virtual mip/coordinates, physical slot, mandatory/detail class,
+  original request frame, and producer result. `recorded` means commands were
+  recorded successfully; it is not a GPU-completion or presentation receipt.
+  `vt-dirty` records affected owners and reasons: 0 explicit invalidation,
+  1 material inputs, 2 source inputs, 3 material and source inputs, 4 surface
+  classification. `vt-release` and `vt-evict` identify removed owners/pages.
+  These identity fields are diagnostic; asynchronous worker ownership and
+  snapshot-safe candidate publication have separate correctness requirements.
+  Use this in diagnostic captures, not timing acceptance runs: logging writes
+  during page work and can be expensive in large streaming bursts.
+- `MATTER_VT_DENSITY_FRAME=<positive VT frame serial>` — one-shot CPU packing
+  diagnostic at or after this serial, after that frame's page recording. Logs
+  `vt-density` begin/end and one `vt-density-page` per occupied physical slot.
+  Reports tail status, atlas/chart-block coverage, tight projected content
+  bounds, bounds expanded by chart gutters, and the union of triangle-covered
+  payload texel centers. Physical borders and unused pool capacity are separate.
+  Missing geometry is explicit; aliases count once. This is geometric coverage,
+  not a GPU completion receipt or proof that every uncovered texel is removable:
+  filtering/dilation still need padding. Scans geometry and writes logs on the
+  render thread; use only in separate diagnostic captures. Analyze one complete
+  snapshot with `python tools/vt_density.py --log run/log.txt --output density.json`.
 - `MATTER_PRESENT_MODE=auto|fifo|mailbox|immediate` — explicit Vulkan swapchain
   policy. Unset/`auto` retains FIFO by default and the existing `MATTER_VSYNC=0`
   preference for MAILBOX, then IMMEDIATE, then FIFO. An explicit mode overrides
@@ -378,6 +517,14 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
   at launch and disables UI/FIFO overrides. Pacing runs before input sampling,
   uses a high-resolution waitable timer on supported Windows systems and a
   short bounded yield tail, and rebases after hitches instead of catching up.
+- `render.gpu.forest_history_reset` — live bool, default true, persisted per
+  user in Performance → GPU Features. FIFO example:
+  `set render.gpu.forest_history_reset false`. On, every terrain streaming
+  update that replaces the sparse-voxel forest snapshot resets the whole-frame
+  DLSS history, so trees visibly go coarse and re-converge. Off keeps the
+  accumulated history across those updates so tree detail stays stable; the
+  per-pixel sparse history is still rejected for the one frame the new
+  snapshot has not been presented. No effect in DLSS Native mode.
   Long waits service window events at 25 ms intervals. No rendering quality or
   global Windows timer-resolution change is involved. Choose a sustainable
   rate with headroom; the limiter cannot make a slow frame meet its deadline.
@@ -864,6 +1011,14 @@ hard-to-diagnose failures:
   for the high-to-low wall proof. Requested density can be reduced by atlas
   packing limits; it is not a promise that every chart fits at that density.
 
+Streamed terrain authors its finest requested density in the world JS as
+`static streaming = { terrainTexelsPerMeter: 64, ... }` (finite number 1–2048;
+default 16). The value applies on world reload to runtime chart preparation,
+including both in-memory and artifact staging. Nested tile size and coarser
+rungs retain their density scaling; atlas packing may reduce the request to
+fit the 16384-texel limit. Higher density adds virtual indirection and visible
+page demand; it does not increase the reserved physical VT pool automatically.
+
 ### Finished surface detail materials
 
 `defineMaterial('Brick', {detail:'BrickDetail', detailMode:'surface'})` opts a
@@ -877,3 +1032,199 @@ The mode travels as `MATERIAL_SURFACE_DETAIL` (bit 5) in existing
 older serialized material contracts; repeated declarations compare this bit.
 Authored world-source identity changes with the property. The unchanged atlas
 pixels retain their source/projection recipe cache key.
+
+### Composed VT POM diagnostics
+
+Use the raster path and Raw albedo to inspect diagnostic colors without lighting
+or tone mapping:
+
+```text
+render_path raster
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 9
+```
+
+Mode 9 ("Composed POM path (raster)") colors successful ordinary chart hits
+green and successful connected-surface hits yellow. It preserves the mode 7
+status palette for other results: gray off, orange initial boundary, red path
+boundary, magenta input-snapshot mismatch, blue travel limit, cyan unresolved,
+white unsupported, and dark green zero depth. Yellow counts successful connected
+hits only; it does not count failed connected attempts or measure their cost.
+Mode 8 displays composed VT chart identity. These views preserve normal POM
+sampling, shading normals and depth; the final base color is replaced.
+
+Restore `render.pom.horizon_debug 0` and `viewer.debug.debug_view_mode 0` before
+appearance review or timing. The horizon diagnostic is not serialized.
+
+### Geometry paging stage profile
+
+Set `MATTER_GEOMETRY_PAGES_PROFILE=1` before launching the editor. Every 120
+render frame serials the geometry runtime drains a profiling window and logs:
+
+- `paging_stage`: sample count, total, mean and maximum CPU wall-clock
+  milliseconds for `update_cpu`, `worker_queue`, `cache_open`, `index_refresh`,
+  `page_read_batch`, `decode_page`, `completion_queue`, `prepared_queue`,
+  `upload_cpu`, `render_ready_wait`, `request_to_publish`, `cpu_cut`, `snapshot`,
+  `hierarchy_pack`, and `cut_upload_cpu`.
+- `paging_bank`: fixed geometry CPU payload bank capacity/occupied bytes,
+  largest contiguous free range and lifetime backing allocation count. A healthy
+  initialized bank reports `backing_allocations=1` throughout streaming; eviction
+  changes occupancy, not capacity. Excludes decode, BLAS disk cache and GPU banks.
+- `paging_io`: page-cache requests/hits, storage read operations/bytes, and the
+  latest CPU payload allocation census, and validated speculative page count
+  (`prefetched`). Payload bytes include externally pinned
+  allocations and read padding; they exclude maps, indices and decoded renderer
+  structures. The census covers the worker's current cache directory.
+- `paging_queue`: current read/decode/completion/prepared/upload queue sizes; window
+  publication count, reservation stalls, frames that exhausted the upload
+  admission budget with prepared work remaining, CPU budget deferrals, read
+  failures, watchdog expirations, separate GPU-residency/scratch budget stalls,
+  and successful fine-page evictions.
+
+Geometry I/O and preparation run on separate background lanes. Each store handle
+belongs only to the I/O lane. The outstanding-work bound (128 items by default) is backpressure,
+not a per-frame throughput limit. Publication still occurs on the app lane.
+Geometry admission uses a 4 ms CPU / 8 MiB upload budget; BLAS warmup uses a 4 MiB
+geometry-input budget and a 4 ms CPU preparation budget. One indivisible operation
+can exceed a time target; these settings do not guarantee a <10 ms whole frame.
+
+`MATTER_GEOMETRY_MAX_INFLIGHT` sets the bounded end-to-end page window (default
+128, accepted range 1–4096), shared by residency admission and the asynchronous
+pipeline capacity. `MATTER_GEOMETRY_READ_BATCH` sets the maximum requests passed
+to one read operation (default 32, range 1–1024, clamped to the in-flight window).
+These diagnostic tuning controls leave payload bank sizes, upload byte/time
+budgets, and GPU publication retirement unchanged. The terrain audit accepts
+`--geometry-inflight` and `--geometry-read-batch` for reproducible comparisons.
+
+`MATTER_GEOMETRY_UPLOAD_CPU_MS` adjusts the upload CPU budget (default 4 ms,
+accepted range 0.1–8 ms). This is a cooperative submission budget, not a promised
+GPU execution time. Oversized demand batches split at read-budget boundaries
+so a valid individual page cannot starve behind a too-large batch.
+
+`MATTER_PREPARED_IDENTITY_CACHE=1` enables the request-to-resolved-sector
+identity manifest. Its request key includes exact authored/transitive sources,
+raw overrides, sorted child hashes, bake mode and engine version. Hits avoid
+JS evaluation but still pass prepared-sector policy/dependency validation.
+Missing or incompatible data falls back to normal resolution. The map is read
+once per session using a 4 MiB bank and is bounded to 65,536 records.
+
+`MATTER_PREPARED_IDENTITY_COOK=1` additionally records successful resolutions,
+committing a binary manifest every 64 new entries and the remaining entries at
+normal PartStore teardown. Finish and close the cook before the read-only test;
+interrupted cooks may leave the final partial batch uncached. One session owns
+writes. Commit failures are logged. `terrain_cache_audit.py --identity-cache
+--identity-cook ...` cooks; `--identity-cache` alone requires all logged sector
+identities to come from the manifest. Source-fold invalidation follows the
+existing ScriptHost session/live-edit rules. The source hash prefix is memoized
+per ScriptHost and cleared with the fold cache; per-request parameters, child
+hashes, bake modes and version salts are still folded on every lookup. This
+preserves existing v1 identity keys and does not require recooking. Sector
+workers share an identity-only host for the installed world snapshot, replaced
+when that snapshot is installed again; actual JS bakes retain request-local hosts.
+
+`MATTER_PREPARED_SECTOR_READERS` selects 1–8 independently locked prepared-sector
+readers (default 1). Keys consistently select one reader; workers reading other
+keys can perform disk reads and validation concurrently. Each reader retains at
+most 128 MiB of payload leases in its own upfront bank, totaling
+`readers * 128 MiB` (four readers: 512 MiB; eight: 1 GiB). Separate address ranges
+let each reader reclaim contiguous space independently. Writes remain serialized;
+readers observe atomic reference/index publication. `terrain_cache_audit.py
+--sector-readers {1,2,4,8}` provides controlled comparisons. This does not increase
+the worker count or change GPU upload budgets.
+
+`MATTER_PREPARED_SECTOR_READ_AHEAD_MB` is an experimental physical-neighbor
+read-ahead target for the separate prepared-sector cache (default 0, accepted
+0–16 MiB). It uses the prepared-sector reader bank described above. Prefetch cannot
+force eviction and is skipped when the complete group will not fit. The terrain
+audit accepts `--sector-read-ahead-mb`; demand-only remains the default because
+an initial 4 MiB trial increased sector delivery time. This does not change the
+geometry-page reader's independent setting below.
+
+`MATTER_GEOMETRY_READ_AHEAD_MB` selects the physical-neighbor read-ahead target
+(default 4 MiB, capped at 16 MiB; `0` disables it). Prefetch is dropped when it
+cannot fit available bank capacity without eviction; demand reads retain normal
+bounded eviction behavior. Smaller actual reads occur at pack/group boundaries,
+cache hits, gaps and capacity pressure. The mountain launcher reserves 1 GiB CPU
+payload capacity (`MATTER_GEOMETRY_CPU_MB=1024`); the generic runtime default is
+unchanged. Read-ahead groups are based on current physical placement, not the
+future sector/resolution bundle schema.
+
+Use `python3 tools/geometry_paging_report.py path/to/controller.log` (or `--json`)
+for a weighted summary of one run. Use one log per run; concatenating duplicate
+editor/controller output double-counts samples. Queue peaks are sampled at log
+windows, not continuously measured high-water marks. The final partial window
+and outstanding requests are not included in completed timing samples.
+
+Prepared-sector cache hits also emit `prepared_stage` under
+`MATTER_GEOMETRY_PAGES_PROFILE`: payload `bytes`, mutex `wait_ms`, serialized
+cache/open/read `io_ms`, canonical source existence-check `source_ms`, archive
+reconstruction `decode_ms`, and dependent geometry-root lookup `roots_ms`.
+These are per-sector worker timings; parallel worker totals are not wall time.
+`prepared_identity hash=<hash> ms=<time>` separately measures script parameter
+canonicalization and dependency hashing before the prepared-cache lookup.
+
+The update CPU profile also includes `feedback_cpu` (feedback requests),
+`collect_cpu` (retired GPU page scan), `accept_cpu` (drain and validate completed
+reads), `upload_loop_cpu` (whole pending upload loop including queue removal),
+`publish_cpu` (readiness checks and residency publication), and `scene_check_cpu`
+(unchanged-scene comparison). All are nested inside `update_cpu`;
+`upload_cpu` is nested inside `upload_loop_cpu`. Do not add nested totals.
+
+Timing interpretation:
+
+| Stage | Scope / unit |
+| --- | --- |
+| `update_cpu` | Entire geometry runtime update, once per frame; includes other app-lane stages |
+| `cpu_cut` | CPU LOD cut selection, per eligible instance |
+| `snapshot` | Rebuild resident hierarchy and page-index map, per invalidated asset |
+| `hierarchy_pack` | Assemble GPU node descriptors, RT proxies and retained resources, per eligible instance |
+| `cut_upload_cpu` | Renderer admission of assembled cut data, per update; excludes GPU execution |
+| `worker_queue` | Request enqueue to worker pickup, per page; includes competition with world-worker commands |
+| `cache_open`, `index_refresh` | Worker CPU wall time, per operation |
+| `page_read_batch` | Batched page-cache lookup/read/validation; may include OS-cached I/O, not physical-drive latency |
+| `decode_page` | Geometry decode and renderer-part preparation, per page |
+| `completion_queue` | Worker completion to app consumption, per page |
+| `prepared_queue` | App consumption to accepted upload attempt, per page |
+| `upload_cpu` | Successful renderer part admission/warmup queueing, per page; excludes GPU execution |
+| `render_ready_wait` | Accepted upload to publication, per page; includes BLAS lookup/build/restore, submission and fence retirement |
+| `request_to_publish` | End-to-end completed request latency, per page |
+
+These stages overlap and run on different lanes. **Do not sum them as frame
+cost.** `render_ready_wait` is not a GPU timestamp; correlate with existing
+`STATS` GPU timings and BLAS restored/miss/captured/rejected counters. Reservation
+stalls count failed per-page attempts, including retries, not distinct pages.
+Profiling does not change scheduling or residency budgets.
+
+
+### CPU raster staging reservation
+
+`MATTER_VK_CPU_RESERVE_VERTEX_MB` and `MATTER_VK_CPU_RESERVE_INDEX_MB` reserve
+and touch CPU-side raster staging storage during renderer initialization.
+Defaults are zero (existing dynamic behavior); the terrain cache audit uses
+2048 MiB vertex and 256 MiB index staging, plus a 2048 MiB Vulkan vertex
+reservation after the movement test exceeded 1 GiB. CPU reservations are separate from Vulkan
+`MATTER_VK_STATIC_RESERVE_*` allocations and consume system RAM. Logical array
+sizes remain unchanged. Later registrations reuse this capacity; exceeding it
+still grows the vector and logs `raster_staging_growth` when
+`MATTER_GEOMETRY_PAGES_PROFILE` is enabled. This is a reservation optimization,
+not yet a hard-cap allocator. Startup measurements include initialization and
+touching these allocations.
+
+
+### Visible-first sector cubes
+
+The renderer publishes unjittered camera planes to the streaming coordinator.
+For volumetric sectors, worker ticks classify cube bounds once and request
+in-frustum cubes before offscreen cubes, retaining distance/hole ordering within
+each group and existing seam-dependency holds. Camera rotation refreshes priority
+without resetting residency. Already issued work currently completes normally;
+this priority does not yet reorder downstream decode/upload queues. The terrain
+cache audit explicitly forces `MATTER_VOLUMETRIC_SECTORS=1`. Its global readiness
+result still includes background sectors and is not a visible-set timing metric.
+
+
+`MATTER_ASSET_BROWSER_SKIP_CACHE_STATUS` skips the Assets panel's synchronous
+procedural hash/dependency evaluation and per-frame cache-status scans. Presence
+enables it. Object/world browsing remains available; unannotated rows show
+"bake status not checked". This is a review-session workaround for expensive
+script evaluation on the UI thread, not an asynchronous browser implementation.
