@@ -17,6 +17,7 @@
 #include "lod_bake.h"          // build_chart_rung, bake_lods, chart_atlas, part_asset_v2
 #include "part_store.h"        // viewer::PartStore (flat fast path)
 #include "raster_mesh.h"       // viewer::build_raster_mesh_data
+#include "render/vt_canonical_page.h"
 #include "../../libs/MeshChartingLib/include/mesh_charting.h"
 // M6: test_apply_chart_rung decimates a fixture to get a genuinely coarser
 // rung to adopt the base parameterisation onto.
@@ -28,6 +29,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -388,6 +391,185 @@ void run_fixture(const char* label, const std::vector<Tri>& tris,
             if (v != 0.0f) { any_nonzero = true; break; }
         snprintf(msg, sizeof msg, "%s: chart UVs flow into the surface_uv vertex stream", label);
         CHECK(!mesh.surface_uvs.empty() && any_nonzero, msg);
+    }
+}
+
+// An oversized request must preserve useful resolution inside the existing
+// atlas cap, including aligned origins and meshes limited by total chart area.
+void test_density_clamp() {
+    printf("=== test_density_clamp ===\n");
+    for (unsigned fixture = 0; fixture < 2; ++fixture) {
+        auto tris = build_cube();
+        const float requested = fixture ? 192.f : 512.f;
+        if (!fixture) {
+            tris = {make_tri(make_float3(-20,0,-20), make_float3(-20,0,20), make_float3(20,0,20)),
+                    make_tri(make_float3(-20,0,-20), make_float3(20,0,20), make_float3(20,0,-20))};
+        } else {
+            for (auto& tri : tris)
+                for (auto* p : {&tri.vertex0,&tri.vertex1,&tri.vertex2}) *p = *p * 16.f;
+        }
+        for (bool aligned : {false,true}) {
+            auto ex = face_normal_triex(tris), repeat_ex = ex;
+            chart_atlas::ChartAtlasRung atlas, repeat;
+            const bool ok = lod_bake::build_chart_rung(tris,ex,requested,45,atlas,aligned) &&
+                lod_bake::build_chart_rung(tris,repeat_ex,requested,45,repeat,aligned);
+            CHECK(ok && !atlas.charts.empty(), "density clamp: oversized geometry charts");
+            if (!ok || atlas.charts.empty()) continue;
+            const float actual = atlas.charts.front().texels_per_meter;
+            CHECK(actual > (fixture ? 160.f : 400.f) && actual <= requested,
+                  "density clamp: intermediate fit retains resolution beyond the half-density fallback");
+            CHECK(atlas.atlas_w <= chart_atlas::kVtMaxAtlasDim &&
+                  atlas.atlas_h <= chart_atlas::kVtMaxAtlasDim,
+                  "density clamp: atlas cap remains unchanged");
+            CHECK(serialize_rung(atlas)==serialize_rung(repeat) &&
+                  std::memcmp(ex.data(),repeat_ex.data(),ex.size()*sizeof(TriEx))==0,
+                  "density clamp: repeated chart tables and vertex attributes are byte-identical");
+            check_rung_gates(fixture ? "clamped-cube" : "clamped-plane",tris,ex,atlas);
+            printf("  density clamp: fixture=%u aligned=%u requested=%.3f actual=%.3f atlas=%ux%u\n",
+                   fixture,unsigned(aligned),requested,actual,atlas.atlas_w,atlas.atlas_h);
+        }
+    }
+    const auto tris = build_cube();
+    const auto original = face_normal_triex(tris);
+    for (float invalid : {std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::quiet_NaN()}) {
+        auto ex = original;
+        chart_atlas::ChartAtlasRung atlas;
+        CHECK(!lod_bake::build_chart_rung(tris,ex,invalid,45,atlas) && atlas.charts.empty() &&
+              std::memcmp(ex.data(),original.data(),ex.size()*sizeof(TriEx))==0,
+              "density clamp: nonfinite requests fail without changing the vertex stream");
+    }
+}
+
+// Resizing a wall must not shift the physical sampling grid on its large
+// planar faces. Exercise the real chart builder (including negative axes),
+// then ask the same producer that serves runtime VT for reusable page keys.
+void test_material_grid_alignment() {
+    printf("=== test_material_grid_alignment ===\n");
+    constexpr float tpm = 512.0f;
+    constexpr uint32_t page = chart_atlas::kVtPagePayload;
+    constexpr uint32_t gutter = chart_atlas::kChartGutterTexels;
+    std::set<std::pair<uint64_t, uint64_t>> first_face_keys[2];
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        const unsigned columns = 8 + variant * 4, courses = 12 + variant * 4;
+        const float width = columns * .23f - .01f;
+        const float height = courses * .094f - .01f;
+        auto tris = build_cube();
+        for (auto& tri : tris) {
+            for (float3* p : {&tri.vertex0, &tri.vertex1, &tri.vertex2}) {
+                p->x = (p->x + 1) * .5f * width - .117f;
+                p->y = (p->y + 1) * .5f * height - .173f;
+                p->z = (p->z + 1) * .055f - .031f;
+            }
+        }
+        auto compact_ex = face_normal_triex(tris), aligned_ex = compact_ex, repeat_ex = compact_ex;
+        chart_atlas::ChartAtlasRung compact, aligned, repeat;
+        const bool ok = lod_bake::build_chart_rung(tris, compact_ex, tpm,
+            chart_atlas::kChartNormalConeDeg, compact) &&
+            lod_bake::build_chart_rung(tris, aligned_ex, tpm,
+                chart_atlas::kChartNormalConeDeg, aligned, true) &&
+            lod_bake::build_chart_rung(tris, repeat_ex, tpm,
+                chart_atlas::kChartNormalConeDeg, repeat, true);
+        CHECK(ok, "material grid: differently sized walls chart successfully");
+        if (!ok) continue;
+        char label[80];
+        snprintf(label, sizeof label, "aligned-wall-%ux%u", columns, courses);
+        check_rung_gates(label, tris, aligned_ex, aligned);
+        CHECK(serialize_rung(aligned) == serialize_rung(repeat),
+              "material grid: repeated build has identical chart table");
+        CHECK(std::memcmp(aligned_ex.data(), repeat_ex.data(), aligned_ex.size() * sizeof(TriEx)) == 0,
+              "material grid: repeated build has identical vertex attributes");
+
+        std::vector<float> positions, normals;
+        std::vector<unsigned int> indices;
+        soup_arrays(tris, positions, indices);
+        for (const auto& e : aligned_ex)
+            for (const auto* n : {&e.N0, &e.N1, &e.N2})
+                normals.insert(normals.end(), {n->x, n->y, n->z});
+        uint32_t material = 9;
+        vt::VtPartContext context;
+        context.positions = positions.data(); context.normals = normals.data();
+        context.indices = indices.data(); context.vertex_count = uint32_t(positions.size() / 3);
+        context.triangle_count = uint32_t(tris.size()); context.surface_material_count = 1;
+        context.surface_materials = &material; context.surface_tape_text = "wall material grid fixture";
+        vt::VtFillRequest request; request.atlas = &aligned; request.part_context = &context;
+        unsigned reused[2]{}, eligible[2]{};
+        uint64_t compact_pages = 0, aligned_pages = 0;
+        bool padding_ok = true, projection_ok = true;
+        for (size_t ci = 0; ci < aligned.charts.size(); ++ci) {
+            const auto& a = aligned.charts[ci]; const auto& b = compact.charts[ci];
+            compact_pages += uint64_t(b.rect_w / page) * (b.rect_h / page);
+            aligned_pages += uint64_t(a.rect_w / page) * (a.rect_h / page);
+            padding_ok &= a.rect_w >= b.rect_w && a.rect_w <= b.rect_w + page &&
+                          a.rect_h >= b.rect_h && a.rect_h <= b.rect_h + page;
+            for (const float* axis : {a.tangent, a.bitangent}) {
+                float leading = 0;
+                for (unsigned k = 0; k < 3; ++k) leading += (b.origin[k] - a.origin[k]) * axis[k];
+                padding_ok &= leading >= -1e-6f && leading * tpm < float(page) + 1e-4f;
+            }
+            for (uint32_t j = 0; j < a.tri_count; ++j) {
+                const uint32_t ti = aligned.tri_order[a.first_tri + j];
+                const auto& tri = tris[ti]; const auto& e = aligned_ex[ti];
+                const float3* vertices[] = {&tri.vertex0, &tri.vertex1, &tri.vertex2};
+                const float2* uvs[] = {&e.uv0, &e.uv1, &e.uv2};
+                for (unsigned k = 0; k < 3; ++k) {
+                    const auto* p = vertices[k];
+                    const float delta[] = {p->x - a.origin[0], p->y - a.origin[1], p->z - a.origin[2]};
+                    float u = float(a.rect_x + gutter), v = float(a.rect_y + gutter);
+                    for (unsigned axis = 0; axis < 3; ++axis) {
+                        u += delta[axis] * a.tangent[axis] * tpm;
+                        v += delta[axis] * a.bitangent[axis] * tpm;
+                    }
+                    projection_ok &= std::abs(u - uvs[k]->x * aligned.atlas_w) < .001f &&
+                                     std::abs(v - uvs[k]->y * aligned.atlas_h) < .001f;
+                }
+            }
+            const float nz = normals[aligned.tri_order[a.first_tri] * 9 + 2];
+            if (std::abs(nz) < .999f) continue;
+            const unsigned face = nz > 0 ? 1 : 0;
+            for (uint32_t y = a.rect_y / page; y < (a.rect_y + a.rect_h) / page; ++y)
+                for (uint32_t x = a.rect_x / page; x < (a.rect_x + a.rect_w) / page; ++x) {
+                    request.page_x = uint16_t(x); request.page_y = uint16_t(y);
+                    vt::VtCanonicalPage payload;
+                    if (!vt::vt_canonical_page(request, uint32_t(ci), {-.01f, .02f, 1}, payload)) continue;
+                    ++eligible[face];
+                    const auto key = std::make_pair(payload.key.low, payload.key.high);
+                    if (!variant) first_face_keys[face].insert(key);
+                    else reused[face] += unsigned(first_face_keys[face].count(key));
+                }
+        }
+        CHECK(padding_ok, "material grid: leading padding is less than one page on each axis");
+        CHECK(projection_ok, "material grid: vertex UVs match the runtime chart projection");
+        CHECK(eligible[0] && eligible[1], "material grid: both signed wall faces have reusable interiors");
+        if (variant) CHECK(reused[0] && reused[1],
+            "material grid: resized walls share exact producer keys on both signed faces");
+        printf("  [%s] chart pages %llu -> %llu, atlas pages %u -> %u, eligible=%u/%u shared=%u/%u\n",
+            label, (unsigned long long)compact_pages, (unsigned long long)aligned_pages,
+            compact.atlas_w / page * (compact.atlas_h / page),
+            aligned.atlas_w / page * (aligned.atlas_h / page),
+            eligible[0], eligible[1], reused[0], reused[1]);
+    }
+
+    // Compact policy remains identical for small faces and multi-triangle
+    // charts, which have no eligible interior in the current sharing path.
+    for (unsigned fixture = 0; fixture < 2; ++fixture) {
+        auto tris = build_cube();
+        float density = 16;
+        if (fixture) {
+            tris.clear(); density = 512;
+            const float3 center = make_float3(.173f, -.117f, .031f);
+            const float3 corners[] = {make_float3(-1.827f, -2.117f, .031f),
+                make_float3(2.173f, -2.117f, .031f), make_float3(2.173f, 1.883f, .031f),
+                make_float3(-1.827f, 1.883f, .031f)};
+            for (unsigned i = 0; i < 4; ++i) tris.push_back(make_tri(center, corners[i], corners[(i + 1) % 4]));
+        }
+        auto a = face_normal_triex(tris), b = a;
+        chart_atlas::ChartAtlasRung ca, cb;
+        const bool ok = lod_bake::build_chart_rung(tris, a, density, chart_atlas::kChartNormalConeDeg, ca) &&
+            lod_bake::build_chart_rung(tris, b, density, chart_atlas::kChartNormalConeDeg, cb, true);
+        CHECK(ok && serialize_rung(ca) == serialize_rung(cb) &&
+              std::memcmp(a.data(), b.data(), a.size() * sizeof(TriEx)) == 0,
+              "material grid: small or complex charts preserve compact parameterisation");
     }
 }
 
@@ -866,6 +1048,58 @@ void test_sidecar_roundtrip() {
 // per-rung chart tables (parallel to lod_mesh_data) and chart UVs in its
 // vertex streams, exactly like the stage_from_snapshot path.
 // ---------------------------------------------------------------------------
+void test_terrain_authored_density() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::path("build") / "chart_terrain_density_fixture";
+    fs::create_directories(root / "parts");
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ec; fs::remove_all(root, ec); } } cleanup{root};
+    constexpr uint64_t hash = 0x7e22a164ull;
+    const std::vector<Tri> tris = {
+        make_tri(make_float3(-32,0,-32),make_float3(-32,0,32),make_float3(32,0,-32)),
+        make_tri(make_float3(32,0,-32),make_float3(-32,0,32),make_float3(32,0,32))};
+    const auto ex = face_normal_triex(tris);
+    BLASManager source; TLASManager tlas(4);
+    source.register_triangles(const_cast<Tri*>(tris.data()),int(tris.size()),ex.data());
+    CHECK(part_asset::save_v2((root / part_asset::cache_path_resolved(hash)).string(),
+                             source,tlas,nullptr,0,{},hash), "terrain density fixture saves");
+    viewer::PartStore store(root.string());
+    viewer::PartStore::WarpAnchor anchor;
+    anchor.valid=true;anchor.sector_size=64;anchor.base_sector_size=64;
+    auto base=store.stage_load(hash,0,true,anchor);
+    auto detail=store.stage_load(hash,0,true,anchor,64);
+    auto close_detail=store.stage_load(hash,0,true,anchor,128);
+    anchor.sector_size=128;
+    auto nested=store.stage_load(hash,0,true,anchor,64);
+    const auto density=[](const viewer::PartStore::StagedPart& part) {
+        return part.ok && !part.lp.lod_charts.empty() && !part.lp.lod_charts[0].charts.empty()
+            ? part.lp.lod_charts[0].charts[0].texels_per_meter : 0.f;
+    };
+    CHECK(density(base)==16 && density(detail)==64 && density(nested)==32,
+          "real terrain staging preserves legacy density, authored detail and nested scaling");
+    CHECK(density(close_detail)==128 &&
+          close_detail.lp.lod_charts[0].atlas_w>8192 &&
+          close_detail.lp.lod_charts[0].atlas_h>8192,
+          "64 m terrain retains 128 texels/m including gutters beyond the old 8K atlas limit");
+    CHECK(base.lp.lod_blas.size()==detail.lp.lod_blas.size() &&
+          base.lp.lod_blas.size()==close_detail.lp.lod_blas.size(),
+          "terrain density retains the geometry ladder");
+    printf("  terrain 16K density: authored=%.1f atlas=%ux%u texels\n", density(close_detail),
+           close_detail.lp.lod_charts[0].atlas_w,close_detail.lp.lod_charts[0].atlas_h);
+    printf("  terrain density: legacy=%.1f authored=%.1f nested=%.1f texels/m\n",
+           density(base),density(detail),density(nested));
+    const uint64_t small_hash=hash+1;
+    std::vector<Tri> small;
+    for(const auto& t:tris) small.push_back(make_tri(t.vertex0*.25f,t.vertex1*.25f,t.vertex2*.25f));
+    BLASManager small_source;
+    small_source.register_triangles(small.data(),int(small.size()),ex.data());
+    CHECK(part_asset::save_v2((root / part_asset::cache_path_resolved(small_hash)).string(),
+                             small_source,tlas,nullptr,0,{},small_hash), "small terrain fixture saves");
+    anchor.sector_size=anchor.base_sector_size=16;
+    auto small_detail=store.stage_load(small_hash,0,true,anchor,64);
+    CHECK(density(small_detail)==64,
+          "small streamed terrain retains authored density below the terrain ladder radius guard");
+}
+
 void test_flat_load_charts() {
     namespace fs = std::filesystem;
     const fs::path root = fs::path("build") / "chart_atlas_flat_fixture";
@@ -1139,11 +1373,14 @@ int main(int argc, char** argv) {
         run_fixture("big-sheet", tris, ex, 16.0f);
     }
 
+    test_density_clamp();
+    test_material_grid_alignment();
     test_ladder_charts();
     test_apply_chart_rung();
     test_unified_ladder_parameterisation();
     test_sidecar_roundtrip();
     test_flat_load_charts();
+    test_terrain_authored_density();
 
     if (g_failures == 0) { printf("chart_atlas_tests: ALL PASS\n"); return 0; }
     printf("chart_atlas_tests: %d FAILURE(S)\n", g_failures);

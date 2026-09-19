@@ -41,9 +41,13 @@ bool base_proves_miss(const FaceJob& j, V a, V b) {
         std::abs(b.x), std::abs(b.y), std::abs(b.z), std::abs(op.row0[3]),
         std::abs(op.row1[3]), std::abs(op.row2[3]), op.shape[0], op.shape[1],
         op.shape[2], op.shape[3]});
-    // Covers endpoint construction, matrix dot products and primitive rounding.
-    // Inconclusive intervals only lose this optimization; they still march.
-    const float pad = 32.f * std::numeric_limits<float>::epsilon() * (1.f + extent);
+    // Covers endpoint construction, proper-rotation dot products and primitive
+    // rounding. Error scales with the values being transformed, not a fixed
+    // extra metre: that floor made proven misses near small rounded bricks
+    // inconclusive and sent nearly tangent rays through thousands of steps.
+    // Keep a small positive scale for zero/subnormal inputs. The matching GPU
+    // proof uses the same bound; inconclusive intervals still march normally.
+    const float pad = 32.f * std::numeric_limits<float>::epsilon() * std::max(extent, 1e-6f);
     float nearest[3];
     const std::array<float, 4>* rows[] = {&op.row0, &op.row1, &op.row2};
     for (int k = 0; k < 3; ++k) {
@@ -83,7 +87,7 @@ bool clip(const FaceJob &j, const FaceLayout &l, V p, float &low, float &high) {
     return low <= high;
 }
 } // namespace
-bool validate_face_job(const FaceJob &j, FaceLayout &out, Error &e) {
+static bool validate_face_layout(const FaceJob &j, FaceLayout &out, Error &e) {
     out = {};
     e = {};
     GridLayout grid;
@@ -116,9 +120,6 @@ bool validate_face_job(const FaceJob &j, FaceLayout &out, Error &e) {
     double h = std::ceil((double(j.v_max_m) - j.v_min_m) / j.pixel_m);
     if (w > 65535 || h > 65535 || w * h > j.max_pixels)
         return fail(e, ErrorCode::LimitExceeded, "face pixel capacity exceeded");
-    if (w * h * (j.max_steps + j.refine_steps + 8) * j.source.op_count > 256.0 * 1024 * 1024)
-        return fail(e, ErrorCode::LimitExceeded,
-                    "face worst-case field work exceeds service bound");
     // Float traversal must distinguish the requested tolerance at every corner.
     double extent =
         std::max({std::abs(double(j.frame.origin_m.x)), std::abs(double(j.frame.origin_m.y)),
@@ -139,6 +140,62 @@ bool validate_face_job(const FaceJob &j, FaceLayout &out, Error &e) {
                                grid.origin_m.y + grid.cell_dims[1] * j.source.voxel_m,
                                grid.origin_m.z + grid.cell_dims[2] * j.source.voxel_m};
     return true;
+}
+static std::uint64_t field_work_per_pixel(const FaceJob &j) {
+    return std::uint64_t(j.max_steps + j.refine_steps + 8) * j.source.op_count;
+}
+static bool bounded_region(const FaceJob &j, const FaceRegion &r, const FaceLayout &l, Error &e) {
+    if (!r.width || !r.height || r.x >= l.width || r.y >= l.height ||
+        r.width > l.width - r.x || r.height > l.height - r.y)
+        return fail(e, ErrorCode::InvalidInput, "face region outside full sample lattice");
+    if (std::uint64_t(r.width) * r.height * field_work_per_pixel(j) > face_dispatch_field_work_limit)
+        return fail(e, ErrorCode::LimitExceeded, "face worst-case field work exceeds service bound");
+    return true;
+}
+bool validate_face_job(const FaceJob &j, FaceLayout &out, Error &e) {
+    out = {};
+    FaceLayout l;
+    if (!validate_face_layout(j, l, e) || !bounded_region(j, {0, 0, l.width, l.height}, l, e))
+        return false;
+    out = l;
+    return true;
+}
+bool validate_face_region(const FaceJob &j, const FaceRegion &r, FaceLayout &out, Error &e) {
+    out = {};
+    FaceLayout l;
+    if (!validate_face_layout(j, l, e) || !bounded_region(j, r, l, e)) return false;
+    out = l;
+    return true;
+}
+bool plan_face_regions(const FaceJob &j, const FacePreparationLimits &limits,
+                       FaceLayout &out, std::vector<FaceRegion> &regions, Error &e) {
+    FaceLayout l;
+    if (!validate_face_layout(j, l, e)) return false;
+    if (!limits.max_region_pixels || limits.max_region_pixels > 1024 * 1024 ||
+        !limits.max_regions || limits.max_regions > 4096)
+        return fail(e, ErrorCode::InvalidInput, "invalid face preparation limits");
+    const auto pixels = std::min<std::uint64_t>(limits.max_region_pixels,
+        face_dispatch_field_work_limit / field_work_per_pixel(j));
+    if (!pixels) return fail(e, ErrorCode::LimitExceeded, "one face pixel exceeds service bound");
+    const auto width = std::uint32_t(std::min<std::uint64_t>(l.width, pixels));
+    const auto height = std::uint32_t(std::min<std::uint64_t>(l.height, pixels / width));
+    const auto count = std::uint64_t((l.width + width - 1) / width) *
+                      ((l.height + height - 1) / height);
+    if (count > limits.max_regions)
+        return fail(e, ErrorCode::LimitExceeded, "face preparation region count exceeds limit");
+    try {
+        std::vector<FaceRegion> candidate;
+        candidate.reserve(std::size_t(count));
+        for (std::uint32_t y = 0; y < l.height; y += height)
+            for (std::uint32_t x = 0; x < l.width; x += width)
+                candidate.push_back({x, y, std::min(width, l.width - x),
+                                            std::min(height, l.height - y)});
+        regions = std::move(candidate);
+        out = l;
+        return true;
+    } catch (const std::bad_alloc &) {
+        return fail(e, ErrorCode::LimitExceeded, "face region plan allocation failed");
+    }
 }
 std::uint64_t face_recipe_digest(const FaceJob &j) {
     std::uint64_t h = solid_recipe_digest(j.source);
@@ -169,30 +226,85 @@ std::uint64_t face_recipe_digest(const FaceJob &j) {
     word(j.refine_steps);
     return h;
 }
-bool project_solid_face_reference(const FaceJob &j, FacePatch &out, FaceStats &stats, Error &e,
-                                  const BuildControl &control) {
+FacePatch face_patch_metadata(const FaceJob &j, const FaceLayout &l) {
+    FacePatch p;
+    p.frame = j.frame; p.layout = l;
+    p.u_min_m = j.u_min_m; p.u_max_m = j.u_max_m;
+    p.v_min_m = j.v_min_m; p.v_max_m = j.v_max_m;
+    p.height_min_m = j.height_min_m; p.height_max_m = j.height_max_m;
+    p.material = j.source.material; p.recipe_digest = face_recipe_digest(j);
+    return p;
+}
+bool prepare_solid_face(const FaceJob &j, const SolidFaceRegionProjector &project,
+                        FacePatch &out, FaceStats &stats, Error &e,
+                        const BuildControl &control, const FacePreparationLimits &limits) {
     const auto start = std::chrono::steady_clock::now();
     stats = {};
     e = {};
     FaceLayout l;
-    if (!current(j, control, e) || !validate_face_job(j, l, e))
+    std::vector<FaceRegion> regions;
+    if (!current(j, control, e) || !plan_face_regions(j, limits, l, regions, e))
         return false;
+    if (!project) return fail(e, ErrorCode::Unavailable, "face region projector unavailable");
     try {
-        FacePatch result;
-        result.frame = j.frame;
-        result.layout = l;
-        result.u_min_m = j.u_min_m;
-        result.u_max_m = j.u_max_m;
-        result.v_min_m = j.v_min_m;
-        result.v_max_m = j.v_max_m;
-        result.height_min_m = j.height_min_m;
-        result.height_max_m = j.height_max_m;
-        result.material = j.source.material;
-        result.recipe_digest = face_recipe_digest(j);
-        result.texels.resize(std::size_t(l.width) * l.height);
+        FacePatch result = face_patch_metadata(j, l);
+        if (regions.size() > 1) result.texels.resize(std::size_t(l.width) * l.height);
+        for (const auto &r : regions) {
+            if (!current(j, control, e)) return false;
+            std::vector<FaceTexel> piece;
+            FaceStats partial;
+            if (!project(j, r, piece, partial, e, control)) return false;
+            if (!current(j, control, e)) return false;
+            if (piece.size() != std::size_t(r.width) * r.height)
+                return fail(e, ErrorCode::ArtifactFailure, "face region returned wrong pixel count");
+            if (regions.size() == 1) result.texels = std::move(piece);
+            else for (std::uint32_t y = 0; y < r.height; ++y)
+                std::copy_n(piece.data() + std::size_t(y) * r.width, r.width,
+                    result.texels.data() + std::size_t(y + r.y) * l.width + r.x);
+            stats.covered_pixels += partial.covered_pixels;
+            stats.max_steps_used = std::max(stats.max_steps_used, partial.max_steps_used);
+            stats.readback_memory_flags = stats.submissions ?
+                stats.readback_memory_flags & partial.readback_memory_flags : partial.readback_memory_flags;
+            stats.submissions += partial.submissions;
+            stats.resident_bytes = std::max(stats.resident_bytes, partial.resident_bytes);
+            stats.host_scratch_bytes = std::max(stats.host_scratch_bytes,
+                partial.host_scratch_bytes + (result.texels.capacity() + piece.capacity()) * sizeof(FaceTexel));
+            stats.prepare_ms += partial.prepare_ms;
+            stats.submit_wait_ms += partial.submit_wait_ms;
+            stats.decode_ms += partial.decode_ms;
+            stats.gpu_ms += partial.gpu_ms;
+            stats.readback_copy_ms += partial.readback_copy_ms;
+        }
+        if (!current(j, control, e)) return false;
+        out = std::move(result);
+        stats.host_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return true;
+    } catch (const std::bad_alloc &) {
+        return fail(e, ErrorCode::LimitExceeded, "face preparation allocation failed");
+    }
+}
+bool project_solid_face_reference(const FaceJob &j, FacePatch &out, FaceStats &stats, Error &e,
+                                  const BuildControl &control) {
+    stats = {};
+    FaceLayout l;
+    if (!current(j, control, e) || !validate_face_job(j, l, e)) return false;
+    return prepare_solid_face(j, project_solid_face_region_reference, out, stats, e, control,
+                              {1024 * 1024, 1});
+}
+bool project_solid_face_region_reference(const FaceJob &j, const FaceRegion &r,
+                                         std::vector<FaceTexel> &out, FaceStats &stats, Error &e,
+                                         const BuildControl &control) {
+    const auto start = std::chrono::steady_clock::now();
+    stats = {};
+    e = {};
+    FaceLayout l;
+    if (!current(j, control, e) || !validate_face_region(j, r, l, e)) return false;
+    try {
+        std::vector<FaceTexel> result(std::size_t(r.width) * r.height);
         const bool prove_base = subtractive_base(j.source);
-        for (std::uint32_t y = 0; y < l.height; ++y)
-            for (std::uint32_t x = 0; x < l.width; ++x) {
+        for (std::uint32_t y = r.y; y < r.y + r.height; ++y)
+            for (std::uint32_t x = r.x; x < r.x + r.width; ++x) {
                 if ((x & 31) == 0 && !current(j, control, e))
                     return false;
                 V base =
@@ -245,7 +357,7 @@ bool project_solid_face_reference(const FaceJob &j, FacePatch &out, FaceStats &s
                             return fail(e, ErrorCode::ArtifactFailure,
                                         "undefined projected normal");
                         n = mul(n, 1 / len);
-                        auto &t = result.texels[std::size_t(y) * l.width + x];
+                        auto &t = result[std::size_t(y - r.y) * r.width + x - r.x];
                         t.height_m = at;
                         t.normal_uvn = {dot(n, j.frame.u), dot(n, j.frame.v), dot(n, j.frame.n)};
                         t.coverage = 1;

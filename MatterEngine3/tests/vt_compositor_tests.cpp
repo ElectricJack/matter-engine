@@ -39,12 +39,21 @@
 //       fills and blacked out whole streamed sectors).
 
 #include "check.h"
+#include "vt_prepare_tests.h"
+#include "render/vt_encoded_upload.h"
+#include "render/vt_encoded_filler.h"
+#include <filesystem>
+#include <thread>
+#include "vt_surface_boundary_tests.h"
+#include "vt_finite_source_fixture.h"
+#include "vt_cellular_fixture.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -55,6 +64,8 @@
 #include "matter/vulkan_device.h"
 #include "render/vk_resources.h"
 #include "render/vt_compositor.h"
+#include "render/vt_chart_gpu.h"
+#include "render/vt_periodic_material.h"
 #include "render/vt_enrich.h"
 // P2 (texel-rate tape, weight-seam mode 3): CPU tape runtime + the shared
 // lane scan / GpuSurfOp packing the compositor uses.
@@ -555,7 +566,13 @@ struct TestCmd {
             return false;
         }
         bool proven = false;
-        return vk->submit_and_wait(cmd, fence, proven, err) && proven;
+        const bool submitted = vk->submit_and_wait(cmd, fence, proven, err);
+        if (!proven) {
+            std::fprintf(stderr, "VT compositor fixture: GPU completion unknown: %s\n", err.c_str());
+            std::fflush(nullptr);
+            std::_Exit(2);
+        }
+        return submitted;
     }
     void destroy() {
         if (!vk) return;
@@ -951,6 +968,123 @@ chart_atlas::ChartEntry make_chart(V3 origin, V3 t, V3 b, uint32_t rx,
 }  // namespace
 
 int main() {
+    vt_prepare_tests::run();
+    vt_surface_boundary_tests::run();
+    {
+        // Adjacent surface triangles in separate charts with a UV vertex split.
+        // Emitted order is reversed to catch original-index/stream-index mixups.
+        const float positions[] = {0,0,0, 1,0,0, 0,1,0, 1,0,0, 1,1,0.5f, 0,1,0};
+        const uint32_t indices[] = {0,1,2, 3,4,5};
+        vt::VtPartContext ctx{};
+        ctx.positions = positions; ctx.indices = indices;
+        ctx.vertex_count = 6; ctx.triangle_count = 2; ctx.dominant_material = 37;
+        chart_atlas::ChartAtlasRung atlas;
+        atlas.tri_order = {1,0}; atlas.charts.resize(2);
+        for (uint32_t i=0; i<2; ++i) {
+            auto& c = atlas.charts[i];
+            c.tangent[0] = c.bitangent[1] = 1; c.texels_per_meter = 150;
+            c.first_tri = i; c.tri_count = 1;
+        }
+        std::vector<vt::GpuChart> charts;
+        std::vector<vt::GpuTri> triangles;
+        std::vector<vt::VtTriangleCorners> corners;
+        CHECK(vt::vt_build_chart_gpu_streams(atlas, ctx, charts, triangles, nullptr, 0, &corners),
+              "surface neighbors: prepare reversed chart geometry");
+        const auto original = triangles;
+        CHECK(vt::vt_build_chart_surface_neighbors(ctx, corners, triangles),
+              "surface neighbors: build oriented connectivity");
+        if (triangles.size() == 2) {
+            CHECK(triangles[0].mat[1] == 0 && triangles[0].mat[2] == 0 && triangles[0].mat[3] == 2 &&
+                  triangles[1].mat[1] == 0 && triangles[1].mat[2] == 1 && triangles[1].mat[3] == 0,
+                  "surface neighbors: packed indices follow emitted order and retain real boundaries");
+            auto unchanged = triangles;
+            for (auto& tri : unchanged) tri.mat[1] = tri.mat[2] = tri.mat[3] = 0;
+            CHECK(std::memcmp(unchanged.data(), original.data(), original.size()*sizeof(vt::GpuTri)) == 0,
+                  "surface neighbors: material, normals, positions and mutable rows remain unchanged");
+            const auto once = triangles;
+            CHECK(vt::vt_build_chart_surface_neighbors(ctx, corners, triangles) &&
+                  std::memcmp(once.data(), triangles.data(), once.size()*sizeof(vt::GpuTri)) == 0,
+                  "surface neighbors: repeated preparation is deterministic");
+            corners[0][0] = ctx.vertex_count;
+            CHECK(!vt::vt_build_chart_surface_neighbors(ctx, corners, triangles),
+                  "surface neighbors: invalid borrowed corner fails before position access");
+            CHECK(triangles[0].mat[3] == 0 && triangles[1].mat[2] == 0,
+                  "surface neighbors: failed preparation cannot retain old links");
+        }
+    }
+    {
+        // Reordered charts, invalid triangles and duplicate triangle references
+        // must retain the right original vertices for later surface updates.
+        const float positions[] = {0,0,0, 1,0,0, 0,0,1, 1,0,1};
+        const uint32_t indices[] = {0,1,2, 999,0,2, 2,1,3};
+        uint8_t weights[4 * 8];
+        uint16_t lanes[4 * 8];
+        for (uint32_t v = 0; v < 4; ++v)
+            for (uint32_t c = 0; c < 8; ++c) {
+                weights[v * 8 + c] = uint8_t(v * 37 + c * 19 + 11);
+                lanes[v * 8 + c] = uint16_t(0x3000 + v * 0x80 + c * 7);
+            }
+        vt::VtPartContext context{};
+        context.positions = positions;
+        context.indices = indices;
+        context.vertex_count = 4;
+        context.triangle_count = 3;
+        context.surface_weights = weights;
+        context.surface_material_count = 8;
+        chart_atlas::ChartAtlasRung atlas;
+        atlas.charts.resize(2);
+        atlas.tri_order = {2, 1, 99, 0, 2};
+        for (auto& chart : atlas.charts) {
+            chart.tangent[0] = 1;
+            chart.bitangent[2] = 1;
+            chart.texels_per_meter = 4;
+        }
+        atlas.charts[0].first_tri = 0; atlas.charts[0].tri_count = 3;
+        atlas.charts[1].first_tri = 3; atlas.charts[1].tri_count = 2;
+        const std::vector<vt::VtTriangleCorners> expected = {{2,1,3}, {0,1,2}, {2,1,3}};
+        std::vector<vt::GpuChart> charts;
+        std::vector<vt::GpuTri> triangles;
+        std::vector<vt::VtTriangleCorners> corners;
+        for (bool mode3 : {false, true}) {
+            CHECK(vt::vt_build_chart_gpu_streams(atlas, context, charts, triangles,
+                                                mode3 ? lanes : nullptr, mode3 ? 8 : 0,
+                                                &corners),
+                  "split streams: build reordered geometry");
+            CHECK(corners == expected && triangles.size() == expected.size(),
+                  "split streams: rejected triangles do not shift retained vertices");
+            if (corners != expected || triangles.size() != expected.size()) continue;
+            CHECK(charts[0].tri_range[1] == 1 && charts[1].tri_range[0] == 1 &&
+                      charts[1].tri_range[1] == 2,
+                  "split streams: chart ranges match emitted geometry");
+            for (size_t t = 0; t < expected.size(); ++t) {
+                const auto packed = vt::vt_pack_triangle_surface(
+                    context, corners[t].data(), 8, mode3 ? lanes : nullptr, mode3 ? 8 : 0);
+                uint32_t actual[12];
+                std::memcpy(actual, &packed, sizeof(actual));
+                uint32_t oracle[12]{};
+                for (uint32_t v = 0; v < 3; ++v)
+                    for (uint32_t c = 0; c < 8; ++c) {
+                        const auto vertex = expected[t][v];
+                        const uint32_t word = mode3 ? v * 4 + c / 2 : v * 2 + c / 4;
+                        oracle[word] |= mode3
+                            ? uint32_t(lanes[vertex * 8 + c]) << ((c % 2) * 16)
+                            : uint32_t(weights[vertex * 8 + c]) << ((c % 4) * 8);
+                    }
+                CHECK(std::memcmp(actual, oracle, sizeof(oracle)) == 0,
+                      "split streams: all weight columns and field lanes match the byte oracle");
+                CHECK(std::memcmp(triangles[t].wA, packed.wA, sizeof(packed.wA)) == 0 &&
+                          std::memcmp(triangles[t].wB, packed.wB, sizeof(packed.wB)) == 0 &&
+                          std::memcmp(triangles[t].wC, packed.wC, sizeof(packed.wC)) == 0,
+                      "split streams: combined AO packing retains the original rows");
+            }
+            CHECK(vt::vt_build_chart_surface_neighbors(context, corners, triangles),
+                  "surface neighbors: emitted valid corners survive rejected source triangles");
+            bool closed = true;
+            for (const auto& tri : triangles)
+                for (int edge=1; edge<4; ++edge) closed &= tri.mat[edge] == 0;
+            CHECK(closed, "surface neighbors: duplicate chart references cannot invent a unique neighbor");
+        }
+    }
     {
         const float positions[] = {
             0.0f, 0.0f, 0.0f,
@@ -1026,7 +1160,7 @@ int main() {
 
         // ---- pool images: one row of 16 slots, GENERAL layout ----
         const uint32_t pool_w = vt::kVtPoolLayerEdgeTexels;   // 2176
-        TestImage pool_albedo, pool_normal, pool_orm, pool_aux;
+        TestImage pool_albedo, pool_normal, pool_orm, pool_aux, pool_height;
         bool pool_ok =
             create_test_image(*vulkan, pool_w, kPageStore, 1, 1,
                               VK_FORMAT_BC7_UNORM_BLOCK,
@@ -1047,11 +1181,16 @@ int main() {
                               VK_FORMAT_R8G8B8A8_UNORM,
                               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                              pool_aux, err);
+                              pool_aux, err) &&
+            create_test_image(*vulkan, pool_w, kPageStore, 1, 1,
+                              VK_FORMAT_R16_UNORM,
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              pool_height, err);
         CHECK(pool_ok, err.empty() ? "create pool images" : err.c_str());
         if (pool_ok && tc.begin(err)) {
             for (TestImage* img :
-                 {&pool_albedo, &pool_normal, &pool_orm, &pool_aux})
+                 {&pool_albedo, &pool_normal, &pool_orm, &pool_aux, &pool_height})
                 cmd_transition(tc.cmd, img->image, VK_IMAGE_LAYOUT_UNDEFINED,
                                VK_IMAGE_LAYOUT_GENERAL, 1, 1);
             CHECK(tc.submit(err), err.c_str());
@@ -1061,10 +1200,12 @@ int main() {
         pool.image[vt::kVtChannelNormal] = pool_normal.image;
         pool.image[vt::kVtChannelOrm] = pool_orm.image;
         pool.image[vt::kVtChannelAux] = pool_aux.image;
+        pool.image[vt::kVtChannelHeight] = pool_height.image;
         pool.format[vt::kVtChannelAlbedo] = VK_FORMAT_BC7_UNORM_BLOCK;
         pool.format[vt::kVtChannelNormal] = VK_FORMAT_BC5_UNORM_BLOCK;
         pool.format[vt::kVtChannelOrm] = VK_FORMAT_BC7_UNORM_BLOCK;
         pool.format[vt::kVtChannelAux] = VK_FORMAT_R8G8B8A8_UNORM;
+        pool.format[vt::kVtChannelHeight] = VK_FORMAT_R16_UNORM;
         pool.layer_count = 1;
         pool.transfer_dst_layout = false;   // pool stays GENERAL in this test
 
@@ -1156,9 +1297,13 @@ int main() {
             const size_t bc_bytes = size_t(kBlocksPage) * 16;
             const size_t aux_bytes = size_t(kPageStore) * kPageStore * 4;
             struct PageData {
-                std::vector<uint8_t> albedo, normal, orm, aux;
+                std::vector<uint8_t> albedo, normal, orm, aux, height;
             };
             auto read_slot = [&](uint32_t slot, PageData& out) {
+                if (slot >= pool_w / kPageStore) {
+                    err = "readback slot exceeds the single-row test pool";
+                    return false;
+                }
                 return readback_slot(*vulkan, tc, pool_albedo.image, slot,
                                      bc_bytes, out.albedo, err) &&
                        readback_slot(*vulkan, tc, pool_normal.image, slot,
@@ -1166,8 +1311,1150 @@ int main() {
                        readback_slot(*vulkan, tc, pool_orm.image, slot,
                                      bc_bytes, out.orm, err) &&
                        readback_slot(*vulkan, tc, pool_aux.image, slot,
-                                     aux_bytes, out.aux, err);
+                                     aux_bytes, out.aux, err) &&
+                       readback_slot(*vulkan, tc, pool_height.image, slot,
+                                     aux_bytes / 2, out.height, err);
             };
+
+            {
+                const std::array<uint64_t, 2> missing{};
+                CHECK(compositor->encoded_input_identity() == missing,
+                    "unfingerprinted external images cannot authorize persistent cache hits");
+                vt::VtTilesetSlotViews identified[2] = {slots[0], slots[1]};
+                identified[0].pixel_hash[0] = 100; identified[1].pixel_hash[0] = 200;
+                CHECK(compositor->set_tilesets(identified, 2, err), err.c_str());
+                const auto original = compositor->encoded_input_identity();
+                CHECK(original != missing, "complete source identities allow persistent cache keys");
+                CHECK(compositor->set_tilesets(identified, 2, err), err.c_str());
+                compositor->set_materials(mats, 3);
+                CHECK(original == compositor->encoded_input_identity(),
+                    "redundant setters and session revisions do not change persistent keys");
+                ++identified[0].pixel_hash[0];
+                CHECK(compositor->set_tilesets(identified, 2, err), err.c_str());
+                CHECK(original != compositor->encoded_input_identity(), "changed source pixels invalidate cache identity");
+                --identified[0].pixel_hash[0]; identified[0].tile_size_m *= 2;
+                CHECK(compositor->set_tilesets(identified, 2, err), err.c_str());
+                CHECK(original != compositor->encoded_input_identity(), "changed source scale invalidates cache identity");
+                identified[0].tile_size_m = slots[0].tile_size_m;
+                CHECK(compositor->set_tilesets(identified, 2, err), err.c_str());
+                auto changed = mats[0]; mats[0].orm[1] += .1f;
+                compositor->set_materials(mats, 3);
+                CHECK(original != compositor->encoded_input_identity(), "changed material roughness invalidates cache identity");
+                mats[0] = changed; compositor->set_materials(mats, 3);
+                CHECK(original == compositor->encoded_input_identity(), "restored content restores cache identity");
+                CHECK(compositor->set_tilesets(slots, 2, err), err.c_str());
+            }
+
+            // Persist actual compositor output, then restore it by transfers only.
+            // The importer has no compositor/mesh-preparation dependency.
+            {
+                auto source_request = make_request(fix_a, 0, 12);
+                PageData source, restored;
+                CHECK(run_fill(&source_request, 1) && read_slot(12, source), "encoded cache source page");
+                vt::encoded::Page page;
+                page.key = {{0x1234, 0x5678}, 0, 0, 0, 0};
+                page.height = {-.25f, .5f, 1};
+                for (const auto* channel : {&source.albedo, &source.normal, &source.orm, &source.aux, &source.height})
+                    page.pixels.insert(page.pixels.end(), channel->begin(), channel->end());
+                std::vector<uint8_t> packed;
+                CHECK(vt::encoded::encode({page}, packed, err), err.c_str());
+                auto storage = std::make_shared<std::vector<uint8_t>>(std::move(packed));
+                auto lease = std::make_shared<asset_store::CachedPage>();
+                lease->allocation = storage; lease->bytes = storage->data(); lease->size = storage->size();
+                CHECK(asset_store::decode_page(lease->bytes, lease->size, vt::encoded::limits(), lease->view, err), err.c_str());
+                vt::encoded::Bundle bundle;
+                CHECK(vt::encoded::decode(lease, bundle, err), err.c_str());
+                matter::VkBufferResource staging;
+                CHECK(matter::create_buffer(*vulkan, vt::encoded::kPixelBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    0, staging, err) && matter::map_buffer(staging, err), err.c_str());
+                if (staging.mapped && bundle.lease) {
+                    auto request = make_request(fix_a, 0, 13);
+                    bool filled = false; request.out_filled = &filled;
+                    vt::VtPageHeight restored_height; request.out_height = &restored_height;
+                    vt::encoded::UploadSpan span{staging.buffer, staging.mapped, vt::encoded::kPixelBytes, 0};
+                    const auto builds = compositor->stats().mesh_cache_builds;
+                    CHECK(tc.begin(err), err.c_str());
+                    cmd_barrier_all(tc.cmd);
+                    auto wrong = page.key; ++wrong.mip;
+                    CHECK(!vt::encoded::record_upload(tc.cmd, bundle, wrong, request, span, false) && !filled,
+                        "encoded cache rejects mismatched page identity without publication");
+                    auto short_span = span; --short_span.buffer_bytes;
+                    CHECK(!vt::encoded::record_upload(tc.cmd, bundle, page.key, request, short_span, false) && !filled,
+                        "encoded cache rejects undersized staging slice");
+                    CHECK(!vt::encoded::record_upload(tc.cmd, bundle, page.key, request, span, true) && !filled,
+                        "encoded cache requires a separate geometry lease for POM");
+                    CHECK(vt::encoded::record_upload(tc.cmd, bundle, page.key, request, span, false) && filled,
+                        "encoded cache records direct GPU upload with POM disabled");
+                    CHECK(restored_height.min_m == -.25f && restored_height.range_m == .5f && restored_height.version == 1,
+                        "encoded cache publishes height decoding metadata with pixels");
+                    CHECK(tc.submit(err) && read_slot(13, restored), err.c_str());
+                    CHECK(source.albedo == restored.albedo && source.normal == restored.normal &&
+                        source.orm == restored.orm && source.aux == restored.aux && source.height == restored.height,
+                        "encoded disk representation restores every GPU channel byte-exactly");
+                    CHECK(compositor->stats().mesh_cache_builds == builds,
+                        "cache import does not prepare compositor geometry");
+                    // Real disk -> worker fingerprint/lookup -> cache probe -> GPU
+                    // copy. The fallback deliberately cannot prepare or fill.
+                    struct UnavailableProducer final : vt::VtPageFiller {
+                        uint32_t preparations = 0, fills = 0;
+                        bool prepare(const vt::VtPreparationKey&, const std::shared_ptr<const vt::VtPartSnapshot>&) override {
+                            ++preparations; return false;
+                        }
+                        void fill(VkCommandBuffer, const vt::VtFillRequest*, size_t) override { ++fills; }
+                    };
+                    const auto directory = std::filesystem::temp_directory_path() /
+                        ("matter_vt_gpu_cache_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+                    asset_store::PageCacheConfig config; config.store.dir = directory.string();
+                    config.resident_bytes = 4u << 20; config.bank = asset_store::PageBank::create(4u << 20, 256);
+                    const auto snapshot = vt::VtPartSnapshot::capture(fix_a.atlas, fix_a.ctx);
+                    asset_store::BlobHash inputs{0x3456, 0x789a};
+                    page.key.content = vt::encoded::page_content_key(vt::encoded::receiver_key(*snapshot), inputs);
+                    {
+                        struct FixtureProducer final : vt::VtPageFiller {
+                            const vt::encoded::Bundle* source = nullptr;
+                            vt::encoded::UploadSpan span;
+                            void fill(VkCommandBuffer cmd, const vt::VtFillRequest* requests, size_t count) override {
+                                for (size_t i = 0; i < count; ++i)
+                                    vt::encoded::record_upload(cmd, *source, source->pages[0].key, requests[i], span, false);
+                            }
+                        };
+                        auto producer = std::make_unique<FixtureProducer>();
+                        producer->source = &bundle; producer->span = span;
+                        auto cold = vt::encoded::Filler::create(*vulkan, std::move(producer), config,
+                            [&] { return inputs; }, false, err, 2, true);
+                        CHECK(cold != nullptr, err.c_str());
+                        if (cold) {
+                            auto capture_request = make_request(fix_a, 0, 14);
+                            capture_request.part_snapshot = snapshot; capture_request.part_context = &snapshot->context;
+                            bool produced = false; vt::VtPageHeight produced_height;
+                            capture_request.out_filled = &produced; capture_request.out_height = &produced_height;
+                            cold->begin_residency_frame(1, 0);
+                            const auto deadline = std::chrono::steady_clock::now()+std::chrono::seconds(10);
+                            auto state = vt::VtPageFiller::PageReadiness::Pending;
+                            while ((state = cold->probe_page(capture_request)) == vt::VtPageFiller::PageReadiness::Pending &&
+                                   std::chrono::steady_clock::now() < deadline)
+                                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                            CHECK(state == vt::VtPageFiller::PageReadiness::NeedsPreparation,
+                                "cold cache reports a real miss before producing the page");
+                            CHECK(tc.begin(err), err.c_str()); cmd_barrier_all(tc.cmd);
+                            cold->fill(tc.cmd, &capture_request, 1);
+                            CHECK(produced && cold->stats().captured == 1 && cold->stats().persisted == 0,
+                                "GPU capture is recorded without reading or persisting unretired bytes");
+                            CHECK(tc.submit(err), err.c_str());
+                            uint64_t serial = 2;
+                            const auto write_deadline = std::chrono::steady_clock::now()+std::chrono::seconds(10);
+                            do {
+                                // The test submission has retired this slot; no
+                                // new GPU work is recorded while draining disk I/O.
+                                cold->begin_residency_frame(serial++, 0);
+                                if (!cold->stats().pending_pages) break;
+                                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                            } while (std::chrono::steady_clock::now() < write_deadline);
+                            CHECK(cold->stats().persisted == 1 && cold->stats().pending_pages == 0 &&
+                                  cold->stats().capture_rejected == 0 && cold->stats().errors == 0,
+                                "retired capture commits only the populated prefix of its reusable payload");
+                        }
+                    }
+                    auto unavailable = std::make_unique<UnavailableProducer>();
+                    auto* fallback = unavailable.get();
+                    auto cache = vt::encoded::Filler::create(*vulkan, std::move(unavailable), config,
+                        [&] { return inputs; }, false, err, 1);
+                    CHECK(cache != nullptr, err.c_str());
+                    if (cache) {
+                        auto cached_request = make_request(fix_a, 0, 14);
+                        cached_request.part_snapshot = snapshot;
+                        cached_request.part_context = &snapshot->context;
+                        bool cached_filled = false; cached_request.out_filled = &cached_filled;
+                        cache->begin_residency_frame(1, 0);
+                        const auto await_probe = [&] {
+                            auto state = vt::VtPageFiller::PageReadiness::Pending;
+                            const auto deadline = std::chrono::steady_clock::now()+std::chrono::seconds(10);
+                            do {
+                                state = cache->probe_page(cached_request);
+                                if (state != vt::VtPageFiller::PageReadiness::Pending) break;
+                                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                            } while (std::chrono::steady_clock::now() < deadline);
+                            return state;
+                        };
+                        CHECK(await_probe() == vt::VtPageFiller::PageReadiness::Ready,
+                            "disk cache page becomes ready without geometry preparation");
+                        CHECK(tc.begin(err), err.c_str()); cmd_barrier_all(tc.cmd);
+                        cache->fill(tc.cmd, &cached_request, 1);
+                        PageData from_disk;
+                        CHECK(tc.submit(err) && cached_filled && read_slot(14, from_disk),
+                            "disk cache adapter publishes an actual GPU page");
+                        CHECK(source.albedo == from_disk.albedo && source.normal == from_disk.normal &&
+                              source.orm == from_disk.orm && source.aux == from_disk.aux && source.height == from_disk.height,
+                            "background disk hit matches every original GPU channel byte-exactly");
+                        CHECK(cache->stats().hits == 1 && fallback->preparations == 0 && fallback->fills == 0,
+                            "disk hit never calls the unavailable compositor");
+                        ++inputs.lo; cache->begin_residency_frame(2, 0);
+                        CHECK(await_probe() == vt::VtPageFiller::PageReadiness::NeedsPreparation,
+                            "changed material/source identity misses instead of reusing stale pixels");
+                        cache.reset();
+                    }
+                    std::filesystem::remove_all(directory);
+                }
+            }
+
+            // Independent periodic producer: the logical extent can end within
+            // a page, but every mip must preserve BC block phase at the repeat.
+            // Every stored border/partial-page texel is the same wrapped sample.
+            {
+                const gpu_meshing::FaceFrame frame{{0,0,0},{1,0,0},{0,1,0},{0,0,1}};
+                vt::VtPeriodicDomain domain;
+                CHECK(vt::vt_make_periodic_domain(frame,{259.f/128,131.f/128},128,domain,err),err.c_str());
+                CHECK(domain.width==288 && domain.height==160 && domain.period[0]==259.f/128 && domain.period[1]==131.f/128,
+                    "periodic producer rounds density upward to preserve BC phase without rescaling physical extent");
+                for(uint32_t width:{1u,2u,3u,63u,64u,65u,127u,129u,259u,1045u,4097u,8192u}) {
+                    vt::VtPeriodicDomain thin;
+                    CHECK(vt::vt_make_periodic_domain(frame,{float(width)/128,1.f/128},128,thin,err) &&
+                        thin.width>=width && thin.height==1 && vt::vt_valid_periodic_domain(thin),
+                        "BC-aligned domain retains requested density and does not inflate one-texel axes");
+                }
+                auto unaligned=domain;unaligned.width=259;unaligned.height=131;
+                CHECK(!vt::vt_valid_periodic_domain(unaligned),"BC producer rejects a period that changes compression block phase");
+                auto red=std::make_shared<surface_stamp::Stamp>(*vt_finite_test::source(false,64));
+                auto blue=std::make_shared<surface_stamp::Stamp>(*vt_finite_test::source(true,64));
+                for(auto& s:{red,blue}) {
+                    s->domain[0]=-.25f;s->domain[1]=-.125f;s->domain[2]=.5f;s->domain[3]=.25f;
+                    s->content_digest+=0x1000000;
+                }
+                vt::VtFiniteSourceBinding a,b;a.stamp=red;b.stamp=blue;
+                a.frame=frame;b.frame=frame;
+                a.frame.origin_m={.02f,.04f,0};b.frame.origin_m={1.f,.58f,0};
+                std::shared_ptr<const vt::VtPartSnapshot> module,again;
+                const std::vector<vt::VtFiniteSourceBinding> inputs={a,b};
+                CHECK(vt::vt_make_periodic_material(domain,inputs,vt_finite_test::base(),1,module,err),err.c_str());
+                CHECK(vt::vt_make_periodic_material(domain,inputs,vt_finite_test::base(),1,again,err) &&
+                    module && again && module->context.variant_hash==again->context.variant_hash,
+                    "periodic producer has deterministic complete source identity");
+                if(module) {
+                    CHECK(module->owns_context_inputs() && module->context.finite_sources->payloads.size()==2 &&
+                        module->context.finite_sources->bindings.size()>2,
+                        "periodic source ghosts share two immutable payloads and own their input snapshot");
+                    auto bad=domain;bad.width=0;const auto preserved=again;
+                    CHECK(!vt::vt_make_periodic_material(bad,inputs,vt_finite_test::base(),1,again,err) && again==preserved,
+                        "invalid periodic replacement retains previous complete producer");
+                    bad=domain;bad.width*=2;bad.height*=2;
+                    CHECK(vt::vt_make_periodic_material(bad,inputs,vt_finite_test::base(),1,again,err) &&
+                        again->context.variant_hash!=module->context.variant_hash,"periodic texel metrics enter content identity");
+                    auto wrong_plane=inputs;wrong_plane[0].frame.origin_m.z=.01f;
+                    CHECK(!vt::vt_make_periodic_material(domain,wrong_plane,vt_finite_test::base(),1,again,err),
+                        "periodic sources cannot leak from another projection plane");
+                    vt::VtPreparedInputs prepared;
+                    CHECK(vt::vt_prepare_cpu(*module->context.atlas,module->context,{},true,prepared),
+                        "periodic producer prepares through the native VT path");
+                    auto altered=module->context;altered.periodic.width++;
+                    CHECK(!vt::vt_prepare_cpu(*altered.atlas,altered,{},true,prepared),
+                        "periodic preparation rejects incompatible logical page dimensions");
+                }
+
+                auto exercise=[&](const std::shared_ptr<const vt::VtPartSnapshot>& source,const char* name,
+                                  const char* output,bool analytic) {
+                    if(!source)return;
+                    auto producer=vt::VtCompositor::create(vulkan->device(),vulkan->physical_device(),VK_NULL_HANDLE,err);
+                    CHECK(producer!=nullptr,err.c_str());if(!producer)return;
+                    producer->set_materials(mats,3);
+                    const vt::VtPreparationKey key{source->context.variant_hash,0,0,0};
+                    const bool ready=vt_prepare_tests::until([&] {
+                        producer->begin_preparation_frame();
+                        return producer->prepare(key,source);
+                    });
+                    CHECK(ready,"periodic producer completes owned asynchronous preparation");if(!ready)return;
+                    const auto& d=source->context.periodic;
+                    unsigned page_count=0,wrap_checks=0,invalid=0;float color_wrap=0,normal_wrap=0,orm_wrap=0,height_error=0;
+                    std::vector<float> dump(size_t(d.width)*d.height*10);
+                    uint16_t low=65535,high=0;
+                    // Independent constant-rectangle filter oracle. Source mip
+                    // filtering is coverage-premultiplied, with squared roughness.
+                    const auto coverage=[](float x,float y,float footprint) {
+                        const float lod=std::min(6.f,std::log2(std::max(1.f,footprint/(.25f/64))));
+                        const int first=int(lod),last=std::min(first+1,6);const float mix=lod-first;
+                        float result=0;
+                        for(int l=first;l<=last;++l) {
+                            const float fw=std::max(.5f/float(64>>l),footprint),fh=std::max(.25f/float(64>>l),footprint);
+                            const float sx=std::max(0.f,std::min(x+.5f*fw,.25f)-std::max(x-.5f*fw,-.25f))/fw;
+                            const float sy=std::max(0.f,std::min(y+.5f*fh,.125f)-std::max(y-.5f*fh,-.125f))/fh;
+                            result+=sx*sy*(first==last?1.f:l==first?1-mix:mix);
+                        }
+                        return result;
+                    };
+                    for(uint16_t mip=0;mip<8;++mip) {
+                        const uint32_t w=std::max(d.width>>mip,1u),h=std::max(d.height>>mip,1u);
+                        const uint32_t pw=(w+127)/128,ph=(h+127)/128;
+                        struct Pixel {uint8_t rgb[3],normal[2],orm[3];uint16_t height;};
+                        std::vector<Pixel> reference(size_t(w)*h);std::vector<bool> seen(size_t(w)*h,false);
+                        for(uint32_t py=0;py<ph;++py)for(uint32_t px=0;px<pw;++px) {
+                            vt::VtFillRequest request{};request.variant_hash=source->context.variant_hash;
+                            request.atlas=source->context.atlas;request.part_context=&source->context;request.part_snapshot=source;
+                            request.pool=&pool;request.physical_slot=12;request.mip=mip;request.page_x=uint16_t(px);request.page_y=uint16_t(py);
+                            bool filled=false;vt::VtPageHeight range;vt::VtDrawGeometry geometry;
+                            request.out_filled=&filled;request.out_height=&range;request.out_geometry=&geometry;
+                            CHECK(tc.begin(err),err.c_str());producer->fill(tc.cmd,&request,1);
+                            PageData data;const bool ok=tc.submit(err) && filled && read_slot(12,data);
+                            CHECK(ok,"periodic producer fills compressed native pages");if(!ok)return;
+                            CHECK(!geometry.lifetime,"periodic producer does not publish its preparation quad as receiver geometry");
+                            std::vector<uint8_t> rgb,norm,orm;int bad_rgb=0,bad_orm=0;
+                            decode_page_bc7(data.albedo,rgb,bad_rgb);decode_page_bc5(data.normal,norm);decode_page_bc7(data.orm,orm,bad_orm);
+                            CHECK(!bad_rgb && !bad_orm,"periodic BC payload is valid");++page_count;
+                            const float footprint=std::max(d.period[0]/w,d.period[1]/h);
+                            for(uint32_t y=0;y<kPageStore;++y)for(uint32_t x=0;x<kPageStore;++x) {
+                                const auto wrap=[](int v,int n){const int r=v%n;return r<0?r+n:r;};
+                                const uint32_t sx=wrap(int(px*128+x)-4,w),sy=wrap(int(py*128+y)-4,h);
+                                const size_t i=size_t(y)*kPageStore+x,j=size_t(sy)*w+sx;
+                                Pixel value{};std::copy_n(rgb.data()+i*4,3,value.rgb);std::copy_n(norm.data()+i*2,2,value.normal);
+                                std::copy_n(orm.data()+i*4,3,value.orm);std::memcpy(&value.height,data.height.data()+i*2,2);
+                                if(seen[j]) {
+                                    const auto& r=reference[j];++wrap_checks;
+                                    if(value.height!=r.height) {
+                                        ++invalid;
+                                        if(invalid<=8)std::printf("PERIODIC_MISMATCH name=%s mip=%u page=%u,%u stored=%u,%u logical=%u,%u height=%u reference=%u\n",
+                                            name,unsigned(mip),px,py,x,y,sx,sy,unsigned(value.height),unsigned(r.height));
+                                    }
+                                    for(int c=0;c<3;++c){color_wrap=std::max(color_wrap,std::abs(int(value.rgb[c])-r.rgb[c])/255.f);
+                                        orm_wrap=std::max(orm_wrap,std::abs(int(value.orm[c])-r.orm[c])/255.f);}
+                                    for(int c=0;c<2;++c)normal_wrap=std::max(normal_wrap,std::abs(int(value.normal[c])-r.normal[c])/255.f);
+                                } else {seen[j]=true;reference[j]=value;}
+                                const float height=range.min_m+range.range_m*(value.height/65535.f);
+                                if(analytic) {
+                                    const float u=(sx+.5f)*d.period[0]/w,v=(sy+.5f)*d.period[1]/h;
+                                    float cr=0,cb=0;
+                                    for(int ty=-2;ty<=2;++ty)for(int tx=-2;tx<=2;++tx) {
+                                        cr+=coverage(u-.02f-tx*d.period[0],v-.04f-ty*d.period[1],footprint);
+                                        cb+=coverage(u-1.f-tx*d.period[0],v-.58f-ty*d.period[1],footprint);
+                                    }
+                                    const float expected=-.03f*std::max(0.f,1-cr-cb)+(.02f*cr+.04f*cb)/std::max(1.f,cr+cb);
+                                    height_error=std::max(height_error,std::abs(height-expected));
+                                }
+                                if(mip==0 && x>=4 && x<132 && y>=4 && y<132 && px*128+x-4<w && py*128+y-4<h) {
+                                    low=std::min(low,value.height);high=std::max(high,value.height);
+                                    for(int c=0;c<3;++c){dump[j*10+c]=value.rgb[c]/255.f;dump[j*10+3+c]=value.orm[c]/255.f;}
+                                    dump[j*10+6]=value.normal[0]/127.5f-1;dump[j*10+7]=value.normal[1]/127.5f-1;
+                                    dump[j*10+8]=std::sqrt(std::max(0.f,1-dump[j*10+6]*dump[j*10+6]-dump[j*10+7]*dump[j*10+7]));dump[j*10+9]=height;
+                                }
+                            }
+                        }
+                        CHECK(std::find(seen.begin(),seen.end(),false)==seen.end(),"periodic mip has complete logical coverage");
+                        if(w<=64 && h<=64)break;
+                    }
+                    std::printf("PERIODIC_PRODUCER name=%s logical=%ux%u pages=%u wrap_checks=%u height_mismatches=%u color_wrap=%.6f normal_wrap=%.6f orm_wrap=%.6f height_error_m=%.9f payloads=%zu references=%zu\n",
+                        name,d.width,d.height,page_count,wrap_checks,invalid,color_wrap,normal_wrap,orm_wrap,height_error,
+                        source->context.finite_sources?source->context.finite_sources->payloads.size():0,
+                        source->context.finite_sources?source->context.finite_sources->bindings.size():0);
+                    CHECK(wrap_checks>0 && invalid==0,"all repeated stored texels retain identical R16 height, including gutters and mip tails");
+                    CHECK(color_wrap==0 && orm_wrap==0 && normal_wrap==0,"all repeated BC-decoded material channels match exactly at every mip");
+                    CHECK(high>low && high-low>10000,"periodic output contains real relief and recessed base");
+                    if(analytic)CHECK(height_error<2e-6f,"periodic source/mortar filtering matches independent physical rectangle oracle");
+                    CHECK(producer->stats().mesh_cache_builds==1,"module geometry and prepared sources are reused across all page/mip fills");
+                    if(output && *output) {
+                        std::ofstream file(std::string(output)+".bin",std::ios::binary);
+                        file.write(reinterpret_cast<const char*>(dump.data()),dump.size()*sizeof(float));file.close();CHECK(bool(file),"periodic material channels written");
+                        std::ofstream meta(std::string(output)+".json");meta<<"{\"width\":"<<d.width<<",\"height\":"<<d.height<<",\"channels\":10,\"period_m\":["<<d.period[0]<<","<<d.period[1]<<"]}\n";
+                    }
+                };
+                exercise(module,"analytic",nullptr,true);
+                if(const char* directory=std::getenv("MATTER_VT_PERIODIC_CLAY_FIXTURE");directory && *directory) {
+                    std::shared_ptr<const surface_stamp::Stamp> bricks[8];bool loaded=true;
+                    for(int i=0;i<8;++i){bricks[i]=vt_finite_test::load(std::string(directory)+"/clay-projected-"+std::to_string(i)+".fst");loaded=loaded && bool(bricks[i]);}
+                    CHECK(loaded,"periodic clay uses eight real geometry-baked brick sources");
+                    if(loaded) {
+                        auto clay_frame=frame;clay_frame.origin_m.z=.056f;
+                        vt::VtPeriodicDomain clay;
+                        CHECK(vt::vt_make_periodic_domain(clay_frame,{2.04f,.376f},512,clay,err),err.c_str());
+                        std::vector<vt::VtFiniteSourceBinding> bindings;
+                        for(int row=0;row<4;++row)for(int col=0;col<8;++col) {
+                            vt::VtFiniteSourceBinding source;source.stamp=bricks[(row*3+col)%8];source.frame=frame;source.datum_m=.056f;
+                            source.frame.origin_m={(col+.5f+(row%2)*.5f)*.255f,(row+.5f)*.094f,0};bindings.push_back(source);
+                        }
+                        std::shared_ptr<const vt::VtPartSnapshot> proof;
+                        const std::string mortar="const 0.2\nconst 0.9\nconst 0\nconst 1\nconst -0.012\nmaterial 1 r3\nsource 1 r0 r0 r0 r1 r2 r3 r4 -0.012 -0.012\n";
+                        CHECK(vt::vt_make_periodic_material(clay,bindings,mortar,1,proof,err),err.c_str());
+                        exercise(proof,"geometry-clay",std::getenv("MATTER_VT_PERIODIC_DUMP"),false);
+                    }
+                }
+            }
+
+            // Different receiver geometry/atlas packing must produce identical
+            // encoded material bytes before residency is allowed to alias them.
+            {
+                auto canonical=vt::VtCompositor::create(vulkan->device(),vulkan->physical_device(),VK_NULL_HANDLE,err);
+                CHECK(canonical!=nullptr,err.c_str());
+                QuadFixture walls[2];vt::VtFillRequest requests[2];
+                vt::VtMaterialPixelKey keys[2]{};vt::VtPageHeight heights[2]{};
+                const uint32_t ids[]={1,1,1,1};bool filled[2]{};
+                auto binding=vt_finite_test::binding(vt_finite_test::source());
+                binding.frame.origin_m.x+=2;binding.frame.origin_m.z+=2;
+                for(unsigned i=0;i<2;++i) {
+                    auto& w=walls[i];
+                    w.add_quad(v3(0,0,0),v3(1,0,0),v3(0,0,1),4,v3(0,1,0),kMatA);
+                    if(i) {w.positions[3]=w.positions[6]=8;}
+                    w.atlas.atlas_w=w.atlas.atlas_h=1024;w.atlas.tri_order={0,1};w.atlas.charts.resize(1);
+                    auto& c=w.atlas.charts[0];c={};c.tangent[0]=1;c.bitangent[2]=1;
+                    c.texels_per_meter=64;c.rect_x=i*128;c.rect_w=i?640:384;c.rect_h=384;c.tri_count=2;
+                    w.finalize(0x739000+i);w.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                    w.apply_tape_text(vt_finite_test::base(),false);
+                    std::vector<vt::VtFiniteSourceBinding> bindings={binding};
+                    vt::VtFiniteReceiver receiver;receiver.frame.u={1,0,0};receiver.frame.v={0,0,-1};receiver.frame.n={0,1,0};
+                    receiver.domain={0,-4,i?8.f:4.f,4};receiver.sources={0};
+                    if(i) {auto distant_binding=binding;distant_binding.frame.origin_m.x+=4;bindings.push_back(distant_binding);receiver.sources.push_back(1);}
+                    std::shared_ptr<const vt::VtFiniteSources> sources;
+                    CHECK(vt::vt_make_finite_sources(bindings,sources,err,{receiver}),err.c_str());
+                    if(i) {
+                        // A valid, deliberately coarse spatial index returns
+                        // the distant stamp too. False-positive cell members
+                        // must not change either material bytes or identity.
+                        auto coarse=std::make_shared<vt::VtFiniteSources>(*sources);
+                        coarse->receivers[0].levels[0]=coarse->receivers[0].levels[1]=1;
+                        coarse->receivers[0].levels[2]=6;
+                        coarse->lookup.resize(9);
+                        coarse->lookup[5]={1,1,6,0};coarse->lookup[6]={7,2,0,0};
+                        coarse->lookup[7]={0,0,0,0};coarse->lookup[8]={1,0,0,0};
+                        coarse->content_hash=vt::vt_finite_hash_word(coarse->content_hash,0x434f41525345ull);
+                        sources=coarse;
+                    }
+                    w.ctx.finite_sources=sources;w.ctx.finite_source_ids=ids;
+                    requests[i]=make_request(w,0,12+i);requests[i].page_x=uint16_t(1+i);requests[i].page_y=1;
+                    requests[i].out_material_key=&keys[i];requests[i].out_height=&heights[i];requests[i].out_filled=&filled[i];
+                }
+                CHECK(tc.begin(err),err.c_str());canonical->fill(tc.cmd,requests,2);
+                CHECK(tc.submit(err) && filled[0] && filled[1],"canonical wall pages: native fills complete");
+                PageData a,b;CHECK(read_slot(12,a) && read_slot(13,b),err.c_str());
+                CHECK(keys[0].low && keys[0].low==keys[1].low && keys[0].high==keys[1].high,
+                      "canonical wall pages: resize, repack and irrelevant extra bricks preserve producer identity");
+                CHECK(a.albedo==b.albedo && a.normal==b.normal && a.orm==b.orm && a.height==b.height,
+                      "canonical wall pages: all four encoded material channels and gutters match byte-for-byte");
+                uint16_t low=UINT16_MAX,high=0;
+                for(size_t offset=0;offset+1<a.height.size();offset+=2) {
+                    uint16_t h;std::memcpy(&h,a.height.data()+offset,sizeof(h));
+                    low=std::min(low,h);high=std::max(high,h);
+                }
+                CHECK(high>low && uint32_t(high)-low>10000,
+                      "canonical wall pages: shared payload contains both source relief and recessed base");
+                CHECK(heights[0].min_m==heights[1].min_m && heights[0].range_m==heights[1].range_m,
+                      "canonical wall pages: shared pixels retain compatible physical height decode");
+                // The second stamp's geometric domain begins beyond the page,
+                // but its filter fringe reaches the stored gutter. It MUST
+                // remain a dependency and visibly change that edge's height.
+                auto fringe_binding=binding;fringe_binding.frame.origin_m.x=4.6f;
+                vt::VtFiniteReceiver fringe_receiver;fringe_receiver.frame.u={1,0,0};
+                fringe_receiver.frame.v={0,0,-1};fringe_receiver.frame.n={0,1,0};
+                fringe_receiver.domain={0,-4,8,4};fringe_receiver.sources={0,1};
+                std::shared_ptr<const vt::VtFiniteSources> fringe_sources;
+                CHECK(vt::vt_make_finite_sources({binding,fringe_binding},fringe_sources,err,{fringe_receiver}),err.c_str());
+                auto fringe_context=walls[1].ctx;fringe_context.variant_hash=0x739002;
+                fringe_context.finite_sources=fringe_sources;
+                auto fringe_request=requests[1];fringe_request.variant_hash=fringe_context.variant_hash;
+                fringe_request.part_context=&fringe_context;
+                vt::VtMaterialPixelKey fringe_key;fringe_request.out_material_key=&fringe_key;
+                CHECK(tc.begin(err),err.c_str());canonical->fill(tc.cmd,&fringe_request,1);
+                PageData fringe;
+                CHECK(tc.submit(err) && read_slot(13,fringe),err.c_str());
+                CHECK(fringe_key.low && (fringe_key.low!=keys[0].low || fringe_key.high!=keys[0].high) &&
+                      fringe.height!=b.height,
+                      "canonical wall pages: filtering beyond a source domain remains visible and cannot alias");
+                requests[1].page_x=3;keys[1]={};
+                CHECK(tc.begin(err),err.c_str());canonical->fill(tc.cmd,requests+1,1);
+                CHECK(tc.submit(err) && keys[1].low && keys[1].low!=keys[0].low,
+                      "canonical wall pages: a different material phase does not share");
+            }
+
+            // Finite sources run through the actual compressed page path, with
+            // immutable catalogs and categorical per-face assignment.
+            {
+                constexpr uint32_t source_slot=12, alias_slot=13, old_slot=14, edited_slot=15;
+                auto finite=vt::VtCompositor::create(vulkan->device(),vulkan->physical_device(),VK_NULL_HANDLE,err);
+                CHECK(finite!=nullptr,err.c_str());
+                std::shared_ptr<const vt::VtFiniteSources> catalog;
+                const auto source=vt_finite_test::source();
+                auto binding=vt_finite_test::binding(source);
+                CHECK(vt::vt_make_finite_sources({binding,binding},catalog,err),err.c_str());
+                CHECK(catalog && catalog->payloads.size()==1 && catalog->pixel_count==5,
+                      "finite catalog: identical source pixels uploaded once across bindings");
+                std::shared_ptr<const vt::VtFiniteSources> large_catalog;
+                CHECK(vt::vt_make_finite_sources(std::vector<vt::VtFiniteSourceBinding>(4932,binding),large_catalog,err) &&
+                      large_catalog->payloads.size()==1,"large maze corner admits projected faces while retaining one payload");
+                CHECK(!vt::vt_make_finite_sources(std::vector<vt::VtFiniteSourceBinding>(24577,binding),large_catalog,err),
+                      "projected bindings remain bounded by six times the placement limit");
+                const auto preserved=catalog;
+                auto bad=binding;bad.frame.u.x=2;
+                CHECK(!vt::vt_make_finite_sources({bad},catalog,err) && catalog==preserved,
+                      "finite catalog: nonphysical scaling rejected without replacing active source");
+                auto unresolved=std::make_shared<surface_stamp::Stamp>(*source);unresolved->height_projection=0;
+                bad=binding;bad.stamp=unresolved;
+                CHECK(!vt::vt_make_finite_sources({bad},catalog,err) && catalog==preserved,
+                      "finite catalog: unresolved normal-oriented height cannot enter VT");
+                QuadFixture receiver;
+                receiver.add_quad(v3(0,0,0),v3(1,0,0),v3(0,0,1),kQuadExtent,v3(0,1,0),kMatA);
+                receiver.atlas=fix_a.atlas;receiver.finalize(0x720001);
+                receiver.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                receiver.apply_tape_text(vt_finite_test::base(),false);
+                std::vector<uint32_t> ids(4,1);
+                receiver.ctx.finite_sources=catalog;receiver.ctx.finite_source_ids=ids.data();
+                auto snapshot=vt::VtPartSnapshot::capture(receiver.atlas,receiver.ctx);
+                ids[1]=2;
+                CHECK(snapshot->owns_context_inputs() && snapshot->context.finite_source_ids[1]==1,
+                      "finite snapshot: owned selectors survive caller edits");
+                vt::VtPreparedInputs prepared;
+                CHECK(!vt::vt_prepare_cpu(receiver.atlas,receiver.ctx,{},true,prepared),
+                      "finite selector: triangle corners cannot interpolate different source IDs");
+                ids[1]=1;
+                CHECK(!vt::vt_prepare_cpu(receiver.atlas,receiver.ctx,{},false,prepared),
+                      "finite source: disabled tape preserves old pages instead of publishing a substitute");
+                auto invalid_position=receiver.positions;invalid_position[1]=.01f;
+                auto invalid_context=receiver.ctx;invalid_context.positions=invalid_position.data();
+                CHECK(!vt::vt_prepare_cpu(receiver.atlas,invalid_context,{},true,prepared),
+                      "finite receiver: mismatched projection plane rejected");
+                CHECK(vt::vt_prepare_cpu(receiver.atlas,receiver.ctx,{},true,prepared) &&
+                      prepared.finite_ids==std::vector<uint32_t>({1,1}),"finite receiver: selectors follow emitted triangle order");
+                auto request=make_request(receiver,0,source_slot);vt::VtPageHeight range;request.out_height=&range;
+                bool source_filled=false;request.out_filled=&source_filled;
+                PageData first;
+                CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&request,1);
+                CHECK(tc.submit(err) && source_filled && read_slot(source_slot,first),"finite source: fill and read compressed VT channels");
+                std::vector<uint8_t> color,orm,normal;int bad_color=0,bad_orm=0;
+                decode_page_bc7(first.albedo,color,bad_color);decode_page_bc7(first.orm,orm,bad_orm);decode_page_bc5(first.normal,normal);
+                float color_error=0,rough_error=0,height_error=0,normal_error=0;
+                for (uint32_t y=56;y<68;++y) for (uint32_t x=12;x<124;++x) {
+                    const size_t i=size_t(y)*kPageStore+x;
+                    const float position=(float(x)-8+.5f)/kChartTpm;
+                    const float u=position-.9375f;
+                    const float coverage=std::clamp(std::min(u+.75f,.75f-u)/.5f,0.f,1.f);
+                    const float expected[]={.2f+coverage*.6f,.2f-coverage*.05f,.2f-coverage*.12f};
+                    for (int c=0;c<3;++c) color_error=std::max(color_error,std::abs(color[i*4+c]/255.f-expected[c]));
+                    rough_error=std::max(rough_error,std::abs(orm[i*4+1]/255.f-std::sqrt(.49f*(1-coverage)+.09f*coverage)));
+                    uint16_t h;std::memcpy(&h,first.height.data()+i*2,2);
+                    height_error=std::max(height_error,std::abs(range.min_m+range.range_m*(h/65535.f)-(-.03f+.05f*coverage)));
+                    if (u<-.3f && u>-.7f) normal_error=std::max(normal_error,std::abs(normal[i*2]/127.5f-1+.1f/std::sqrt(1.01f)));
+                }
+                std::printf("finite VT: color=%.8f rough=%.8f height_m=%.9g transition_normal=%.8f\n",color_error,rough_error,height_error,normal_error);
+                CHECK(!bad_color && !bad_orm && color_error<.018f && rough_error<.018f,
+                      "finite VT: linear color, coverage and RMS roughness survive compression");
+                CHECK(range.version==1 && height_error<range.range_m/65535.f+1e-7f,
+                      "finite VT: composed height and published decode agree");
+                CHECK(normal_error<.02f,"finite VT: brick-to-base height transition contributes its normal slope");
+                // Another owner retains the same source allocation, with only
+                // its selector/surface streams added to surface GPU accounting.
+                const auto before=finite->preparation_memory();
+                auto alias_context=receiver.ctx;alias_context.variant_hash=0x720002;
+                auto alias=request;alias.variant_hash=alias_context.variant_hash;alias.part_context=&alias_context;alias.physical_slot=alias_slot;
+                CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&alias,1);CHECK(tc.submit(err),err.c_str());
+                const auto after=finite->preparation_memory();
+                CHECK(after.surface_gpu_bytes-before.surface_gpu_bytes==2*sizeof(vt::GpuTriSurface)+2*sizeof(uint32_t),
+                      "finite VT: separate receivers share uploaded source pixels and directory");
+                PageData alias_page;CHECK(read_slot(alias_slot,alias_page),err.c_str());
+                CHECK(alias_page.albedo==first.albedo && alias_page.height==first.height,
+                      "finite VT: identical placement and source remain byte-identical across owners");
+                // Thin paint must cover both the finite brick and its exposed
+                // base after composition, without modifying relief channels.
+                const std::string coat_text=std::string(vt_finite_test::base())+"coat r3 r2 r2 r1 r0\n";
+                auto coat_context=receiver.ctx;coat_context.variant_hash=0x720007;
+                terrain_field::SurfaceProgram coat_program;
+                CHECK(terrain_field::SurfaceProgram::parse(coat_text,coat_program,err),err.c_str());
+                coat_context.surface_tape_text=coat_text.c_str();coat_context.surface_tape_hash=coat_program.hash();
+                auto coated=request;coated.variant_hash=coat_context.variant_hash;
+                coated.part_context=&coat_context;coated.physical_slot=alias_slot;
+                vt::VtPageHeight coat_range;coated.out_height=&coat_range;
+                CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&coated,1);
+                PageData coat_page;CHECK(tc.submit(err) && read_slot(alias_slot,coat_page),err.c_str());
+                CHECK(coat_page.height==first.height && coat_page.normal==first.normal &&
+                      coat_range.min_m==range.min_m && coat_range.range_m==range.range_m,
+                      "finite coating preserves exact composed height/normal and decode");
+                decode_page_bc7(coat_page.albedo,color,bad_color);decode_page_bc7(coat_page.orm,orm,bad_orm);
+                color_error=rough_error=0;
+                for(uint32_t y=56;y<68;++y) for(uint32_t x=12;x<124;++x) {
+                    const size_t i=size_t(y)*kPageStore+x;
+                    const float u=(float(x)-8+.5f)/kChartTpm-.9375f;
+                    const float c=std::clamp(std::min(u+.75f,.75f-u)/.5f,0.f,1.f);
+                    const float expected[]={(.2f+c*.6f)*.3f+.7f,(.2f-c*.05f)*.3f,(.2f-c*.12f)*.3f};
+                    for(unsigned k=0;k<3;++k)color_error=std::max(color_error,std::abs(color[i*4+k]/255.f-expected[k]));
+                    rough_error=std::max(rough_error,std::abs(orm[i*4+1]/255.f-std::sqrt((.49f*(1-c)+.09f*c)*.3f+.04f*.7f)));
+                }
+                std::printf("finite coating: color_error=%.8f rough_error=%.8f\n",color_error,rough_error);
+                CHECK(!bad_color && !bad_orm && color_error<.018f && rough_error<.018f,
+                      "finite coating blends over both brick and base with correct linear RGB and RMS roughness");
+                // Record an old-source fill, replace its snapshot, then record
+                // the new one before either command executes on the GPU.
+                CHECK(tc.begin(err),err.c_str());
+                request.physical_slot=old_slot;finite->fill(tc.cmd,&request,1);
+                CHECK(vt::vt_make_finite_sources({vt_finite_test::binding(vt_finite_test::source(true))},catalog,err),err.c_str());
+                receiver.ctx.finite_sources=catalog;
+                finite->invalidate_surface(receiver.variant_hash);
+                auto edited=request;edited.physical_slot=edited_slot;vt::VtPageHeight edited_range;edited.out_height=&edited_range;
+                finite->fill(tc.cmd,&edited,1);CHECK(tc.submit(err),err.c_str());
+                PageData old_page,new_page;CHECK(read_slot(old_slot,old_page) && read_slot(edited_slot,new_page),err.c_str());
+                CHECK(old_page.albedo==first.albedo && old_page.height==first.height &&
+                      new_page.albedo!=first.albedo && new_page.height!=first.height && edited_range.range_m>range.range_m,
+                      "finite VT: edits retain in-flight source pixels and height decode");
+                // Spatial composition must match the CPU finite-filter oracle,
+                // including cells crossed by a footprint and source mip tails.
+                auto a=vt_finite_test::binding(vt_finite_test::source(false,8));a.frame.origin_m.x=.4f;
+                auto b=vt_finite_test::binding(vt_finite_test::source(true,8));b.frame.origin_m.x=1.5f;
+                vt::VtFiniteReceiver group;group.frame=binding.frame;group.datum_m=0;
+                group.domain={-.9375f,-.9375f,1.875f,1.875f};group.sources={0,1};
+                CHECK(vt::vt_make_finite_sources({a,b},catalog,err,{group}),err.c_str());
+                auto composite_context=receiver.ctx;composite_context.variant_hash=0x720010;
+                composite_context.finite_sources=catalog;
+                auto composite_request=request;composite_request.variant_hash=composite_context.variant_hash;
+                composite_request.part_context=&composite_context;composite_request.physical_slot=edited_slot;
+                for(uint16_t mip:{uint16_t(0),uint16_t(3),uint16_t(6)}) {
+                    composite_request.mip=mip;vt::VtPageHeight decode;composite_request.out_height=&decode;
+                    CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&composite_request,1);
+                    PageData page;CHECK(tc.submit(err) && read_slot(edited_slot,page),err.c_str());
+                    int invalid=0;std::vector<uint8_t> rgb;decode_page_bc7(page.albedo,rgb,invalid);
+                    float color_delta=0,height_delta=0;unsigned probes=0;
+                    const float footprint=float(1u<<mip)/kChartTpm;
+                    for(uint32_t y=0;y<kPageStore;++y) for(uint32_t x=0;x<kPageStore;++x) {
+                        const size_t i=size_t(y)*kPageStore+x;
+                        if(page.aux[i*4+3]!=2) continue;
+                        const float px=(float(x)-4+.5f)*footprint-4.f/kChartTpm;
+                        const float pz=(float(y)-4+.5f)*footprint-4.f/kChartTpm;
+                        float sum=0,h=0,c[3]={};
+                        for(const auto* placed:{&a,&b}) {
+                            // Constant rectangular source: exact overlap area,
+                            // independent of the production stamp sampler.
+                            const float width=std::max(footprint,.125f);
+                            const auto overlap=[&](float center) {
+                                return std::max(0.f,std::min(.5f,center+width*.5f)-
+                                    std::max(-.5f,center-width*.5f))/width;
+                            };
+                            const float coverage=overlap(px-placed->frame.origin_m.x)*overlap(pz-placed->frame.origin_m.z);
+                            const auto& q=placed->stamp->pixels.front();sum+=coverage;
+                            h+=coverage*q.orm_height[3];
+                            for(unsigned k=0;k<3;++k)c[k]+=coverage*q.albedo_coverage[k];
+                        }
+                        const float base=std::max(0.f,1-sum),inv=1/std::max(1.f,sum);
+                        for(unsigned k=0;k<3;++k) color_delta=std::max(color_delta,std::abs(rgb[i*4+k]/255.f-(.2f*base+c[k]*inv)));
+                        uint16_t encoded;std::memcpy(&encoded,page.height.data()+i*2,2);
+                        height_delta=std::max(height_delta,std::abs(decode.min_m+decode.range_m*encoded/65535.f-(-.03f*base+h*inv)));
+                        ++probes;
+                    }
+                    std::printf("COMPOSITE_GRID mip=%u probes=%u color_error=%.6f height_error=%.9f\n",mip,probes,color_delta,height_delta);
+                    CHECK(probes && !invalid && color_delta<.04f,"composite grid matches both source colors across spatial bins and coarse mips");
+                    CHECK(height_delta<decode.range_m/65535.f+1e-6f,"composite grid height matches coverage-weighted CPU oracle");
+                }
+                // Force the actual source payload (350 KiB) to span frames,
+                // then supersede it halfway through copying. Retain the page.
+                auto staged_context=receiver.ctx;staged_context.variant_hash=0x720003;
+                CHECK(vt::vt_make_finite_sources({vt_finite_test::binding(vt_finite_test::source(false,64))},catalog,err),err.c_str());
+                staged_context.finite_sources=catalog;
+                auto staged=request;staged.variant_hash=staged_context.variant_hash;staged.physical_slot=source_slot;
+                staged.part_snapshot=vt::VtPartSnapshot::capture(receiver.atlas,staged_context);
+                staged.part_context=&staged.part_snapshot->context;staged.atlas=staged.part_snapshot->context.atlas;
+                finite->set_preparation_limits({1,512,0});
+                const auto initial_bytes=finite->gpu_preparation_stats().uploaded_bytes;
+                bool ready_early=false,quotas_held=true;
+                CHECK(vt_prepare_tests::until([&] {
+                    finite->begin_preparation_frame();
+                    ready_early=finite->prepare(staged.preparation_key(),staged.part_snapshot);
+                    const auto stats=finite->gpu_preparation_stats();
+                    quotas_held &= stats.allocations_this_frame<=1 && stats.uploaded_bytes_this_frame<=512;
+                    return stats.uploaded_bytes-initial_bytes>4096;
+                }) && !ready_early,"finite upload: source pixels remain unpublished while copying");
+                bool partial_filled=false;staged.out_filled=&partial_filled;
+                CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&staged,1);
+                PageData unchanged;
+                CHECK(tc.submit(err) && !partial_filled && read_slot(source_slot,unchanged) &&
+                      unchanged.albedo==first.albedo && unchanged.height==first.height,
+                      "finite upload: incomplete source leaves visible color and height intact");
+                const auto cancelled=finite->gpu_preparation_stats().cancelled;
+                finite->invalidate_surface(staged.variant_hash);
+                CHECK(finite->gpu_preparation_stats().pending_jobs==0 &&
+                      finite->gpu_preparation_stats().cancelled==cancelled+1,
+                      "finite upload: superseded source releases unpublished buffers");
+                CHECK(vt::vt_make_finite_sources({vt_finite_test::binding(vt_finite_test::source(true,64))},catalog,err),err.c_str());
+                staged_context.finite_sources=catalog;
+                staged.part_snapshot=vt::VtPartSnapshot::capture(receiver.atlas,staged_context);
+                staged.part_context=&staged.part_snapshot->context;staged.atlas=staged.part_snapshot->context.atlas;
+                auto reference=staged;reference.variant_hash=0x720004;reference.part_snapshot.reset();
+                reference.physical_slot=alias_slot;reference.out_height=nullptr;reference.out_filled=nullptr;
+                PageData expected;
+                CHECK(run_fill(&reference,1) && read_slot(alias_slot,expected),
+                      "finite upload: independent compositor produces the complete edited reference");
+                uint32_t copying_frames=0;
+                CHECK(vt_prepare_tests::until([&] {
+                    finite->begin_preparation_frame();
+                    bool ready=finite->prepare(staged.preparation_key(),staged.part_snapshot);
+                    ready=finite->prepare(staged.preparation_key(),staged.part_snapshot)||ready;
+                    const auto stats=finite->gpu_preparation_stats();
+                    quotas_held &= stats.allocations_this_frame<=1 && stats.uploaded_bytes_this_frame<=512;
+                    copying_frames+=stats.uploaded_bytes_this_frame?1:0;
+                    return ready;
+                }),"finite upload: edited source completes through bounded preparation");
+                CHECK(quotas_held && copying_frames>100,"finite upload: shared per-frame quotas cover source pixels and repeated requests");
+                CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&staged,1);
+                CHECK(tc.submit(err) && partial_filled && read_slot(source_slot,unchanged) &&
+                      unchanged.albedo==expected.albedo && unchanged.normal==expected.normal &&
+                      unchanged.orm==expected.orm && unchanged.height==expected.height,
+                      "finite upload: only the complete newest source replaces all channels together");
+                std::printf("finite upload: copying_frames=%u payload_bytes=%zu quotas=%s\n",copying_frames,
+                    catalog->pixel_count*sizeof(surface_stamp::Channels),quotas_held?"pass":"fail");
+                // A different wall catalog retains the same ordered pixels and
+                // mip directory. Only placement buffers may be uploaded again.
+                const auto first_bank=catalog;
+                auto alias_binding=vt_finite_test::binding(first_bank->payloads.front());
+                CHECK(vt::vt_make_finite_sources({alias_binding,alias_binding},catalog,err,{},first_bank->payloads),err.c_str());
+                CHECK(catalog->payload_hash==first_bank->payload_hash && catalog->content_hash!=first_bank->content_hash,
+                      "different wall layouts share payload identity");
+                auto shared_context=staged_context;shared_context.variant_hash=0x720006;shared_context.finite_sources=catalog;
+                auto shared_request=staged;shared_request.variant_hash=shared_context.variant_hash;
+                shared_request.part_snapshot=vt::VtPartSnapshot::capture(receiver.atlas,shared_context);
+                shared_request.part_context=&shared_request.part_snapshot->context;
+                shared_request.atlas=shared_request.part_snapshot->context.atlas;
+                const auto memory_before=finite->preparation_memory().surface_gpu_bytes;
+                const auto upload_before=finite->gpu_preparation_stats().uploaded_bytes;
+                CHECK(vt_prepare_tests::until([&]{finite->begin_preparation_frame();
+                    return finite->prepare(shared_request.preparation_key(),shared_request.part_snapshot);}),
+                      "second wall with shared bank prepares");
+                CHECK(finite->preparation_memory().surface_gpu_bytes<memory_before+16384 &&
+                      finite->gpu_preparation_stats().uploaded_bytes<upload_before+16384,
+                      "second wall reuses GPU source pixels rather than uploading another 350 KiB bank");
+                CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&shared_request,1);
+                CHECK(tc.submit(err) && read_slot(source_slot,unchanged) && unchanged.albedo==expected.albedo &&
+                      unchanged.height==expected.height,"shared GPU bank preserves rendered channels");
+                vulkan->wait_idle();finite.reset();
+            }
+
+            // Optional authored-clay integration, using the actual projection
+            // test's complete GPU-baked sources. Three physical VT pages span
+            // each brick at 1 mm/texel; no periodic source or Wang atlas.
+            if (const char *directory=std::getenv("MATTER_VT_CLAY_FIXTURE"); directory && *directory) {
+                for (unsigned seed=0;seed<8;++seed) {
+                    const auto path=std::string(directory)+"/clay-projected-"+std::to_string(seed);
+                    auto source=vt_finite_test::load(path+".fst");
+                    CHECK(source!=nullptr,"clay VT: projected source fixture loaded");
+                    if (!source) continue;
+                    CHECK(source->levels[0].width==256 && source->levels[0].height==96,
+                          "clay VT: full authored source retains its millimetre lattice");
+                    if (source->levels[0].width!=256 || source->levels[0].height!=96) continue;
+                    constexpr float datum=.056f,base_height=-.005f;
+                    QuadFixture clay;
+                    const V3 origin=v3(-.128f,-.048f,datum);
+                    clay.add_quad(origin,v3(1,0,0),v3(0,.096f/.256f,0),.256f,v3(0,0,1),kMatA);
+                    auto chart=make_chart(origin,v3(1,0,0),v3(0,1,0),0,0,0,2);
+                    chart.rect_w=264;chart.rect_h=104;chart.texels_per_meter=1000;
+                    clay.atlas.atlas_w=384;clay.atlas.atlas_h=128;
+                    clay.atlas.charts={chart};clay.atlas.tri_order={0,1};clay.finalize(0x730000+seed);
+                    clay.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                    clay.apply_tape_text("const 0.2\nconst 0.9\nconst 0\nconst 1\nconst -0.005\nmaterial 1 r3\nsource 1 r0 r0 r0 r1 r2 r3 r4 -0.005 -0.005\n",false);
+                    vt::VtFiniteSourceBinding binding;binding.stamp=source;binding.datum_m=datum;
+                    CHECK(vt::vt_make_finite_sources({binding},clay.ctx.finite_sources,err),err.c_str());
+                    const uint32_t ids[]={1,1,1,1};clay.ctx.finite_source_ids=ids;
+                    PageData pages[3];vt::VtPageHeight ranges[3];
+                    std::vector<uint8_t> colors[3],normals[3],orms[3];bool complete=true;
+                    for (uint32_t p=0;p<3;++p) {
+                        auto req=make_request(clay,0,p);req.page_x=p;req.out_height=&ranges[p];
+                        bool filled=false;req.out_filled=&filled;
+                        const bool ok=run_fill(&req,1) && filled && read_slot(p,pages[p]);
+                        CHECK(ok,"clay VT: actual compressed page produced");complete &= ok;
+                        if (!ok) break;
+                        int bad_color=0,bad_orm=0;
+                        decode_page_bc7(pages[p].albedo,colors[p],bad_color);
+                        decode_page_bc7(pages[p].orm,orms[p],bad_orm);
+                        decode_page_bc5(pages[p].normal,normals[p]);
+                        CHECK(!bad_color && !bad_orm,"clay VT: valid compressed color and ORM blocks");
+                    }
+                    if (!complete) continue;
+                    float max_color=0,max_rough=0,max_height=0;
+                    double color_square=0,normal_cos=0;size_t normal_count=0;
+                    std::ofstream dump(path+".vt.bin",std::ios::binary);
+                    for (uint32_t y=0;y<96;++y) for (uint32_t x=0;x<256;++x) {
+                        const uint32_t p=(x+4)/128;
+                        const size_t i=size_t(y+8)*kPageStore+(x+4)%128+4;
+                        const auto &s=source->pixels[size_t(y)*256+x];
+                        const float coverage=std::clamp(s.albedo_coverage[3],0.f,1.f);
+                        const float premult_scale=s.albedo_coverage[3]>0?coverage/s.albedo_coverage[3]:0;
+                        float result[10];
+                        for (int c=0;c<3;++c) {
+                            result[c]=colors[p][i*4+c]/255.f;result[c+3]=orms[p][i*4+c]/255.f;
+                            const float error=result[c]-(s.albedo_coverage[c]*premult_scale+.2f*(1-coverage));
+                            max_color=std::max(max_color,std::abs(error));color_square+=error*error;
+                        }
+                        max_rough=std::max(max_rough,std::abs(result[4]-std::sqrt(s.orm_height[1]*premult_scale+.81f*(1-coverage))));
+                        const float nx=normals[p][i*2]/127.5f-1,ny=normals[p][i*2+1]/127.5f-1;
+                        const auto n=norm3(v3(nx,ny,std::sqrt(std::max(0.f,1-nx*nx-ny*ny))));
+                        result[6]=n.x;result[7]=n.y;result[8]=n.z;
+                        if (coverage>.99999f && s.normal_detail[2]>.05f) {
+                            normal_cos+=dot3(n,norm3(v3(s.normal_detail[0],s.normal_detail[1],s.normal_detail[2])));++normal_count;
+                        }
+                        uint16_t h;std::memcpy(&h,pages[p].height.data()+i*2,2);
+                        result[9]=ranges[p].min_m+ranges[p].range_m*(h/65535.f);
+                        const float expected_height=s.orm_height[3]*premult_scale-coverage*datum+base_height*(1-coverage);
+                        max_height=std::max(max_height,std::abs(result[9]-expected_height));
+                        dump.write(reinterpret_cast<const char*>(result),sizeof(result));
+                    }
+                    dump.close();CHECK(bool(dump),"clay VT: decoded native channels written");
+                    const double color_rmse=std::sqrt(color_square/(256*96*3));
+                    std::printf("CLAY_VT seed=%u color_max=%.8f color_rmse=%.8f rough_max=%.8f height_error_m=%.9g normal_mean_cos=%.8f\n",
+                        seed,max_color,color_rmse,max_rough,max_height,normal_count?normal_cos/normal_count:0);
+                    CHECK(color_rmse<.008 && max_color<.06f && max_rough<.06f,
+                          "clay VT: source color and roughness survive page compression");
+                    // Includes float chart/barycentric coordinate reconstruction
+                    // at non-power-of-two density, distinct from same-coordinate
+                    // sampler error: 1/1000 source texel plus R16 quantization.
+                    CHECK(max_height<ranges[0].range_m/65535.f+1e-6f,
+                          "clay VT: source relief and coverage survive composition across three pages");
+                }
+            }
+
+            // Inputs belong to the batch that recorded them. Four batches
+            // recorded before one submit must match their separately submitted
+            // references across material, source-view and parameter changes.
+            // No GPU wait can conceal a shared-buffer overwrite in this case.
+            {
+                vt::VtCompositorMaterial edited[3];
+                edited[kMatA].albedo[0] = 0.8f;
+                edited[kMatA].albedo[1] = 0.1f;
+                edited[kMatA].albedo[2] = 0.2f;
+                const auto set_version = [&](uint32_t version) {
+                    vt::VtTilesetSlotViews sources[2] = {slots[0], slots[1]};
+                    if (version >= 2) std::swap(sources[0], sources[1]);
+                    if (version == 3) {
+                        sources[0].tile_size_m *= 2.0f;
+                        sources[0].texels_per_meter *= 0.25f;
+                    }
+                    CHECK(compositor->set_tilesets(sources, 2, err), err.c_str());
+                    compositor->set_materials(version == 1 ? edited : mats, 3);
+                };
+                PageData reference[4], delayed[4];
+                for (uint32_t i = 0; i < 4; ++i) {
+                    set_version(i);
+                    auto request = make_request(fix_a, 0, i);
+                    CHECK(run_fill(&request, 1) && read_slot(i, reference[i]),
+                          "input snapshot: separately submitted reference");
+                }
+                CHECK(reference[0].albedo != reference[1].albedo,
+                      "input snapshot: material versions produce distinct pixels");
+                CHECK(reference[0].albedo != reference[2].albedo,
+                      "input snapshot: source-view versions produce distinct pixels");
+                CHECK(reference[2].albedo != reference[3].albedo,
+                      "input snapshot: source parameters produce distinct pixels");
+                CHECK(tc.begin(err), err.c_str());
+                for (uint32_t i = 0; i < 4; ++i) {
+                    set_version(i);
+                    auto request = make_request(fix_a, 0, 4 + i);
+                    compositor->fill(tc.cmd, &request, 1);
+                }
+                set_version(0); // even a setter after the last record changes no recorded batch
+                CHECK(tc.submit(err), "input snapshot: four versions submit without an intervening wait");
+                for (uint32_t i = 0; i < 4; ++i) {
+                    CHECK(read_slot(4 + i, delayed[i]), err.c_str());
+                    CHECK(delayed[i].albedo == reference[i].albedo &&
+                          delayed[i].normal == reference[i].normal &&
+                          delayed[i].orm == reference[i].orm &&
+                          delayed[i].aux == reference[i].aux,
+                          "input snapshot: recorded inputs survive later setters in every channel");
+                }
+                compositor->set_materials(mats, 3);
+            }
+
+            // Real source images must survive caller replacement after record,
+            // before submission. Use distinct allocations, not just sentinel
+            // tokens beside globally owned images, and check eventual release.
+            {
+                constexpr uint32_t count = vt::VtCompositor::kMaxBatchesInFlight;
+                std::shared_ptr<TestImage> owned[count];
+                std::weak_ptr<TestImage> observed[count];
+                PageData reference[count], delayed[count];
+                bool sources_ok = true;
+                for (uint32_t i = 0; i < count; ++i) {
+                    owned[i] = std::shared_ptr<TestImage>(new TestImage{},
+                        [&](TestImage* source) {
+                            destroy_test_image(*vulkan, *source);
+                            delete source;
+                        });
+                    observed[i] = owned[i];
+                    sources_ok = upload_tileset_channel(*vulkan, tc,
+                        i & 1 ? *ts_b : *ts_a, 0, *owned[i], err) && sources_ok;
+                }
+                CHECK(sources_ok, "source lifetime: upload distinct owned images");
+                const auto set_source = [&](uint32_t i) {
+                    vt::VtTilesetSlotViews sources[2] = {slots[0], slots[1]};
+                    sources[0].albedo = owned[i]->view;
+                    sources[0].lifetimes[0] = owned[i];
+                    if (i >= 2) sources[0].tile_size_m *= 2.0f;
+                    CHECK(compositor->set_tilesets(sources, 2, err), err.c_str());
+                };
+                if (sources_ok) {
+                    for (uint32_t i = 0; i < count; ++i) {
+                        set_source(i);
+                        auto request = make_request(fix_a, 0, i);
+                        CHECK(run_fill(&request, 1) && read_slot(i, reference[i]),
+                              "source lifetime: separately submitted reference");
+                    }
+                    CHECK(reference[0].albedo != reference[1].albedo,
+                          "source lifetime: source versions change actual pixels");
+                    const bool recording = tc.begin(err);
+                    CHECK(recording, err.c_str());
+                    if (recording) {
+                        for (uint32_t i = 0; i < count; ++i) {
+                            set_source(i);
+                            auto request = make_request(fix_a, 0, 4 + i);
+                            compositor->fill(tc.cmd, &request, 1);
+                        }
+                        CHECK(compositor->set_tilesets(slots, 2, err), err.c_str());
+                        bool retained = true;
+                        for (uint32_t i = 0; i < count; ++i) {
+                            owned[i].reset();
+                            CHECK(!observed[i].expired(),
+                                  "source lifetime: recorded batch owns replaced image before submit");
+                            retained = retained && !observed[i].expired();
+                        }
+                        // A regression may have destroyed a recorded source.
+                        // Never submit that invalid command buffer; the next
+                        // begin resets it before recording any further work.
+                        if (retained) {
+                            CHECK(tc.submit(err), "source lifetime: submit four replaced sources");
+                            for (uint32_t i = 0; i < count; ++i) {
+                                CHECK(read_slot(4 + i, delayed[i]), err.c_str());
+                                CHECK(delayed[i].albedo == reference[i].albedo &&
+                                      delayed[i].normal == reference[i].normal &&
+                                      delayed[i].orm == reference[i].orm &&
+                                      delayed[i].aux == reference[i].aux,
+                                      "source lifetime: every channel matches its captured source");
+                            }
+                        }
+                    }
+                }
+                CHECK(compositor->set_tilesets(slots, 2, err), err.c_str());
+                for (auto& source : owned) source.reset();
+                for (uint32_t i = 0; i < count; ++i) {
+                    auto request = make_request(fix_a, 0, i);
+                    CHECK(run_fill(&request, 1), "source lifetime: retire and reuse all batch rings");
+                }
+                for (const auto& source : observed)
+                    CHECK(source.expired(), "source lifetime: retired source allocations are reclaimed");
+            }
+
+            // Updating CPU surface weights/palette and invalidating preparation
+            // must retain the GPU streams used by earlier recorded batches.
+            {
+                QuadFixture surface;
+                surface.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1), kQuadExtent,
+                                 v3(0, 1, 0), kMatA);
+                surface.atlas = fix_a.atlas;
+                surface.finalize(0x1010);
+                const uint64_t geometry_before = compositor->stats().geometry_builds;
+                const uint64_t mode3_before = compositor->stats().tape_mode3_entries;
+                const auto set_surface = [&](uint32_t version) {
+                    surface.ctx.surface_tape_text = nullptr;
+                    surface.ctx.surface_lanes = nullptr;
+                    surface.ctx.surface_lane_count = 0;
+                    if (version == 0 || version == 3) {
+                        surface.apply_tape({version ? kMatB : kMatA},
+                            std::vector<uint8_t>(surface.ctx.vertex_count, 255), version + 1);
+                    } else {
+                        surface.apply_tape({kMatA, kMatB},
+                            std::vector<uint8_t>(surface.ctx.vertex_count * 2, 128), version + 1);
+                        TapeBuilder tape;
+                        const int moisture = tape.op("input moisture");
+                        const int one = tape.op("const 1");
+                        const int inverse = tape.bop("sub", one, moisture);
+                        tape.mat(kMatA, moisture);
+                        tape.mat(kMatB, inverse);
+                        // Field lanes require world context. Unanchored tapes
+                        // deliberately resolve moisture to the CPU fallback.
+                        surface.apply_tape_text(tape.text, true, nullptr,
+                            std::vector<uint16_t>(surface.ctx.vertex_count,
+                                                  version == 1 ? 0x3400 : 0x3A00), 1);
+                    }
+                    compositor->invalidate_surface(surface.variant_hash);
+                };
+                PageData reference[4], delayed[4];
+                vt::VtCompositor::PreparationMemory first_version_memory{};
+                for (uint32_t i = 0; i < 4; ++i) {
+                    set_surface(i);
+                    auto request = make_request(surface, 0, i);
+                    CHECK(run_fill(&request, 1) && read_slot(i, reference[i]),
+                          "surface snapshot: separately submitted reference");
+                    if (i == 0) first_version_memory = compositor->preparation_memory();
+                }
+                CHECK(reference[0].albedo != reference[3].albedo,
+                      "surface snapshot: stored weight versions produce distinct pixels");
+                CHECK(reference[1].albedo != reference[2].albedo,
+                      "surface snapshot: field lane edits produce distinct pixels");
+                const auto worker_before = compositor->cpu_preparation_stats();
+                CHECK(tc.begin(err), err.c_str());
+                for (uint32_t i = 0; i < 4; ++i) {
+                    set_surface(i);
+                    auto request = make_request(surface, 0, 4 + i);
+                    request.part_snapshot = vt::VtPartSnapshot::capture(surface.atlas, surface.ctx);
+                    request.part_context = &request.part_snapshot->context;
+                    request.atlas = request.part_snapshot->context.atlas;
+                    CHECK(vt_prepare_tests::until([&] {
+                        compositor->begin_preparation_frame();
+                        return compositor->prepare(request.preparation_key(), request.part_snapshot);
+                    }), "surface worker: asynchronous input packing becomes ready before record");
+                    compositor->fill(tc.cmd, &request, 1);
+                }
+                surface.apply_tape({}, {}, 0);
+                compositor->invalidate_part(surface.variant_hash);
+                CHECK(tc.submit(err), "surface snapshot: edited and released inputs submit without a wait");
+                for (uint32_t i = 0; i < 4; ++i) {
+                    CHECK(read_slot(4 + i, delayed[i]), err.c_str());
+                    CHECK(delayed[i].albedo == reference[i].albedo &&
+                          delayed[i].normal == reference[i].normal &&
+                          delayed[i].orm == reference[i].orm &&
+                          delayed[i].aux == reference[i].aux,
+                          "surface snapshot: previous GPU streams survive CPU update and invalidation");
+                }
+                CHECK(compositor->stats().geometry_builds == geometry_before + 1,
+                      "surface snapshot: edits reuse one immutable geometry preparation");
+                CHECK(compositor->stats().tape_mode3_entries == mode3_before + 4,
+                      "surface snapshot: field lane versions execute the GPU tape path");
+                CHECK(compositor->cpu_preparation_stats().completed == worker_before.completed + 4 &&
+                          vt_prepare_tests::until([&] {
+                              return compositor->cpu_preparation_stats().reserved_bytes == 0;
+                          }), "surface worker: all four CPU jobs publish and release their reservations");
+                const auto retained = compositor->preparation_memory();
+                CHECK(retained.geometries == first_version_memory.geometries &&
+                          retained.geometry_gpu_bytes == first_version_memory.geometry_gpu_bytes &&
+                          retained.corner_cpu_bytes == first_version_memory.corner_cpu_bytes,
+                      "surface snapshot: retired versions share geometry without duplicating its storage");
+            }
+
+            // Real partial GPU uploads: tiny quotas force a cold rebuild across
+            // frames. The visible page survives pause, supersession and demand
+            // abandonment; only the completed newest input may replace it.
+            {
+                QuadFixture staged;
+                staged.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1), kQuadExtent,
+                                v3(0, 1, 0), kMatA);
+                staged.atlas = fix_a.atlas;
+                staged.finalize(0x6a0001);
+                staged.apply_tape({kMatA}, std::vector<uint8_t>(staged.ctx.vertex_count, 255), 1);
+                auto current_request = make_request(staged, 0, 12);
+                PageData current, expected, actual;
+                CHECK(run_fill(&current_request, 1) && read_slot(12, current), "staged upload: initial page filled");
+                compositor->release_preparation(current_request.preparation_key());
+                const auto request_for_snapshot = [&] {
+                    auto request = make_request(staged, 0, 12);
+                    request.part_snapshot = vt::VtPartSnapshot::capture(staged.atlas, staged.ctx);
+                    request.part_context = &request.part_snapshot->context;
+                    request.atlas = request.part_snapshot->context.atlas;
+                    return request;
+                };
+                const auto same_page = [](const PageData& a, const PageData& b) {
+                    return a.albedo == b.albedo && a.normal == b.normal && a.orm == b.orm && a.aux == b.aux;
+                };
+                compositor->set_preparation_limits({1, 16, 0});
+                staged.apply_tape({kMatA, kMatB}, std::vector<uint8_t>(staged.ctx.vertex_count * 2, 128), 2);
+                compositor->invalidate_surface(staged.variant_hash);
+                auto obsolete = request_for_snapshot();
+                const auto first_bytes = compositor->gpu_preparation_stats().uploaded_bytes;
+                bool prematurely_ready = false;
+                CHECK(vt_prepare_tests::until([&] {
+                    compositor->begin_preparation_frame();
+                    prematurely_ready = compositor->prepare(obsolete.preparation_key(), obsolete.part_snapshot);
+                    return compositor->gpu_preparation_stats().uploaded_bytes > first_bytes;
+                }), "staged upload: obsolete edit starts an actual partial buffer upload");
+                CHECK(!prematurely_ready && compositor->gpu_preparation_stats().pending_jobs == 1,
+                      "staged upload: a partial buffer is not preparation-ready");
+                CHECK(read_slot(12, actual) && same_page(current, actual),
+                      "staged upload: partial preparation leaves the current page unchanged");
+                const auto cancelled_before = compositor->gpu_preparation_stats().cancelled;
+                staged.apply_tape({kMatB}, std::vector<uint8_t>(staged.ctx.vertex_count, 255), 3);
+                compositor->invalidate_surface(staged.variant_hash);
+                CHECK(compositor->gpu_preparation_stats().pending_jobs == 0 &&
+                          compositor->gpu_preparation_stats().cancelled == cancelled_before + 1,
+                      "staged upload: superseding edit immediately releases unpublished buffers");
+                auto newest = request_for_snapshot();
+                auto reference = make_request(staged, 0, 13);
+                ++reference.variant_hash; // independent synchronous GPU preparation
+                CHECK(run_fill(&reference, 1) && read_slot(13, expected), "staged upload: newest independent reference");
+                CHECK(expected.albedo != current.albedo, "staged upload: newest edit changes visible material");
+                compositor->set_preparation_limits({1, 0, 0});
+                const auto paused_bytes = compositor->gpu_preparation_stats().uploaded_bytes;
+                CHECK(vt_prepare_tests::until([&] {
+                    compositor->begin_preparation_frame();
+                    compositor->prepare(newest.preparation_key(), newest.part_snapshot);
+                    return compositor->gpu_preparation_stats().pending_jobs == 1;
+                }), "staged upload: zero-copy allowance retains a pending edit");
+                CHECK(compositor->gpu_preparation_stats().uploaded_bytes == paused_bytes &&
+                          read_slot(12, actual) && same_page(current, actual),
+                      "staged upload: paused copies preserve page content and progress accounting");
+                // Lose demand long enough to release the bounded staging slot.
+                for (uint32_t frame = 0; frame < 6; ++frame) compositor->begin_preparation_frame();
+                CHECK(compositor->gpu_preparation_stats().pending_jobs == 0 &&
+                          vt_prepare_tests::until([&] { return compositor->cpu_preparation_stats().reserved_bytes == 0; }),
+                      "staged upload: abandoned demand cannot pin GPU/CPU staging capacity forever");
+                compositor->set_preparation_limits({1, 16, 0});
+                bool quotas_held = true;
+                uint32_t upload_frames = 0;
+                CHECK(vt_prepare_tests::until([&] {
+                    compositor->begin_preparation_frame();
+                    bool ready = compositor->prepare(newest.preparation_key(), newest.part_snapshot);
+                    // Repeated calls in the SAME frame cannot reset the allowance.
+                    ready = compositor->prepare(newest.preparation_key(), newest.part_snapshot) || ready;
+                    const auto stats = compositor->gpu_preparation_stats();
+                    quotas_held = quotas_held && stats.allocations_this_frame <= 1 && stats.uploaded_bytes_this_frame <= 16;
+                    if (stats.uploaded_bytes_this_frame) ++upload_frames;
+                    return ready;
+                }), "staged upload: newest edit resumes to complete GPU preparation");
+                CHECK(quotas_held && upload_frames > 1,
+                      "staged upload: allocation and byte quotas hold across multiple upload frames");
+                CHECK(tc.begin(err), err.c_str());
+                compositor->fill(tc.cmd, &newest, 1);
+                CHECK(tc.submit(err) && read_slot(12, actual) && same_page(expected, actual),
+                      "staged upload: completed newest edit matches all independent reference channels");
+                CHECK(compositor->gpu_preparation_stats().pending_jobs == 0 &&
+                          vt_prepare_tests::until([&] { return compositor->cpu_preparation_stats().reserved_bytes == 0; }),
+                      "staged upload: publication releases pending GPU state and CPU result leases");
+                compositor->release_preparation(newest.preparation_key());
+                compositor->release_preparation(reference.preparation_key());
+                compositor->set_preparation_limits({});
+                compositor->begin_preparation_frame();
+            }
+
+            // Two parameterizations, and successive generations of one, can
+            // have the same canonical (part, rung). Their preparation and its
+            // retirement must remain independent, including before submission.
+            {
+                PageData reference[3];
+                const QuadFixture* fixtures[] = {&fix_a, &fix_a2, &fix_b};
+                vt::VtFillRequest requests[3];
+                for (uint32_t i = 0; i < 3; ++i) {
+                    auto ref = make_request(*fixtures[i], 0, i);
+                    CHECK(run_fill(&ref, 1) && read_slot(i, reference[i]),
+                          "owner preparation: independent GPU reference");
+                    requests[i] = make_request(*fixtures[i], 0, 4 + i);
+                    requests[i].variant_hash = 0x1011;
+                    requests[i].owner_key = i == 0 ? 0xA1 : 0xA2;
+                    requests[i].owner_generation = i == 2 ? 11 : 10;
+                }
+                CHECK(reference[0].albedo != reference[1].albedo &&
+                          reference[0].normal != reference[2].normal,
+                      "owner preparation: fixture geometry/materials differ");
+                const auto before = compositor->stats();
+                CHECK(tc.begin(err), err.c_str());
+                compositor->fill(tc.cmd, requests, 3);
+                compositor->release_preparation(requests[0].preparation_key());
+                compositor->release_preparation(requests[1].preparation_key());
+                compositor->invalidate_surface(requests[2].preparation_key());
+                auto repeat = requests[2];
+                repeat.physical_slot = 7;
+                compositor->fill(tc.cmd, &repeat, 1);
+                // Repeated stale release must leave the newer generation live.
+                compositor->release_preparation(requests[1].preparation_key());
+                CHECK(tc.submit(err), "owner preparation: submit fills after precise retirement");
+                CHECK(compositor->stats().geometry_builds == before.geometry_builds + 3 &&
+                          compositor->stats().mesh_cache_builds == before.mesh_cache_builds + 4,
+                      "owner preparation: three distinct geometries, one surface-only refresh");
+                for (uint32_t i = 0; i < 4; ++i) {
+                    PageData actual;
+                    CHECK(read_slot(4 + i, actual), err.c_str());
+                    const auto& expected = reference[std::min(i, 2u)];
+                    CHECK(actual.albedo == expected.albedo && actual.normal == expected.normal &&
+                              actual.orm == expected.orm && actual.aux == expected.aux,
+                          "owner preparation: each lifetime retains its own GPU content");
+                }
+                const auto builds = compositor->stats().mesh_cache_builds;
+                CHECK(run_fill(&repeat, 1), err.c_str());
+                CHECK(compositor->stats().mesh_cache_builds == builds,
+                      "owner preparation: stale release preserves the newer cached lifetime");
+                compositor->release_preparation(repeat.preparation_key());
+            }
 
             // ================= (a) golden determinism =================
             compositor->set_weight_mode(
@@ -2492,6 +3779,563 @@ int main() {
                 }
             }
 
+            // A complete procedural source bypasses Wang input images, even
+            // when its fallback material has a detail slot. Its height is in
+            // metres; the slope below has an analytic normal at every mip.
+            {
+                QuadFixture direct;
+                direct.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                kQuadExtent, v3(0, 1, 0), kMatA);
+                direct.atlas = fix_a.atlas;
+                direct.finalize(0x710001);
+                direct.apply_tape({kMatA}, std::vector<uint8_t>(4, 255), 1);
+                // 512 instructions exercise multi-block uploads and physical
+                // register reuse while retaining the independent analytic oracle.
+                const std::string recipe = vt_prepare_tests::long_source(512);
+                direct.apply_tape_text(recipe, false);
+                compositor->set_materials(mats, 3);
+                compositor->set_weight_mode(vt::VtCompositor::WeightMode::kTriangleMaterial);
+                vt::VtPreparedInputs disabled;
+                CHECK(!vt::vt_prepare_cpu(direct.atlas, direct.ctx, {}, false, disabled),
+                      "direct source: disabled GPU evaluation cannot publish a vertex fallback");
+                PageData pages[2];
+                vt::VtDrawGeometry draw_geometry[2];
+                for (uint16_t mip = 0; mip < 2; ++mip) {
+                    auto request = make_request(direct, mip, mip);
+                    vt::VtPageHeight height;
+                    request.out_height = &height;
+                    request.out_geometry = &draw_geometry[mip];
+                    const bool filled = run_fill(&request, 1) && read_slot(mip, pages[mip]);
+                    CHECK(filled, "direct source: fill and read actual GPU page");
+                    CHECK(draw_geometry[mip].lifetime && draw_geometry[mip].gpu.charts != 0 &&
+                              draw_geometry[mip].gpu.triangles != 0 &&
+                              draw_geometry[mip].gpu.chart_count == 1 &&
+                              draw_geometry[mip].gpu.triangle_count == 2,
+                          "draw geometry: direct pages publish owned device addresses and bounded counts");
+                    if (!filled) continue;
+                    std::vector<uint8_t> color, normal, orm;
+                    int bad_color = 0, bad_orm = 0;
+                    decode_page_bc7(pages[mip].albedo, color, bad_color);
+                    decode_page_bc7(pages[mip].orm, orm, bad_orm);
+                    decode_page_bc5(pages[mip].normal, normal);
+                    CHECK(bad_color == 0 && bad_orm == 0, "direct source: valid encoded channels");
+                    const float footprint = float(1u << mip) / kChartTpm;
+                    const float expected_color[3] = {.4f, .6f, footprint};
+                    const float expected_orm[3] = {1.f, .4f, 0.f};
+                    const float nx = -.25f / std::sqrt(1.0625f);
+                    float color_error = 0, orm_error = 0, normal_error = 0, height_error = 0;
+                    bool identity = true;
+                    // Both mips are inside the chart and the unclamped ramp.
+                    for (uint32_t y = 16; y < 50; ++y) {
+                        for (uint32_t x = 16; x < 50; ++x) {
+                            const size_t p = size_t(y) * kPageStore + x;
+                            for (int c = 0; c < 3; ++c) {
+                                color_error = std::max(color_error,
+                                    std::fabs(color[p * 4 + c] / 255.f - expected_color[c]));
+                                orm_error = std::max(orm_error,
+                                    std::fabs(orm[p * 4 + c] / 255.f - expected_orm[c]));
+                            }
+                            normal_error = std::max(normal_error,
+                                std::fabs(normal[p * 2] / 127.5f - 1.f - nx));
+                            normal_error = std::max(normal_error,
+                                std::fabs(normal[p * 2 + 1] / 127.5f - 1.f));
+                            uint16_t encoded_height;
+                            std::memcpy(&encoded_height, &pages[mip].height[p * 2], 2);
+                            const float local_x = ((float(x) - 4.f + .5f) * float(1u << mip) - 4.f) / kChartTpm;
+                            height_error = std::max(height_error, std::fabs(
+                                height.min_m + height.range_m * (encoded_height / 65535.f) - .25f * local_x));
+                            identity &= pages[mip].aux[p * 4] == kMatA &&
+                                pages[mip].aux[p * 4 + 1] == 0 &&
+                                pages[mip].aux[p * 4 + 2] == 0 &&
+                                pages[mip].aux[p * 4 + 3] == 2;
+                        }
+                    }
+                    std::printf("direct source mip %u: color %.6f ORM %.6f normal %.6f\n",
+                                unsigned(mip), color_error, orm_error, normal_error);
+                    CHECK(color_error < .012f && orm_error < .012f,
+                          "direct source: coherent channels and physical footprint match analytic values");
+                    CHECK(normal_error < .025f, "direct source: normal agrees with the metre height slope");
+                    CHECK(identity, "direct source: exact carrier identity, chart zero and interior tag");
+                    std::printf("composed height mip %u: max metre error %.9f\n", unsigned(mip), height_error);
+                    CHECK(height.version == 1 && height.min_m == 0 && height.range_m == 1 &&
+                              height_error <= 1.f / 65535.f,
+                          "composed height: R16 page and its decode match the analytic ramp at both mips");
+                }
+                auto regenerate = make_request(direct, 0, 2);
+                CHECK(draw_geometry[0].lifetime == draw_geometry[1].lifetime &&
+                          draw_geometry[0].gpu.charts == draw_geometry[1].gpu.charts &&
+                          draw_geometry[0].gpu.triangles == draw_geometry[1].gpu.triangles,
+                      "draw geometry: all mips share the same immutable buffers");
+                const std::weak_ptr<const void> retired_geometry = draw_geometry[0].lifetime;
+                vt::VtDrawGeometry next_geometry;
+                regenerate.out_geometry = &next_geometry;
+                compositor->release_preparation(regenerate.preparation_key());
+                PageData again;
+                CHECK(run_fill(&regenerate, 1) && read_slot(2, again),
+                      "direct source: regenerate after preparation eviction");
+                CHECK(again.albedo == pages[0].albedo && again.normal == pages[0].normal &&
+                          again.orm == pages[0].orm && again.aux == pages[0].aux &&
+                          again.height == pages[0].height,
+                      "direct source: regeneration in another physical slot is byte-identical");
+                CHECK(next_geometry.lifetime && next_geometry.lifetime != draw_geometry[0].lifetime,
+                      "draw geometry: whole-owner release cannot reuse the earlier geometry snapshot");
+                for (uint32_t i = 0; i < vt::VtCompositor::kMaxBatchesInFlight; ++i) {
+                    auto filler = make_request(fix_a, 0, 6);
+                    CHECK(run_fill(&filler, 1), "draw geometry: retire every compositor batch reader");
+                }
+                CHECK(!retired_geometry.expired(),
+                      "draw geometry: a resident-page token survives compositor cache retirement");
+                const auto pinned_memory = compositor->preparation_memory();
+                draw_geometry[0] = {}; draw_geometry[1] = {};
+                const auto released_memory = compositor->preparation_memory();
+                CHECK(retired_geometry.expired() &&
+                          pinned_memory.geometries == released_memory.geometries + 1 &&
+                          pinned_memory.geometry_gpu_bytes == released_memory.geometry_gpu_bytes +
+                              sizeof(vt::GpuChart) + 2 * sizeof(vt::GpuTriGeometry),
+                      "draw geometry: census includes page-only ownership and frees it after the last reader");
+                // Editing the same surface identity must replace source metadata
+                // as well as its scalar operations, without retaining the slope.
+                direct.apply_tape({kMatA}, std::vector<uint8_t>(4, 255), 2);
+                direct.apply_tape_text(
+                    "const 0.2\nconst 1\nconst 0\nmaterial 1 r1\n"
+                    "source 1 r0 r0 r0 r0 r2 r1 r2 0 0\n", false);
+                compositor->invalidate_surface(direct.variant_hash);
+                auto edit = make_request(direct, 0, 3);
+                PageData edited;
+                vt::VtPageHeight edited_height;
+                edit.out_height = &edited_height;
+                vt::VtDrawGeometry edited_geometry;
+                edit.out_geometry = &edited_geometry;
+                CHECK(run_fill(&edit, 1) && read_slot(3, edited),
+                      "direct source: recipe edit fills the same surface");
+                CHECK(edited_geometry.lifetime == next_geometry.lifetime &&
+                          edited_geometry.gpu.triangles == next_geometry.gpu.triangles,
+                      "draw geometry: appearance edits preserve geometry identity and device addresses");
+                CHECK(edited.albedo != again.albedo && edited.normal != again.normal,
+                      "direct source: material and height edits both reach the GPU");
+                CHECK(edited_height.version == 1 && edited_height.min_m == 0 && edited_height.range_m == 0 &&
+                          std::all_of(edited.height.begin(), edited.height.end(), [](uint8_t v) { return v == 0; }),
+                      "composed height: constant source resets stale range and normalized height");
+
+                // Signed metre range and constant recess, including chart dilation
+                // and all payload/gutter texels.
+                direct.apply_tape({kMatA}, std::vector<uint8_t>(4, 255), 3);
+                direct.apply_tape_text(
+                    "const 0.2\nconst 1\nconst 0\nconst -0.006\nmaterial 1 r1\n"
+                    "source 1 r0 r0 r0 r0 r2 r1 r3 -0.008 0.002\n", false);
+                compositor->invalidate_surface(direct.variant_hash);
+                auto recess = make_request(direct, 0, 4);
+                vt::VtPageHeight recess_height;
+                recess.out_height = &recess_height;
+                recess.out_geometry = &edited_geometry;
+                PageData recessed;
+                CHECK(run_fill(&recess, 1) && read_slot(4, recessed), "composed height: negative recess filled");
+                float recess_error = 0;
+                for (size_t p = 0; p + 1 < recessed.height.size(); p += 2) {
+                    uint16_t h; std::memcpy(&h, recessed.height.data() + p, 2);
+                    recess_error = std::max(recess_error, std::fabs(
+                        recess_height.min_m + recess_height.range_m * (h / 65535.f) + .006f));
+                }
+                CHECK(recess_height.version == 1 && std::fabs(recess_height.min_m + .008f) < 1e-8f &&
+                          std::fabs(recess_height.range_m - .01f) < 1e-8f && recess_error < .01f / 65535.f,
+                      "composed height: signed metre decode and constant recess cover payload and gutters");
+                direct.apply_tape({kMatA}, std::vector<uint8_t>(4, 255), 4);
+                direct.apply_tape_text("const 1\nmaterial 1 r0\n", false);
+                compositor->invalidate_surface(direct.variant_hash);
+                CHECK(run_fill(&recess, 1) && read_slot(4, recessed),
+                      "composed height: legacy source replaces a direct source in the same slot");
+                CHECK(recess_height.version == 0 && recess_height.min_m == 0 && recess_height.range_m == 0 &&
+                          std::all_of(recessed.height.begin(), recessed.height.end(), [](uint8_t v) { return v == 0; }),
+                      "composed height: legacy replacement clears height and its decode");
+                CHECK(!edited_geometry.lifetime && edited_geometry.gpu.charts == 0 &&
+                          edited_geometry.gpu.triangles == 0,
+                      "draw geometry: legacy replacement clears the direct-source geometry output");
+            }
+
+            // Independent analytic context surfaces: a field-lane ramp, a
+            // piecewise ramp across the quad diagonal, and a varying unit
+            // normal. Holding barycentrics/normal fixed falsely flattens all
+            // three. The diagonal probes require actual neighbor lane reads.
+            for(int mode=0;mode<3;++mode) {
+                QuadFixture context;
+                context.add_quad(v3(0,0,0),v3(1,0,0),v3(0,0,1),kQuadExtent,v3(0,1,0),kMatA);
+                context.atlas=fix_a.atlas;
+                if(mode==2) for(int vertex:{1,2}) {
+                    context.normals[vertex*3]=.6f;context.normals[vertex*3+1]=.8f;
+                }
+                context.finalize(0x71d000+mode);
+                context.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                const float identity[]={1,0,0,0,0,1,0,0,0,0,1,0};
+                std::vector<uint16_t> lanes;
+                if(mode<2) for(float f:(mode==0?std::vector<float>{0,1,3,2}:std::vector<float>{0,1,0,2}))
+                    lanes.push_back(vt::vt_f32_to_f16(f));
+                const std::string input=mode==2?"input ny\nconst 0.2\n":"input height\nconst 0.05\n";
+                context.apply_tape_text(input+"mul r0 r1\nconst 0.4\nconst 1\nconst 0\n"
+                    "material 1 r4\nsource 2 r3 r3 r3 r3 r5 r4 r2 0 0.2\n",
+                    true,identity,std::move(lanes),mode<2?1:0);
+                const auto h=[&](float x,float z) {
+                    const float u=x/kQuadExtent,v=z/kQuadExtent;
+                    if(mode==0)return .05f*(u+2*v);
+                    if(mode==1)return u>=v?.05f*(u-v):.1f*(v-u);
+                    const float ny=1-.2f*u,nx=.6f*u;
+                    return .2f*ny/std::sqrt(nx*nx+ny*ny);
+                };
+                for(uint16_t mip=0;mip<2;++mip) {
+                    auto request=make_request(context,mip,3);vt::VtPageHeight range;request.out_height=&range;
+                    PageData page;
+                    const bool filled=run_fill(&request,1)&&read_slot(3,page);
+                    CHECK(filled,"context source: real GPU page produced");if(!filled)continue;
+                    std::vector<uint8_t> normals;decode_page_bc5(page.normal,normals);
+                    float height_error=0,normal_error=0;
+                    const float eps=.5f*float(1u<<mip)/kChartTpm;
+                    for(uint32_t y=16;y<50;++y)for(uint32_t x=16;x<50;++x) {
+                        const float px=((float(x)-4+.5f)*float(1u<<mip)-4)/kChartTpm;
+                        const float pz=((float(y)-4+.5f)*float(1u<<mip)-4)/kChartTpm;
+                        float tangent_x=1;
+                        if(mode==2) {const float u=px/kQuadExtent,ny=1-.2f*u,nx=.6f*u;
+                            tangent_x=ny/std::sqrt(nx*nx+ny*ny);}
+                        const float du=(h(px+eps*tangent_x,pz)-h(px-eps*tangent_x,pz))/(2*eps);
+                        const float dv=(h(px,pz-eps)-h(px,pz+eps))/(2*eps);
+                        const float len=std::sqrt(1+du*du+dv*dv);
+                        const size_t pixel=y*kPageStore+x;
+                        uint16_t encoded;std::memcpy(&encoded,page.height.data()+pixel*2,2);
+                        height_error=std::max(height_error,std::abs(range.min_m+range.range_m*(encoded/65535.f)-h(px,pz)));
+                        normal_error=std::max(normal_error,std::abs(normals[pixel*2]/127.5f-1+du/len));
+                        normal_error=std::max(normal_error,std::abs(normals[pixel*2+1]/127.5f-1+dv/len));
+                    }
+                    std::printf("context source mode=%d mip=%u height_error=%.9f normal_error=%.6f\n",mode,unsigned(mip),height_error,normal_error);
+                    CHECK(range.version==1 && height_error<.000005f && normal_error<.025f,
+                          "context source: height and normals follow the analytic context including triangle crossings");
+                    compositor->release_preparation(request.preparation_key());PageData again;
+                    CHECK(run_fill(&request,1)&&read_slot(3,again)&&again.height==page.height&&again.normal==page.normal,
+                          "context source: regeneration preserves composed height and normals");
+                }
+            }
+
+            // Original receiver identity survives the constant direct-source
+            // carrier, without requiring a world-anchored variant. Use actual
+            // packed triangle materials, not a CPU-injected shader constant.
+            {
+                for(uint32_t receiver_id:{1u,2u,255u}) {
+                    QuadFixture receiver;
+                    receiver.add_quad(v3(0,0,0),v3(1,0,0),v3(0,0,1),
+                                      kQuadExtent,v3(0,1,0),receiver_id);
+                    receiver.atlas=fix_a.atlas;
+                    receiver.finalize(0x71c000+receiver_id);
+                    receiver.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                    receiver.apply_tape_text(
+                        "input receiver_material\nconst 0.003\nmul r0 r1\n"
+                        "const 1\nconst 0\nconst -0.0001\nmul r0 r5\n"
+                        "material 1 r3\nsource 1 r2 r4 r4 r3 r4 r3 r6 -0.0255 0\n",false);
+                    auto request=make_request(receiver,0,3);
+                    vt::VtPageHeight height;request.out_height=&height;
+                    PageData page;
+                    const bool filled=run_fill(&request,1)&&read_slot(3,page);
+                    CHECK(filled,"receiver material: GPU page fills for each original category");
+                    if(!filled) continue;
+                    std::vector<uint8_t> color;int bad=0;
+                    decode_page_bc7(page.albedo,color,bad);
+                    const size_t pixel=68*kPageStore+68;
+                    uint16_t h;std::memcpy(&h,page.height.data()+pixel*2,2);
+                    const float metres=height.min_m+height.range_m*(h/65535.f);
+                    CHECK(bad==0 && std::abs(float(color[pixel*4])/255.f-.003f*receiver_id)<.02f &&
+                          std::abs(metres+.0001f*receiver_id)<.000002f,
+                          "receiver material: analytic color and height match triangle identity after packing");
+                }
+            }
+
+            // A single continuous chart straddles a physical page boundary.
+            // Overlapping payload/gutter samples must encode identical heights.
+            {
+                QuadFixture continuous;
+                continuous.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                    248.f / kChartTpm, v3(0, 1, 0), kMatA);
+                continuous.atlas = fix_a.atlas;
+                continuous.atlas.atlas_w = continuous.atlas.atlas_h = 256;
+                continuous.atlas.charts[0].rect_w = continuous.atlas.charts[0].rect_h = 256;
+                continuous.finalize(0x710003);
+                continuous.apply_tape({kMatA}, std::vector<uint8_t>(4, 255), 1);
+                continuous.apply_tape_text(vt_prepare_tests::long_source(512), false);
+                vt::VtFillRequest requests[2] = {make_request(continuous, 0, 5), make_request(continuous, 0, 6)};
+                requests[1].page_x = 1;
+                vt::VtPageHeight ranges[2];
+                requests[0].out_height = &ranges[0]; requests[1].out_height = &ranges[1];
+                PageData left, right;
+                const bool filled = run_fill(requests, 2) && read_slot(5, left) && read_slot(6, right);
+                CHECK(filled, "composed height: adjacent pages of one chart filled");
+                if (filled) {
+                    bool identical = true;
+                    float error = 0;
+                    for (uint32_t y = 16; y < 50; ++y) for (uint32_t x = 0; x < 8; ++x) {
+                        uint16_t a, b;
+                        std::memcpy(&a, &left.height[(y * kPageStore + 128u + x) * 2u], 2);
+                        std::memcpy(&b, &right.height[(y * kPageStore + x) * 2u], 2);
+                        identical &= a == b;
+                        const float local_x = (128.f + float(x) - 8.f + .5f) / kChartTpm;
+                        error = std::max(error, std::fabs(a / 65535.f - .25f * local_x));
+                    }
+                    CHECK(identical && error <= 1.f / 65535.f &&
+                              ranges[0].version == 1 && ranges[1].version == 1 &&
+                              ranges[0].min_m == ranges[1].min_m && ranges[0].range_m == ranges[1].range_m,
+                          "composed height: page-edge gutters agree byte-for-byte and match the analytic surface");
+                }
+            }
+
+            // Non-power-of-two chart density reproduces the real wall's
+            // diagonal. Internal triangle edges must not become POM borders.
+            // Chart 256 also exercises both bytes of the lossless chart ID.
+            {
+                QuadFixture coverage;
+                const V3 origin=v3(-.8f,-.4f,-2),t=v3(1,0,0),b=v3(0,1,0);
+                coverage.add_quad(origin,t,b,.8f,v3(0,0,1),kMatA);
+                coverage.atlas=fix_a.atlas;
+                auto chart=make_chart(origin,t,b,0,0,0,2);chart.texels_per_meter=150;
+                auto empty=chart;empty.tri_count=0;
+                coverage.atlas.charts.assign(257,empty);coverage.atlas.charts[256]=chart;
+                coverage.finalize(0x710004);
+                coverage.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                coverage.apply_tape_text("const 1\nconst 0\nconst 0.2\nmaterial 1 r0\n"
+                    "source 1 r2 r2 r2 r2 r1 r0 r1 0 0.1\n",false);
+                for(uint16_t mip=0;mip<3;++mip) {
+                    auto request=make_request(coverage,mip,7);
+                    PageData data;
+                    const bool filled=run_fill(&request,1)&&read_slot(7,data);
+                    CHECK(filled,"chart validity: native nonbinary-density page filled");
+                    if(!filled)continue;
+                    uint32_t inside_bad=0,outside_bad=0,identity_bad=0;
+                    for(uint32_t y=0;y<kPageStore;++y)for(uint32_t x=0;x<kPageStore;++x) {
+                        const float fx=(float(x)-4+.5f)*float(1u<<mip);
+                        const float fy=(float(y)-4+.5f)*float(1u<<mip);
+                        const bool inside=fx>4 && fx<124 && fy>4 && fy<124;
+                        const size_t at=(y*kPageStore+x)*4;
+                        identity_bad+=data.aux[at+1]!=0 || data.aux[at+2]!=1;
+                        if(inside && data.aux[at+3]!=2) {
+                            if(inside_bad<8)std::printf("chart validity mip=%u false-border=(%u,%u) tag=%u\n",
+                                unsigned(mip),x,y,unsigned(data.aux[at+3]));
+                            ++inside_bad;
+                        }
+                        if(!inside && data.aux[at+3]!=3)++outside_bad;
+                    }
+                    std::printf("chart validity mip=%u inside_bad=%u outside_bad=%u identity_bad=%u\n",
+                                unsigned(mip),inside_bad,outside_bad,identity_bad);
+                    CHECK(!inside_bad && !outside_bad && !identity_bad,
+                          "chart validity: triangle diagonal stays interior, gutters stay padded, chart ID stays exact");
+                }
+            }
+
+            // Integer feature variation must agree on CPU/GPU, both sides of
+            // zero and after a mip change. Keep samples inside constant cells
+            // so the BC tolerance measures storage, not filtering at an edge.
+            {
+                QuadFixture cells;
+                cells.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                               kQuadExtent, v3(0, 1, 0), kMatA);
+                cells.atlas = fix_a.atlas;
+                cells.finalize(0x710002);
+                cells.apply_tape({kMatA}, std::vector<uint8_t>(4, 255), 1);
+                cells.apply_tape_text(
+                    "input lx\ninput lz\nconst 1\nsub r0 r2\n"
+                    "cell2 317 r3 r1\ncell2 4294967295 r3 r1\n"
+                    "const 0.7\nconst 0\nmaterial 1 r2\n"
+                    "source 1 r4 r5 r6 r6 r7 r2 r7 0 0\n", false);
+                const uint32_t gold[2][4] = {
+                    {9534753u, 6792881u, 10464135u, 7016948u},
+                    {7621890u, 598305u, 3418982u, 2429044u}};
+                PageData reference;
+                for (uint16_t mip = 0; mip < 2; ++mip) {
+                    auto request = make_request(cells, mip, mip);
+                    PageData page;
+                    const bool filled = run_fill(&request, 1) && read_slot(mip, page);
+                    CHECK(filled, "cell2: fill and read GPU cells at both mips");
+                    if (!filled) continue;
+                    if (mip == 0) reference = page;
+                    std::vector<uint8_t> color;
+                    int bad = 0;
+                    decode_page_bc7(page.albedo, color, bad);
+                    float error = 0;
+                    for (int cell = 0; cell < 4; ++cell) {
+                        const int lo = mip ? 20 : 32, hi = mip ? 48 : 96;
+                        const int cx = (cell % 2) ? hi : lo;
+                        const int cy = (cell / 2) ? hi : lo;
+                        for (int dy = -2; dy <= 2; ++dy) for (int dx = -2; dx <= 2; ++dx) {
+                            const size_t at = size_t(cy + dy) * kPageStore + cx + dx;
+                            for (int c = 0; c < 2; ++c)
+                                error = std::max(error, std::fabs(color[at * 4 + c] / 255.f -
+                                    float(gold[c][cell]) / 16777216.f));
+                        }
+                    }
+                    std::printf("cell2 mip %u: channel error %.6f\n", unsigned(mip), error);
+                    CHECK(bad == 0 && error < .012f,
+                          "cell2: signed coordinates and uint32 seeds match fixed goldens");
+                }
+                auto regen = make_request(cells, 0, 2);
+                compositor->release_preparation(regen.preparation_key());
+                PageData repeated;
+                CHECK(run_fill(&regen, 1) && read_slot(2, repeated), "cell2: regeneration succeeds");
+                CHECK(repeated.albedo == reference.albedo,
+                      "cell2: feature choices survive eviction and physical slot changes");
+            }
+
+            for(int feature=0;feature<3;++feature) {
+                QuadFixture cells;
+                cells.add_quad(v3(0,0,0),v3(1,0,0),v3(0,0,1),kQuadExtent,v3(0,1,0),kMatA);
+                cells.atlas=fix_a.atlas;cells.finalize(0x710010+uint64_t(feature));
+                cells.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                const std::string height_reg=feature==0?"11":feature==1?"9":"10";
+                cells.apply_tape_text(
+                    "input lx\ninput lz\nconst 2\nmul r0 r2\nmul r1 r2\nconst -2\n"
+                    "add r3 r5\nadd r4 r5\nconst -0.125\n"
+                    "cellular3 4294967295 gap r6 r8 r7\ncellular3 4294967295 value r6 r8 r7\n"
+                    "cellular3 4294967295 distance r6 r8 r7\nconst 0.02\nmul r"+height_reg+" r12\n"
+                    "const 1\nconst 0\nconst 0.8\nmaterial 1 r14\n"
+                    "source 1 r9 r10 r11 r16 r15 r14 r13 0 0.08\n",false);
+                PageData reference;
+                for(uint16_t mip=0;mip<2;++mip) {
+                    auto request=make_request(cells,mip,mip);vt::VtPageHeight height;
+                    request.out_height=&height;PageData page;
+                    const bool filled=run_fill(&request,1)&&read_slot(mip,page);
+                    CHECK(filled,"cellular3: native GPU composition and readback");if(!filled)continue;
+                    CHECK(height.version==1 && height.min_m==0 && std::abs(height.range_m-.08f)<1e-7f,
+                        "cellular3: page belongs to the requested source height envelope");
+                    if(!mip)reference=page;
+                    std::vector<uint8_t> color;int bad=0;decode_page_bc7(page.albedo,color,bad);
+                    double squared_error=0;float max_height_error=0,interior_value_error=0;unsigned count=0,interior_count=0;
+                    const auto site_value=[&](uint32_t x,uint32_t y) {
+                        const float px=((float(x)-4+.5f)*float(1u<<mip)-4)/kChartTpm;
+                        const float pz=((float(y)-4+.5f)*float(1u<<mip)-4)/kChartTpm;
+                        return terrain_field::surface_cellular3(px*2-2,-.125f,pz*2-2,0xffffffffu,2);
+                    };
+                    for(uint32_t y=16;y<50;++y)for(uint32_t x=16;x<50;++x) {
+                        const size_t at=size_t(y)*kPageStore+x;
+                        const float px=((float(x)-4+.5f)*float(1u<<mip)-4)/kChartTpm;
+                        const float pz=((float(y)-4+.5f)*float(1u<<mip)-4)/kChartTpm;
+                        const float gap=terrain_field::surface_cellular3(px*2-2,-.125f,pz*2-2,0xffffffffu,1);
+                        const float value=terrain_field::surface_cellular3(px*2-2,-.125f,pz*2-2,0xffffffffu,2);
+                        const float distance=terrain_field::surface_cellular3(px*2-2,-.125f,pz*2-2,0xffffffffu,0);
+                        const float expected[]={std::min(gap,1.f),value,std::min(distance,1.f)};
+                        for(int c=0;c<3;++c){const double d=color[at*4+c]/255.f-expected[c];squared_error+=d*d;++count;}
+                        // BC7 represents one line through RGB space per block; raw
+                        // independent fields need not fit it at a cell edge.
+                        // Constant-site blocks still preserve the site attribute.
+                        bool interior=true;
+                        for(uint32_t by=y/4*4;by<y/4*4+4;++by)for(uint32_t bx=x/4*4;bx<x/4*4+4;++bx)
+                            interior &= site_value(bx,by)==value;
+                        if(interior) {++interior_count;interior_value_error=std::max(interior_value_error,
+                            std::abs(color[at*4+1]/255.f-value));}
+                        uint16_t h;std::memcpy(&h,&page.height[at*2],2);
+                        const float expected_height=(feature==0?distance:feature==1?gap:value)*.02f;
+                        max_height_error=std::max(max_height_error,std::abs(height.min_m+height.range_m*(h/65535.f)-expected_height));
+                    }
+                    const double rmse=std::sqrt(squared_error/count);
+                    std::printf("CELLULAR3_GPU feature=%d mip=%u color_rmse=%.6f height_error_m=%.9f interior=%u value_error=%.6f\n",
+                        feature,mip,rmse,max_height_error,interior_count,interior_value_error);
+                    CHECK(!bad && interior_count>100 && interior_value_error<.012f,
+                        "cellular3: constant-site BC7 blocks preserve the GPU feature attribute");
+                    CHECK(max_height_error<2e-6f,"cellular3: native physical height agrees within UNORM16 storage error");
+                    // A stable fingerprint supports before/after optimization
+                    // comparisons of all physical channels, not just averages.
+                    uint64_t fingerprint=14695981039346656037ull;
+                    for(const auto* channel:{&page.albedo,&page.normal,&page.orm,&page.aux,&page.height})
+                        for(uint8_t byte:*channel)fingerprint=(fingerprint^byte)*1099511628211ull;
+                    std::printf("CELLULAR3_PAGE feature=%d mip=%u hash=%016llx\n",feature,mip,
+                        static_cast<unsigned long long>(fingerprint));
+                }
+                auto regen=make_request(cells,0,2);compositor->release_preparation(regen.preparation_key());
+                PageData repeated;CHECK(run_fill(&regen,1)&&read_slot(2,repeated),"cellular3: native regeneration");
+                CHECK(repeated.albedo==reference.albedo && repeated.height==reference.height && repeated.normal==reference.normal,
+                    "cellular3: feature color, normals and relief survive preparation eviction byte-identically");
+                if(feature==0) {
+                    VkQueryPool qp=VK_NULL_HANDLE;
+                    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+                    info.queryType=VK_QUERY_TYPE_TIMESTAMP;info.queryCount=2;
+                    const bool created=vkCreateQueryPool(vulkan->device(),&info,nullptr,&qp)==VK_SUCCESS;
+                    CHECK(created,"cellular3: create page-fill timestamp queries");
+                    if(created) {
+                        VkPhysicalDeviceProperties props{};
+                        vkGetPhysicalDeviceProperties(vulkan->physical_device(),&props);
+                        std::vector<vt::VtFillRequest> requests;
+                        for(uint32_t slot=0;slot<16;++slot)requests.push_back(make_request(cells,0,slot));
+                        // Sustain work before sampling; two tiny warm-up fills
+                        // can finish while a desktop GPU is still at idle clocks.
+                        const auto warm_start=std::chrono::steady_clock::now();
+                        unsigned warm_batches=0;
+                        for(int sample=-1;sample<9;) {
+                            CHECK(tc.begin(err),err.c_str());vkCmdResetQueryPool(tc.cmd,qp,0,2);
+                            vkCmdWriteTimestamp(tc.cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,qp,0);
+                            compositor->fill(tc.cmd,requests.data(),requests.size());
+                            vkCmdWriteTimestamp(tc.cmd,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,qp,1);
+                            CHECK(tc.submit(err),err.c_str());uint64_t stamps[2]={};
+                            CHECK(vkGetQueryPoolResults(vulkan->device(),qp,0,2,sizeof(stamps),stamps,sizeof(uint64_t),
+                                VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WAIT_BIT)==VK_SUCCESS,"cellular3: read page-fill timestamps");
+                            if(sample>=0) {
+                                std::printf("CELLULAR3_FILL sample=%d pages=16 ms=%.6f\n",sample,
+                                    double(stamps[1]-stamps[0])*double(props.limits.timestampPeriod)/1e6);
+                                ++sample;
+                            } else {
+                                ++warm_batches;
+                                const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-warm_start).count();
+                                if(elapsed>=1.0) {
+                                    std::printf("CELLULAR3_WARMUP batches=%u wall_ms=%.3f\n",warm_batches,elapsed*1000);
+                                    sample=0;
+                                }
+                            }
+                        }
+                        vkDestroyQueryPool(vulkan->device(),qp,nullptr);
+                    }
+                }
+            }
+
+            {
+                QuadFixture cells;
+                cells.add_quad(v3(0,0,0),v3(1,0,0),v3(0,0,1),kQuadExtent,v3(0,1,0),kMatA);
+                cells.atlas=fix_a.atlas;cells.finalize(0x710030);
+                cells.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                cells.apply_tape_text(vt_cellular_test::query_stress,false);
+                for(uint16_t mip=0;mip<2;++mip) {
+                    auto request=make_request(cells,mip,mip);vt::VtPageHeight height;
+                    request.out_height=&height;PageData page;
+                    const bool filled=run_fill(&request,1)&&read_slot(mip,page);
+                    CHECK(filled,"cellular3: mixed seed/position query GPU fill");if(!filled)continue;
+                    float error=0;
+                    for(uint32_t y=16;y<50;++y)for(uint32_t x=16;x<50;++x) {
+                        const float px=((float(x)-4+.5f)*float(1u<<mip)-4)/kChartTpm;
+                        const float pz=((float(y)-4+.5f)*float(1u<<mip)-4)/kChartTpm;
+                        const auto query=[&](float dx,uint32_t seed,int feature) {
+                            return terrain_field::surface_cellular3(px+dx,0,pz,seed,feature);
+                        };
+                        const float gap=query(0,317,1),value=query(0,317,2),distance=query(0,317,0);
+                        float expected=gap+value;expected+=distance;expected+=query(.375f,317,2);
+                        expected+=query(.375f,0xffffffffu,2);expected+=gap;expected+=value;expected+=distance;
+                        uint16_t h;std::memcpy(&h,&page.height[(size_t(y)*kPageStore+x)*2],2);
+                        error=std::max(error,std::abs(height.min_m+height.range_m*(h/65535.f)-expected*.005f));
+                    }
+                    std::printf("CELLULAR3_MIXED mip=%u height_error_m=%.9f\n",mip,error);
+                    CHECK(height.version==1 && error<2e-6f,"cellular3: changed coordinates/seeds and returning queries match CPU");
+                }
+            }
+
+            {
+                // This point's second-nearest site is outside the first 27
+                // cells. Exercise the rare GPU extension with an exact source.
+                QuadFixture cells;
+                cells.add_quad(v3(0,0,0),v3(1,0,0),v3(0,0,1),kQuadExtent,v3(0,1,0),kMatA);
+                cells.atlas=fix_a.atlas;cells.finalize(0x710020);
+                cells.apply_tape({kMatA},std::vector<uint8_t>(4,255),1);
+                cells.apply_tape_text("const -24.61710739135742\nconst -17.83032608032227\nconst 3.077592134475708\n"
+                    "cellular3 317 gap r0 r1 r2\nconst 0.02\nmul r3 r4\nconst 1\nconst 0\n"
+                    "material 1 r6\nsource 1 r3 r3 r3 r6 r7 r6 r5 0 0.08\n",false);
+                auto request=make_request(cells,0,3);vt::VtPageHeight height;request.out_height=&height;PageData page;
+                const bool filled=run_fill(&request,1)&&read_slot(3,page);
+                CHECK(filled,"cellular3: native outer-ring fixture");
+                if(filled) {
+                    const float expected=terrain_field::surface_cellular3(-24.6171074f,-17.8303261f,3.07759213f,317,1)*.02f;
+                    uint16_t h;std::memcpy(&h,&page.height[(32*kPageStore+32)*2],2);
+                    const float error=std::abs(height.min_m+height.range_m*(h/65535.f)-expected);
+                    std::printf("CELLULAR3_GPU_OUTER height_error_m=%.9f\n",error);
+                    CHECK(height.version==1 && error<2e-6f,"cellular3: adaptive GPU search finds the farther competitor");
+                }
+            }
+
             std::printf("compositor stats: %llu pages, %llu skipped, %llu "
                         "mesh builds\n",
                         static_cast<unsigned long long>(
@@ -2509,6 +4353,7 @@ int main() {
         destroy_test_image(*vulkan, pool_normal);
         destroy_test_image(*vulkan, pool_orm);
         destroy_test_image(*vulkan, pool_aux);
+        destroy_test_image(*vulkan, pool_height);
         for (auto& imgs : slot_imgs)
             for (TestImage& img : imgs) destroy_test_image(*vulkan, img);
         tc.destroy();

@@ -305,6 +305,62 @@ static const bake_trace::Counter* find_counter(const bake_trace::Span& s,
     return nullptr;
 }
 
+static void test_analytic_settle_without_physics(const std::string& cache_dir,
+                                                uint64_t pebble_hash,
+                                                uint64_t twig_hash) {
+    auto spec = make_spec(pebble_hash, twig_hash);
+    spec.drops.clear();
+    spec.layers.resize(1); // analytically snapped pebbles
+    tileset::BakeInputs inputs{cache_dir};
+    tileset::SettlePlan expected;
+    std::string error;
+    CHECK(tileset::build_settle_plan(spec, inputs, expected, error),
+          "analytic generation: reference placement plan builds");
+    bake_trace::Collector collector;
+    auto* previous = bake_trace::current();
+    bake_trace::set_current(&collector);
+    tileset::SettledTorus result;
+    const bool ok = tileset::settle_tileset(spec, inputs, result, error);
+    bake_trace::set_current(previous);
+    CHECK(ok, "analytic generation: bake succeeds");
+    if (!ok || expected.layers.empty()) return;
+    const auto trace = collector.snapshot();
+    CHECK(find_counter(trace, "physics_worlds_created") == nullptr,
+          "analytic generation: no physics world is created");
+    CHECK(trace.children.empty(), "analytic generation: no simulation layer executes");
+    CHECK(result.instances.size() == 48 &&
+              result.instances.size() == expected.layers[0].nonphys.size(),
+          "analytic generation: all placed instances are retained");
+    bool same = result.instances.size() == expected.layers[0].nonphys.size();
+    for (size_t i = 0; same && i < result.instances.size(); ++i) {
+        const auto& a = result.instances[i];
+        const auto& b = expected.layers[0].nonphys[i];
+        same = a.child_hash == b.child_hash && a.scale == b.scale &&
+               a.layer == b.layer && std::memcmp(&a.pose, &b.pose, sizeof(a.pose)) == 0;
+    }
+    CHECK(same, "analytic generation: transforms and instance order match the placement plan");
+    CHECK(result.report.converged_all && result.report.layers.size() == 1 &&
+              result.report.layers[0].converged && result.report.layers[0].sim_time == 0,
+          "analytic generation: report preserves zero-time successful layers");
+    CHECK(result.report.pose_hash == 1469598103934665603ull,
+          "analytic generation: empty physics pose hash remains compatible");
+
+    // An authored physics layer with zero generated instances also needs no
+    // world. Presence of a physics flag alone must not trigger simulation.
+    spec.layers.clear();
+    spec.layers.emplace_back();
+    spec.layers[0].physics = true;
+    collector.reset();
+    bake_trace::set_current(&collector);
+    tileset::SettledTorus empty;
+    const bool empty_ok = tileset::settle_tileset(spec, inputs, empty, error);
+    bake_trace::set_current(previous);
+    CHECK(empty_ok && empty.instances.empty() && empty.report.converged_all,
+          "analytic generation: empty recipe retains a valid base");
+    CHECK(find_counter(collector.snapshot(), "physics_worlds_created") == nullptr,
+          "analytic generation: empty physics layer creates no world");
+}
+
 static void test_settle_trace_spans(const std::string& cache_dir,
                                     uint64_t pebble_hash, uint64_t twig_hash) {
     tileset::TilesetSpec spec = make_spec(pebble_hash, twig_hash);
@@ -320,6 +376,9 @@ static void test_settle_trace_spans(const std::string& cache_dir,
     if (!ok) return;
 
     bake_trace::Span snap = col.snapshot();
+    const auto* worlds = find_counter(snap, "physics_worlds_created");
+    CHECK(worlds && worlds->value == 1.0,
+          "trace: physical recipe creates one observable world");
     CHECK(snap.children.size() == 2,
           "trace: two settle-layer spans (drops batch + physics layer)");
     if (snap.children.size() != 2) return;
@@ -699,6 +758,7 @@ int main()
         uint64_t pebble_hash = pebble_ir.root_hashes[0];
         uint64_t twig_hash   = twig_ir.root_hashes[0];
         test_settle_tileset(root.string(), pebble_hash, twig_hash);
+        test_analytic_settle_without_physics(root.string(), pebble_hash, twig_hash);
         test_settle_trace_spans(root.string(), pebble_hash, twig_hash);
         test_build_settle_plan(root.string(), pebble_hash, twig_hash);
     }

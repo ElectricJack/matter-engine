@@ -34,6 +34,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <chrono>
+#include <cstdlib>
+#include "matter/log.h"
 
 namespace terrain_mesher {
 
@@ -412,6 +415,8 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                              float sector_size, float y_min, float y_max,
                              SectorMesh& out, seam::SectorBoundary* boundary_out,
                              std::string& err) {
+    using DiagnosticClock=std::chrono::steady_clock;
+    const auto diagnostic_start=DiagnosticClock::now();
     // Rung is a power-of-two voxel ladder around a 2 m base, extending in BOTH
     // directions:
     //   rung  3 -> 0.25 m      rung  0 -> 2 m (the base)
@@ -828,6 +833,7 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
     // `key` moved with it: no cell the owned mesh ever asks for -- ci in [0, n],
     // ck in [0, n] -- changes its bound test, its centroid arithmetic, or its
     // resulting position by so much as an ulp.
+    const auto density_end=DiagnosticClock::now();
     std::unordered_map<int64_t, CellVert> verts;
     auto key = [&](int ci, int cj, int ck) -> int64_t {
         return (int64_t(idx_k(ck)) * sy + int64_t(idx_j(cj))) * sx +
@@ -1140,6 +1146,7 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                 }
             }
 
+    const auto surface_end=DiagnosticClock::now();
     // ---- THE CONSTRAINED BORDER, once per face ------------------------------
     //
     // With the bridge gone (see OWNERSHIP UNDER THE CONTOUR RULE), the tile's
@@ -1622,6 +1629,12 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
     // The transient case they also covered -- a neighbour not yet resident --
     // now shows through as background rather than as a wall. That is the
     // intended trade: a streaming hole is momentary, a seam grid is not.
+    if(std::getenv("MATTER_GEOMETRY_PAGES_PROFILE")) {
+        const auto elapsed=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
+        MATTER_LOGI("geometry","mesher_profile tx=%lld ty=%lld tz=%lld rung=%d density_bytes=%llu triangles=%zu density_ms=%.3f surface_ms=%.3f boundary_ms=%.3f",
+            (long long)tx,(long long)ty,(long long)tz,rung,(unsigned long long)(d.size()*sizeof(float)),out.triangle_count(),
+            elapsed(diagnostic_start,density_end),elapsed(density_end,surface_end),elapsed(surface_end,DiagnosticClock::now()));
+    }
     return true;
 }
 

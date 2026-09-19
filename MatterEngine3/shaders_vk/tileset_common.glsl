@@ -30,12 +30,15 @@
 // TILESET_CHANNELS MUST equal VkSceneRenderer::kTilesetChannelCount (Phase 2's
 // horizon-map lighting grew the per-slot channel count from 4 to 6:
 // TILESET_CH_HORIZON_A/B).
-// Descriptor array size = TILESET_MAX_SLOTS * TILESET_CHANNELS = 48, indexed
-// slot*TILESET_CHANNELS + channel.
+// Source handles address a live bank followed by eight retained input banks.
+// Logical authoring slots remain 0..7. Captured material rows remap their
+// detail slot to the matching bank without changing the Wang coordinates.
+// Descriptor array size = 72 source handles * 6 channels = 432.
 #define TILESET_MAX_SLOTS 8
+#define TILESET_SOURCE_SLOTS (TILESET_MAX_SLOTS * 9)
 #define TILESET_CHANNELS  6
 layout(set = TILESET_SET, binding = TILESET_TEX_BINDING)
-    uniform sampler2DArray tilesetTex[TILESET_MAX_SLOTS * TILESET_CHANNELS];
+    uniform sampler2DArray tilesetTex[TILESET_SOURCE_SLOTS * TILESET_CHANNELS];
 layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     uniform TilesetParams {
     // Per-slot scalars, four to a vec4 (std140 would pad a float[] to 16 bytes
@@ -43,15 +46,15 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     // with TILESET_MAX_SLOTS > 4 `tile_size_m[slot]` no longer means "slot
     // `slot`", it means "component `slot` of vec4 0", which silently reads the
     // wrong slot for 0..3 and is out of bounds beyond that.
-    vec4 tile_size_m[TILESET_MAX_SLOTS / 4];
-    vec4 texels_per_meter[TILESET_MAX_SLOTS / 4];
-    vec4 height_min[TILESET_MAX_SLOTS / 4];
-    vec4 height_max[TILESET_MAX_SLOTS / 4];
+    vec4 tile_size_m[TILESET_SOURCE_SLOTS / 4];
+    vec4 texels_per_meter[TILESET_SOURCE_SLOTS / 4];
+    vec4 height_min[TILESET_SOURCE_SLOTS / 4];
+    vec4 height_max[TILESET_SOURCE_SLOTS / 4];
     // rgb + valid/has_horizon flag in .w: 0 = not loaded, 1 = loaded (no
     // horizon data, v1 .gtex), 2 = loaded with horizon data (v2 .gtex). See
-    // tileset_has_horizon below and VkSceneRenderer::write_tileset_params_buffer.
+    // tileset_has_horizon below and VkSceneRenderer::stage_tileset_params.
     // One vec4 per slot already, so this one indexes directly.
-    vec4 mean_albedo[TILESET_MAX_SLOTS];
+    vec4 mean_albedo[TILESET_SOURCE_SLOTS];
     // Phase 0 (near-band modulate-not-replace): whole-atlas mean of the slot's
     // ORM channel (occlusion, roughness, metallic; .w unused). The near band
     // divides the live detail's occlusion/roughness by these to get a
@@ -59,12 +62,12 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     // live tap contributes only its deviation -- the ORM counterpart of the
     // albedo ratio that already rides mean_albedo above. One vec4 per slot,
     // indexes directly.
-    vec4 mean_orm[TILESET_MAX_SLOTS];
+    vec4 mean_orm[TILESET_SOURCE_SLOTS];
     vec4 pom_a;                  // steps, refine_steps, max_distance_m, fade_band_m
     vec4 pom_b;                  // detail_fade_center_m, detail_fade_width_m, pom_max_relief_m, pom_max_march_m
     // Task 11: direction-to-sun (normalized, world space; xyz) + sun_intensity
     // (w). Uploaded per-frame from the renderer's lighting state (see
-    // VkSceneRenderer::set_lighting / write_tileset_params_buffer). y <= 0.0
+    // VkSceneRenderer::set_lighting / stage_tileset_params). y <= 0.0
     // means the sun is below the horizon; w <= 0.0 means no sun contribution
     // -- both are the caller's cue to skip the self-shadow march entirely.
     vec4 sun_dir_intensity;
@@ -95,7 +98,7 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
 } tileset;
 
 // Per-slot scalar accessor: unpacks the vec4-of-4-slots packing described in
-// the TilesetParams block above. `slot` must be in [0, TILESET_MAX_SLOTS).
+// the TilesetParams block above. `slot` must be in [0, TILESET_SOURCE_SLOTS).
 #define TILESET_SLOT_SCALAR(field, slot) (tileset.field[(slot) >> 2][(slot) & 3])
 
 #define TILESET_CH_ALBEDO    0
