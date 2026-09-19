@@ -28,7 +28,7 @@
 // vt_record_post_pass hooks establish it:
 //   begin_frame(serial, slot)     CPU only: refresh budgets, collect the
 //                                 graveyards, consume this slot's readback
-//   ensure_feedback(w, h)         resize the 1/8-res feedback target
+//   ensure_feedback(w, h)         resize the visible-feedback attachment and compact readback
 //   record_feedback_clear(cmd)  \ both BEFORE vkCmdBeginRendering — they are
 //   record_frame(cmd)           / transfers plus the filler's own passes
 //   ... the G-buffer pass writes feedback as storage ...
@@ -66,19 +66,47 @@
 // a buffer at init and are not live-editable.
 
 #include "vt_residency.h"
+#include "vt_periodic_material.h"
+#include "vt_density.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
+#include <utility>
 
 #include "matter/log.h"
 #include "matter/vt_budgets.h"
 #include "matter/vulkan_device.h"
 #include "profile.h"
 #include "vk_resources.h"
+#include "vk_pipeline.h"
 
 namespace vt {
+struct VtReceiverMaterialState {
+    std::shared_ptr<const VtPartSnapshot> inputs;
+    std::vector<VtReceiverMaterialChart> charts;
+    std::vector<VtReceiverMaterialGpu> records;
+    matter::VkBufferResource buffer;
+};
+using VtSurfacePairKey = std::array<uint64_t,5>;
+static VtSurfacePairKey surface_pair_key(const VtSurfaceConnectionPair& pair) {
+    return {pair.first,pair.first_rung,pair.second,pair.second_rung,pair.domain};
+}
+struct VtSurfacePairCache {
+    std::array<std::shared_ptr<const VtSurfaceBoundarySource>,2> sources;
+    std::array<std::vector<VtSurfaceLinkGpu>,2> links;
+};
+struct VtSurfaceLinkTable {
+    std::vector<uint8_t> bytes;
+    matter::VkBufferResource buffer;
+};
+struct VtSurfaceConnectionState {
+    std::vector<std::shared_ptr<const VtSurfaceBoundarySource>> sources;
+    std::map<VtSurfacePairKey,std::shared_ptr<const VtSurfacePairCache>> pairs;
+    std::map<uint32_t,std::shared_ptr<const VtSurfaceLinkTable>> tables;
+};
 namespace {
 
 // Fold a (part hash, discriminator) pair into one 64-bit map key by xoring in a
@@ -201,8 +229,28 @@ namespace {
 // RAII: the destructor runs shutdown(), which is idempotent and safe on an
 // object that was never init()ed (it early-outs on the null device). It does
 // NOT wait the device idle — see shutdown().
+struct VtResidency::FeedbackGpu {
+    matter::VkComputePipelineResource pipeline;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet sets[kFeedbackSlots]{};
+    ~FeedbackGpu() {
+        if (pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(pipeline.device, pool, nullptr);
+    }
+};
+
 VtResidency::VtResidency() = default;
 VtResidency::~VtResidency() { shutdown(); }
+
+// Ordinary draw rungs occupy 0..31. Independent modules use a private alias
+// and a separate parameterisation key; releasing a part cannot release them.
+static constexpr uint32_t kMaterialModuleRung = 32;
+static constexpr uint32_t kMaterialModuleParameterisation = 0x4d4f4401u;
+struct VtModuleOwner { VtResidency* runtime = nullptr; };
+VtMaterialModule::~VtMaterialModule() {
+    if (const auto owner=owner_.lock(); owner && owner->runtime)
+        owner->runtime->release_material_module(*this);
+}
 
 // ---------------------------------------------------------------------------
 // Resource creation
@@ -392,6 +440,7 @@ bool VtResidency::create_pool_image(uint32_t channel, VkFormat format,
     if (!create_array_image(*vulkan_, format, kVtPoolLayerEdgeTexels,
                             kVtPoolLayerEdgeTexels, layers,
                             VK_IMAGE_USAGE_SAMPLED_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                             out.image, out.view, out.memory, error,
                             VK_IMAGE_VIEW_TYPE_2D_ARRAY, &alloc_size)) {
@@ -428,8 +477,8 @@ void VtResidency::destroy_pool_image(PoolImage& image) {
 //
 // ORDER MATTERS at the top: the env/registry budget pass runs before pool_pages
 // is read, because that value is now one of the budgets. The pool size is then
-// derived either from pool_mb (at 7 bytes per page texel: BC7 + BC5 + BC7 +
-// RGBA8) or from an explicit page count, rounded UP to whole layers — and a
+// derived either from pool_mb (at 9 bytes per page texel: BC7 + BC5 + BC7 +
+// RGBA8 + R16) or from an explicit page count, rounded UP to whole layers — and a
 // layer count past the device's maxImageArrayLayers is a hard init failure, not
 // a clamp.
 //
@@ -446,6 +495,15 @@ void VtResidency::destroy_pool_image(PoolImage& image) {
 bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     if (ready_) return true;
     vulkan_ = &vulkan;
+    const char* event_log = std::getenv("MATTER_VT_EVENT_LOG");
+    event_log_ = event_log && event_log[0] != '\0' && event_log[0] != '0';
+    density_frame_ = 0;
+    if (const char* density_frame = std::getenv("MATTER_VT_DENSITY_FRAME")) {
+        char* end = nullptr;
+        const uint64_t parsed = std::strtoull(density_frame, &end, 10);
+        if (density_frame[0] >= '1' && density_frame[0] <= '9' &&
+            end != density_frame && *end == '\0') density_frame_ = parsed;
+    }
 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(vulkan.physical_device(), &properties);
@@ -460,8 +518,7 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
 
     // Derive pool page count. When pool_mb > 0 (the default), compute pages
     // from the VRAM budget; otherwise fall back to the explicit page count.
-    // Per-page byte cost: BC7(1) + BC5(1) + BC7(1) + RGBA8(4) = 7 bytes/texel.
-    constexpr uint64_t kBytesPerPageTexel = 1 + 1 + 1 + 4;  // 7
+    // Pool cost includes composed R16 height as well as BC7/BC5/BC7/RGBA8.
     if (budgets.pool_mb > 0) {
         const uint64_t budget_bytes =
             static_cast<uint64_t>(budgets.pool_mb) * 1024u * 1024u;
@@ -473,7 +530,7 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         // tripped -Wunused-variable in the -Werror smoke-test build.
         constexpr uint64_t kBytesPerLayer =
             static_cast<uint64_t>(kVtPoolLayerEdgeTexels) *
-            kVtPoolLayerEdgeTexels * kBytesPerPageTexel;
+            kVtPoolLayerEdgeTexels * kVtPoolBytesPerTexel;
         uint32_t layers_from_mb = static_cast<uint32_t>(
             std::min<uint64_t>(budget_bytes / kBytesPerLayer, 256u));
         if (layers_from_mb < 1u) layers_from_mb = 1u;
@@ -509,7 +566,7 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     // takes effect on the next frame.
     refresh_budgets();
     // Indirection table arena. 64 MiB = 16.7M entries: thousands of worst-case
-    // (8192^2, 5462-entry) tables, hundreds of thousands of typical ones — an
+    // (16384^2, 21846-entry) tables, hundreds of thousands of typical ones — an
     // order of magnitude past any working set the mesh budget admits, so the
     // arena is never the first wall. See VtTableAllocator's growth-policy note
     // for why it is pre-sized rather than grown live. Like max_variants it
@@ -523,7 +580,7 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
 
     const VkFormat formats[kVtChannelCount] = {
         VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC5_UNORM_BLOCK,
-        VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM};
+        VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16_UNORM};
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
         VkFormatProperties format_properties{};
         vkGetPhysicalDeviceFormatProperties(vulkan.physical_device(), formats[c],
@@ -629,7 +686,11 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         }
     }
 
-    slots_.reset(pool_pages_);
+    // Scratch destinations are disjoint from every resident/retiring slot.
+    // One batch is enough: queue-ordered copy-back consumes each candidate
+    // before the next frame can reuse this reserve. No extra image allocation.
+    slots_.reset(pool_pages_ - kMaxFillFlags);
+    material_pages_.reset(slots_.capacity());
     slots_.set_debug(debug_generations_);
     // Eviction hysteresis window. One frame is NOT enough in practice:
     // temporal jitter (DLSS) shifts which feedback blocks sample which pages,
@@ -646,6 +707,22 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     tables_.reset(indirection_words);
     tables_.set_debug(debug_generations_);
     slot_tier_.assign(pool_pages_, 0u);
+    slot_input_snapshots_.assign(pool_pages_, nullptr);
+    slot_geometry_lifetimes_.assign(pool_pages_, nullptr);
+    slot_occlusion_pages_.assign(pool_pages_,nullptr);
+    occlusion_pages_=std::make_unique<VtOcclusionPages>(pool_pages_+16u*uint32_t(kVtRetireHorizonFrames+1));
+    slot_material_mappings_.assign(pool_pages_, nullptr);
+    slot_content_revisions_.assign(pool_pages_, 0);
+    slot_page_metadata_.assign(pool_pages_, VtPageMetadata{});
+    if (!create_buffer(static_cast<VkDeviceSize>(pool_pages_) * sizeof(VtPageMetadata),
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, input_snapshot_buffer_, error)) {
+        shutdown();
+        return false;
+    }
+    input_indices_dirty_begin_ = 0;
+    input_indices_dirty_end_ = pool_pages_;
     enrich_queue_.clear();
     enrich_queued_slot_.clear();
     variants_.clear();           // grows lazily with the slot high-water mark
@@ -683,14 +760,15 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         filler_ = std::move(stub);
     }
 
-    // Pool bytes: BC7(1) + BC5(1) + BC7(1) + RGBA8(4) = 7 bytes/texel.
+    // Image bytes include the two-byte composed height; metadata is a separate buffer.
     const uint64_t layer_texels = static_cast<uint64_t>(kVtPoolLayerEdgeTexels) *
                                   kVtPoolLayerEdgeTexels;
     stats_ = Stats{};
     stats_.pool_capacity = pool_pages_;
+    stats_.replacement_reserve_pages = kMaxFillFlags;
     stats_.max_variants = max_variants_;
     stats_.mesh_budget_bytes = mesh_budget_bytes_;
-    stats_.pool_bytes = layer_texels * pool_layers * kBytesPerPageTexel;
+    stats_.pool_bytes = layer_texels * pool_layers * kVtPoolBytesPerTexel;
     stats_.indirection_capacity_bytes =
         static_cast<uint64_t>(indirection_words) * 4u;
     stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;
@@ -706,14 +784,20 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
 // It does NOT wait the device idle. Every caller must already have done so —
 // the destructor's caller included.
 void VtResidency::shutdown() {
+    // Invalidate the epoch before releasing any registration. Old leases can
+    // neither call this runtime nor bind to a later init that recycles slots.
+    module_owner_.reset();
+    modules_.clear();
     if (!vulkan_) {
         ready_ = false;
         return;
     }
     filler_.reset();
     enricher_.reset();
+    feedback_gpu_.reset();
     for (uint32_t c = 0; c < kVtChannelCount; ++c) destroy_pool_image(pool_[c]);
-    destroy_pool_image(feedback_);
+    feedback_source_lifetime_.reset();
+    feedback_source_view_ = VK_NULL_HANDLE;
     const VkDevice device = vulkan_->device();
     if (pool_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, pool_sampler_, nullptr);
@@ -722,6 +806,7 @@ void VtResidency::shutdown() {
     pool_sampler_ = VK_NULL_HANDLE;
     point_sampler_ = VK_NULL_HANDLE;
     destroy_buffer(variant_buffer_);
+    destroy_buffer(input_snapshot_buffer_);
     destroy_buffer(indirection_buffer_);
     destroy_buffer(pool_zero_staging_);
     for (uint32_t i = 0; i < kFeedbackSlots; ++i)
@@ -729,24 +814,515 @@ void VtResidency::shutdown() {
     for (uint32_t i = 0; i < kFeedbackSlots; ++i)
         destroy_buffer(feedback_readback_[i]);
     variants_.clear();
+    surface_connections_.reset();surface_connection_pairs_.clear();
     free_layers_.clear();
     layer_graveyard_.clear();
     debug_layer_reuse_.clear();
     layer_of_.clear();
     param_key_of_rung_.clear();   // M6: alias table dies with the layers
+    material_dependents_.clear();
     queue_.clear();
     queued_keys_.clear();
+    batch_.clear();
+    dirty_pages_.clear();
     enrich_queue_.clear();
     enrich_queued_slot_.clear();
     enrich_batch_.clear();
     slot_tier_.clear();
+    slot_input_snapshots_.clear();
+    slot_geometry_lifetimes_.clear();
+    slot_occlusion_pages_.clear();
+    slot_material_mappings_.clear();
+    slot_content_revisions_.clear();
+    retired_geometries_.clear();
+    occlusion_pages_.reset();
+    for (auto& candidate : fill_geometries_) candidate = {};
+    slot_page_metadata_.clear();
+    material_pages_.reset(0);
+    input_snapshot_.reset();
+    for (auto& retired : retired_input_snapshots_) retired = {};
+    for (auto& registered : input_snapshot_registry_) registered.reset();
+    input_indices_dirty_begin_ = UINT32_MAX;
+    input_indices_dirty_end_ = 0;
+    page_fills_paused_for_test_ = false;
+    input_update_pending_ = false;
+    slot_input_counts_.fill(0);
     variant_records_.clear();
     mesh_bytes_used_ = 0;
     warned_rejection_ = false;
     indirection_cleared_ = false;
     feedback_w_ = feedback_h_ = 0;
+    feedback_raster_w_ = feedback_raster_h_ = 0;
     ready_ = false;
     vulkan_ = nullptr;
+}
+
+bool VtResidency::set_input_snapshot(std::shared_ptr<const VtInputSnapshot> snapshot,
+                                    const std::vector<uint32_t>& changed_material_ids,
+                                    VtInvalidationReason reason) {
+    if (!ready_) return false;
+    if (snapshot) {
+        if (snapshot->index >= kVtMaxInputSnapshots || !snapshot->lifetime) return false;
+        const auto previous = input_snapshot_registry_[snapshot->index].lock();
+        if (previous && previous != snapshot) return false;
+    }
+    if (snapshot == input_snapshot_) {
+        input_update_pending_ = false;
+        return true;
+    }
+    if (snapshot) input_snapshot_registry_[snapshot->index] = snapshot;
+    input_snapshot_ = std::move(snapshot);
+    // Dirtiness is durable across successive edits. In particular, an A page
+    // waiting for B must not be retagged as C just because B -> C changed a
+    // different material. Only already-clean, unaffected pages can be retagged.
+    invalidate_material_content(changed_material_ids, reason);
+    rebind_compatible_input_snapshots(changed_material_ids);
+    input_update_pending_ = false;
+    return true;
+}
+
+std::array<std::shared_ptr<const VtInputSnapshot>, kVtMaxInputSnapshots>
+VtResidency::active_input_snapshots() const {
+    std::array<std::shared_ptr<const VtInputSnapshot>, kVtMaxInputSnapshots> result{};
+    for (uint32_t i = 0; i < kVtMaxInputSnapshots; ++i)
+        if (slot_input_counts_[i] || retired_input_snapshots_[i].snapshot ||
+            (input_snapshot_ && input_snapshot_->index == i))
+            result[i] = input_snapshot_registry_[i].lock();
+    return result;
+}
+
+void VtResidency::retire_slot_input_snapshot(uint32_t slot) {
+    auto& previous = slot_input_snapshots_[slot];
+    if (!previous) return;
+    --slot_input_counts_[previous->index];
+    auto& retired = retired_input_snapshots_[previous->index];
+    retired.retire_serial = std::max(retired.retire_serial,
+                                    frame_index_ + kVtRetireHorizonFrames);
+    // The weak registry prevents a different live object from sharing this
+    // index. There are at most eight entries, regardless of page/edit count.
+    retired.snapshot = std::move(previous);
+}
+
+void VtResidency::set_slot_input_snapshot(uint32_t slot,
+                                        std::shared_ptr<const VtInputSnapshot> snapshot) {
+    const uint32_t index = snapshot ? snapshot->index : kVtNoInputSnapshot;
+    if (slot_input_snapshots_[slot] == snapshot && slot_page_metadata_[slot].input_snapshot == index) return;
+    retire_slot_input_snapshot(slot);
+    slot_input_snapshots_[slot] = std::move(snapshot);
+    if (slot_input_snapshots_[slot]) ++slot_input_counts_[index];
+    slot_page_metadata_[slot].input_snapshot = index;
+    const auto owner=layer_of_.find(slots_.owner(slot).variant_key);
+    if(owner!=layer_of_.end()) {
+        auto& v=variants_[owner->second];
+        if(v.live && v.tail_slot==slot && v.boundary_source && !dirty_pages_.count(slot)) {
+            auto next=std::make_shared<VtSurfaceBoundarySource>(*v.boundary_source);
+            next->material_inputs=slot_input_snapshots_[slot];next->metadata=slot_page_metadata_[slot];
+            v.boundary_source=std::move(next);
+        }
+    }
+    input_indices_dirty_begin_ = std::min(input_indices_dirty_begin_, slot);
+    input_indices_dirty_end_ = std::max(input_indices_dirty_end_, slot + 1u);
+}
+
+std::shared_ptr<const VtSurfaceBoundarySource> VtResidency::surface_boundary_source(uint32_t slot) const {
+    if(!slot || slot>variants_.size())return {};
+    const auto& source=variants_[slot-1].boundary_source;
+    return source && surface_boundary_source_current(*source) ? source : nullptr;
+}
+
+bool VtResidency::surface_boundary_source_current(const VtSurfaceBoundarySource& source) const {
+    if(!source.slot || source.slot>variants_.size())return false;
+    const auto& v=variants_[source.slot-1];
+    return v.live && v.tail_filled && v.tail_ready_serial<=frame_index_ &&
+        uint32_t(v.table_generation)==source.generation && v.inputs==source.inputs &&
+        v.content_revision==source.content_revision && v.boundary_source.get()==&source &&
+        source.geometry.lifetime && source.geometry.boundary &&
+        slot_geometry_lifetimes_[v.tail_slot]==source.geometry.lifetime &&
+        slot_input_snapshots_[v.tail_slot]==source.material_inputs &&
+        slot_content_revisions_[v.tail_slot]==source.content_revision &&
+        !dirty_pages_.count(v.tail_slot);
+}
+
+bool VtResidency::set_surface_connections(const std::vector<VtSurfaceConnectionPair>& pairs,std::string& error) {
+    if(pairs.size()>65536){error="surface connection pair budget exceeded";return false;}
+    for(const auto& p:pairs)if(!p.domain || !p.first || !p.second || p.first==p.second) {
+        error="surface connections require distinct owners and an explicit continuity domain";return false;
+    }
+    auto canonical=pairs;
+    for(auto& pair:canonical) {
+        if(std::tie(pair.second,pair.second_rung)<std::tie(pair.first,pair.first_rung)) {
+            std::swap(pair.first,pair.second);std::swap(pair.first_rung,pair.second_rung);
+        }
+    }
+    std::sort(canonical.begin(),canonical.end(),[](const auto& a,const auto& b){
+        return surface_pair_key(a)<surface_pair_key(b);
+    });
+    const auto equal=[](const auto& a,const auto& b){return surface_pair_key(a)==surface_pair_key(b);};
+    canonical.erase(std::unique(canonical.begin(),canonical.end(),equal),canonical.end());
+    if(canonical.size()!=surface_connection_pairs_.size() ||
+       !std::equal(canonical.begin(),canonical.end(),surface_connection_pairs_.begin(),equal)) {
+        surface_connection_pairs_=std::move(canonical);surface_connections_changed_=true;
+    }
+    error.clear();return true;
+}
+
+void VtResidency::publish_surface_connections(std::string& error) {
+    PROFILE_SCOPE("vt.surface_connections");
+    if (!surface_walk_enabled_) return;
+    if(surface_connection_pairs_.empty() && !surface_connections_)return;
+    std::vector<std::shared_ptr<const VtSurfaceBoundarySource>> sources;
+    sources.reserve(surface_connection_pairs_.size()*2);
+    for(const auto& pair:surface_connection_pairs_) {
+        sources.push_back(surface_boundary_source(slot_for(pair.first,pair.first_rung)));
+        sources.push_back(surface_boundary_source(slot_for(pair.second,pair.second_rung)));
+    }
+    const auto sync=[&](const std::shared_ptr<VtSurfaceConnectionState>& state,bool clear) {
+        if(!state)return;
+        for(const auto& table:state->tables) {
+            if(table.first>=variant_records_.size())continue;
+            auto& record=variant_records_[table.first];const uint64_t address=clear?0:table.second->buffer.address;
+            if(record.surface_links_low!=uint32_t(address) || record.surface_links_high!=uint32_t(address>>32)) {
+                record.surface_links_low=uint32_t(address);record.surface_links_high=uint32_t(address>>32);
+                variant_records_dirty_=true;
+            }
+        }
+    };
+    if(!surface_connections_changed_ && surface_connections_ && sources==surface_connections_->sources) {
+        sync(surface_connections_,false);return;
+    }
+    auto next=std::make_shared<VtSurfaceConnectionState>();next->sources=std::move(sources);
+    std::map<uint32_t,std::vector<VtSurfaceLinkGpu>> links;
+    std::map<uint32_t,std::shared_ptr<const VtSurfaceBoundarySource>> owners;
+    size_t total_links=0;
+    bool valid=true;
+    for(size_t pair_index=0;pair_index<surface_connection_pairs_.size() && valid;++pair_index) {
+        const auto& pair=surface_connection_pairs_[pair_index];
+        const auto a=next->sources[pair_index*2],b=next->sources[pair_index*2+1];
+        if(!a || !b || a->slot==b->slot)continue;
+        const auto key=surface_pair_key(pair);
+        std::shared_ptr<const VtSurfacePairCache> cached;
+        if(surface_connections_) {
+            const auto old=surface_connections_->pairs.find(key);
+            if(old!=surface_connections_->pairs.end() && old->second->sources[0]==a && old->second->sources[1]==b)
+                cached=old->second;
+        }
+        if(cached) {
+            next->pairs.emplace(key,cached);
+            for(int direction=0;direction<2;++direction) {
+                const auto& from=cached->sources[direction];
+                const auto& added=cached->links[direction];
+                if(added.size()>262144-total_links) {
+                    error="surface connection GPU storage budget exceeded";valid=false;break;
+                }
+                total_links+=added.size();owners[from->slot-1]=from;
+                auto& records=links[from->slot-1];records.insert(records.end(),added.begin(),added.end());
+            }
+            continue;
+        }
+        // This publication implements continuous world-authored direct sources.
+        // Independently mapped modules need their own retained mapping contract.
+        if(!a->inputs->context.surface_world_anchored || !b->inputs->context.surface_world_anchored ||
+           a->inputs->context.finite_sources || b->inputs->context.finite_sources ||
+           a->metadata.mapping_count || b->metadata.mapping_count ||
+           a->material_inputs!=b->material_inputs || a->metadata.height.version!=1 ||
+           std::memcmp(&a->metadata.height,&b->metadata.height,sizeof(VtPageHeight)) ||
+           a->inputs->surface->tape_hash!=b->inputs->surface->tape_hash ||
+           a->inputs->surface->tape_text!=b->inputs->surface->tape_text)continue;
+        auto compiled=std::make_shared<VtSurfacePairCache>();compiled->sources={a,b};
+        ++stats_.surface_pairs_compiled_total;
+        for(int direction=0;direction<2 && valid;++direction) {
+            const auto from=direction?b:a,to=direction?a:b;
+            std::vector<VtSurfaceBoundaryLink> matches;
+            const float* fm=from->inputs->context.surface_local_to_world;
+            const float* tm=to->inputs->context.surface_local_to_world;
+            valid=vt_link_surface_boundaries(*from->geometry.boundary,fm,pair.domain,
+                *to->geometry.boundary,tm,pair.domain,matches,error);
+            if(!valid)break;
+            auto& records=links[from->slot-1];owners[from->slot-1]=from;
+            for(const auto& match:matches) {
+                if(++total_links>262144){error="surface connection GPU storage budget exceeded";valid=false;break;}
+                const auto& edge=from->geometry.boundary->edges[match.source_edge];
+                const auto& target=to->geometry.boundary->edges[match.target_edge];
+                VtSurfaceLinkGpu record;
+                record.edge[0]=edge.triangle;record.edge[1]=edge.edge;
+                record.edge[2]=target.triangle;record.edge[3]=target.chart;
+                record.target[0]=to->slot;record.target[1]=to->generation;
+                record.target[2]=to->inputs->geometry->atlas.atlas_w;
+                record.target[3]=to->inputs->geometry->atlas.atlas_h;
+                record.metadata=to->metadata;
+                record.interval[0]=float(match.source_begin);record.interval[1]=float(match.source_end);
+                record.interval[2]=float(match.target_begin);record.interval[3]=float(match.target_end);
+                for(int row=0;row<3;++row) {
+                    for(int col=0;col<3;++col)for(int k=0;k<3;++k)
+                        record.transform[row*4+col]+=tm[k*4+row]*fm[k*4+col];
+                    double offset=0;for(int k=0;k<3;++k)
+                        offset+=double(tm[k*4+row])*(double(fm[k*4+3])-tm[k*4+3]);
+                    record.transform[row*4+3]=float(offset);
+                }
+                records.push_back(record);
+                compiled->links[direction].push_back(record);
+            }
+        }
+        if(valid)next->pairs.emplace(key,std::move(compiled));
+    }
+    for(auto& item:links) {
+        if(!valid)break;
+        auto& records=item.second;if(records.empty())continue;
+        std::sort(records.begin(),records.end(),[](const auto& a,const auto& b){
+            return std::tie(a.edge[0],a.edge[1],a.interval[0],a.target[0])<
+                   std::tie(b.edge[0],b.edge[1],b.interval[0],b.target[0]);
+        });
+        size_t edge_count=0;
+        for(size_t i=0;i<records.size();++i) {
+            const bool same=i && records[i-1].edge[0]==records[i].edge[0] && records[i-1].edge[1]==records[i].edge[1];
+            edge_count=same?edge_count+1:1;
+            if(edge_count>64 || (same && records[i-1].interval[1]>records[i].interval[0]+1e-6f)) {
+                error="surface connection destinations overlap or exceed the per-edge bound";valid=false;break;
+            }
+        }
+        if(!valid)break;
+        const auto& owner=owners[item.first];VtSurfaceLinksHeaderGpu header;
+        header.metadata=owner->metadata;header.source[0]=owner->slot;header.source[1]=owner->generation;
+        header.source[2]=uint32_t(records.size());
+        std::vector<uint8_t> bytes(sizeof(header)+records.size()*sizeof(VtSurfaceLinkGpu));
+        std::memcpy(bytes.data(),&header,sizeof(header));
+        std::memcpy(bytes.data()+sizeof(header),records.data(),records.size()*sizeof(VtSurfaceLinkGpu));
+        // Preserve the exact GPU address of every unaffected owner. Retained
+        // states keep old source leases alive for frames already in flight.
+        if(surface_connections_) {
+            const auto old=surface_connections_->tables.find(item.first);
+            if(old!=surface_connections_->tables.end() && old->second->bytes==bytes) {
+                next->tables.emplace(item.first,old->second);continue;
+            }
+        }
+        auto table=std::make_shared<VtSurfaceLinkTable>();table->bytes=std::move(bytes);
+        valid=matter::create_buffer(*vulkan_,table->bytes.size(),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,table->buffer,error) &&
+            matter::upload_buffer(*vulkan_,table->buffer,table->bytes.data(),table->bytes.size(),0,error);
+        if(valid) {++stats_.surface_table_uploads_total;next->tables.emplace(item.first,std::move(table));}
+    }
+    if(!valid) {next->tables.clear();MATTER_LOGW("vt-surface-links","%s",error.c_str());}
+    sync(surface_connections_,true);
+    if(surface_connections_) {
+        auto& retired=retired_geometries_[surface_connections_.get()];
+        retired.retire_serial=frame_index_+kVtRetireHorizonFrames;retired.lifetime=surface_connections_;
+    }
+    surface_connections_=std::move(next);surface_connections_changed_=false;
+    sync(surface_connections_,false);
+    stats_.surface_link_tables=uint32_t(surface_connections_->tables.size());
+    stats_.surface_link_table_bytes=0;
+    for(const auto& table:surface_connections_->tables)stats_.surface_link_table_bytes+=table.second->bytes.size();
+}
+
+void VtResidency::retire_slot_geometry(uint32_t slot) {
+    retire_slot_occlusion(slot);
+    if(slot_page_metadata_[slot].geometry.page_flags&kVtCoverageOnly) {
+        --stats_.coverage_only_pages;
+        slot_page_metadata_[slot].geometry.page_flags&=~kVtCoverageOnly;
+    }
+    auto& previous = slot_geometry_lifetimes_[slot];
+    if (!previous) return;
+    auto& retired = retired_geometries_[previous.get()];
+    retired.retire_serial = std::max(retired.retire_serial,
+                                    frame_index_ + kVtRetireHorizonFrames);
+    retired.lifetime = std::move(previous);
+}
+
+void VtResidency::set_slot_geometry(uint32_t slot, const VtDrawGeometry& geometry) {
+    retire_slot_occlusion(slot);
+    if (slot_geometry_lifetimes_[slot] != geometry.lifetime) {
+        retire_slot_geometry(slot);
+        slot_geometry_lifetimes_[slot] = geometry.lifetime;
+    }
+    // A producer cannot publish an unowned device address. Legacy pages use
+    // zero addresses and continue to take the existing chart-local route.
+    if(slot_page_metadata_[slot].geometry.page_flags&kVtCoverageOnly) --stats_.coverage_only_pages;
+    slot_page_metadata_[slot].geometry = geometry.lifetime ? geometry.gpu : VtDrawGeometryGpu{};
+    if(slot_page_metadata_[slot].geometry.page_flags&kVtCoverageOnly) ++stats_.coverage_only_pages;
+}
+
+void VtResidency::retire_occlusion(std::shared_ptr<VtOcclusionPages::Page> page) {
+    if(!page)return;
+    auto& retired=retired_geometries_[page.get()];
+    retired.retire_serial=std::max(retired.retire_serial,frame_index_+kVtRetireHorizonFrames);
+    retired.lifetime=std::move(page);
+}
+
+void VtResidency::retire_slot_occlusion(uint32_t slot) {
+    if(slot_occlusion_pages_[slot]) {
+        retire_occlusion(std::move(slot_occlusion_pages_[slot]));
+        --stats_.occlusion_pages;
+    }
+    slot_page_metadata_[slot].occlusion_address=0;
+}
+
+void VtResidency::retire_slot_material_mapping(uint32_t slot) {
+    auto& previous=slot_material_mappings_[slot];
+    if (!previous) return;
+    auto& retired=retired_geometries_[previous.get()];
+    retired.retire_serial=std::max(retired.retire_serial,frame_index_+kVtRetireHorizonFrames);
+    retired.lifetime=std::move(previous);
+}
+
+void VtResidency::set_slot_material_mapping(uint32_t slot,
+    std::shared_ptr<VtReceiverMaterialState> mapping) {
+    if (slot_material_mappings_[slot]!=mapping) {
+        retire_slot_material_mapping(slot);
+        slot_material_mappings_[slot]=mapping;
+    }
+    auto& metadata=slot_page_metadata_[slot];
+    const uint64_t address=mapping?mapping->buffer.address:0;
+    metadata.mapping_address[0]=uint32_t(address);
+    metadata.mapping_address[1]=uint32_t(address>>32);
+    metadata.mapping_count=mapping?uint32_t(mapping->records.size()):0;
+    input_indices_dirty_begin_=std::min(input_indices_dirty_begin_,slot);
+    input_indices_dirty_end_=std::max(input_indices_dirty_end_,slot+1);
+}
+
+bool VtResidency::bind_receiver_materials(uint64_t hash,uint32_t rung,
+    const std::vector<VtReceiverMaterialChart>& charts,std::string& error) {
+    const auto fail=[&](const char* message){error=message;return false;};
+    const uint32_t slot=slot_for(hash,rung);
+    if (!ready_ || !slot || rung>=32) return fail("receiver material owner is not registered");
+    auto& receiver=variants_[slot-1];
+    if (!receiver.live || receiver.rung==kMaterialModuleRung) return fail("material modules cannot receive module mappings");
+    try {
+        auto next=std::make_shared<VtReceiverMaterialState>();
+        next->inputs=receiver.inputs;next->charts=charts;
+        if (!charts.empty()) {
+            std::array<float,2> envelope;
+            if (!vt_receiver_height_range(*receiver.inputs,envelope,error)) return false;
+            const size_t count=receiver.inputs->geometry->atlas.charts.size();
+            if (!count || count>65536 || charts.size()>count) return fail("receiver material chart count exceeds coverage encoding");
+            next->records.resize(count);
+            for (const auto& chart:charts) {
+                const auto& lease=chart.module;
+                if (!lease || lease->owner_.lock()!=module_owner_ || !lease->slot_ || lease->slot_>variants_.size())
+                    return fail("receiver material module belongs to a different runtime");
+                const auto& module=variants_[lease->slot_-1];
+                if (!module.live || module.rung!=kMaterialModuleRung || module.table_generation!=lease->generation_ ||
+                    module.variant_hash!=lease->hash_) return fail("receiver material module has expired");
+                if (chart.chart>=count || next->records[chart.chart].binding[0]) return fail("duplicate or absent receiver material chart");
+                auto& record=next->records[chart.chart];
+                if (!vt_receiver_material_chart(*receiver.inputs,module.inputs->context.periodic,chart,record,error)) return false;
+                record.binding[0]=lease->slot_;record.binding[1]=uint32_t(lease->generation_);
+                std::array<float,2> range;
+                if (!vt_receiver_height_range(*module.inputs,range,error)) return false;
+                envelope[0]=std::min(envelope[0],range[0]+chart.datum_m);
+                envelope[1]=std::max(envelope[1],range[1]+chart.datum_m);
+            }
+            if (!std::isfinite(envelope[0]) || !std::isfinite(envelope[1]) ||
+                !std::isfinite(envelope[1]-envelope[0])) return fail("receiver material height envelope overflow");
+            for (auto& record:next->records) {
+                record.metrics[2]=envelope[0];record.metrics[3]=envelope[1]-envelope[0];
+            }
+        }
+        const auto same=[&](const std::shared_ptr<VtReceiverMaterialState>& current) {
+            return current && current->inputs==next->inputs && current->records.size()==next->records.size() &&
+                (next->records.empty() || std::memcmp(current->records.data(),next->records.data(),
+                    next->records.size()*sizeof(VtReceiverMaterialGpu))==0);
+        };
+        if(same(receiver.material_candidate)){error.clear();return true;}
+        if(same(receiver.material_published)){receiver.material_candidate.reset();error.clear();return true;}
+        if(!next->records.empty()) {
+            if (!matter::create_buffer(*vulkan_,next->records.size()*sizeof(VtReceiverMaterialGpu),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,next->buffer,error) ||
+                !matter::upload_buffer(*vulkan_,next->buffer,next->records.data(),next->buffer.size,0,error)) return false;
+        }
+        // The table is immutable before publication. The old published table
+        // remains retained by its resident pages and all earlier GPU readers.
+        receiver.material_candidate=std::move(next);
+        error.clear();return true;
+    } catch (const std::bad_alloc&) {return fail("receiver material mapping allocation failed; previous mapping retained");}
+}
+
+void VtResidency::publish_receiver_materials() {
+    for (auto& receiver:variants_) {
+        if (!receiver.live || receiver.rung==kMaterialModuleRung) continue;
+        // A compatible LOD promotion or a source edit owns a new snapshot.
+        // It cannot silently inherit a projection validated for the old one.
+        if (receiver.material_candidate && receiver.material_candidate->inputs!=receiver.inputs)
+            receiver.material_candidate.reset();
+        if (receiver.material_published && receiver.material_published->inputs!=receiver.inputs)
+            receiver.material_published.reset();
+        auto& candidate=receiver.material_candidate;
+        if (!candidate) continue;
+        bool ready=true;
+        for (const auto& chart:candidate->charts)
+            ready=ready && material_module_binding(chart.module).slot!=0;
+        if (!ready) continue;
+        // A removed/narrowed mapping needs full finite material again. Refill
+        // those coverage-only pages while their previous mapping remains live;
+        // publish the new table only once every incompatible page is complete.
+        for(uint32_t slot=0;slot<slots_.capacity();++slot) {
+            const auto& owner=slots_.owner(slot);
+            if(!owner.live || owner.variant_key!=receiver.param_key ||
+               !(slot_page_metadata_[slot].geometry.page_flags&kVtCoverageOnly) ||
+               slot_content_revisions_[slot]!=receiver.content_revision) continue;
+            if(vt_receiver_material_page(*receiver.inputs,candidate->records,
+                    owner.page.mip,owner.page.px,owner.page.py)) continue;
+            ready=false;
+            dirty_pages_.try_emplace(slot,PendingFill{receiver.layer,owner.page,kVtMaxMips,
+                frame_index_,UINT32_MAX,receiver.table_generation,receiver.content_revision});
+            queue_page(receiver,owner.page,true);
+        }
+        if(!ready) continue;
+        receiver.material_published=std::move(candidate);
+        for (uint32_t slot=0;slot<slots_.capacity();++slot) {
+            const auto& owner=slots_.owner(slot);
+            if (owner.live && owner.variant_key==receiver.param_key &&
+                slot_content_revisions_[slot]==receiver.content_revision &&
+                receiver.indirection.is_mapped(owner.page.mip,owner.page.px,owner.page.py))
+                set_slot_material_mapping(slot,receiver.material_published);
+        }
+    }
+}
+
+void VtResidency::rebind_compatible_input_snapshots(
+        const std::vector<uint32_t>& changed_material_ids) {
+    std::vector<uint8_t> affected(variants_.size(), 0);
+    for (uint32_t id : changed_material_ids) {
+        const auto found = material_dependents_.find(id);
+        if (found == material_dependents_.end()) continue;
+        for (uint32_t layer : found->second) affected[layer] = 1;
+    }
+    for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
+        const auto& owner = slots_.owner(slot);
+        if (!owner.live || slot_input_snapshots_[slot] == input_snapshot_ ||
+            dirty_pages_.find(slot) != dirty_pages_.end()) continue;
+        const auto found = layer_of_.find(owner.variant_key);
+        if (found == layer_of_.end() || affected[found->second]) continue;
+        const auto& variant = variants_[found->second];
+        if (!variant.tail_filled || !variant.indirection.is_mapped(
+                owner.page.mip, owner.page.px, owner.page.py)) continue;
+        set_slot_input_snapshot(slot, input_snapshot_);
+    }
+}
+
+void VtResidency::record_input_snapshot_indices(VkCommandBuffer cmd) {
+    if (input_indices_dirty_begin_ >= input_indices_dirty_end_) return;
+    buffer_barrier(cmd, input_snapshot_buffer_.buffer,
+                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    // vkCmdUpdateBuffer captures these CPU bytes at record time. Multiple
+    // frames can be recorded before submission without rewriting staging used
+    // by an earlier reader. Updates are four-byte aligned and <= 65536 bytes.
+    constexpr uint32_t max_records = 65536u / sizeof(VtPageMetadata);
+    for (uint32_t begin = input_indices_dirty_begin_; begin < input_indices_dirty_end_;) {
+        const uint32_t count = std::min(max_records, input_indices_dirty_end_ - begin);
+        vkCmdUpdateBuffer(cmd, input_snapshot_buffer_.buffer,
+                          static_cast<VkDeviceSize>(begin) * sizeof(VtPageMetadata),
+                          static_cast<VkDeviceSize>(count) * sizeof(VtPageMetadata),
+                          slot_page_metadata_.data() + begin);
+        begin += count;
+    }
+    buffer_barrier(cmd, input_snapshot_buffer_.buffer,
+                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    input_indices_dirty_begin_ = UINT32_MAX;
+    input_indices_dirty_end_ = 0;
 }
 
 VkImageView VtResidency::pool_view(uint32_t channel) const {
@@ -765,7 +1341,12 @@ void VtResidency::set_filler(std::unique_ptr<VtPageFiller> filler) {
 
 void VtResidency::set_enricher(std::unique_ptr<VtPageEnricher> enricher) {
     enricher_ = std::move(enricher);
+    // Context-dependent ORM must become private before enrichment is queued.
+    if (enricher_ && max_enrich_per_frame_ && !enricher_->supports_separate_occlusion() &&
+        (material_pages_.shared_references() != 0 || stats_.coverage_only_pages))
+        invalidate_all_content();
     stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;
+    if(ready_ && enricher_)queue_resident_enrichment();
     if (!enricher_) {
         // Tier 2 just went away: forget every candidate and every tier bit so
         // the stats never claim pages are enriched when nothing enriches them.
@@ -785,20 +1366,18 @@ void VtResidency::note_rejection(const char* reason, size_t wanted_bytes) {
     ++stats_.rejected_variants;
     if (warned_rejection_) return;
     warned_rejection_ = true;
-    // WARN ONCE, loudly. A rejected variant does not fail -- it falls back to
-    // the legacy per-material path, which renders but ignores the authored
-    // surfaces() classification. In a streamed world that shows up as a uniform
-    // far field with a visible boundary, and nothing else in the pipeline
-    // reports it. Raise the knobs named here rather than guessing from pixels.
+    // Warn once and retain the rejection counter. Initial admission falls
+    // back to the legacy material path; a compatible promotion retains its
+    // existing texture owner. The reason names the exhausted resource.
     const double used_mb =
         static_cast<double>(mesh_bytes_used_) / (1024.0 * 1024.0);
     const double budget_mb =
         static_cast<double>(mesh_budget_bytes_) / (1024.0 * 1024.0);
     const double wanted_kb = static_cast<double>(wanted_bytes) / 1024.0;
     MATTER_LOGW("vt",
-                 "WARNING: variant registration REJECTED (%s) -- this "
-                 "part falls back to the legacy path and ignores its "
-                 "surfaces() classification. variants=%u/%u, mesh=%.1f/%.1f "
+                 "WARNING: variant registration REJECTED (%s) -- "
+                 "unadmitted rungs use their existing fallback. "
+                 "variants=%u/%u, mesh=%.1f/%.1f "
                  "MiB, indirection=%.1f/%.1f MiB, wanted=%.1f KiB. Raise "
                  "MATTER_VT_MAX_VARIANTS / MATTER_VT_MESH_BUDGET_MB / "
                  "MATTER_VT_INDIRECTION_MB / MATTER_VT_POOL_PAGES as named. "
@@ -814,6 +1393,14 @@ void VtResidency::note_rejection(const char* reason, size_t wanted_bytes) {
 }
 
 void VtResidency::refresh_indirection_stats() {
+    if(occlusion_pages_) {
+        occlusion_pages_->collect();
+        stats_.occlusion_allocated_bytes=occlusion_pages_->allocated_bytes();
+        stats_.occlusion_retained_pages=occlusion_pages_->retained_pages();
+    }
+    stats_.material_pages = material_pages_.used();
+    stats_.shared_material_references = material_pages_.shared_references();
+    stats_.material_read_pages = material_pages_.read_pages();
     stats_.indirection_used_bytes =
         static_cast<uint64_t>(tables_.used_words()) * 4u;
     stats_.tables_live = tables_.live_blocks();
@@ -828,23 +1415,34 @@ bool VtResidency::context_storage_owned_for_test(
     const uint32_t layer = transport_slot - 1u;
     if (layer >= variants_.size()) return false;
     const VariantRung& v = variants_[layer];
-    const auto data_or_null = [](const auto& owned) {
-        return owned.empty() ? nullptr : owned.data();
-    };
-    return v.live && v.context.atlas == &v.atlas &&
-           v.context.positions == data_or_null(v.positions) &&
-           v.context.normals == data_or_null(v.normals) &&
-           v.context.surface_uvs == data_or_null(v.surface_uvs) &&
-           v.context.material_table == data_or_null(v.material_table) &&
-           v.context.material_ids == data_or_null(v.material_ids) &&
-           v.context.tint_rgba == data_or_null(v.tint_rgba) &&
-           v.context.indices == data_or_null(v.indices) &&
-           v.context.surface_weights == data_or_null(v.surface_weights) &&
-           v.context.surface_materials == data_or_null(v.surface_materials) &&
-           v.context.surface_tape_text ==
-               (v.surface_tape_text.empty() ? nullptr
-                                            : v.surface_tape_text.c_str()) &&
-           v.context.surface_lanes == data_or_null(v.surface_lanes);
+    return v.live && v.inputs && v.inputs->owns_context_inputs();
+}
+
+// Stage into an empty record before replacing a live mesh. Cold registration
+// uses the same adoption path; all borrowed fields are repointed at owned data.
+void VtResidency::copy_variant_mesh(VariantRung& v,
+    const chart_atlas::ChartAtlasRung& atlas, const VtPartContext& context) {
+    PROFILE_SCOPE("vt.mesh_copy");
+    auto chosen = context;
+    chosen.variant_hash = v.variant_hash;
+    chosen.rung = v.rung;
+    if (vt_context_has_surface_tape(context))
+        chosen.surface_tape_hash = vt_page_content_salt(
+            context.surface_tape_hash, vt_tape_gpu_enabled() ? 3u : 2u);
+    v.inputs = VtPartSnapshot::capture(atlas, chosen);
+    v.finest_texels_per_meter = 0;
+    for (const auto& chart : atlas.charts)
+        v.finest_texels_per_meter = std::max(v.finest_texels_per_meter, chart.texels_per_meter);
+    v.mesh_bytes = vt_variant_mesh_bytes(atlas, context);
+    PROFILE_COUNT("vt.mesh_copy_bytes", v.mesh_bytes);
+}
+
+// Page mappings, alias references and readiness stay with the owner. Any
+// recorded request or running CPU job keeps its own immutable source snapshot.
+void VtResidency::swap_variant_mesh(VariantRung& a, VariantRung& b) {
+    std::swap(a.inputs, b.inputs);
+    std::swap(a.mesh_bytes, b.mesh_bytes);
+    std::swap(a.finest_texels_per_meter, b.finest_texels_per_meter);
 }
 
 // Implements the header's contract; two things about the IMPLEMENTATION are
@@ -853,14 +1451,14 @@ bool VtResidency::context_storage_owned_for_test(
 // (1) The M6 fast paths come first and are documented inline: an exact re-
 // registration is idempotent, a rung whose parameterisation already has a layer
 // ALIASES it (taking a reference, spending no pages and no mesh budget), and a
-// strictly FINER rung tears the layer down and rebuilds it from its own mesh.
+// strictly FINER rung stages its own mesh and refreshes the existing owner.
 //
 // (2) The gates below run in a fixed order chosen so a rejection never leaves
 // partial state: usable layout -> free layer slot -> CPU mesh budget ->
 // indirection table block -> pinned tail page slot. Each of the last two rolls
 // the previous one back if it fails (tables_.release_now is legal there because
 // no frame has ever seen the allocation). NOTHING is mutated until all of them
-// pass; only then is the caller's mesh ADOPTED (deep-copied, with v.context
+// pass; only then is the caller's mesh ADOPTED (deep-copied, with v.inputs->context
 // repointed at the copies), the tail page mapped and force-queued, and the GPU
 // record written.
 //
@@ -869,13 +1467,136 @@ bool VtResidency::context_storage_owned_for_test(
 uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
                                        const chart_atlas::ChartAtlasRung& atlas,
                                        const VtPartContext& context) {
+    if (rung>=kMaterialModuleRung || context.periodic.version) return kVtNoSlot;
+    return register_variant_impl(variant_hash,rung,atlas,context);
+}
+
+bool VtResidency::acquire_material_module(const std::shared_ptr<const VtPartSnapshot>& source,
+    VtMaterialModuleLease& out, std::string& error) {
+    if (!ready_ || !source || !source->owns_context_inputs() ||
+        !vt_valid_periodic_domain(source->context.periodic) || !source->context.atlas ||
+        source->context.atlas->atlas_w!=source->context.periodic.width ||
+        source->context.atlas->atlas_h!=source->context.periodic.height ||
+        source->context.vertex_count!=4 || source->context.triangle_count!=2) {
+        error="material module requires a complete periodic producer and active residency";return false;
+    }
+    const auto hash=source->context.variant_hash;
+    if (const auto found=modules_.find(hash); found!=modules_.end())
+        if (auto shared=found->second.lock()) {
+            out=std::move(shared);++stats_.module_reuses_total;error.clear();return true;
+        }
+    // Allocate lease/cache ownership before the registration takes resources.
+    auto lease=std::shared_ptr<VtMaterialModule>(new VtMaterialModule);
+    if (!module_owner_) module_owner_=std::make_shared<VtModuleOwner>(VtModuleOwner{this});
+    modules_[hash]=lease;
+    const uint32_t slot=register_variant_impl(hash,kMaterialModuleRung,
+        *source->context.atlas,source->context);
+    if (!slot) {modules_.erase(hash);error="material module registration was refused";return false;}
+    lease->owner_=module_owner_;lease->hash_=hash;lease->slot_=slot;
+    lease->generation_=variants_[slot-1].table_generation;
+    ++stats_.module_variants;
+    out=std::move(lease);error.clear();return true;
+}
+
+VtMaterialModuleBinding VtResidency::material_module_binding(const VtMaterialModuleLease& lease) const {
+    if (!lease || !module_owner_ || lease->owner_.lock()!=module_owner_ ||
+        !slot_active(lease->slot_)) return {};
+    const auto& v=variants_[lease->slot_-1];
+    if (v.rung!=kMaterialModuleRung || v.variant_hash!=lease->hash_ ||
+        v.table_generation!=lease->generation_) return {};
+    return {lease->slot_,uint32_t(lease->generation_)};
+}
+
+VtMaterialReadStatus VtResidency::acquire_material_read(const VtMaterialModuleLease& module,
+    uint32_t mip, const VtMaterialReadBounds& bounds, VtMaterialReadLease& out, std::string& error) {
+    out.reset();
+    if (!ready_ || !module || !module_owner_ || module->owner_.lock() != module_owner_ ||
+        !module->slot_ || module->slot_ > variants_.size()) {
+        error = "material read requires a module from this active residency";
+        return VtMaterialReadStatus::Invalid;
+    }
+    auto& v = variants_[module->slot_ - 1];
+    if (!v.live || v.rung != kMaterialModuleRung || v.variant_hash != module->hash_ ||
+        v.table_generation != module->generation_ || mip >= v.layout.mip_count) {
+        error = "material read module generation or mip is invalid";
+        return VtMaterialReadStatus::Invalid;
+    }
+    try {
+        std::vector<std::array<uint32_t, 2>> tiles;
+        if (!vt_material_read_tiles(v.inputs->context.periodic, mip, bounds, tiles, error))
+            return VtMaterialReadStatus::Invalid;
+        bool pending = !slot_active(module->slot_);
+        for (const auto& tile : tiles) {
+            const VtPageKey page{mip, tile[0], tile[1]};
+            if (!v.indirection.is_mapped(mip, tile[0], tile[1])) {
+                queue_page(v, page, false); pending = true; continue;
+            }
+            const auto slot = v.indirection.resolve(mip, tile[0], tile[1]).slot;
+            if (dirty_pages_.count(slot) || slot_content_revisions_[slot] != v.content_revision ||
+                material_pages_.slot(slot) == UINT32_MAX || slot_page_metadata_[slot].height.version != 1) {
+                queue_page(v, page, true, slot); pending = true;
+            }
+        }
+        if (pending) {
+            error = "material read is waiting for exact-mip base pages";
+            refresh_queue_stats();
+            return VtMaterialReadStatus::Pending;
+        }
+        auto read = std::shared_ptr<VtMaterialRead>(new VtMaterialRead);
+        read->module_ = module; read->inputs_ = v.inputs; read->snapshot_ = input_snapshot_;
+        read->revision_ = v.content_revision; read->mip_ = mip;
+        read->pages_.reserve(tiles.size()); read->reads_.reserve(tiles.size());
+        for (const auto& tile : tiles) {
+            const auto receiver = v.indirection.resolve(mip, tile[0], tile[1]).slot;
+            auto pixels = material_pages_.retain_read(receiver);
+            if (!pixels) { error = "material read lost its pixel allocation"; return VtMaterialReadStatus::Pending; }
+            pixels->retain_until(frame_index_ + kVtRetireHorizonFrames);
+            read->pages_.push_back({tile[0], tile[1], pixels->slot(), slot_page_metadata_[receiver].height});
+            read->reads_.push_back(std::move(pixels));
+        }
+        out = std::move(read);
+        refresh_indirection_stats();
+        error.clear(); return VtMaterialReadStatus::Ready;
+    } catch (const std::bad_alloc&) {
+        error = "material read dependency allocation deferred";
+        return VtMaterialReadStatus::Pending;
+    }
+}
+
+bool VtResidency::material_read_current(const VtMaterialReadLease& read) const {
+    if (!read || !material_module_binding(read->module_).slot || read->snapshot_ != input_snapshot_) return false;
+    const auto& v = variants_[read->module_->slot_ - 1];
+    return v.inputs == read->inputs_ && v.content_revision == read->revision_;
+}
+
+bool VtResidency::retain_material_read(const VtMaterialReadLease& read) {
+    if (!material_read_current(read)) return false;
+    for (const auto& pixels : read->reads_) pixels->retain_until(frame_index_ + kVtRetireHorizonFrames);
+    return true;
+}
+
+void VtResidency::release_material_module(const VtMaterialModule& lease) {
+    modules_.erase(lease.hash_);
+    if (!ready_ || !lease.slot_ || lease.slot_>variants_.size()) return;
+    const auto& v=variants_[lease.slot_-1];
+    if (!v.live || v.rung!=kMaterialModuleRung || v.variant_hash!=lease.hash_ ||
+        v.table_generation!=lease.generation_) return;
+    release_rung_alias(variant_key(lease.hash_,kMaterialModuleRung));
+    if (stats_.module_variants)--stats_.module_variants;
+    stats_.pool_used=slots_.used();stats_.pool_pinned=slots_.pinned();
+    stats_.queue_depth=uint32_t(queue_.size());
+}
+
+uint32_t VtResidency::register_variant_impl(uint64_t variant_hash, uint32_t rung,
+    const chart_atlas::ChartAtlasRung& atlas, const VtPartContext& context) {
     if (!ready_) return kVtNoSlot;
     if (atlas.charts.empty() || atlas.atlas_w == 0 || atlas.atlas_h == 0)
         return kVtNoSlot;
     // M6: the layer is keyed by the PARAMETERISATION, not by the rung. Rungs
     // of one part that share a chart table therefore share a layer — which is
     // the whole point: the pages stop being re-fetched when the rung switches.
-    const uint64_t key = variant_key(variant_hash, chart_atlas::parameterisation_id(atlas));
+    const uint64_t key = variant_key(variant_hash, chart_atlas::parameterisation_id(atlas) ^
+        (rung==kMaterialModuleRung ? kMaterialModuleParameterisation : 0));
     const uint64_t alias = variant_key(variant_hash, rung);
 
     // This rung already resolves somewhere. Same layer: idempotent, hand it
@@ -894,44 +1615,47 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     const auto found = layer_of_.find(key);
     if (found != layer_of_.end()) {
         VariantRung& existing = variants_[found->second];
-        // M6: WHICH RUNG'S MESH COMPOSITES THE SHARED PAGES.
-        //
-        // A layer's pages are rasterised from the mesh it was registered with,
-        // and registration is DEMAND-DRIVEN by default (matter_engine.cpp's
-        // vt_deferred_rung_mask; MATTER_VT_EAGER restores register-everything).
-        // So a sector first seen at distance registers a COARSE rung, and
-        // before this branch existed its page texels would have been baked
-        // from coarse geometry permanently — normals and materials resolved
-        // against a mesh the close-up camera is no longer drawing. That is a
-        // fidelity regression you would only ever see by flying in, which is
-        // exactly how it would have escaped a headless suite.
-        //
-        // A FINER rung therefore rebuilds the layer. Coarser or equal ones
-        // alias, so the common case (drawing away from a part) costs nothing
-        // and only the first close approach pays — never worse than the
-        // pre-M6 behaviour, where every rung switch rebuilt.
         if (rung < existing.rung) {
-            // Every alias on this key is about to name a dead layer, so drop
-            // them all rather than leave refcounts describing a layer that no
-            // longer exists. The rungs re-register on demand and re-alias to
-            // the replacement.
-            for (auto it = param_key_of_rung_.begin();
-                 it != param_key_of_rung_.end();) {
-                if (it->second == key) it = param_key_of_rung_.erase(it);
-                else ++it;
+            // Keep the owner and its valid pages while preparing the finer
+            // mesh. Account for old + staged CPU storage at peak; a rejected
+            // promotion must change neither aliases nor displayed coverage.
+            const size_t bytes = vt_variant_mesh_bytes(atlas, context);
+            if (bytes > mesh_budget_bytes_ - std::min(mesh_bytes_used_, mesh_budget_bytes_)) {
+                note_rejection("CPU mesh staging budget spent; retained compatible owner", bytes);
+                return kVtNoSlot;
             }
-            release_variant_key(key);
+            VariantRung prepared;
+            prepared.variant_hash = variant_hash;
+            prepared.rung = rung;
+            try {
+                copy_variant_mesh(prepared, atlas, context);
+            } catch (const std::bad_alloc&) {
+                note_rejection("CPU mesh staging allocation failed; retained compatible owner", bytes);
+                return kVtNoSlot;
+            }
+            const VtPreparationKey old_preparation{existing.variant_hash, existing.rung,
+                existing.param_key, existing.table_generation};
+            if (filler_) filler_->release_preparation(old_preparation);
+            if (enricher_) enricher_->release_preparation(old_preparation);
+            remove_material_dependencies(existing);
+            const size_t old_bytes = existing.mesh_bytes;
+            swap_variant_mesh(existing, prepared);
+            existing.rung = rung;
+            mesh_bytes_used_ = mesh_bytes_used_ - old_bytes + existing.mesh_bytes;
+            stats_.mesh_bytes = mesh_bytes_used_;
+            rebuild_material_dependencies(existing);
+            // Old pages remain valid until the candidate path publishes the
+            // new revision. This also supersedes previously queued/recorded
+            // coarse fills and prevents enrichment of dirty old content.
+            invalidate_owners({existing.layer + 1u}, VtInvalidationReason::Geometry);
             ++stats_.finer_rebuilds_total;
-            // ...and fall through to build the layer from THIS rung's mesh.
-        } else {
-            // A sibling rung already built this parameterisation at equal or
-            // finer detail. Take a reference rather than a second layer: same
-            // pages, same indirection table, mesh budget spent once.
-            param_key_of_rung_[alias] = key;
-            ++existing.alias_refs;
-            ++stats_.shared_refs_total;
-            return found->second + 1u;
         }
+        // Coarser rungs reuse the canonical mesh without spending CPU/page
+        // capacity. A finer rung joins the same alias set after promotion.
+        param_key_of_rung_[alias] = key;
+        ++existing.alias_refs;
+        ++stats_.shared_refs_total;
+        return found->second + 1u;
     }
 
     VtVariantLayout layout{};
@@ -946,10 +1670,6 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
                        "retirement backlog)", 0);
         return kVtNoSlot;
     }
-
-    // WP-F: a usable tape classification needs both arrays and an exact
-    // per-vertex weight matrix; anything else fails closed to the TriEx path.
-    const bool has_surface_tape = vt_context_has_surface_tape(context);
 
     // Budget the CPU mesh copy BEFORE taking anything, so a rejection leaves
     // no partial registration behind.
@@ -987,6 +1707,8 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     }
     if (evicted.live) {
         // The pool was full of unpinned pages; unmap whatever we recycled.
+        material_pages_.release(tail_slot);
+        dirty_pages_.erase(tail_slot);
         const auto owner_layer = layer_of_.find(evicted.variant_key);
         if (owner_layer != layer_of_.end())
             variants_[owner_layer->second].indirection.unmap(
@@ -1011,115 +1733,16 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     v.alias_refs = 1;
     param_key_of_rung_[alias] = key;
     v.layout = layout;
-    v.atlas = atlas;                 // owned copy: the filler borrows this
-    v.context = context;
-    v.context.atlas = &v.atlas;
     v.table_offset_words = table_offset;
     v.table_block_words = table_block;
     v.table_generation = table_generation;
     v.table_uploaded = false;
-    // Adopt the mesh: copy everything the context points at, then repoint.
-    // After this the caller's arrays may go away at any time.
-    const auto adopt_f = [](const float* src, size_t count,
-                            std::vector<float>& dst, const float*& out) {
-        if (src == nullptr || count == 0) { out = nullptr; return; }
-        dst.assign(src, src + count);
-        out = dst.data();
-    };
-    const size_t vertices = context.vertex_count;
-    adopt_f(context.positions, vertices * 3, v.positions, v.context.positions);
-    adopt_f(context.normals, vertices * 3, v.normals, v.context.normals);
-    adopt_f(context.surface_uvs, vertices * 2, v.surface_uvs,
-            v.context.surface_uvs);
-    adopt_f(context.material_table,
-            static_cast<size_t>(context.material_count) * context.material_stride,
-            v.material_table, v.context.material_table);
-    if (context.material_ids && vertices != 0) {
-        v.material_ids.assign(context.material_ids,
-                              context.material_ids + vertices);
-        v.context.material_ids = v.material_ids.data();
-    } else {
-        v.context.material_ids = nullptr;
-    }
-    if (context.tint_rgba && vertices != 0) {
-        v.tint_rgba.assign(context.tint_rgba, context.tint_rgba + vertices * 4);
-        v.context.tint_rgba = v.tint_rgba.data();
-    } else {
-        v.context.tint_rgba = nullptr;
-    }
-    if (context.indices && context.triangle_count != 0) {
-        v.indices.assign(context.indices,
-                         context.indices + context.triangle_count * 3u);
-        v.context.indices = v.indices.data();
-    } else {
-        v.context.indices = nullptr;
-        v.context.triangle_count = 0;
-    }
-    // WP-F: adopt the surfaces()-tape classification (fail-closed to the
-    // TriEx materialId path when absent or malformed — has_surface_tape).
-    if (has_surface_tape) {
-        v.surface_weights.assign(
-            context.surface_weights,
-            context.surface_weights +
-                static_cast<size_t>(vertices) * context.surface_material_count);
-        v.surface_materials.assign(
-            context.surface_materials,
-            context.surface_materials + context.surface_material_count);
-        v.context.surface_weights = v.surface_weights.data();
-        v.context.surface_materials = v.surface_materials.data();
-        v.context.surface_material_count = context.surface_material_count;
-        // P2 content-key fold: the stored hash carries the weight-seam mode
-        // (env gate) and kVtBakeVersion, so a mode flip or version bump can
-        // never alias the old identity (vt_types.h).
-        v.context.surface_tape_hash = vt_page_content_salt(
-            context.surface_tape_hash, vt_tape_gpu_enabled() ? 3u : 2u);
-        // P2: adopt the mode-3 payload (tape text + f16 field lanes). The
-        // world-anchored flag and local_to_world are VALUE fields — the
-        // struct copy above already took them.
-        if (context.surface_tape_text != nullptr) {
-            v.surface_tape_text = context.surface_tape_text;
-            v.context.surface_tape_text = v.surface_tape_text.c_str();
-        } else {
-            v.surface_tape_text.clear();
-            v.context.surface_tape_text = nullptr;
-        }
-        if (context.surface_lanes != nullptr &&
-            context.surface_lane_count > 0) {
-            v.surface_lanes.assign(
-                context.surface_lanes,
-                context.surface_lanes +
-                    static_cast<size_t>(vertices) *
-                        context.surface_lane_count);
-            v.context.surface_lanes = v.surface_lanes.data();
-            v.context.surface_lane_count = context.surface_lane_count;
-        } else {
-            v.surface_lanes.clear();
-            v.context.surface_lanes = nullptr;
-            v.context.surface_lane_count = 0;
-        }
-    } else {
-        v.context.surface_weights = nullptr;
-        v.context.surface_materials = nullptr;
-        v.context.surface_material_count = 0;
-        v.context.surface_tape_hash = 0;
-        v.surface_tape_text.clear();
-        v.surface_lanes.clear();
-        v.context.surface_tape_text = nullptr;
-        v.context.surface_lanes = nullptr;
-        v.context.surface_lane_count = 0;
-    }
-    // WP-H: the rung's finest chart density, for the coarse-page enrichment
-    // skip in queue_enrich.
-    v.finest_texels_per_meter = 0.0f;
-    for (const chart_atlas::ChartEntry& chart : v.atlas.charts) {
-        if (chart.texels_per_meter > v.finest_texels_per_meter)
-            v.finest_texels_per_meter = chart.texels_per_meter;
-    }
-    v.mesh_bytes = mesh_bytes;
+    copy_variant_mesh(v, atlas, context);
     mesh_bytes_used_ += mesh_bytes;
     v.tail_slot = tail_slot;
     v.tail_filled = false;
     v.live = true;
+    rebuild_material_dependencies(v);
     v.indirection.reset(layout, tail_slot);
     v.indirection.map(tail_page.mip, 0, 0, tail_slot);
     layer_of_[key] = layer;
@@ -1152,28 +1775,49 @@ bool VtResidency::release_variant_key(uint64_t key) {
     if (found == layer_of_.end()) return false;
     const uint32_t layer = found->second;
     VariantRung& v = variants_[layer];
+    if (event_log_)
+        MATTER_LOGI("vt-release", "frame=%llu owner=%016llx generation=%llu part=%016llx rung=%u slot=%u",
+            static_cast<unsigned long long>(frame_index_),
+            static_cast<unsigned long long>(v.param_key),
+            static_cast<unsigned long long>(v.table_generation),
+            static_cast<unsigned long long>(v.variant_hash), v.rung, layer + 1u);
     // Everything an in-flight frame's draw records could still resolve
     // through — the variant slot (and its GPU record), the indirection table
     // block, every page slot — ages in the graveyard until this serial. The
-    // CPU mesh copies die immediately: every recorded fill has already staged
-    // what it reads, so nothing on the GPU timeline points at them.
+    // Recorded GPU work has already staged its CPU inputs. A preparation job
+    // may still retain an immutable snapshot after the owner is released.
     const uint64_t retire = frame_index_ + kVtRetireHorizonFrames;
     for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
         const VtSlotPool::Owner& o = slots_.owner(slot);
         if (o.live && o.variant_key == key) {
+            dirty_pages_.erase(slot);
             slot_reset_tier(slot);
+            // Keep the old GPU id, like the old page and variant record,
+            // until this slot is reused. Retain its binding through the same
+            // reader horizon even though CPU ownership ends now.
+            retire_slot_input_snapshot(slot);
+            retire_slot_geometry(slot);
+            retire_slot_material_mapping(slot);
+            material_pages_.release(slot, retire);
             slots_.release(slot, retire);
         }
     }
-    // Drop queued fills for it.
-    for (size_t i = queue_.size(); i-- > 0;) {
-        if (queue_[i].layer == layer) {
-            queued_keys_.erase(page_key(layer, queue_[i].page));
-            queue_.erase(queue_.begin() + static_cast<long>(i));
-        }
-    }
+    // Erasing shifts every later entry. Rebuild surviving indices before a
+    // registration/forced refresh can use dedup again, not just at frame drain.
+    const size_t previous_queue_size = queue_.size();
+    queue_.erase(std::remove_if(queue_.begin(), queue_.end(),
+        [layer](const PendingFill& pending) { return pending.layer == layer; }),
+        queue_.end());
+    if (queue_.size() != previous_queue_size) reindex_pending_fills();
     mesh_bytes_used_ -= std::min(mesh_bytes_used_, v.mesh_bytes);
     tables_.release(v.table_offset_words, v.table_block_words, retire);
+    remove_material_dependencies(v);
+    // Only the last alias (or an incompatible owner replacement) reaches here.
+    // Producers retire their captured GPU resources independently of CPU mesh
+    // storage; notify before losing the canonical context and generation.
+    const VtPreparationKey preparation{v.variant_hash, v.rung, v.param_key, v.table_generation};
+    if (filler_) filler_->release_preparation(preparation);
+    if (enricher_) enricher_->release_preparation(preparation);
     v = VariantRung{};
     stats_.mesh_bytes = mesh_bytes_used_;
     // The GPU record is deliberately NOT cleared here: an in-flight frame that
@@ -1183,6 +1827,7 @@ bool VtResidency::release_variant_key(uint64_t key) {
     if (debug_generations_) debug_layer_reuse_[layer] = retire;
     layer_of_.erase(found);
     if (stats_.variants) --stats_.variants;
+    stats_.dirty_pages = static_cast<uint32_t>(dirty_pages_.size());
     refresh_indirection_stats();
     return true;
 }
@@ -1224,72 +1869,136 @@ void VtResidency::release_variant(uint64_t variant_hash) {
 }
 
 void VtResidency::release_variant(uint64_t variant_hash, uint32_t rung) {
-    if (!ready_) return;
+    if (!ready_ || rung>=kMaterialModuleRung) return;
     if (!release_rung_alias(variant_key(variant_hash, rung))) return;
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
 }
 
+void VtResidency::remove_material_dependencies(VariantRung& v) {
+    for (uint32_t id : v.material_dependencies) {
+        const auto found = material_dependents_.find(id);
+        if (found == material_dependents_.end()) continue;
+        found->second.erase(v.layer);
+        if (found->second.empty()) material_dependents_.erase(found);
+    }
+    v.material_dependencies.clear();
+}
+
+void VtResidency::rebuild_material_dependencies(VariantRung& v) {
+    remove_material_dependencies(v);
+    // Every material channel in a module comes from its immutable direct
+    // source program and projected payloads, independent of scalar materials.
+    if (v.inputs->context.periodic.version) return;
+    bool used[256]{};
+    if (v.inputs->context.surface_material_count > 0 &&
+        v.inputs->context.surface_material_count <= 8 &&
+        v.inputs->context.surface_weights && v.inputs->context.surface_materials) {
+        for (uint32_t id : v.inputs->surface->materials)
+            used[id & 0xFFu] = true;
+    }
+    {
+        // Even tape-classified surfaces can fall back to the triangle
+        // material: vt_top2_select does so when all evaluated weights are
+        // zero. Keep that dependency alongside the declared tape palette.
+        // Match the chart-stream builder's first-corner material selection,
+        // fallback and 8-bit transport. Unreferenced vertices are not inputs.
+        for (const auto& chart : v.inputs->geometry->atlas.charts) {
+            const size_t end = std::min(v.inputs->geometry->atlas.tri_order.size(),
+                static_cast<size_t>(chart.first_tri) + chart.tri_count);
+            for (size_t i = chart.first_tri; i < end; ++i) {
+                const uint32_t tri = v.inputs->geometry->atlas.tri_order[i];
+                if (tri >= v.inputs->context.triangle_count) continue;
+                const size_t index = static_cast<size_t>(tri) * 3u;
+                if (index + 2 >= v.inputs->geometry->indices.size()) continue;
+                const uint32_t c0 = v.inputs->geometry->indices[index];
+                if (c0 >= v.inputs->context.vertex_count ||
+                    v.inputs->geometry->indices[index + 1] >= v.inputs->context.vertex_count ||
+                    v.inputs->geometry->indices[index + 2] >= v.inputs->context.vertex_count) continue;
+                uint32_t id = v.inputs->geometry->material_ids.empty()
+                    ? v.inputs->context.dominant_material : v.inputs->geometry->material_ids[c0];
+                if (id == 0xFFFFFFFFu)
+                    id = v.inputs->context.dominant_material == 0xFFFFFFFFu
+                        ? 0u : v.inputs->context.dominant_material;
+                used[id & 0xFFu] = true;
+            }
+        }
+    }
+    for (uint32_t id = 0; id < 256; ++id) {
+        if (!used[id]) continue;
+        v.material_dependencies.push_back(id);
+        material_dependents_[id].insert(v.layer);
+    }
+}
+
+uint32_t VtResidency::invalidate_material_content(
+    const std::vector<uint32_t>& material_ids, VtInvalidationReason reason) {
+    std::set<uint32_t> owners;
+    for (uint32_t id : material_ids) {
+        const auto found = material_dependents_.find(id);
+        if (found == material_dependents_.end()) continue;
+        for (uint32_t layer : found->second) owners.insert(layer + 1u);
+    }
+    return invalidate_owners(std::vector<uint32_t>(owners.begin(), owners.end()), reason);
+}
+
 uint32_t VtResidency::invalidate_all_content() {
-    if (!ready_) return 0;
-    // CALLER CONTRACT (see header): the device is idle here — both callers
-    // wait_idle before invalidating — which is what makes the IMMEDIATE slot
-    // release below legal: no in-flight frame exists to resolve into a
-    // recycled slot, so the graveyard would only delay the re-fills.
-    //
-    // The slot pool is the authority on what is resident: every indirection
-    // mapping was created by an acquire() and is unmapped again when its slot
-    // is evicted or released, so sweeping live slots covers exactly the
-    // resident set (the pinned tails excepted -- those keep their mapping and
-    // are re-filled in place below).
-    uint32_t dropped = 0;
-    for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
-        const VtSlotPool::Owner owner = slots_.owner(slot);   // copy: release clears it
-        if (!owner.live || owner.pinned) continue;
-        const auto owner_layer = layer_of_.find(owner.variant_key);
-        if (owner_layer != layer_of_.end())
-            variants_[owner_layer->second].indirection.unmap(
-                owner.page.mip, owner.page.px, owner.page.py);
-        slots_.release_now(slot);
-        ++dropped;
-    }
+    std::vector<uint32_t> owners;
+    for (const VariantRung& v : variants_)
+        if (v.live) owners.push_back(v.layer + 1u);
+    return invalidate_owners(owners);
+}
 
-    // Re-fill every pinned tail in place. Queued (not recorded) on purpose:
-    // record_frame() drains the queue, and the caller rebinds the filler's
-    // inputs before calling this, so a re-queued fill can only ever execute
-    // against the NEW inputs.
-    for (VariantRung& v : variants_) {
-        if (!v.live || !v.layout.valid()) continue;
+uint32_t VtResidency::invalidate_owners(
+    const std::vector<uint32_t>& transport_slots, VtInvalidationReason reason) {
+    if (!ready_ || transport_slots.empty()) return 0;
+    std::set<uint64_t> keys;
+    std::vector<uint32_t> layers;
+    for (uint32_t slot : transport_slots) {
+        if (slot == kVtNoSlot || slot > variants_.size()) continue;
+        const VariantRung& v = variants_[slot - 1u];
+        if (v.live && v.layout.valid() && keys.insert(v.param_key).second)
+            layers.push_back(v.layer);
+    }
+    if (layers.empty()) return 0;
+
+    for (uint32_t layer : layers) {
+        VariantRung& v = variants_[layer];
+        ++v.content_revision;
+        if (event_log_)
+            MATTER_LOGI("vt-dirty", "frame=%llu owner=%016llx generation=%llu revision=%llu reason=%u",
+                static_cast<unsigned long long>(frame_index_),
+                static_cast<unsigned long long>(v.param_key),
+                static_cast<unsigned long long>(v.table_generation),
+                static_cast<unsigned long long>(v.content_revision), static_cast<unsigned>(reason));
         const VtPageKey tail{v.layout.mip_count - 1u, 0u, 0u};
-        v.tail_filled = false;
-        queue_page(v, tail, /*force=*/true, /*preassigned_slot=*/v.tail_slot);
-        // Outrank every feedback-derived request (priority is a mip distance,
-        // so it never reaches kVtMaxMips). A steady feedback stream would
-        // otherwise starve the tails, which is what the whole variant reads
-        // wherever no finer page is resident.
+        queue_page(v, tail, /*force=*/true, v.tail_slot);
         const auto queued = queued_keys_.find(page_key(v.layer, tail));
-        if (queued != queued_keys_.end())
-            queue_[queued->second].priority = kVtMaxMips;
+        if (queued != queued_keys_.end()) queue_[queued->second].priority = kVtMaxMips;
     }
-
-    // WP-H: enrichment state is page CONTENT, so it dies with the content.
-    // Every tier bit is cleared (the pinned tails included -- they are about to
-    // be re-filled in place) and every pending candidate is dropped; the
-    // re-fills below queue fresh candidates, so the whole pool re-enriches from
-    // the new inputs rather than keeping occlusion baked against the old ones.
-    stats_.enrich_dropped_total += enrich_queue_.size();
-    enrich_queue_.clear();
-    enrich_queued_slot_.clear();
-    std::fill(slot_tier_.begin(), slot_tier_.end(), uint8_t{0});
-    stats_.enriched_pages = 0;
-    stats_.enrich_queue_depth = 0;
+    // Keep old bytes, mappings and readiness. The producer writes candidates;
+    // record_frame copies successful, current revisions into these slots only
+    // after prior readers. A capped execution queue cannot lose this dirtiness.
+    uint32_t detail_pages = 0;
+    for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
+        const auto& owner = slots_.owner(slot);
+        if (!owner.live || keys.find(owner.variant_key) == keys.end()) continue;
+        const auto found = layer_of_.find(owner.variant_key);
+        if (found == layer_of_.end()) continue;
+        const auto& v = variants_[found->second];
+        auto [entry, inserted] = dirty_pages_.try_emplace(slot);
+        const uint64_t first = inserted ? frame_index_ : entry->second.requested_frame;
+        entry->second = PendingFill{v.layer, owner.page, kVtMaxMips, first,
+            owner.pinned ? slot : UINT32_MAX, v.table_generation, v.content_revision};
+        if (!owner.pinned) ++detail_pages;
+    }
     ++stats_.invalidations_total;
-    stats_.pages_dropped_total += dropped;
+    stats_.dirty_pages = static_cast<uint32_t>(dirty_pages_.size());
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
-    return dropped;
+    return detail_pages;
 }
 
 uint32_t VtResidency::slot_for(uint64_t variant_hash, uint32_t rung) const {
@@ -1302,9 +2011,21 @@ uint32_t VtResidency::slot_for(uint64_t variant_hash, uint32_t rung) const {
     return found == layer_of_.end() ? kVtNoSlot : found->second + 1u;
 }
 
+uint32_t VtResidency::compatible_owner_slot(uint64_t variant_hash,
+    const chart_atlas::ChartAtlasRung& atlas) const {
+    const auto found = layer_of_.find(
+        variant_key(variant_hash, chart_atlas::parameterisation_id(atlas)));
+    return found == layer_of_.end() ? kVtNoSlot : found->second + 1u;
+}
+
+uint32_t VtResidency::canonical_rung_for_slot(uint32_t slot) const {
+    if (!slot || slot > variants_.size() || !variants_[slot - 1u].live) return UINT32_MAX;
+    return variants_[slot - 1u].rung;
+}
+
 // Swaps one registered rung's tape classification in place (the header carries
-// the caller contract, including the wait-idle and the invalidation the caller
-// owes afterwards). Two implementation details:
+// the caller contract and the content invalidation owed after its edit
+// bracket). Two implementation details:
 //
 //  - Every validity check runs BEFORE any mutation, so a call with mismatched
 //    sizes returns false with the old classification completely intact.
@@ -1323,8 +2044,12 @@ bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
                                          uint64_t tape_hash,
                                          const char* tape_text,
                                          const uint16_t* lanes,
-                                         uint32_t lane_count) {
-    if (!ready_) return false;
+                                         uint32_t lane_count,
+                                         bool* content_changed,
+                                         const float* local_to_world,
+                                         uint32_t world_anchored) {
+    if (content_changed) *content_changed = false;
+    if (!ready_ || rung>=kMaterialModuleRung) return false;
     const auto alias = param_key_of_rung_.find(variant_key(variant_hash, rung));
     if (alias == param_key_of_rung_.end()) return false;
     const auto found = layer_of_.find(alias->second);
@@ -1332,67 +2057,94 @@ bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
     VariantRung& v = variants_[found->second];
     if (!v.live) return false;
 
-    const size_t old_bytes =
-        v.surface_weights.size() + v.surface_materials.size() * sizeof(uint32_t) +
-        v.surface_tape_text.size() +
-        v.surface_lanes.size() * sizeof(uint16_t);
+    const auto& current = v.inputs->context;
+    const auto& surface = *v.inputs->surface;
+    const size_t old_bytes = surface.bytes();
+    if (local_to_world) {
+        if (world_anchored > 1) return false;
+        for (unsigned i=0;i<12;++i) if (!std::isfinite(local_to_world[i])) return false;
+    }
+    const bool same_frame = !local_to_world ||
+        (world_anchored == current.surface_world_anchored &&
+         std::memcmp(local_to_world,current.surface_local_to_world,sizeof(current.surface_local_to_world))==0);
 
     const bool strip = material_count == 0 || weights == nullptr ||
                        materials == nullptr || material_count > 8u;
     const size_t expected =
-        static_cast<size_t>(v.context.vertex_count) * material_count;
+        static_cast<size_t>(current.vertex_count) * material_count;
     if (!strip && weight_bytes != expected) return false;
     if (!strip && lanes != nullptr && lane_count > 8u) return false;
 
-    if (strip) {
-        v.surface_weights.clear();
-        v.surface_materials.clear();
-        v.surface_tape_text.clear();
-        v.surface_lanes.clear();
-        v.context.surface_weights = nullptr;
-        v.context.surface_materials = nullptr;
-        v.context.surface_material_count = 0;
-        v.context.surface_tape_hash = 0;
-        v.context.surface_tape_text = nullptr;
-        v.context.surface_lanes = nullptr;
-        v.context.surface_lane_count = 0;
-    } else {
-        v.surface_weights.assign(weights, weights + weight_bytes);
-        v.surface_materials.assign(materials, materials + material_count);
-        v.context.surface_weights = v.surface_weights.data();
-        v.context.surface_materials = v.surface_materials.data();
-        v.context.surface_material_count = material_count;
-        // Same P2 content-key fold as register_variant.
-        v.context.surface_tape_hash = vt_page_content_salt(
-            tape_hash, vt_tape_gpu_enabled() ? 3u : 2u);
-        if (tape_text != nullptr) {
-            v.surface_tape_text = tape_text;
-            v.context.surface_tape_text = v.surface_tape_text.c_str();
-        } else {
-            v.surface_tape_text.clear();
-            v.context.surface_tape_text = nullptr;
-        }
-        if (lanes != nullptr && lane_count > 0) {
-            v.surface_lanes.assign(
-                lanes, lanes + static_cast<size_t>(v.context.vertex_count) *
-                                   lane_count);
-            v.context.surface_lanes = v.surface_lanes.data();
-            v.context.surface_lane_count = lane_count;
-        } else {
-            v.surface_lanes.clear();
-            v.context.surface_lanes = nullptr;
-            v.context.surface_lane_count = 0;
-        }
-    }
+    const uint64_t desired_hash = strip ? 0 : vt_page_content_salt(
+        tape_hash, vt_tape_gpu_enabled() ? 3u : 2u);
+    const size_t desired_lane_count = !strip && lanes && lane_count
+        ? static_cast<size_t>(current.vertex_count) * lane_count : 0;
+    const auto matches = [](const auto& stored, const auto* data, size_t count) {
+        return stored.size() == count &&
+            (count == 0 || std::memcmp(stored.data(), data,
+                count * sizeof(stored[0])) == 0);
+    };
+    if ((strip && current.surface_material_count == 0) ||
+        (!strip && same_frame && current.surface_tape_hash == desired_hash &&
+         matches(surface.weights, weights, weight_bytes) &&
+         matches(surface.materials, materials, material_count) &&
+         matches(surface.lanes, lanes, desired_lane_count) &&
+         current.surface_lane_count == (desired_lane_count ? lane_count : 0) &&
+         surface.tape_text == (tape_text ? tape_text : "") &&
+         surface.has_tape_text == (tape_text != nullptr)))
+        return true;
 
-    const size_t new_bytes =
-        v.surface_weights.size() + v.surface_materials.size() * sizeof(uint32_t) +
-        v.surface_tape_text.size() +
-        v.surface_lanes.size() * sizeof(uint16_t);
+    auto updated = current;
+    if (local_to_world) {
+        std::memcpy(updated.surface_local_to_world,local_to_world,sizeof(updated.surface_local_to_world));
+        updated.surface_world_anchored=world_anchored;
+    }
+    updated.surface_weights = strip ? nullptr : weights;
+    updated.surface_materials = strip ? nullptr : materials;
+    updated.surface_material_count = strip ? 0 : material_count;
+    updated.surface_tape_hash = desired_hash;
+    updated.surface_tape_text = strip ? nullptr : tape_text;
+    updated.surface_lanes = desired_lane_count ? lanes : nullptr;
+    updated.surface_lane_count = desired_lane_count ? lane_count : 0;
+    auto next = v.inputs->with_surface(updated);
+    const size_t new_bytes = next->surface->bytes();
+    v.inputs = std::move(next);
     v.mesh_bytes = v.mesh_bytes - std::min(v.mesh_bytes, old_bytes) + new_bytes;
     mesh_bytes_used_ =
         mesh_bytes_used_ - std::min(mesh_bytes_used_, old_bytes) + new_bytes;
     stats_.mesh_bytes = mesh_bytes_used_;
+    rebuild_material_dependencies(v);
+    if (filler_) filler_->invalidate_surface(
+        {v.variant_hash, v.rung, v.param_key, v.table_generation});
+    if (content_changed) *content_changed = true;
+    return true;
+}
+
+bool VtResidency::update_variant_finite_sources(uint64_t variant_hash,uint32_t rung,
+    std::shared_ptr<const VtFiniteSources> sources,const uint32_t* ids,size_t id_count,bool* content_changed) {
+    if (content_changed) *content_changed=false;
+    if (!ready_ || rung>=kMaterialModuleRung) return false;
+    const auto alias=param_key_of_rung_.find(variant_key(variant_hash,rung));
+    if (alias==param_key_of_rung_.end()) return false;
+    const auto found=layer_of_.find(alias->second);
+    if (found==layer_of_.end()) return false;
+    auto &v=variants_[found->second]; if (!v.live) return false;
+    const auto &current=v.inputs->context;const auto &surface=*v.inputs->surface;
+    if (sources ? (!ids || id_count!=current.vertex_count || sources->bindings.empty()) : (ids || id_count)) return false;
+    for (size_t i=0;i<id_count;++i) if (ids[i]>sources->bindings.size()) return false;
+    const bool same_catalog=(!sources && !surface.finite_sources) ||
+        (sources && surface.finite_sources && sources->content_hash==surface.finite_sources->content_hash);
+    if (same_catalog && surface.finite_source_ids.size()==id_count &&
+        (!id_count || std::memcmp(surface.finite_source_ids.data(),ids,id_count*sizeof(uint32_t))==0)) return true;
+    const size_t old_bytes=surface.bytes();
+    auto updated=current;updated.finite_sources=std::move(sources);updated.finite_source_ids=ids;
+    auto next=v.inputs->with_surface(updated);const size_t new_bytes=next->surface->bytes();
+    v.inputs=std::move(next);
+    v.mesh_bytes=v.mesh_bytes-std::min(v.mesh_bytes,old_bytes)+new_bytes;
+    mesh_bytes_used_=mesh_bytes_used_-std::min(mesh_bytes_used_,old_bytes)+new_bytes;
+    stats_.mesh_bytes=mesh_bytes_used_;
+    if (filler_) filler_->invalidate_surface({v.variant_hash,v.rung,v.param_key,v.table_generation});
+    if (content_changed) *content_changed=true;
     return true;
 }
 
@@ -1427,8 +2179,10 @@ void VtResidency::write_variant_record(const VariantRung& v) {
     r.atlas_h = v.layout.atlas_h;
     r.mip_count = v.layout.mip_count;
     r.flags = 1u;
-    for (uint32_t m = 0; m < kVtMaxMips; ++m)
+    for (uint32_t m = 0; m < 8; ++m)
         r.mip_offset[m] = v.layout.mip_offset[m];
+    for (uint32_t m = 8; m < kVtMaxMips; ++m)
+        r.mip_offset_high[m - 8] = v.layout.mip_offset[m];
     r.table_offset = v.table_offset_words;
     r.pages_w = v.layout.page_w[0];
     r.pages_h = v.layout.page_h[0];
@@ -1439,6 +2193,45 @@ void VtResidency::write_variant_record(const VariantRung& v) {
 // ---------------------------------------------------------------------------
 // Fill queue
 // ---------------------------------------------------------------------------
+
+bool VtResidency::queued_requests_consistent_for_test() const {
+    if (queued_keys_.size() != queue_.size()) return false;
+    for (size_t i = 0; i < queue_.size(); ++i) {
+        const PendingFill& pending = queue_[i];
+        const auto found = queued_keys_.find(page_key(pending.layer, pending.page));
+        if (found == queued_keys_.end() || found->second != i ||
+            pending.layer >= variants_.size()) return false;
+        const VariantRung& variant = variants_[pending.layer];
+        if (!variant.live || !variant.indirection.in_range(
+                pending.page.mip, pending.page.px, pending.page.py)) return false;
+        if (pending.preassigned_slot != 0xFFFFFFFFu &&
+            pending.preassigned_slot != variant.tail_slot) return false;
+    }
+    return true;
+}
+
+void VtResidency::reindex_pending_fills() {
+    queued_keys_.clear();
+    for (size_t i = 0; i < queue_.size(); ++i)
+        queued_keys_[page_key(queue_[i].layer, queue_[i].page)] = i;
+}
+
+void VtResidency::refresh_queue_stats() {
+    stats_.dirty_pages = static_cast<uint32_t>(dirty_pages_.size());
+    stats_.queue_depth = static_cast<uint32_t>(queue_.size());
+    stats_.mandatory_queue_depth = stats_.detail_queue_depth = 0;
+    stats_.oldest_mandatory_age_frames = stats_.oldest_detail_age_frames = 0;
+    for (const PendingFill& pending : queue_) {
+        const uint64_t age = frame_index_ - std::min(frame_index_, pending.requested_frame);
+        if (pending.preassigned_slot != 0xFFFFFFFFu) {
+            ++stats_.mandatory_queue_depth;
+            stats_.oldest_mandatory_age_frames = std::max(stats_.oldest_mandatory_age_frames, age);
+        } else {
+            ++stats_.detail_queue_depth;
+            stats_.oldest_detail_age_frames = std::max(stats_.oldest_detail_age_frames, age);
+        }
+    }
+}
 
 // Request one page of one variant. Not necessarily a queue push:
 //
@@ -1460,20 +2253,23 @@ void VtResidency::write_variant_record(const VariantRung& v) {
 void VtResidency::queue_page(VariantRung& v, VtPageKey page, bool force,
                              uint32_t preassigned_slot) {
     if (!v.live || !v.indirection.in_range(page.mip, page.px, page.py)) return;
-    if (!force && v.indirection.is_mapped(page.mip, page.px, page.py)) {
+    const VtEntry served = v.indirection.resolve(page.mip, page.px, page.py);
+    // Registration explicitly maps the pinned tail, and all other entries
+    // resolve either to their own resident page or to a strictly coarser mip.
+    // The shader's existing table therefore answers exact residency too; a
+    // second tree lookup for every visible resident page is unnecessary.
+    if (!force && served.mapped_mip == page.mip) {
         // Already resident; keep its slot warm. The touch also arms this
         // frame's eviction hysteresis: a page the current frame requested is
         // never this frame's eviction victim.
-        const VtEntry entry = v.indirection.resolve(page.mip, page.px, page.py);
-        slots_.touch(entry.slot, frame_index_);
+        slots_.touch(served.slot, frame_index_);
         return;
     }
     const uint64_t k = page_key(v.layer, page);
     const auto found = queued_keys_.find(k);
     // Priority: how many mips coarser the currently-served page is. A page
     // whose only coverage is the tail is the most starved, so it wins.
-    const VtEntry served = v.indirection.resolve(page.mip, page.px, page.py);
-    const uint32_t priority = served.mapped_mip > page.mip
+    const uint32_t priority = force ? kVtMaxMips : served.mapped_mip > page.mip
                                   ? served.mapped_mip - page.mip
                                   : 0u;
     // The page currently serving this request is wanted by definition — keep
@@ -1484,14 +2280,43 @@ void VtResidency::queue_page(VariantRung& v, VtPageKey page, bool force,
     if (found != queued_keys_.end()) {
         PendingFill& existing = queue_[found->second];
         if (priority > existing.priority) existing.priority = priority;
-        existing.requested_frame = frame_index_;
+        // Keep the first request's age. Repeated feedback must not make a
+        // waiting page appear newly requested forever.
         if (preassigned_slot != 0xFFFFFFFFu)
             existing.preassigned_slot = preassigned_slot;
+        existing.owner_generation = v.table_generation;
+        existing.content_revision = v.content_revision;
         return;
     }
     queued_keys_[k] = queue_.size();
     queue_.push_back(
-        PendingFill{v.layer, page, priority, frame_index_, preassigned_slot});
+        PendingFill{v.layer, page, priority, frame_index_, preassigned_slot,
+                    v.table_generation, v.content_revision});
+}
+
+void VtResidency::queue_dirty_pages() {
+    uint32_t detail_queued = 0;
+    const uint32_t limit = std::max(max_queue_, max_fills_per_frame_);
+    for (auto it = dirty_pages_.begin(); it != dirty_pages_.end();) {
+        const auto& pending = it->second;
+        const auto& owner = slots_.owner(it->first);
+        if (!owner.live || pending.layer >= variants_.size() ||
+            !variants_[pending.layer].live ||
+            variants_[pending.layer].table_generation != pending.owner_generation ||
+            owner.variant_key != variants_[pending.layer].param_key ||
+            !(owner.page == pending.page)) {
+            it = dirty_pages_.erase(it);
+            continue;
+        }
+        if (pending.preassigned_slot != UINT32_MAX || detail_queued < limit) {
+            auto& v = variants_[pending.layer];
+            queue_page(v, pending.page, true, pending.preassigned_slot);
+            auto& queued = queue_[queued_keys_.at(page_key(v.layer, pending.page))];
+            queued.requested_frame = std::min(queued.requested_frame, pending.requested_frame);
+            if (pending.preassigned_slot == UINT32_MAX) ++detail_queued;
+        }
+        ++it;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1534,6 +2359,10 @@ void VtResidency::slot_reset_tier(uint32_t slot) {
 void VtResidency::queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot) {
     if (!enricher_ || max_enrich_per_frame_ == 0) return;
     if (slot >= slot_tier_.size()) return;
+    if((slot_page_metadata_[slot].geometry.page_flags&kVtCoverageOnly) &&
+       !enricher_->supports_separate_occlusion())return;
+    if (layer < variants_.size() && variants_[layer].inputs &&
+        variants_[layer].inputs->context.periodic.version) return;
     // COARSE-PAGE SKIP. Tier 2 bakes a contact-scale term (sub-metre); once a
     // page texel is wider than the enricher's fade end, the enrichment would be
     // multiplied by zero, so tracing it is pure cost. This is also the guard
@@ -1567,6 +2396,18 @@ void VtResidency::queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot) {
     stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
 }
 
+void VtResidency::queue_resident_enrichment() {
+    if(!ready_ || !enricher_ || !max_enrich_per_frame_)return;
+    for(uint32_t slot=0;slot<slots_.capacity();++slot) {
+        const auto& owner=slots_.owner(slot);
+        if(!owner.live || slot_tier_[slot] || dirty_pages_.count(slot))continue;
+        const auto layer=layer_of_.find(owner.variant_key);if(layer==layer_of_.end())continue;
+        const auto& v=variants_[layer->second];
+        if(v.live && slot_content_revisions_[slot]==v.content_revision)
+            queue_enrich(layer->second,owner.page,slot);
+    }
+}
+
 // Records up to max_enrich_per_frame_ tier-2 enrichments into `cmd`. Each
 // candidate is re-validated against the slot pool first — the slot must still
 // hold exactly the page that was queued, since an eviction or re-fill in between
@@ -1582,6 +2423,15 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
     if (!enricher_ || max_enrich_per_frame_ == 0 || enrich_queue_.empty())
         return;
     enrich_batch_.clear();
+    struct Candidate {
+        PendingEnrich pending;
+        uint64_t generation,revision;
+        std::shared_ptr<VtOcclusionPages::Page> factor;
+    };
+    std::vector<Candidate> candidates;
+    std::vector<PendingEnrich> deferred;
+    std::array<bool,16> written{};
+    candidates.reserve(16);
     size_t consumed = 0;
     for (size_t i = 0; i < enrich_queue_.size() &&
                        enrich_batch_.size() < max_enrich_per_frame_;
@@ -1595,33 +2445,49 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
         // The slot must still hold exactly the page we queued. An eviction or a
         // re-fill in between makes the candidate stale: the re-fill queued its
         // own candidate, so dropping this one loses nothing.
-        if (!owner.live ||
+        if (!owner.live || dirty_pages_.find(p.slot) != dirty_pages_.end() ||
             owner.variant_key != v.param_key ||
             !(owner.page == p.page)) {
             ++stats_.enrich_dropped_total;
             continue;
         }
         if (slot_tier_[p.slot] != 0) continue;   // already tier-2
+        const bool separate=enricher_->supports_separate_occlusion() &&
+            slot_geometry_lifetimes_[p.slot] && slot_page_metadata_[p.slot].height.version==1;
+        std::shared_ptr<VtOcclusionPages::Page> factor;
+        if(separate) {
+            std::string allocation_error;
+            factor=occlusion_pages_->allocate(*vulkan_,allocation_error);
+            if(!factor) {++stats_.enrich_deferred_total;deferred.push_back(p);continue;}
+        }
         VtEnrichRequest request;
         request.variant_hash = v.variant_hash;
         request.rung = static_cast<uint16_t>(v.rung);
         request.mip = static_cast<uint16_t>(p.page.mip);
         request.page_x = static_cast<uint16_t>(p.page.px);
         request.page_y = static_cast<uint16_t>(p.page.py);
-        request.physical_slot = p.slot;
-        request.atlas = &v.atlas;
-        request.part_context = &v.context;
+        request.physical_slot = separate?p.slot:material_pages_.slot(p.slot);
+        request.atlas = &v.inputs->geometry->atlas;
+        request.part_context = &v.inputs->context;
+        request.part_snapshot = v.inputs;
         request.pool = &pool_binding_;
         request.frame_index = frame_index_;
+        request.owner_key = v.param_key;
+        request.owner_generation = v.table_generation;
+        if(factor) {
+            request.occlusion_buffer=factor->slab->buffer.buffer;
+            request.occlusion_offset=factor->offset();request.occlusion_address=factor->address();
+            request.out_enriched=&written[candidates.size()];
+        }
         enrich_batch_.push_back(request);
+        candidates.push_back({p,owner.generation,v.content_revision,std::move(factor)});
         // Marked tier-2 at RECORD time, not on completion: the enrichment
         // multiplies into the page in place, so a second pass over the same
         // fill would darken it twice. A request the enricher then fails closed
         // on (no acceleration structure, no sampled pool view) simply stays
         // tier-1 content flagged as done -- which is the "skipped silently"
         // contract, since tier-1 pages are already correct.
-        slot_tier_[p.slot] = 1;
-        ++stats_.enriched_pages;
+        if(!separate) {slot_tier_[p.slot] = 1;++stats_.enriched_pages;}
     }
     enrich_queue_.erase(enrich_queue_.begin(),
                         enrich_queue_.begin() + static_cast<long>(consumed));
@@ -1629,7 +2495,10 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
     for (size_t i = 0; i < enrich_queue_.size(); ++i)
         enrich_queued_slot_[enrich_queue_[i].slot] = i;
     stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
-    if (enrich_batch_.empty()) return;
+    if (enrich_batch_.empty()) {
+        for(const auto& p:deferred)queue_enrich(p.layer,p.page,p.slot);
+        return;
+    }
 
     // The enricher SAMPLES the ORM pool image (vt_enrich.h contract) and
     // restores this layout itself after its write-back, so the tracked layout
@@ -1645,8 +2514,41 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
         orm.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
     enricher_->enrich(cmd, enrich_batch_.data(), enrich_batch_.size());
-    stats_.enrich_last_frame = static_cast<uint32_t>(enrich_batch_.size());
-    stats_.enrich_total += enrich_batch_.size();
+    uint32_t published=0;
+    for(size_t i=0;i<candidates.size();++i) {
+        auto& candidate=candidates[i];
+        if(!candidate.factor){++published;continue;}
+        const auto& p=candidate.pending;const auto& request=enrich_batch_[i];
+        const auto& owner=slots_.owner(p.slot);const auto& v=variants_[p.layer];
+        const bool current=owner.live && owner.generation==candidate.generation &&
+            owner.variant_key==request.owner_key && owner.page==p.page &&
+            v.live && v.table_generation==request.owner_generation && v.content_revision==candidate.revision &&
+            v.inputs==request.part_snapshot && !dirty_pages_.count(p.slot);
+        if(current && written[i]) {
+            retire_slot_occlusion(p.slot);
+            slot_page_metadata_[p.slot].occlusion_address=candidate.factor->address();
+            slot_occlusion_pages_[p.slot]=std::move(candidate.factor);
+            ++stats_.occlusion_pages;slot_tier_[p.slot]=1;++stats_.enriched_pages;++published;
+            input_indices_dirty_begin_=std::min(input_indices_dirty_begin_,p.slot);
+            input_indices_dirty_end_=std::max(input_indices_dirty_end_,p.slot+1);
+        } else {
+            // A declined or stale producer may already have recorded writes.
+            // Never reuse those bytes before the normal reader horizon.
+            retire_occlusion(std::move(candidate.factor));
+            if(current){++stats_.enrich_deferred_total;deferred.push_back(p);}
+            else ++stats_.enrich_dropped_total;
+        }
+    }
+    for(const auto& p:deferred) {
+        const auto& owner=slots_.owner(p.slot);
+        if(p.layer<variants_.size() && variants_[p.layer].live && owner.live &&
+           owner.variant_key==variants_[p.layer].param_key && owner.page==p.page)
+            queue_enrich(p.layer,p.page,p.slot);
+    }
+    stats_.enrich_last_frame=published;
+    stats_.enrich_total+=published;
+    // Only jobs that explicitly retain inputs should extend their lifetime.
+    enrich_batch_.clear();
 }
 
 void VtResidency::inject_feedback_for_test(const VtFeedbackRequest* requests,
@@ -1671,103 +2573,43 @@ void VtResidency::inject_feedback_for_test(const VtFeedbackRequest* requests,
 // Test-injected requests (inject_feedback_for_test) are merged in and consumed
 // here, so a headless test can drive residency with no GPU readback at all.
 void VtResidency::drain_feedback(uint32_t frame_slot) {
-    std::vector<VtFeedbackRequest> requests;
-    requests.swap(injected_);
-    if (frame_slot < kFeedbackSlots && feedback_slot_written_[frame_slot] &&
-        feedback_readback_[frame_slot].mapped != nullptr && feedback_w_ != 0) {
-        const uint16_t* texels =
-            static_cast<const uint16_t*>(feedback_readback_[frame_slot].mapped);
-        const size_t count = static_cast<size_t>(feedback_w_) * feedback_h_;
-        requests.reserve(requests.size() + count / 8);
-        // DEDUP AT THE SOURCE. The feedback target is per-TEXEL, but a VT page
-        // covers a large screen region, so a page is named by hundreds of
-        // adjacent texels. Feeding every one to queue_page() re-did the same
-        // in_range / is_mapped / resolve / touch / hash-find work per texel: a
-        // 2026-08-08 capture measured 4550 calls per frame of which ~2 queued
-        // anything new, at 4.5 ms of render-thread time.
-        //
-        // Equivalence: queue_page() is idempotent for a repeated key. The
-        // duplicate path only raises `priority` (identical for every texel
-        // naming the same page and mip -- it is derived from the page's own
-        // served mip, not from the texel), restamps requested_frame with this
-        // same frame_index_, and calls slots_.touch() with this same
-        // frame_index_. Collapsing N identical keys to one is therefore
-        // bit-identical in effect, not an approximation.
-        //
-        // The run-length guard alone removes the bulk, because the scan is
-        // row-major and page coverage is contiguous in screen space; the sort
-        // below catches a page reappearing on a later scanline.
+    const bool have_readback = frame_slot < kFeedbackSlots &&
+        feedback_slot_written_[frame_slot] && feedback_readback_[frame_slot].mapped &&
+        feedback_w_ != 0;
+    const size_t count = have_readback
+        ? size_t(feedback_w_) * feedback_h_ * kVtFeedbackRequestsPerSample : 0;
+    feedback_keys_.begin(injected_.size() + count / 8u);
+    for (const auto& request : injected_)
+        feedback_keys_.add_request(request.layer, request.mip, request.px, request.py);
+    injected_.clear();
+    if (have_readback) {
         PROFILE_SCOPE("vt.fb_scan");
         PROFILE_COUNT("vt.fb_texels", count);
-        uint64_t raw_hits = 0;
-        uint64_t last_packed = UINT64_MAX;
-        for (size_t i = 0; i < count; ++i) {
-            const uint16_t* t = texels + i * 4;
-            if (t[0] == 0) continue;
-            const uint64_t packed = (static_cast<uint64_t>(t[0]) << 48) |
-                                    (static_cast<uint64_t>(t[3]) << 32) |
-                                    (static_cast<uint64_t>(t[2]) << 16) |
-                                    static_cast<uint64_t>(t[1]);
-            ++raw_hits;
-            if (packed == last_packed) continue;
-            last_packed = packed;
-            requests.push_back(VtFeedbackRequest{static_cast<uint32_t>(t[0] - 1u),
-                                                 t[3], t[1], t[2]});
-        }
-        // Raw non-zero texels vs what survived the run-length guard. If these
-        // are close, adjacent texels are NOT naming the same page (interleaved
-        // variants across a scanline) and the guard is not earning its keep --
-        // which would make the sort below the dominant cost.
-        PROFILE_COUNT("vt.fb_hits_raw", raw_hits);
-        PROFILE_COUNT("vt.fb_hits_runlength", requests.size());
+        feedback_keys_.append_texels(
+            static_cast<const uint16_t*>(feedback_readback_[frame_slot].mapped), count);
+        PROFILE_COUNT("vt.fb_hits_raw", feedback_keys_.raw_hits());
+        PROFILE_COUNT("vt.fb_hits_runlength", feedback_keys_.run_hits());
+        PROFILE_COUNT("vt.fb_hits_filtered", feedback_keys_.candidates());
         feedback_slot_written_[frame_slot] = false;
     }
-    // Full dedup across scanlines. Sorting a few hundred POD entries costs far
-    // less than the queue_page() calls it removes, and it groups the survivors
-    // by layer, so the loop below walks variants_ with locality instead of
-    // jumping across the table per texel.
-    {
-        // O(n log n) on whatever the run-length guard let through. Split out
-        // because if the guard is ineffective this becomes the whole cost of
-        // drain_feedback, and the fix would be a hash set rather than a sort.
-        PROFILE_SCOPE("vt.fb_dedup");
-        const auto packed = [](const VtFeedbackRequest& r) {
-            return (static_cast<uint64_t>(r.layer) << 48) |
-                   (static_cast<uint64_t>(r.mip) << 32) |
-                   (static_cast<uint64_t>(r.py) << 16) |
-                   static_cast<uint64_t>(r.px);
-        };
-        std::sort(requests.begin(), requests.end(),
-                  [&](const VtFeedbackRequest& a, const VtFeedbackRequest& b) {
-                      return packed(a) < packed(b);
-                  });
-        requests.erase(
-            std::unique(requests.begin(), requests.end(),
-                        [&](const VtFeedbackRequest& a,
-                            const VtFeedbackRequest& b) {
-                            return packed(a) == packed(b);
-                        }),
-            requests.end());
-    }
-    // DISTINCT pages now, not raw texel hits -- which is what this counter
-    // always should have meant. Compare against captures from before
-    // 2026-08-08 with that in mind.
+    // Preserve the same sorted distinct request order. The bounded filter
+    // removes duplicates before this sort; a hash collision can only leave
+    // more work for the sort, never suppress a different request.
+    PROFILE_SCOPE_NAMED(dedup, "vt.fb_dedup");
+    const auto& requests = feedback_keys_.finish();
+    dedup.stop();
     stats_.requests_last_frame = static_cast<uint32_t>(requests.size());
-    // Feedback is 2-3 frames stale by construction. A request naming a variant
-    // slot released since is dropped by the live check; one naming a slot
-    // already recycled (impossible inside the retirement horizon, which is
-    // wider than the readback ring) would at worst queue a spurious-but-valid
-    // fill for the NEW variant.
-    {
-        // Per distinct page: in_range / is_mapped / resolve / slots_.touch /
-        // hash find, each hopping through a different variant's indirection.
-        PROFILE_SCOPE("vt.fb_queue");
-        for (const VtFeedbackRequest& r : requests) {
-            if (r.layer >= variants_.size()) continue;
-            VariantRung& v = variants_[r.layer];
-            if (!v.live) continue;
-            queue_page(v, VtPageKey{r.mip, r.px, r.py});
-        }
+    // Feedback is 2-3 frames stale. The frame/owner retirement horizon prevents
+    // index reuse while a GPU readback can still reference the previous owner.
+    PROFILE_SCOPE_NAMED(queue, "vt.fb_queue");
+    for (uint64_t key : requests) {
+        const uint32_t layer = uint32_t(key >> 48) - 1u;
+        if (layer >= variants_.size()) continue;
+        VariantRung& variant = variants_[layer];
+        if (!variant.live) continue;
+        queue_page(variant, VtPageKey{uint32_t((key >> 32) & 0xFFFFu),
+                                     uint32_t(key & 0xFFFFu),
+                                     uint32_t((key >> 16) & 0xFFFFu)});
     }
 }
 
@@ -1782,10 +2624,15 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
 // re-runs. Clamps are the ones the env helper used to apply.
 void VtResidency::refresh_budgets() {
     const matter::VtResidencyBudgets& b = matter::vt_residency_budgets();
+    const bool enabling_enrichment = max_enrich_per_frame_==0 && b.enrich_per_frame>0;
     max_fills_per_frame_ = clamp_u32(b.fills_per_frame, 1u, kMaxFillFlags);
     max_tail_fills_per_frame_ =
         clamp_u32(b.tail_fills_per_frame, 1u, kMaxFillFlags);
     max_enrich_per_frame_ = clamp_u32(b.enrich_per_frame, 0u, 16u);
+    if(enabling_enrichment && enricher_ && !enricher_->supports_separate_occlusion() &&
+       (material_pages_.shared_references()!=0 || stats_.coverage_only_pages))
+        invalidate_all_content();
+    if(enabling_enrichment && enricher_ && enricher_->supports_separate_occlusion())queue_resident_enrichment();
     max_queue_ = clamp_u32(b.queue_cap, 16u, 65536u);
     // CPU mesh-copy budget, in bytes. Rejections past it fall back to the
     // legacy per-material path, i.e. the authored surfaces() tape is ignored
@@ -1813,6 +2660,7 @@ void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
     refresh_budgets();
     frame_index_ = frame_index;
     frame_slot_ = frame_slot % kFeedbackSlots;
+    if (filler_) filler_->begin_residency_frame(frame_index_, frame_slot_);
     // Collect the graveyards: a retire serial of (release frame +
     // kVtRetireHorizonFrames) has passed once the frame counter reaches it —
     // the caller's frame fences guarantee anything submitted that many frames
@@ -1820,7 +2668,19 @@ void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
     // the compositor's cache retirement already ride).
     PROFILE_SCOPE_NAMED(z_collect, "vt.collect");
     slots_.collect(frame_index_);
+    material_pages_.collect(frame_index_);
     tables_.collect(frame_index_);
+    for (auto& retired : retired_input_snapshots_)
+        if (retired.snapshot && retired.retire_serial <= frame_index_) retired = {};
+    for (auto it = retired_geometries_.begin(); it != retired_geometries_.end();) {
+        if (it->second.retire_serial > frame_index_) { ++it; continue; }
+        // Destruction can release the last module lease and retire its pages.
+        // Remove this map node before invoking that reentrant teardown.
+        auto lifetime=std::move(it->second.lifetime);
+        it=retired_geometries_.erase(it);
+        lifetime.reset();
+    }
+    publish_receiver_materials();
     if (pool_zero_staging_.buffer != VK_NULL_HANDLE && pool_cleared_ &&
         zero_staging_retire_ != 0 && frame_index_ >= zero_staging_retire_) {
         // The one-time pool clear's staging has retired on the GPU.
@@ -1854,39 +2714,76 @@ void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
     }
 }
 
-// Size the feedback target to 1/8 of the raster extent in each axis (never
-// below 1x1) and rebuild the readback ring behind it. Cheap and idempotent when
-// the size has not moved — the whole body is skipped.
+bool VtResidency::ensure_feedback_pipeline(std::string& error) {
+    if (feedback_gpu_) return true;
+    auto gpu = std::make_unique<FeedbackGpu>();
+    const std::vector<VkDescriptorSetLayoutBinding> bindings{
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+    if (!matter::create_compute_pipeline(*vulkan_, "vt_feedback.comp.spv",
+                                         bindings, gpu->pipeline, error)) return false;
+    const VkDescriptorPoolSize sizes[]{
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kFeedbackSlots},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFeedbackSlots}};
+    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool.maxSets = kFeedbackSlots;
+    pool.poolSizeCount = 2;
+    pool.pPoolSizes = sizes;
+    VkResult result = vkCreateDescriptorPool(vulkan_->device(), &pool, nullptr, &gpu->pool);
+    if (result != VK_SUCCESS) {
+        error = "VT feedback descriptor pool: " + std::to_string(result);
+        return false;
+    }
+    VkDescriptorSetLayout layouts[kFeedbackSlots];
+    for (auto& layout : layouts) layout = gpu->pipeline.descriptor_set_layout;
+    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    alloc.descriptorPool = gpu->pool;
+    alloc.descriptorSetCount = kFeedbackSlots;
+    alloc.pSetLayouts = layouts;
+    result = vkAllocateDescriptorSets(vulkan_->device(), &alloc, gpu->sets);
+    if (result != VK_SUCCESS) {
+        error = "VT feedback descriptors: " + std::to_string(result);
+        return false;
+    }
+    feedback_gpu_ = std::move(gpu);
+    return true;
+}
+
+// A full-resolution integer attachment follows final G-buffer depth visibility.
+// GPU extraction writes a receiver/material pair per 8x8 block to the cached readback
+// ring. Rebuild only when the raster extent changes, under the renderer's
+// existing target-resize retirement contract.
 //
 // A rebuild DROPS every slot's pending readback, so the frames immediately after
 // a resize simply produce no page requests. Nothing goes black: resident pages
 // stay resident and every unmapped entry still resolves to its variant's pinned
 // tail. Returns true unchanged when the runtime never started.
-bool VtResidency::ensure_feedback(uint32_t raster_width, uint32_t raster_height,
+bool VtResidency::ensure_feedback(const matter::VkImageResource& visible_feedback,
                                   std::string& error) {
     if (!ready_) return true;
-    const uint32_t w = raster_width / 8u ? raster_width / 8u : 1u;
-    const uint32_t h = raster_height / 8u ? raster_height / 8u : 1u;
-    if (w == feedback_w_ && h == feedback_h_ && feedback_.image != VK_NULL_HANDLE)
+    const uint32_t raster_width = visible_feedback.extent.width;
+    const uint32_t raster_height = visible_feedback.extent.height;
+    if (!raster_width || !raster_height || visible_feedback.view == VK_NULL_HANDLE ||
+        visible_feedback.format != kVtFeedbackFormat) {
+        error = "VT feedback requires the current RGBA32_UINT raster attachment";
+        return false;
+    }
+    const uint32_t w = (raster_width - 1u) / 8u + 1u;
+    const uint32_t h = (raster_height - 1u) / 8u + 1u;
+    if (raster_width == feedback_raster_w_ && raster_height == feedback_raster_h_ &&
+        feedback_source_view_ == visible_feedback.view)
         return true;
-    destroy_pool_image(feedback_);
+    if (!ensure_feedback_pipeline(error)) return false;
+    feedback_source_view_ = VK_NULL_HANDLE;
+    feedback_source_lifetime_.reset();
     for (uint32_t i = 0; i < kFeedbackSlots; ++i) {
         destroy_buffer(feedback_readback_[i]);
         feedback_slot_written_[i] = false;
     }
     feedback_w_ = feedback_h_ = 0;
-    if (!create_array_image(*vulkan_, VK_FORMAT_R16G16B16A16_UINT, w, h, 1,
-                            VK_IMAGE_USAGE_STORAGE_BIT |
-                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                            feedback_.image, feedback_.view, feedback_.memory,
-                            error, VK_IMAGE_VIEW_TYPE_2D)) {
-        return false;
-    }
-    feedback_.format = VK_FORMAT_R16G16B16A16_UINT;
-    feedback_.layers = 1;
-    feedback_.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 8u;
+    feedback_raster_w_ = feedback_raster_h_ = 0;
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 8u *
+                               kVtFeedbackRequestsPerSample;
     for (uint32_t i = 0; i < kFeedbackSlots; ++i) {
         // HOST_CACHED IS THE WHOLE POINT HERE. This is the one buffer the CPU
         // READS every frame -- drain_feedback scans all w*h texels of it. Asked
@@ -1899,7 +2796,7 @@ bool VtResidency::ensure_feedback(uint32_t raster_width, uint32_t raster_height,
         // COHERENT stays REQUIRED so no vkInvalidateMappedMemoryRanges is
         // needed; CACHED is preferred, and find_memory_type falls back to the
         // required pair on a device that cannot offer both.
-        if (!create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        if (!create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                            feedback_readback_[i], error,
@@ -1909,54 +2806,60 @@ bool VtResidency::ensure_feedback(uint32_t raster_width, uint32_t raster_height,
             return false;
         }
     }
+    const VkDescriptorImageInfo image{VK_NULL_HANDLE, visible_feedback.view,
+                                      VK_IMAGE_LAYOUT_GENERAL};
+    for (uint32_t i = 0; i < kFeedbackSlots; ++i) {
+        const VkDescriptorBufferInfo buffer{feedback_readback_[i].buffer, 0, bytes};
+        VkWriteDescriptorSet writes[2]{};
+        for (uint32_t binding = 0; binding < 2; ++binding) {
+            writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[binding].dstSet = feedback_gpu_->sets[i];
+            writes[binding].dstBinding = binding;
+            writes[binding].descriptorCount = 1;
+        }
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[0].pImageInfo = &image;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].pBufferInfo = &buffer;
+        vkUpdateDescriptorSets(vulkan_->device(), 2, writes, 0, nullptr);
+    }
     feedback_w_ = w;
     feedback_h_ = h;
+    feedback_raster_w_ = raster_width;
+    feedback_raster_h_ = raster_height;
+    feedback_source_view_ = visible_feedback.view;
+    feedback_source_lifetime_ = visible_feedback.lifetime;
     return true;
 }
 
-// The two halves of the feedback round trip, and they BRACKET the G-buffer pass:
-// the clear is recorded before vkCmdBeginRendering (it is a transfer, and the
-// fragment shader writes the image as storage afterwards), the copy-out after
-// vkCmdEndRendering. Both maintain feedback_.layout themselves, and both are
-// no-ops when the runtime never started or the target has not been created.
+// The renderer clears and writes the request attachment with the G-buffer.
+// Extract only final visible requests after vkCmdEndRendering. The image's
+// tracked layout is shared with its renderer owner and updated by the barrier.
 //
 // The readback lands in THIS frame slot's buffer and is consumed by the
 // begin_frame of the frame that next reuses the slot — which is where the 2-3
 // frame staleness of the whole feedback loop comes from.
-void VtResidency::record_feedback_clear(VkCommandBuffer cmd) {
-    if (!ready_ || feedback_.image == VK_NULL_HANDLE) return;
-    barrier(cmd, feedback_.image, 1, feedback_.layout,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    const VkClearColorValue zero{};
-    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cmd, feedback_.image,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
-    barrier(cmd, feedback_.image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    feedback_.layout = VK_IMAGE_LAYOUT_GENERAL;
-}
-
-void VtResidency::record_feedback_readback(VkCommandBuffer cmd) {
-    if (!ready_ || feedback_.image == VK_NULL_HANDLE) return;
+void VtResidency::record_feedback_readback(VkCommandBuffer cmd,
+                                          matter::VkImageResource& visible_feedback) {
+    if (!ready_ || !feedback_gpu_ || feedback_w_ == 0 || feedback_h_ == 0) return;
+    if (visible_feedback.view != feedback_source_view_) return;
     if (frame_slot_ >= kFeedbackSlots) return;
     if (feedback_readback_[frame_slot_].buffer == VK_NULL_HANDLE) return;
-    barrier(cmd, feedback_.image, 1, feedback_.layout,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy{};
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {feedback_w_, feedback_h_, 1};
-    vkCmdCopyImageToBuffer(cmd, feedback_.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           feedback_readback_[frame_slot_].buffer, 1, &copy);
-    feedback_.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    matter::record_image_transition(cmd, visible_feedback,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, feedback_gpu_->pipeline.pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        feedback_gpu_->pipeline.pipeline_layout, 0, 1,
+        &feedback_gpu_->sets[frame_slot_], 0, nullptr);
+    vkCmdDispatch(cmd, (feedback_w_ + 7u) / 8u, (feedback_h_ + 7u) / 8u, 1);
+    buffer_barrier(cmd, feedback_readback_[frame_slot_].buffer,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
     feedback_slot_written_[frame_slot_] = true;
 }
 
@@ -1978,7 +2881,7 @@ void VtResidency::record_feedback_readback(VkCommandBuffer cmd) {
 // page budgets (a registration tail gates a whole variant into the VT path, so
 // it must never queue behind feedback-driven sharpening), page admission that
 // STOPS for the frame rather than thrashing once the pool is exhausted, a trim
-// of the queue to max_queue_, and — the part that is easy to get wrong — a page
+// of feedback-only work to max_queue_, and — the part that is easy to get wrong — a page
 // becomes resident only AFTER the filler reports it actually wrote the slot.
 // Mapping before that is what once turned every skipped request into a page
 // pointing at never-written pool memory.
@@ -1993,6 +2896,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     stats_.evictions_total = slots_.evictions();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
 
+    queue_dirty_pages();
     // --- WP-H: tier-2 enrichment, BEFORE this frame's fills ---------------
     // Ordering matters twice over. (1) It runs while the pool is still in its
     // shader-read layout, which is what the enricher samples the page's current
@@ -2022,9 +2926,9 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         // deterministic flat black instead of undefined memory. The BC
         // channels cannot vkCmdClearColorImage (compressed formats), so
         // they are cleared by copying the zeroed staging buffer over every
-        // layer; the uncompressed aux channel takes the plain clear.
+        // layer; the uncompressed aux/height channels take the plain clear.
         for (uint32_t c = 0; c < kVtChannelCount; ++c) {
-            if (pool_[c].format == VK_FORMAT_R8G8B8A8_UNORM) {
+            if (c == kVtChannelAux || c == kVtChannelHeight) {
                 const VkClearColorValue zero{};
                 const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,
                                                     0, 1, 0, pool_[c].layers};
@@ -2092,14 +2996,25 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     batch_.clear();
     pending_map_.clear();
     PROFILE_COUNT("vt.queue_depth", queue_.size());
-    if (!queue_.empty() && filler_) {
+    // Advance staging lifetime even when demand vanished and no fill remains.
+    // Otherwise abandoned partial uploads can keep their CPU/GPU leases idle.
+    if (filler_) filler_->begin_preparation_frame();
+    if (!queue_.empty() && filler_ && !page_fills_paused_for_test_ && !input_update_pending_) {
         PROFILE_SCOPE("vt.fill_select");
-        // Highest priority first; ties by insertion order (stable).
+        // Reserve the shared batch ceiling for mandatory coverage first.
+        // Separate per-class counters alone are insufficient: a detail budget
+        // equal to kMaxFillFlags could otherwise occupy the entire batch before
+        // any initial tail (priority zero) is visited. Within each class use
+        // highest priority first; ties retain insertion order.
         std::stable_sort(queue_.begin(), queue_.end(),
                          [](const PendingFill& a, const PendingFill& b) {
+                             const bool a_tail = a.preassigned_slot != 0xFFFFFFFFu;
+                             const bool b_tail = b.preassigned_slot != 0xFFFFFFFFu;
+                             if (a_tail != b_tail) return a_tail;
                              return a.priority > b.priority;
                          });
-        // Two budgets over one pass (see the tail-gate note in the header):
+        // Two composition budgets over one pass (cached uploads use the
+        // filler staging capacity plus the shared batch ceiling):
         // TAIL fills (preassigned slots — registration tails and in-place
         // invalidation re-fills) draw from max_tail_fills_per_frame_, page
         // fills from max_fills_per_frame_. A streaming burst's tails gate
@@ -2108,6 +3023,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         // batch ceiling.
         uint32_t tail_taken = 0, page_taken = 0;
         bool page_admission_blocked = false;
+        std::map<VtPreparationKey, bool> prepared_owners;
         std::vector<uint8_t> taken(queue_.size(), 0u);
         for (size_t i = 0; i < queue_.size(); ++i) {
             if (batch_.size() >= kMaxFillFlags) break;
@@ -2121,19 +3037,53 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                 continue;
             }
             VariantRung& v = variants_[p.layer];
-            if (!v.live) {
+            if (!v.live || v.table_generation != p.owner_generation ||
+                v.content_revision != p.content_revision) {
                 taken[i] = 1;   // dead entry: drop without dispatch
                 continue;
             }
             const bool is_tail = p.preassigned_slot != 0xFFFFFFFFu;
-            if (is_tail) {
-                if (tail_taken >= max_tail_fills_per_frame_) continue;
-            } else if (page_taken >= max_fills_per_frame_ ||
-                       page_admission_blocked) {
-                continue;
+            if (!is_tail && page_admission_blocked) continue;
+            VtFillRequest request;
+            request.variant_hash = v.variant_hash;
+            request.rung = static_cast<uint16_t>(v.rung);
+            request.mip = static_cast<uint16_t>(p.page.mip);
+            request.page_x = static_cast<uint16_t>(p.page.px);
+            request.page_y = static_cast<uint16_t>(p.page.py);
+            request.physical_slot = UINT32_MAX;
+            request.atlas = &v.inputs->geometry->atlas;
+            request.part_context = &v.inputs->context;
+            request.part_snapshot = v.inputs;
+            request.owner_generation = p.owner_generation;
+            request.content_revision = p.content_revision;
+            request.owner_key = v.param_key;
+            request.input_snapshot = input_snapshot_;
+            const auto readiness = filler_->probe_page(request);
+            if (readiness == VtPageFiller::PageReadiness::Pending) continue;
+            // One readiness probe per admitted owner. Deferred CPU/GPU work
+            // retains demand and request age, and
+            // cannot evict an unrelated page just to wait for preparation.
+            const VtPreparationKey preparation{v.variant_hash, v.rung,
+                                               v.param_key, v.table_generation};
+            if (readiness == VtPageFiller::PageReadiness::NeedsPreparation) {
+                // Composition budgets apply only to work that needs baking.
+                // Ready imports reserve their own bounded, fence-owned staging
+                // slices in probe_page; both paths still share kMaxFillFlags.
+                if (is_tail ? tail_taken >= max_tail_fills_per_frame_
+                            : page_taken >= max_fills_per_frame_) continue;
+                auto prepared = prepared_owners.find(preparation);
+                if (prepared == prepared_owners.end()) {
+                    prepared = prepared_owners.emplace(preparation,
+                        filler_->prepare(preparation, v.inputs)).first;
+                }
+                if (!prepared->second) continue;
             }
             uint32_t slot = p.preassigned_slot;
-            if (!is_tail) {
+            bool acquired = false;
+            if (!is_tail && v.indirection.is_mapped(p.page.mip, p.page.px, p.page.py)) {
+                slot = v.indirection.resolve(p.page.mip, p.page.px, p.page.py).slot;
+                slots_.touch(slot, frame_index_);
+            } else if (!is_tail) {
                 VtSlotPool::Owner evicted;
                 if (!slots_.acquire(v.param_key,
                                     p.page, /*pinned=*/false, frame_index_,
@@ -2148,28 +3098,43 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                     continue;
                 }
                 if (evicted.live) {
+                    dirty_pages_.erase(slot);
+                    material_pages_.release(slot);
+                    retire_slot_input_snapshot(slot);
+                    retire_slot_geometry(slot);
+                    retire_slot_material_mapping(slot);
+                    if (event_log_)
+                        MATTER_LOGI("vt-evict", "frame=%llu owner=%016llx mip=%u x=%u y=%u slot=%u",
+                            static_cast<unsigned long long>(frame_index_),
+                            static_cast<unsigned long long>(evicted.variant_key),
+                            evicted.page.mip, evicted.page.px, evicted.page.py, slot);
                     const auto owner_layer = layer_of_.find(evicted.variant_key);
                     if (owner_layer != layer_of_.end())
                         variants_[owner_layer->second].indirection.unmap(
                             evicted.page.mip, evicted.page.px, evicted.page.py);
                 }
+                acquired = true;
             } else {
                 slots_.touch(slot, frame_index_);
             }
             taken[i] = 1;
-            if (is_tail) ++tail_taken; else ++page_taken;
-            VtFillRequest request;
-            request.variant_hash = v.variant_hash;
-            request.rung = static_cast<uint16_t>(v.rung);
-            request.mip = static_cast<uint16_t>(p.page.mip);
-            request.page_x = static_cast<uint16_t>(p.page.px);
-            request.page_y = static_cast<uint16_t>(p.page.py);
-            request.physical_slot = slot;
-            request.atlas = &v.atlas;
-            request.part_context = &v.context;
+            if (readiness == VtPageFiller::PageReadiness::NeedsPreparation) {
+                if (is_tail) ++tail_taken; else ++page_taken;
+            }
+            request.physical_slot = slots_.capacity() + static_cast<uint32_t>(batch_.size());
             request.pool = &pool_binding_;
+            if(p.page.mip+1<v.layout.mip_count &&
+               (!(enricher_ && max_enrich_per_frame_) || enricher_->supports_separate_occlusion()) &&
+               v.material_published && v.material_published->inputs==v.inputs) {
+                request.coverage_only=vt_receiver_material_page(*v.inputs,v.material_published->records,
+                    p.page.mip,p.page.px,p.page.py);
+                if(request.coverage_only && v.material_candidate && v.material_candidate->inputs==v.inputs)
+                    request.coverage_only=vt_receiver_material_page(*v.inputs,v.material_candidate->records,
+                        p.page.mip,p.page.px,p.page.py);
+            }
             batch_.push_back(request);
-            pending_map_.push_back(PendingMap{p.layer, p.page, slot, is_tail});
+            pending_map_.push_back(PendingMap{p.layer, p.page, slot, is_tail, p.requested_frame,
+                p.owner_generation, p.content_revision, slots_.owner(slot).generation, acquired, v.param_key});
         }
         // Only dispatched (or dead-dropped) entries leave the queue; budget-
         // or admission-skipped ones keep their order for next frame.
@@ -2177,9 +3142,12 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         for (size_t i = 0; i < queue_.size(); ++i)
             if (!taken[i]) queue_[keep++] = queue_[i];
         queue_.resize(keep);
-        // CAP. queue_ is still in the priority order the stable_sort above put
-        // it in (the compaction preserves relative order), so truncating keeps
-        // the most starved pages and drops the least.
+        // Cap only feedback-driven requests, retaining their priority order.
+        // A mandatory tail already has a mapping and bypasses queue_page's
+        // resident fast-out only through force/preassigned_slot. Feedback
+        // cannot regenerate that work after a capacity drop. There is at most
+        // one coalesced tail per admitted owner, so protected work is bounded
+        // independently by variant admission.
         //
         // Without this the queue only ever grew: drain_feedback re-derives the
         // wanted set every frame while ~2.7 fills retire, so measured depths
@@ -2189,19 +3157,26 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         // 14.3 ms in fill_select alone -- a cost that scaled with time flown
         // rather than with anything on screen.
         //
-        // Dropping is safe BECAUSE feedback regenerates: a page still visible
-        // is re-requested next frame. What is lost is at most one frame of
-        // latency on a page that, at this drain rate, was tens of thousands of
-        // frames from being serviced anyway.
-        if (queue_.size() > max_queue_) {
-            const uint64_t dropped = queue_.size() - max_queue_;
+        // Visible missing detail is re-requested through asynchronous feedback;
+        // initial/refresh tails must survive until success or owner cancellation.
+        uint32_t detail_kept = 0;
+        uint64_t dropped = 0;
+        keep = 0;
+        for (size_t i = 0; i < queue_.size(); ++i) {
+            if (queue_[i].preassigned_slot != 0xFFFFFFFFu ||
+                detail_kept < max_queue_) {
+                if (queue_[i].preassigned_slot == 0xFFFFFFFFu) ++detail_kept;
+                queue_[keep++] = queue_[i];
+            } else {
+                ++dropped;
+            }
+        }
+        queue_.resize(keep);
+        if (dropped != 0) {
             stats_.requests_dropped_total += dropped;
             PROFILE_COUNT("vt.requests_dropped", dropped);
-            queue_.resize(max_queue_);
         }
-        queued_keys_.clear();
-        for (size_t i = 0; i < queue_.size(); ++i)
-            queued_keys_[page_key(queue_[i].layer, queue_[i].page)] = i;
+        reindex_pending_fills();
     }
 
     if (!batch_.empty()) {
@@ -2221,6 +3196,12 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         for (size_t i = 0; i < batch_.size(); ++i) {
             fill_flags_[i] = false;
             batch_[i].out_filled = &fill_flags_[i];
+            fill_heights_[i] = {};
+            batch_[i].out_height = &fill_heights_[i];
+            fill_geometries_[i] = {};
+            batch_[i].out_geometry = &fill_geometries_[i];
+            fill_material_keys_[i] = {};
+            batch_[i].out_material_key = &fill_material_keys_[i];
         }
         {
             // Tier-1 page bake: the compositor samples the tileset slots and
@@ -2234,14 +3215,125 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
 
         // --- map or roll back, per request --------------------------------
         uint32_t mapped = 0;
+        bool copy_window = false;
         for (size_t i = 0; i < pending_map_.size(); ++i) {
             const PendingMap& m = pending_map_[i];
+            const bool owner_current = m.layer < variants_.size() &&
+                variants_[m.layer].live && variants_[m.layer].table_generation == m.owner_generation;
+            const bool slot_current = m.slot < slots_.capacity() &&
+                slots_.owner(m.slot).live && slots_.owner(m.slot).generation == m.slot_generation &&
+                slots_.owner(m.slot).variant_key == m.owner_key && slots_.owner(m.slot).page == m.page;
+            const bool current = owner_current && slot_current &&
+                variants_[m.layer].content_revision == m.content_revision &&
+                batch_[i].input_snapshot == input_snapshot_;
+            if (!current) {
+                ++stats_.fills_stale_total;
+                if (m.acquired && slot_current) {
+                    dirty_pages_.erase(m.slot);
+                    slot_reset_tier(m.slot);
+                    slots_.release_now(m.slot);
+                    material_pages_.release(m.slot);
+                }
+                // Released owners need no retry. Live owners' durable dirty
+                // state (or initial tail request) targets their newest revision.
+                if (owner_current && m.preassigned) {
+                    queue_page(variants_[m.layer], m.page, true, m.slot);
+                    auto& retry = queue_[queued_keys_.at(page_key(m.layer, m.page))];
+                    retry.requested_frame = std::min(retry.requested_frame, m.requested_frame);
+                }
+                if (event_log_)
+                    MATTER_LOGI("vt-stale", "frame=%llu owner=%016llx generation=%llu revision=%llu slot=%u",
+                        static_cast<unsigned long long>(frame_index_),
+                        static_cast<unsigned long long>(m.owner_key),
+                        static_cast<unsigned long long>(m.owner_generation),
+                        static_cast<unsigned long long>(m.content_revision), m.slot);
+                continue; // never copy stale scratch bytes to any resident slot
+            }
             VariantRung& v = variants_[m.layer];
+            if (event_log_)
+                MATTER_LOGI("vt-page", "frame=%llu owner=%016llx generation=%llu revision=%llu mip=%u x=%u y=%u slot=%u mandatory=%u first_frame=%llu result=%s",
+                    static_cast<unsigned long long>(frame_index_),
+                    static_cast<unsigned long long>(v.param_key),
+                    static_cast<unsigned long long>(v.table_generation),
+                    static_cast<unsigned long long>(v.content_revision),
+                    m.page.mip, m.page.px, m.page.py, m.slot, m.preassigned ? 1u : 0u,
+                    static_cast<unsigned long long>(m.requested_frame),
+                    fill_flags_[i] ? "recorded" : "producer_refused");
+            VtMaterialPages::Binding pixels;
+            const bool coverage_only=(fill_geometries_[i].gpu.page_flags&kVtCoverageOnly)!=0;
+            if(fill_flags_[i] && coverage_only &&
+               (!batch_[i].coverage_only || !fill_geometries_[i].lifetime)) fill_flags_[i]=false;
             if (fill_flags_[i]) {
-                if (!v.live) continue;
+                // Enrichment modifies ORM using receiver-specific geometry.
+                // Preserve it with private payloads until it has overrides.
+                const bool private_enrichment=enricher_ && max_enrich_per_frame_ &&
+                    !(enricher_->supports_separate_occlusion() && fill_geometries_[i].lifetime && fill_heights_[i].version==1);
+                const auto key = VtMaterialPages::key(private_enrichment ? VtMaterialPixelKey{} : fill_material_keys_[i],
+                    batch_[i].input_snapshot ? batch_[i].input_snapshot->identity : 0,
+                    fill_heights_[i]);
+                if(coverage_only) {
+                    // Queue-ordered replacement: old GPU readers precede the
+                    // pool barrier, and the mapping retains its module lease.
+                    material_pages_.release(m.slot);
+                    pixels={0,false}; // no owned material address; shader flag guards fallback
+                } else {
+                    pixels = material_pages_.publish(m.slot, key);
+                    if (pixels.slot == UINT32_MAX) fill_flags_[i] = false;
+                }
+            }
+            if (fill_flags_[i]) {
+                if (!copy_window) {
+                    // Same-image copy requires GENERAL on source/destination.
+                    // The opening pool barrier already orders prior frame
+                    // readers before this frame. This barrier makes producer
+                    // writes available to the publication copies.
+                    for (uint32_t c = 0; c < kVtChannelCount; ++c) {
+                        barrier(cmd, pool_[c].image, pool_[c].layers, pool_[c].layout,
+                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                        pool_[c].layout = VK_IMAGE_LAYOUT_GENERAL;
+                    }
+                    copy_window = true;
+                }
+                uint32_t src_layer, src_x, src_y, dst_layer, dst_x, dst_y;
+                vt_slot_origin(batch_[i].physical_slot, src_layer, src_x, src_y);
+                VkImageCopy copy{};
+                copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, src_layer, 1};
+                copy.srcOffset = {static_cast<int32_t>(src_x), static_cast<int32_t>(src_y), 0};
+                copy.extent = {kVtPageStride, kVtPageStride, 1};
+                for (uint32_t c = 0; c < kVtChannelCount; ++c) {
+                    if (c != kVtChannelAux && !pixels.write) continue;
+                    vt_slot_origin(c == kVtChannelAux ? m.slot : pixels.slot, dst_layer, dst_x, dst_y);
+                    copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, dst_layer, 1};
+                    copy.dstOffset = {static_cast<int32_t>(dst_x), static_cast<int32_t>(dst_y), 0};
+                    vkCmdCopyImage(cmd, pool_[c].image, VK_IMAGE_LAYOUT_GENERAL,
+                                   pool_[c].image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+                }
                 v.indirection.map(m.page.mip, m.page.px, m.page.py, m.slot);
+                set_slot_input_snapshot(m.slot, batch_[i].input_snapshot);
+                slot_page_metadata_[m.slot].height = fill_heights_[i];
+                slot_page_metadata_[m.slot].material_slot = pixels.slot;
+                slot_page_metadata_[m.slot].surface_revision = v.content_revision;
+                set_slot_geometry(m.slot, fill_geometries_[i]);
+                slot_content_revisions_[m.slot]=v.content_revision;
+                set_slot_material_mapping(m.slot,
+                    v.material_published && v.material_published->inputs==v.inputs ?
+                    v.material_published : nullptr);
+                input_indices_dirty_begin_ = std::min(input_indices_dirty_begin_, m.slot);
+                input_indices_dirty_end_ = std::max(input_indices_dirty_end_, m.slot + 1u);
+                dirty_pages_.erase(m.slot);
                 if (m.page.mip + 1u == v.layout.mip_count) {
                     v.tail_filled = true;
+                    v.boundary_source.reset();
+                    if(fill_geometries_[i].lifetime && fill_geometries_[i].boundary) {
+                        auto source=std::make_shared<VtSurfaceBoundarySource>();
+                        source->slot=m.layer+1;source->generation=uint32_t(v.table_generation);
+                        source->content_revision=v.content_revision;source->inputs=v.inputs;
+                        source->material_inputs=slot_input_snapshots_[m.slot];
+                        source->metadata=slot_page_metadata_[m.slot];
+                        source->geometry=fill_geometries_[i];v.boundary_source=std::move(source);
+                    }
                     // TAIL GATE: the fill is recorded in THIS frame's command
                     // buffer, so a draw recorded from the NEXT frame on is
                     // queue-ordered after it and reads written texels. Flip
@@ -2264,7 +3356,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             // The filler skipped this request. Nothing wrote the slot, so the
             // page must NOT become resident.
             ++stats_.fills_failed_total;
-            if (!m.preassigned) {
+            if (m.acquired) {
                 // Freshly acquired: hand it straight back — release_now is
                 // legal because the entry was never mapped, so no frame past
                 // or present can resolve into this slot. Every sample of this
@@ -2272,17 +3364,24 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                 // before the request.
                 slot_reset_tier(m.slot);
                 slots_.release_now(m.slot);
-            } else if (v.live) {
+                material_pages_.release(m.slot);
+            } else if (m.preassigned) {
                 // A pinned tail keeps its slot (every unmapped entry resolves
                 // to it, so releasing it would break that invariant) but its
                 // content is still undefined: leave tail_filled false and
                 // re-queue the in-place re-fill so the next frame retries.
-                v.tail_filled = false;
                 queue_page(v, m.page, /*force=*/true, /*preassigned_slot=*/m.slot);
+                const auto retry = queued_keys_.find(page_key(v.layer, m.page));
+                if (retry != queued_keys_.end())
+                    queue_[retry->second].requested_frame = std::min(
+                        queue_[retry->second].requested_frame, m.requested_frame);
             }
         }
         stats_.fills_last_frame = mapped;
         stats_.fills_total += mapped;
+        // Failed/stale candidates never become persistent owners. Successful
+        // candidates have transferred ownership to their resident slots.
+        for (size_t i = 0; i < batch_.size(); ++i) fill_geometries_[i] = {};
     }
 
     // --- indirection table uploads ----------------------------------------
@@ -2331,6 +3430,9 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         }
     }
 
+    publish_surface_connections(error);
+    record_input_snapshot_indices(cmd);
+
     // --- back to shader-read ---------------------------------------------
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
         barrier(cmd, pool_[c].image, pool_[c].layers, pool_[c].layout,
@@ -2355,10 +3457,53 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.evictions_total = slots_.evictions();
-    stats_.queue_depth = static_cast<uint32_t>(queue_.size());
+    refresh_queue_stats();
     refresh_indirection_stats();
+    if (density_frame_ && frame_index_ >= density_frame_) {
+        log_page_density();
+        density_frame_ = 0;
+    }
+    // GPU commands have staged their inputs; reusable request capacity must
+    // not keep obsolete snapshots alive until another frame happens to run.
+    batch_.clear();
     (void)error;
     return true;
+}
+
+void VtResidency::log_page_density() const {
+    // A CPU snapshot of occupied slots after this frame's recording. No GPU
+    // readback or wait. Not a completion receipt, visible-pixel metric, or a
+    // performance sample. Count aliases once, through physical ownership.
+    MATTER_LOGI("vt-density", "begin schema=1 frame=%llu capacity=%u occupied=%u pinned=%u "
+                "format_bytes=%llu payload=%u stride=%u reserved=%u resident_capacity=%u",
+                static_cast<unsigned long long>(frame_index_), pool_pages_,
+                slots_.used(), slots_.pinned(),
+                static_cast<unsigned long long>(stats_.pool_bytes),
+                chart_atlas::kVtPagePayload, kVtPageStride, kMaxFillFlags, slots_.capacity());
+    uint32_t reported = 0;
+    for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
+        const auto& owner = slots_.owner(slot);
+        if (!owner.live) continue;
+        const auto found = layer_of_.find(owner.variant_key);
+        if (found == layer_of_.end()) continue;
+        const auto& v = variants_[found->second];
+        if (!v.live) continue;
+        const auto d = vt_measure_page_density(v.inputs->geometry->atlas, v.inputs->context, owner.page.mip,
+                                               owner.page.px, owner.page.py);
+        MATTER_LOGI("vt-density-page", "slot=%u owner=%016llx generation=%llu "
+                    "mip=%u x=%u y=%u pinned=%u tail_filled=%u geometry=%u "
+                    "atlas=%u block=%u bounds=%u gutter=%u triangle=%u",
+                    slot, static_cast<unsigned long long>(owner.variant_key),
+                    static_cast<unsigned long long>(owner.generation),
+                    unsigned(owner.page.mip), unsigned(owner.page.px),
+                    unsigned(owner.page.py), owner.pinned ? 1u : 0u,
+                    v.tail_filled ? 1u : 0u, d.geometry_available ? 1u : 0u,
+                    d.atlas_texels, d.chart_block_texels, d.content_bounds_texels,
+                    d.gutter_bounds_texels, d.triangle_texels);
+        ++reported;
+    }
+    MATTER_LOGI("vt-density", "end frame=%llu reported=%u occupied=%u",
+                static_cast<unsigned long long>(frame_index_), reported, slots_.used());
 }
 
 }  // namespace vt

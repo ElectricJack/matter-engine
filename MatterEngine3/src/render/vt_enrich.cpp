@@ -64,8 +64,9 @@ struct GpuEnrichRequest {
     uint32_t b[4];   // cand_offset, cand_count, sample_count, seed
     uint32_t c[4];   // slot_origin_x, slot_origin_y, pool_layer, unused
     float    d[4];   // strength, cap_texels, cap_meters, min_ao
+    uint32_t e[4];   // optional packed R16 factor BDA, reserved
 };
-static_assert(sizeof(GpuEnrichRequest) == 64, "GpuEnrichRequest layout");
+static_assert(sizeof(GpuEnrichRequest) == 80, "GpuEnrichRequest layout");
 
 // Total candidate-chart entries one enrich() batch may write into a ring's
 // cand buffer, across all its pages. A page whose list would overrun it is
@@ -335,7 +336,7 @@ struct VtEnricher::Impl {
         uint64_t last_used = 0;
         bool built = false;      // false => the AS build still has to be recorded
     };
-    std::map<std::pair<uint64_t, uint32_t>, VariantEntry> variants;
+    std::map<VtPreparationKey, VariantEntry> variants;
 
     // A VariantEntry that has left the live cache (evicted, or dropped by
     // invalidate_part) together with the frame index it left on. retire()
@@ -394,7 +395,7 @@ struct VtEnricher::Impl {
                          VkPipeline& out, std::string& err);
     void write_ring_descriptors(Ring& r);
     void bind_pool_orm(VkImageView view);
-    VariantEntry* get_or_build_variant(uint64_t variant_hash, uint32_t rung,
+    VariantEntry* get_or_build_variant(const VtPreparationKey& key,
                                        const chart_atlas::ChartAtlasRung* atlas,
                                        const VtPartContext* ctx,
                                        uint64_t frame_index, Stats& stats);
@@ -968,10 +969,9 @@ void VtEnricher::Impl::record_as_build(VkCommandBuffer cmd, VariantEntry& e) {
 // the GPU-side build that record_as_build() will record for it later. It also
 // runs evict_lru() first, so a miss can retire another variant's structures.
 VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
-    uint64_t variant_hash, uint32_t rung,
+    const VtPreparationKey& key,
     const chart_atlas::ChartAtlasRung* atlas, const VtPartContext* ctx,
     uint64_t frame_index, Stats& stats) {
-    const auto key = std::make_pair(variant_hash, rung);
     auto it = variants.find(key);
     if (it != variants.end()) {
         it->second.last_used = frame_index;
@@ -987,7 +987,7 @@ VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
                          "[vt.enrich] variant 0x%016llx rung %u cannot be "
                          "enriched (%s): %s -- this and every later build "
                          "failure leaves the page at tier 1\n",
-                         static_cast<unsigned long long>(variant_hash), rung,
+                         static_cast<unsigned long long>(key.variant_hash), key.rung,
                          stage, reason.empty() ? "no reason reported"
                                                : reason.c_str());
         }
@@ -1163,7 +1163,7 @@ void VtEnricher::invalidate_part(uint64_t variant_hash) {
     // that had lived 27 ms and been freed 12 ms earlier, a lifetime no
     // graveyard-routed entry can have (kRetireFrames guarantees more).
     for (auto it = impl_->variants.begin(); it != impl_->variants.end();) {
-        if (it->first.first == variant_hash) {
+        if (it->first.variant_hash == variant_hash) {
             // Deferred, exactly as evict_lru does it -- see the rationale on
             // this function.
             impl_->graveyard.push_back(
@@ -1173,6 +1173,15 @@ void VtEnricher::invalidate_part(uint64_t variant_hash) {
             ++it;
         }
     }
+    stats_.as_cached = static_cast<uint32_t>(impl_->variants.size());
+}
+
+void VtEnricher::release_preparation(const VtPreparationKey& key) {
+    const auto it = impl_->variants.find(key);
+    if (it == impl_->variants.end()) return;
+    impl_->graveyard.push_back(
+        Impl::Retired{std::move(it->second), impl_->last_frame_index});
+    impl_->variants.erase(it);
     stats_.as_cached = static_cast<uint32_t>(impl_->variants.size());
 }
 
@@ -1211,6 +1220,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         uint32_t req_index;
         uint32_t dst_layer;
         int32_t dst_x, dst_y;
+        const VtEnrichRequest* request;
     };
     std::vector<Rec> recs;
     recs.reserve(std::min<size_t>(count, kMaxRequestsPerBatch));
@@ -1233,6 +1243,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
 
     for (size_t i = 0; i < count; ++i) {
         const VtEnrichRequest& req = batch[i];
+        if(req.out_enriched)*req.out_enriched=false;
         const VtPoolBinding* pool = req.pool;
         if (!req.atlas || !req.part_context || !pool ||
             !pool->image[kVtChannelOrm] ||
@@ -1240,6 +1251,9 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
             recs.size() >= kMaxRequestsPerBatch) {
             ++stats_.requests_skipped;
             continue;
+        }
+        if(req.occlusion_address && (!req.occlusion_buffer || (req.occlusion_address&15u) || (req.occlusion_offset&3u))) {
+            ++stats_.requests_skipped;continue;
         }
         // Enforce the single-ORM-image invariant the write-back barriers
         // above depend on. Checked here, before anything in the batch state
@@ -1256,8 +1270,11 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
             continue;
         }
         const auto* ctx = static_cast<const VtPartContext*>(req.part_context);
+        // Reusable material space has no scene occluders. Receiver-dependent
+        // enrichment belongs to an instance override, not shared module pixels.
+        if (ctx && ctx->periodic.version) { ++stats_.requests_skipped; continue; }
         Impl::VariantEntry* entry = im.get_or_build_variant(
-            req.variant_hash, req.rung, req.atlas, ctx, frame_index, stats_);
+            req.preparation_key(), req.atlas, ctx, frame_index, stats_);
         if (!entry) {
             ++stats_.requests_skipped;
             continue;
@@ -1302,11 +1319,17 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         g.d[1] = settings.cap_texels;
         g.d[2] = settings.cap_meters;
         g.d[3] = settings.min_ao;
+        g.e[0]=uint32_t(req.occlusion_address);g.e[1]=uint32_t(req.occlusion_address>>32);
+        g.e[2]=g.e[3]=0;
         orm_image = pool->image[kVtChannelOrm];
         orm_layers = pool->layer_count ? pool->layer_count : 1u;
         im.bind_pool_orm(pool->sampled_view[kVtChannelOrm]);
         recs.push_back(Rec{entry, orm_image, orm_layers, rec_index, layer,
-                           static_cast<int32_t>(sx), static_cast<int32_t>(sy)});
+                           static_cast<int32_t>(sx), static_cast<int32_t>(sy),&req});
+        // Each invocation atomically ORs its own R16 half into a zeroed word.
+        // Disjoint bits make the packed result independent of invocation order.
+        if(req.occlusion_address)
+            vkCmdFillBuffer(cmd,req.occlusion_buffer,req.occlusion_offset,kPageStore*kPageStore*2,0);
     }
     if (recs.empty()) return;
 
@@ -1320,8 +1343,8 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                           VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                           VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
                            VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
@@ -1351,6 +1374,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, im.encode_pl, 0,
                             1, &ring.encode_set, 0, nullptr);
     for (const Rec& rec : recs) {
+        if(rec.request->occlusion_address)continue;
         const uint32_t push[2] = {rec.req_index, rec.req_index};
         vkCmdPushConstants(cmd, im.encode_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8,
                            push);
@@ -1367,13 +1391,15 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     //    ORM image flips to TRANSFER_DST here and is restored to
     //    SHADER_READ_ONLY before returning (vt_enrich.h contract), so the
     //    residency layer's layout tracking stays true.
-    cmd_image_barrier(cmd, orm_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    const bool writes_orm=std::any_of(recs.begin(),recs.end(),[](const Rec& rec){return !rec.request->occlusion_address;});
+    if(writes_orm) cmd_image_barrier(cmd, orm_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT, orm_layers);
     for (const Rec& rec : recs) {
+        if(rec.request->occlusion_address)continue;
         VkBufferImageCopy region{};
         region.bufferOffset =
             VkDeviceSize(rec.req_index) * kBlocksPerPage * 16;
@@ -1385,13 +1411,20 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                &region);
         ++stats_.pages_enriched;
+        rec.request->mark_enriched();
     }
-    cmd_image_barrier(cmd, orm_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    if(writes_orm) cmd_image_barrier(cmd, orm_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, orm_layers);
+
+    cmd_memory_barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    for(const Rec& rec:recs)if(rec.request->occlusion_address) {
+        ++stats_.pages_enriched;rec.request->mark_enriched();
+    }
 
     stats_.as_cached = static_cast<uint32_t>(im.variants.size());
     uint64_t bytes = 0;

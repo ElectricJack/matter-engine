@@ -1,5 +1,7 @@
 #version 460
 #extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_buffer_reference_uvec2 : require
 
 // vt_enrich_ao.comp — WP-H tier-2 hemisphere AO page enrichment (chart-space
 // virtual texturing, spec Phase 6).
@@ -62,8 +64,9 @@
 //      spec asks for, in place, with the indirection untouched.
 //
 // DETERMINISM: the RNG is seeded from the VIRTUAL ATLAS TEXEL at this mip plus
-// the mip index and a fixed constant seed — no time, no frame counter, no
-// atomics. Two enrichment passes over the same page from the same tier-1 base
+// the mip index and a fixed constant seed — no time or frame counter. Packed
+// factor writes use disjoint-bit atomic ORs, with order-independent results.
+// Two enrichment passes over the same page from the same tier-1 base
 // therefore produce byte-identical blocks, which is what lets an enriched page
 // be treated as a pure function of its inputs like every other cached artifact
 // in the engine.
@@ -90,7 +93,9 @@ struct GpuEnrichRequest {
     uvec4 b;   // x cand_offset, y cand_count, z sample_count, w seed
     uvec4 c;   // x slot_origin_x, y slot_origin_y, z pool_layer, w unused
     vec4  d;   // x strength, y cap_texels, z cap_meters, w min_ao
+    uvec4 e;   // optional packed R16 factor BDA, reserved
 };
+layout(buffer_reference,std430,buffer_reference_align=16) buffer VtOcclusionOutput {uint values[];};
 
 // Strength reaches 0 when the page texel is this multiple of cap_meters wide
 // (see the MIP FADE note in the header). Must match vt_enrich.cpp's
@@ -106,6 +111,14 @@ layout(std430, set = 1, binding = 1) readonly buffer CandBuf { uint cand_charts[
 // this an exact texel read.
 layout(set = 1, binding = 2) uniform sampler2DArray poolOrm;
 layout(set = 1, binding = 3, rgba8) uniform writeonly image2DArray outOrm;
+
+void vt_write_enrichment(GpuEnrichRequest req,uvec2 t,ivec3 location,vec4 value) {
+    if(any(notEqual(req.e.xy,uvec2(0)))) {
+        uint texel=t.y*uint(VT_PAGE_STORE)+t.x;
+        uint factor=uint(round(clamp(value.r,0.,1.)*65535.));
+        atomicOr(VtOcclusionOutput(req.e.xy).values[texel>>1u],factor<<((texel&1u)*16u));
+    } else imageStore(outOrm,location,value);
+}
 
 layout(push_constant) uniform Push { uint req_index; } pc;
 
@@ -173,13 +186,14 @@ void main() {
     // texel. Every path below writes this back (possibly unmodified), so the
     // re-encode never invents content for a texel it could not enrich.
     vec2 pool_uv = (vec2(req.c.xy) + vec2(t) + 0.5) / VT_POOL_LAYER_EDGE;
-    vec4 base = textureLod(poolOrm, vec3(pool_uv, float(req.c.z)), 0.0);
+    vec4 base = any(notEqual(req.e.xy,uvec2(0))) ? vec4(1.) :
+        textureLod(poolOrm, vec3(pool_uv, float(req.c.z)), 0.0);
 
     uint mip = req.a.z;
     VtSurfacePoint sp =
         vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y);
     if (!sp.found || sp.footprint_m <= 0.0) {
-        imageStore(outOrm, store_at, base);
+        vt_write_enrichment(req,t,store_at,base);
         return;
     }
 
@@ -195,7 +209,7 @@ void main() {
                                max(fade_end - cap_meters, 1e-4),
                            0.0, 1.0);
     if (mip_fade <= 0.0) {
-        imageStore(outOrm, store_at, base);
+        vt_write_enrichment(req,t,store_at,base);
         return;
     }
     // GEOMETRIC hemisphere, not the shading one. sp.nrm interpolates the
@@ -254,6 +268,6 @@ void main() {
 
     // Multiply into the ORM occlusion channel; roughness/metallic/alpha pass
     // through untouched.
-    imageStore(outOrm, store_at,
+    vt_write_enrichment(req,t,store_at,
                vec4(clamp(base.r * applied, 0.0, 1.0), base.g, base.b, base.a));
 }

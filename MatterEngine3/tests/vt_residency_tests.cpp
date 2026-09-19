@@ -9,14 +9,36 @@
 #include "check.h"
 
 #include <cmath>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <set>
 #include <vector>
 
 #include "render/vt_residency.h"
+#include "render/vt_density.h"
+#include "render/vt_canonical_page.h"
+#include "render/vt_world_receivers.h"
 
 using namespace vt;
 
 namespace {
+
+void test_world_receiver_frames() {
+    // Parent turns +X into -Z, raises the placement 16m, then the child
+    // translates two local metres along +X. This matches expanded draw frames.
+    const float parent[]={0,0,1,8, 0,1,0,16, -1,0,0,5, 0,0,0,1};
+    const float child[]={1,0,0,2, 0,1,0,.5f, 0,0,1,0, 0,0,0,1};
+    VtWorldReceiverFrame frame;frame.add(parent,child);
+    CHECK(frame.supported() && frame.local_to_world[3]==8 && frame.local_to_world[7]==16.5f &&
+          frame.local_to_world[11]==3,"world receiver: parent rotation and all child translation axes compose");
+    frame.add(parent,child);
+    CHECK(!frame.supported(),"world receiver: two physical placements cannot masquerade as one frame");
+    frame={};frame.add(parent);frame.local_to_world[0]=2;
+    CHECK(!frame.supported(),"world receiver: scaled/sheared frames need explicit physical-height support");
+    frame={};frame.add(parent);frame.local_to_world[3]=NAN;
+    CHECK(!frame.supported(),"world receiver: nonfinite transforms fail closed");
+}
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -28,9 +50,7 @@ void test_layout() {
     CHECK(!vt_build_layout(chart_atlas::kVtMaxAtlasDim * 2, 512, layout),
           "atlas wider than kVtMaxAtlasDim is rejected");
 
-    // 8192 is the worst case: mips 8192..64 is 8 levels and the concatenated
-    // page grids sum to 4096+1024+256+64+16+4+1+1 = 5462 exact entries — the
-    // number kVtMaxTableWords pins.
+    // The existing 8K layout stays unchanged when 16K support is enabled.
     CHECK(vt_build_layout(8192, 8192, layout), "8192 atlas builds");
     CHECK(layout.mip_count == 8, "8192 atlas has 8 mips down to the tail");
     CHECK(layout.page_w[0] == 64 && layout.page_h[0] == 64,
@@ -42,8 +62,13 @@ void test_layout() {
           "mip 1's grid starts after mip 0's 64x64 entries");
     CHECK(layout.mip_offset[7] == 5461,
           "the tail entry is the last table word");
-    CHECK(layout.entry_count == kVtMaxTableWords,
-          "the 8192 atlas needs exactly kVtMaxTableWords entries");
+    CHECK(layout.entry_count == 5462, "the 8192 atlas still needs 5462 entries");
+    CHECK(vt_build_layout(16384, 16384, layout), "16384 atlas builds");
+    CHECK(layout.mip_count == 9 && layout.page_w[0] == 128 && layout.page_h[0] == 128 &&
+          layout.page_w[8] == 1 && layout.page_h[8] == 1 &&
+          layout.mip_offset[8] == 21845 && layout.entry_count == 21846 &&
+          layout.entry_count == kVtMaxTableWords,
+          "16K layout covers high page coordinates and reaches the unchanged 64-texel tail");
 
     // EXACT sizing is the point of the buffer indirection: a 512^2 atlas
     // needs 16+4+1+1 = 22 entries (88 bytes), not the old 64x128 = 32 KiB
@@ -184,6 +209,133 @@ void test_indirection_dirty() {
     map.map(1, 0, 0, 3);
     CHECK(map.dirty(), "mapping a page dirties the map");
     CHECK(map.resident_count() == 1, "one resident page after one map");
+}
+
+void test_feedback_residency_equivalence() {
+    for (const auto extent : {std::array<uint32_t, 2>{16384, 16384}, {16383, 8193}, {8192, 8192}, {1920, 1080}, {64, 32}}) {
+        VtVariantLayout layout{};
+        CHECK(vt_build_layout(extent[0], extent[1], layout), "feedback residency: valid atlas");
+        VtIndirectionMap map;
+        map.reset(layout, 7);
+        const uint32_t tail = layout.mip_count - 1;
+        map.map(tail, 0, 0, 7); // same lifetime invariant as runtime registration
+        uint32_t random = 0x712347ABu;
+        for (uint32_t change = 0; change < 32; ++change) {
+            random = random * 1664525u + 1013904223u;
+            if (tail) {
+                const uint32_t mip = random % tail;
+                const uint32_t x = (random >> 8) % layout.page_w[mip];
+                const uint32_t y = (random >> 16) % layout.page_h[mip];
+                if (change & 1u) map.unmap(mip, x, y);
+                else map.map(mip, x, y, 100 + change);
+            }
+            bool equivalent = true;
+            for (uint32_t mip = 0; mip < layout.mip_count; ++mip)
+                for (uint32_t y = 0; y < layout.page_h[mip]; ++y)
+                    for (uint32_t x = 0; x < layout.page_w[mip]; ++x)
+                        equivalent = equivalent &&
+                            (map.is_mapped(mip, x, y) == (map.resolve(mip, x, y).mapped_mip == mip));
+            CHECK(equivalent, "feedback residency: resolved mip equals exact resident membership after edits");
+        }
+    }
+}
+
+void test_feedback_collection() {
+    // Independent tuple-set oracle: exercises all four fields, repeated rows,
+    // more distinct pages than filter buckets, empty texels and u16 boundaries.
+    using Request = std::array<uint32_t, 4>; // owner index, mip, y, x
+    std::set<Request> expected;
+    std::vector<uint16_t> texels;
+    for (uint32_t i = 0; i < 48000; ++i) {
+        const uint32_t key = i % 6000u;
+        const uint16_t owner = i % 19u ? uint16_t(1 + key % 6u) : 0;
+        const uint16_t mip = uint16_t((key / 6u) % 8u);
+        const uint16_t x = uint16_t((key / 48u) % 64u);
+        const uint16_t y = uint16_t(key / 3072u);
+        texels.insert(texels.end(), {owner, x, y, mip});
+        if (owner) expected.insert({uint32_t(owner - 1), mip, y, x});
+    }
+    texels.insert(texels.end(), {65535, 65535, 65535, 65535});
+    expected.insert({65534, 65535, 65535, 65535});
+    expected.insert({65534, 7, 63, 63});
+    VtFeedbackKeys collector;
+    for (uint32_t frame = 0; frame < 3; ++frame) {
+        collector.begin();
+        collector.add_request(65534, 7, 63, 63);
+        collector.add_request(0, 0, 0, 0); // already present in the image
+        collector.add_request(65535, 0, 0, 0); // unencodable, must not alias owner zero
+        collector.add_request(0, 0, 65536, 0);
+        collector.append_texels(texels.data(), texels.size() / 4u);
+        std::vector<Request> actual;
+        for (uint64_t key : collector.finish())
+            actual.push_back({uint32_t(key >> 48) - 1u, uint32_t((key >> 32) & 65535u),
+                              uint32_t((key >> 16) & 65535u), uint32_t(key & 65535u)});
+        CHECK(actual == std::vector<Request>(expected.begin(), expected.end()),
+              "feedback collection: exact canonical requests survive collisions and frame reuse");
+    }
+    collector.begin();
+    CHECK(collector.finish().empty(), "feedback collection: empty frame retains no previous requests");
+
+    // Only uint16 alignment is part of append_texels' contract. Empty texels
+    // may contain arbitrary other channels; they must not interrupt duplicate
+    // runs or turn into page demand. Distinct fields must retain tuple order.
+    alignas(uint64_t) const uint16_t offset_texels[] = {
+        99, 7, 101, 203, 5, 0, 9, 8, 7, 7, 101, 203, 5,
+        7, 102, 203, 5, 7, 102, 204, 5, 7, 102, 204, 6,
+    };
+    collector.append_texels(offset_texels + 1, 6);
+    const std::vector<uint64_t> offset_expected = {
+        (uint64_t{7} << 48) | (uint64_t{5} << 32) | (uint64_t{203} << 16) | 101,
+        (uint64_t{7} << 48) | (uint64_t{5} << 32) | (uint64_t{203} << 16) | 102,
+        (uint64_t{7} << 48) | (uint64_t{5} << 32) | (uint64_t{204} << 16) | 102,
+        (uint64_t{7} << 48) | (uint64_t{6} << 32) | (uint64_t{204} << 16) | 102,
+    };
+    CHECK(collector.finish() == offset_expected && collector.raw_hits() == 5 &&
+              collector.run_hits() == 4,
+          "feedback collection: unaligned texels preserve fields, empty gaps and hit counters");
+}
+
+// Opt-in native CPU benchmark. Timings are evidence, never pass/fail limits;
+// the tuple-set regression above supplies the independent correctness oracle.
+void benchmark_feedback_collection() {
+    if (!std::getenv("MATTER_VT_FEEDBACK_BENCH")) return;
+    using Clock = std::chrono::steady_clock;
+    constexpr size_t count = 32400;
+    for (uint32_t pattern = 0; pattern < 3; ++pattern) {
+        std::vector<uint16_t> texels(1 + count * 4);
+        for (size_t i = 0; i < count; ++i) {
+            const uint32_t key = static_cast<uint32_t>(
+                pattern == 1 ? (i / 6) % 735 : i % 6000);
+            auto* t = texels.data() + 1 + i * 4;
+            t[0] = pattern == 0 || (i % 11 == 0) ? 0 : uint16_t(1 + key % 7);
+            t[1] = uint16_t(key / 7 % 64);
+            t[2] = uint16_t(key / 448);
+            t[3] = uint16_t(key % 5);
+        }
+        VtFeedbackKeys collector;
+        std::vector<double> scan_us, total_us;
+        uint64_t checksum = 0;
+        for (uint32_t frame = 0; frame < 1050; ++frame) {
+            const auto begin = Clock::now();
+            collector.begin(count / 8);
+            const auto scan_begin = Clock::now();
+            collector.append_texels(texels.data() + 1, count);
+            const auto scan_end = Clock::now();
+            const auto& keys = collector.finish();
+            checksum += keys.size();
+            if (!keys.empty()) checksum ^= keys.front() ^ keys.back();
+            const auto end = Clock::now();
+            if (frame < 50) continue;
+            scan_us.push_back(std::chrono::duration<double, std::micro>(scan_end - scan_begin).count());
+            total_us.push_back(std::chrono::duration<double, std::micro>(end - begin).count());
+        }
+        std::sort(scan_us.begin(), scan_us.end());
+        std::sort(total_us.begin(), total_us.end());
+        std::printf("VT_FEEDBACK_BENCH,%u,%zu,%.3f,%.3f,%.3f,%.3f,%llu\n",
+                    pattern, scan_us.size(), scan_us[499], scan_us[949],
+                    total_us[499], total_us[949],
+                    static_cast<unsigned long long>(checksum));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -405,8 +557,21 @@ void test_table_allocator() {
     CHECK(VtTableAllocator::class_words(VtTableAllocator::size_class(22)) == 32,
           "a 512^2 atlas's 22-entry table rounds to a 32-word block");
     CHECK(VtTableAllocator::class_words(
-              VtTableAllocator::size_class(kVtMaxTableWords)) == 8192,
-          "the worst-case table rounds to an 8192-word block");
+              VtTableAllocator::size_class(kVtMaxTableWords)) == 32768,
+          "the worst-case table rounds to a 32768-word block");
+
+    VtTableAllocator large;
+    large.reset(32768);
+    uint32_t large_offset=0,large_words=0;uint64_t large_generation=0;
+    CHECK(large.acquire(21846,1,large_offset,large_words,large_generation) &&
+          large_offset==0 && large_words==32768 && large.used_words()==32768,
+          "16K table fits its exact bounded arena class");
+    large.release(large_offset,large_words,9);
+    CHECK(!large.acquire(21846,8,large_offset,large_words,large_generation),
+          "large table cannot reuse storage still visible to readers");
+    large.collect(9);
+    CHECK(large.acquire(21846,9,large_offset,large_words,large_generation) && large_offset==0,
+          "large table reuses storage after the reader horizon");
 
     VtTableAllocator alloc;
     alloc.reset(/*capacity_words=*/1024);
@@ -630,10 +795,11 @@ void test_registration_cost() {
     CHECK(budget_admits < default_max_variants,
           "the byte budget, not the soft variant-slot bound, is the binding "
           "constraint");
-    // And the indirection arena must NEVER bind before the mesh budget:
-    // budget_admits variants at the worst-case table (8192-word block = 32
-    // KiB) fit the 64 MiB default arena's typical mix — assert with the
-    // TYPICAL table instead (1024^2 atlas -> 86 entries -> 128-word block).
+    // The independent 64 MiB indirection budget fits the typical mix at the
+    // mesh budget. This does not guarantee the worst-case 16K mix fits:
+    // a maximum table rounds to 32768 words (128 KiB). Keep that capacity
+    // gate rather than growing the arena or sampling unregistered records.
+    // Typical 1024^2 atlas -> 86 entries -> 128-word block.
     VtVariantLayout typical{};
     CHECK(vt_build_layout(1024, 1024, typical), "typical atlas builds");
     const size_t typical_block_bytes =
@@ -721,12 +887,279 @@ void test_registration_gates() {
 }
 
 
+void test_page_density() {
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w = atlas.atlas_h = 128;
+    chart_atlas::ChartEntry chart{};
+    chart.tangent[0] = chart.bitangent[1] = 1;
+    chart.texels_per_meter = 1;
+    chart.rect_w = chart.rect_h = 128;
+    chart.tri_count = 2;
+    atlas.charts.push_back(chart);
+    atlas.tri_order = {0, 1};
+    float positions[] = {0,0,0, 120,0,0, 120,120,0, 0,120,0};
+    const uint32_t indices[] = {0,1,2, 0,2,3};
+    VtPartContext ctx;
+    ctx.positions = positions; ctx.vertex_count = 4;
+    ctx.indices = indices; ctx.triangle_count = 2;
+    auto density = vt_measure_page_density(atlas, ctx, 0, 0, 0);
+    CHECK(density.geometry_available && density.triangle_texels == 14400,
+          "density: a 120-square surface covers 14400 centers, excluding gutters");
+    CHECK(density.atlas_texels == 16384 && density.chart_block_texels == 16384 &&
+          density.gutter_bounds_texels == 16384 && density.content_bounds_texels == 14400,
+          "density: surface bounds, padded bounds, chart block, and atlas are separate");
+    atlas.tri_order.push_back(0); atlas.charts[0].tri_count = 3;
+    CHECK(vt_measure_page_density(atlas, ctx, 0, 0, 0).triangle_texels == 14400,
+          "density: duplicate triangle coverage counts once");
+    atlas.charts[0].tri_count = 1;
+    density = vt_measure_page_density(atlas, ctx, 0, 0, 0);
+    CHECK(density.triangle_texels == 7260 && density.content_bounds_texels == 14400,
+          "density: a triangle's bounding rectangle does not count as useful coverage");
+    atlas.charts[0].tri_count = 2;
+    positions[3] = positions[6] = 16; positions[7] = positions[10] = 16;
+    density = vt_measure_page_density(atlas, ctx, 0, 0, 0);
+    CHECK(density.triangle_texels == 256 && density.gutter_bounds_texels == 576 &&
+          density.chart_block_texels == 16384,
+          "density: page rounding is separate from a small chart's gutter");
+    density = vt_measure_page_density(atlas, ctx, 1, 0, 0);
+    CHECK(density.atlas_texels == 4096 && density.triangle_texels == 64,
+          "density: the 64-square tail uses a full 128-square payload slot");
+    atlas.atlas_w = atlas.charts[0].rect_w = 256;
+    positions[3] = positions[6] = 240; positions[7] = positions[10] = 120;
+    const auto left = vt_measure_page_density(atlas, ctx, 0, 0, 0);
+    const auto right = vt_measure_page_density(atlas, ctx, 0, 1, 0);
+    CHECK(left.triangle_texels == 14880 && right.triangle_texels == 13920,
+          "density: page-boundary clipping conserves coverage over a two-page surface");
+    density = vt_measure_page_density(atlas, ctx, 2, 0, 0);
+    CHECK(density.atlas_texels == 2048 && density.triangle_texels == 1800,
+          "density: rectangular tail bounds and mip-scaled centers are preserved");
+    // Rotate the chart and mesh together; stored vertex UVs are not consulted.
+    atlas.charts[0].tangent[0] = 0; atlas.charts[0].tangent[2] = 1;
+    for (int i = 0; i < 4; ++i) { positions[3*i+2] = positions[3*i]; positions[3*i] = 0; }
+    CHECK(vt_measure_page_density(atlas, ctx, 2, 0, 0).triangle_texels == 1800,
+          "density: projected coverage follows rotated chart frames");
+    ctx.positions = nullptr;
+    density = vt_measure_page_density(atlas, ctx, 2, 0, 0);
+    CHECK(!density.geometry_available && density.atlas_texels == 2048,
+          "density: unavailable geometry is explicit, not a measured empty surface");
+}
+
+void test_material_page_ownership() {
+    VtMaterialPages pages;
+    pages.reset(4);
+    const auto a = VtMaterialPages::key({17, 29}, 1, {-.01f, .02f, 1});
+    const auto b = VtMaterialPages::key({18, 29}, 1, {-.01f, .02f, 1});
+    auto first = pages.publish(0, a);
+    CHECK(first.write && first.slot != 0, "pixels: allocation is independent of receiver slot");
+    const auto second = pages.publish(1, a);
+    CHECK(!second.write && second.slot == first.slot && pages.used() == 1 && pages.references() == 2,
+          "pixels: two receivers share one immutable material allocation");
+    auto edit = pages.publish(0, b);
+    CHECK(edit.write && edit.slot != first.slot && pages.slot(1) == first.slot,
+          "pixels: a local edit copies on write without changing the other receiver");
+    CHECK(!pages.publish(0, a).write && pages.used() == 1,
+          "pixels: removing an override rejoins the shared base");
+    pages.release(0, 20);
+    edit = pages.publish(1, b);
+    CHECK(edit.write && edit.slot != first.slot,
+          "pixels: a surviving owner cannot overwrite deleted owner's in-flight pixels");
+    CHECK(pages.publish(2, a).slot != first.slot,
+          "pixels: retired payload is unavailable before its reader horizon");
+    pages.collect(19);
+    pages.publish(3, {});
+    const uint32_t before = pages.slot(1);
+    pages.release(2, 30);
+    CHECK(pages.publish(2, b).slot == before,
+          "pixels: sharing remains possible while retired storage is full");
+    // Split the final shared allocation with no free slots: publication must
+    // fail without corrupting either prior binding.
+    CHECK(pages.publish(1, a).slot == UINT32_MAX && pages.slot(1) == before && pages.slot(2) == before,
+          "pixels: exhausted copy-on-write keeps both previous bindings");
+    pages.collect(20);
+    CHECK(pages.publish(1, a).write && pages.slot(1) == first.slot,
+          "pixels: retirement permits bounded storage reuse");
+    pages.reset(4);
+    first = pages.publish(0, a);
+    auto different = a; different.snapshot = 2;
+    CHECK(pages.publish(1, different).slot != first.slot,
+          "pixels: different input lifetimes cannot alias through recycled bank indices");
+    different = a; different.height[1] ^= 1;
+    CHECK(pages.publish(2, different).slot != first.slot,
+          "pixels: height decode is part of shared payload compatibility");
+    const auto private_page = pages.publish(3, {});
+    CHECK(private_page.write && pages.used() == 4 && pages.publish(3, {}).write,
+          "pixels: unspecified identity always follows the private producer path");
+}
+
+void test_canonical_material_grid() {
+    float positions[]={0,0,0, 4,0,0, 4,0,4, 0,0,4};
+    const float normals[]={0,1,0, 0,1,0, 0,1,0, 0,1,0};
+    uint32_t indices[]={0,1,2, 0,2,3},material=9;
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w=atlas.atlas_h=512;atlas.tri_order={0,1};atlas.charts.resize(1);
+    auto& c=atlas.charts[0];c={};c.tangent[0]=1;c.bitangent[2]=1;
+    c.texels_per_meter=64;c.tri_count=2;c.rect_w=c.rect_h=384;
+    VtPartContext context;
+    context.positions=positions;context.normals=normals;context.indices=indices;
+    context.vertex_count=4;context.triangle_count=2;context.surface_material_count=1;
+    context.surface_materials=&material;context.surface_tape_text="constant material fixture";
+    VtFillRequest request;request.atlas=&atlas;request.part_context=&context;request.page_x=request.page_y=1;
+    VtCanonicalPage a,b;
+    CHECK(vt_canonical_page(request,0,{-.01f,.02f,1},a),"canonical grid: covered rectangle includes all stored gutters");
+    positions[3]=positions[6]=8;c.rect_x=128;c.rect_w=640;atlas.atlas_w=1024;request.page_x=2;
+    CHECK(vt_canonical_page(request,0,{-.01f,.02f,1},b) && a.key.low==b.key.low && a.key.high==b.key.high &&
+          a.origin==b.origin && a.du==b.du && a.dv==b.dv,
+          "canonical grid: wall resize and chart repacking preserve exact material coordinates and identity");
+    request.page_x=1;
+    CHECK(!vt_canonical_page(request,0,{-.01f,.02f,1},b),"canonical grid: boundary dilation stays private");
+    request.page_x=3;
+    CHECK(vt_canonical_page(request,0,{-.01f,.02f,1},b) && a.key.low!=b.key.low,
+          "canonical grid: shifted physical sampling phase cannot alias");
+    request.page_x=2;indices[3]=1;indices[4]=2;indices[5]=3;
+    CHECK(!vt_canonical_page(request,0,{-.01f,.02f,1},b),"canonical grid: overlapping triangles and uncovered rectangle rejected");
+    indices[3]=0;indices[4]=2;indices[5]=3;positions[7]=.01f;
+    CHECK(!vt_canonical_page(request,0,{-.01f,.02f,1},b),"canonical grid: a nonplanar receiver stays private");
+    positions[7]=0;context.surface_lane_count=1;
+    CHECK(!vt_canonical_page(request,0,{-.01f,.02f,1},b),"canonical grid: geometry-dependent field interpolation stays private");
+    context.surface_lane_count=0;context.surface_tape_text="edited material fixture";
+    CHECK(vt_canonical_page(request,0,{-.01f,.02f,1},b) && a.key.low!=b.key.low,
+          "canonical grid: material appearance edits invalidate pixel identity");
+    context.surface_tape_text="constant material fixture";
+    context.dominant_material=18;
+    CHECK(vt_canonical_page(request,0,{-.01f,.02f,1},b) && a.key.low!=b.key.low,
+          "canonical grid: original receiver material is part of shared pixel identity");
+    uint32_t receiver_ids[]={18,18,19,18};context.material_ids=receiver_ids;
+    indices[3]=2;indices[4]=3;indices[5]=0; // same face, different first-corner category
+    CHECK(!vt_canonical_page(request,0,{-.01f,.02f,1},b),
+          "canonical grid: mixed receiver identities cannot alias a uniform material rectangle");
+}
+
+void test_material_reads() {
+    VtMaterialPages pages; pages.reset(2);
+    const auto a = VtMaterialPages::key({71, 11}, 1, {-.02f, .02f, 1});
+    const auto b = VtMaterialPages::key({72, 11}, 1, {-.02f, .02f, 1});
+    const auto old = pages.publish(0, a);
+    auto read = pages.retain_read(0), alias = read;
+    CHECK(read && read->slot() == old.slot && pages.read_pages() == 1,
+          "read lease: encoded material address retained independently of receiver");
+    read->retain_until(20);
+    const auto replacement = pages.publish(0, b);
+    CHECK(replacement.write && replacement.slot != old.slot && pages.used() == 2 &&
+          pages.references() == 1 && pages.shared_references() == 0,
+          "read lease: sole receiver replacement copies on write without counting readers as sharing savings");
+    CHECK(pages.publish(1, {}).slot == UINT32_MAX,
+          "read lease: memory pressure cannot steal retained source pixels");
+    const auto rejoin = pages.publish(1, a);
+    CHECK(!rejoin.write && rejoin.slot == old.slot,
+          "read lease: identical content may rejoin a read-only allocation");
+    pages.release(1); read.reset(); alias->retain_until(40); alias.reset();
+    CHECK(!pages.read_pages() && pages.used() == 1,
+          "read lease: final release leaves only the replacement logically live");
+    pages.collect(39);
+    CHECK(pages.publish(1, {}).slot == UINT32_MAX,
+          "read lease: released source bytes remain protected through the last recorded use");
+    pages.collect(40);
+    CHECK(pages.publish(1, {}).slot == old.slot,
+          "read lease: retirement returns source capacity at the exact horizon");
+    read = pages.retain_read(0); pages.reset(2); pages.publish(0, a);
+    read->retain_until(100); read.reset();
+    CHECK(pages.used() == 1 && !pages.read_pages() && pages.references() == 1,
+          "read lease: old allocator epoch cannot release or pin new allocations");
+    { VtMaterialPages temporary; temporary.reset(1); temporary.publish(0, a); read = temporary.retain_read(0); }
+    read->retain_until(200); read.reset();
+
+    const gpu_meshing::FaceFrame frame{{0,0,0},{1,0,0},{0,1,0},{0,0,1}};
+    VtPeriodicDomain domain; std::string error;
+    std::vector<std::array<uint32_t, 2>> tiles;
+    CHECK(vt_make_periodic_domain(frame, {4,4}, 128, domain, error), error.c_str());
+    const std::vector<std::array<uint32_t, 2>> wrapped{{0,1},{3,1}};
+    CHECK(vt_material_read_tiles(domain, 0, {-.02,.3,.02,.4}, tiles, error) && tiles == wrapped,
+          "read footprint: negative wrapped bounds include both period edges exactly once");
+    CHECK(vt_material_read_tiles(domain, 0, {.98,.3,1.02,.4}, tiles, error) && tiles == wrapped,
+          "read footprint: positive and negative periods have identical dependencies");
+    CHECK(vt_material_read_tiles(domain, 0, {-2,-3,4,5}, tiles, error) && tiles.size() == 16,
+          "read footprint: repeated periods do not duplicate page dependencies");
+    const std::vector<std::array<uint32_t,2>> boundary{{0,1},{1,1}};
+    CHECK(vt_material_read_tiles(domain, 0, {.25,.35,.25,.35}, tiles, error) && tiles == boundary,
+          "read footprint: a boundary point includes bilinear support on both pages");
+    CHECK(vt_make_periodic_domain(frame, {3,2}, 128, domain, error) &&
+          vt_material_read_tiles(domain, 1, {.98,.4,1.02,.5}, tiles, error) && tiles.size() == 2,
+          "read footprint: non-power-of-two dimensions use the actual mip grid");
+    CHECK(!vt_material_read_tiles(domain, 0, {NAN,0,1,1}, tiles, error) && tiles.empty() &&
+          !vt_material_read_tiles(domain, 0, {1,0,0,1}, tiles, error),
+          "read footprint: nonfinite or reversed bounds cannot produce partial dependencies");
+    CHECK(vt_make_periodic_domain(frame, {64,64}, 128, domain, error) &&
+          !vt_material_read_tiles(domain, 0, {0,0,1,1}, tiles, error) && tiles.empty(),
+          "read footprint: oversized jobs fail explicitly without reducing mip quality");
+}
+
+void test_receiver_coverage_pages() {
+    float positions[]={0,0,0, 4,0,0, 4,4,0, 0,4,0};
+    float normals[]={0,0,1, 0,0,1, 0,0,1, 0,0,1};
+    uint32_t indices[]={0,1,2,0,2,3},material=9,ids[]={9,9,9,9};
+    uint8_t weights[]={255,255,255,255};
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w=atlas.atlas_h=640;atlas.tri_order={0,1};atlas.charts.resize(1);
+    auto& chart=atlas.charts[0];chart={};chart.tangent[0]=chart.bitangent[1]=1;
+    chart.texels_per_meter=128;chart.tri_count=2;chart.rect_w=chart.rect_h=640;
+    VtPartContext context;context.positions=positions;context.normals=normals;context.indices=indices;
+    context.vertex_count=4;context.triangle_count=2;context.surface_material_count=1;
+    context.surface_materials=&material;context.surface_weights=weights;context.dominant_material=material;
+    context.surface_tape_text="coverage geometry fixture";
+    std::vector<VtReceiverMaterialGpu> mappings(1);
+    auto& map=mappings[0];map.binding[0]=1;map.binding[1]=1;
+    // Physical metres, expressed in normalized atlas coordinates.
+    map.uv_u[0]=map.uv_v[1]=5;map.uv_u[2]=map.uv_v[2]=-4.f/128;
+    const auto bounds=[&](float low,float high) {
+        std::memcpy(map.binding+2,&low,4);std::memcpy(map.binding+3,&high,4);
+    };
+    bounds(0,4);
+    const auto eligible=[&](uint32_t mip,uint32_t x,uint32_t y) {
+        return vt_receiver_material_page(*VtPartSnapshot::capture(atlas,context),mappings,mip,x,y);
+    };
+    CHECK(eligible(0,1,1) && eligible(0,2,2),"coverage-only: wholly mapped rectangle interiors qualify");
+    CHECK(!eligible(0,0,1) && !eligible(0,4,1) && !eligible(0,1,0) && !eligible(0,1,4),
+          "coverage-only: stored gutters and finite boundaries retain complete material");
+    CHECK(!eligible(1,1,1) && !eligible(2,0,0),"coverage-only: coarser footprints touching finite edges keep their pixels");
+    // Page (1,1) starts near .94m, while its centre is 1.47m. A centre-only
+    // test would accept this interval and expose missing material at its edge.
+    bounds(1,2.1f);
+    CHECK(!eligible(0,1,1),"coverage-only: interval must cover gutters, not only page centre");
+    bounds(.9f,2.1f);
+    CHECK(eligible(0,1,1),"coverage-only: bounded material interior still qualifies");
+    bounds(0,4);map.binding[0]=0;
+    CHECK(!eligible(0,1,1),"coverage-only: removed mapping requires finite pixels");map.binding[0]=1;
+    bounds(NAN,4);
+    CHECK(!eligible(0,1,1),"coverage-only: malformed nonfinite interval cannot discard pixels");bounds(0,4);
+    context.material_ids=ids;ids[2]=3;
+    CHECK(!eligible(0,1,1),"coverage-only: mixed carrier IDs retain ordinary AUX evaluation");ids[2]=9;
+    CHECK(eligible(0,1,1),"coverage-only: explicit matching carrier IDs qualify");
+    indices[3]=1;indices[4]=2;indices[5]=3;
+    CHECK(!eligible(0,1,1),"coverage-only: bounding rectangle cannot hide holes/overlapping triangles");
+    indices[3]=0;indices[4]=2;indices[5]=3;positions[8]=.01f;
+    CHECK(!eligible(0,1,1),"coverage-only: curved/nonplanar receivers retain complete material");positions[8]=0;
+    auto other=chart;other.first_tri=0;atlas.charts.push_back(other);mappings.push_back(map);
+    CHECK(!eligible(0,1,1),"coverage-only: multiple candidate charts require complete material");
+    atlas.charts.pop_back();mappings.pop_back();
+    // Rotate the surface and its chart together. The proof uses the physical
+    // chart plane rather than assuming all receivers are XY aligned.
+    for(int i=0;i<4;++i) {
+        positions[i*3+2]=positions[i*3+1];positions[i*3+1]=0;
+        normals[i*3+1]=-1;normals[i*3+2]=0;
+    }
+    atlas.charts[0].bitangent[1]=0;atlas.charts[0].bitangent[2]=1;
+    CHECK(eligible(0,1,1),"coverage-only: rotated planar wall interior qualifies");
+}
+
 }  // namespace
 
 int main() {
+    test_world_receiver_frames();
     test_layout();
     test_indirection();
     test_indirection_dirty();
+    test_feedback_residency_equivalence();
+    test_feedback_collection();
     test_border_math();
     test_slot_pool();
     test_slot_hysteresis();
@@ -735,6 +1168,12 @@ int main() {
     test_entry_packing();
     test_registration_cost();
     test_registration_gates();
+    test_page_density();
+    test_material_page_ownership();
+    test_material_reads();
+    test_canonical_material_grid();
+    test_receiver_coverage_pages();
+    benchmark_feedback_collection();
     std::printf("vt residency tests complete\n");
     return check_summary();
 }

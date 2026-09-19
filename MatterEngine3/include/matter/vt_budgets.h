@@ -95,8 +95,10 @@ struct VtResidencyBudgets {
     // requests START, never how long one takes — at least one is always
     // serviced, so the VT cannot stall. 0 restores service-everything.
     float request_budget_ms = 4.0f;
-    // Hard ceiling on the pending page-fill queue, applied after each frame's
-    // selection, keeping the highest-priority entries.
+    // Ceiling on pending feedback-driven detail requests, applied after each
+    // frame's selection, keeping the highest-priority detail entries. Required
+    // initial/refresh tails are coalesced separately by owner and protected
+    // from this cap; variant admission bounds their count.
     //
     // The queue used to be unbounded. Because drain_feedback re-derives the
     // wanted set from the feedback buffer EVERY frame, entries accumulated far
@@ -107,12 +109,10 @@ struct VtResidencyBudgets {
     // without bound with time flown -- 14.3 ms of a 35.3 ms frame by the last
     // capture.
     //
-    // Dropping is safe precisely because feedback regenerates: anything still
-    // visible is re-requested next frame. A dropped entry costs at most one
-    // frame of latency on a page that was tens of thousands of frames from
-    // being serviced anyway. Watch the vt.requests_dropped counter -- it should
-    // be non-zero (that is the cap working), but a value that dwarfs
-    // vt.feedback_requests means the cap is too tight for the working set.
+    // Visible missing detail returns through asynchronous feedback. This does
+    // not bound its latency under sustained overload; watch queue age as well
+    // as vt.requests_dropped. Mandatory tail refreshes cannot be regenerated
+    // by feedback and must never be discarded as ordinary detail.
     uint32_t queue_cap = 256;
 };
 
@@ -218,11 +218,10 @@ inline const props::Group& vt_residency_budgets_group() {
         prop(&VtResidencyBudgets::queue_cap, "queue_cap")
             .label("Fill queue cap").range(16.0f, 65536.0f).log()
             .env("MATTER_VT_QUEUE_CAP")
-            .doc("Ceiling on the pending page-fill queue, keeping the "
-                 "highest-priority entries. Feedback re-derives the wanted set "
-                 "every frame, so dropping the tail costs at most one frame of "
-                 "latency; without a cap the queue's per-frame sort grows "
-                 "without bound with time flown."));
+            .doc("Ceiling on pending feedback-driven detail requests, keeping "
+                 "the highest-priority entries. Visible missing detail returns "
+                 "through asynchronous feedback. Mandatory initial/refresh tails "
+                 "are protected separately and bounded by admitted variants."));
     return def.group();
 }
 
