@@ -21,17 +21,18 @@
 // used for 15/16 above, and for the same reason (0-16 are taken). 18 is the
 // shared indirection STORAGE BUFFER (raster and RT read the SAME buffer; the
 // old RT-side image mirror died with the buffer-indirection redesign).
-// Binding 13 (the feedback storage image) is deliberately NOT mirrored: rays
-// never request pages (spec Phase 5 leaves RT-side feedback optional and
-// off), so VT_FEEDBACK_BINDING stays undefined here and vt_write_feedback()
-// compiles to nothing. Every shader that includes this file declares 17-19
+// Rays never request pages (spec Phase 5 leaves RT-side feedback optional and
+// off). Raster feedback uses a depth-tested attachment, with no storage-image
+// writes in the shared sampling helper. Every including shader declares 17-19
 // even if it never samples VT; the renderer writes them uniformly across the
 // RT set.
 #define VT_SET 0
 #define VT_POOL_BINDING 17
 #define VT_INDIRECTION_BINDING 18
 #define VT_VARIANTS_BINDING 19
+#define VT_INPUT_BINDING 27
 #include "vt_common.glsl"
+#include "vt_parallax.glsl"
 #include "vt_normal_frame.glsl"
 
 struct RtSurface {
@@ -137,6 +138,30 @@ layout(set = 0, binding = 4, std430) readonly buffer RtMaterialTable {
     RtMaterialGpu rt_materials[];
 };
 
+#define VT_DRAW_MATERIAL_TYPE RtMaterialGpu
+#define VT_DRAW_INPUT_BINDING 28
+#include "vt_draw_inputs.glsl"
+
+// Classification and input-bank queries need only receiver ownership. Avoid
+// repeating the material/BDA lookup on each non-shading RT query.
+VtAddress rt_vt_receiver_address(RtSurface surface) {
+    float duv = max(surface.cone_width, 0.0) * surface.uv_density;
+    float lod = vt_desired_mip(surface.vt_slot, vec2(duv, 0.0), vec2(0.0, duv));
+    return vt_resolve_address(surface.vt_slot, surface.uv, lod, false);
+}
+VtAddress rt_vt_address(RtSurface surface) {
+    float duv = max(surface.cone_width, 0.0) * surface.uv_density;
+    float lod = vt_desired_mip(surface.vt_slot, vec2(duv, 0.0), vec2(0.0, duv));
+    return vt_resolve(surface.vt_slot, surface.uv, lod);
+}
+
+RtMaterialGpu rt_surface_material(RtSurface surface) {
+    VtAddress page = rt_vt_receiver_address(surface);
+    RtMaterialGpu material;
+    if (vt_draw_material(page.input_snapshot, surface.material_index, material)) return material;
+    return rt_materials[surface.material_index];
+}
+
 layout(set = 0, binding = 5, std430) buffer RtErrorCounter {
     uint invalid_part_records;
     uint any_hit_invocations;
@@ -179,6 +204,7 @@ RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
     result.roughness = 0.0;
     result.metallic = 0.0;
     result.mean_occlusion = 0.0;
+    if (vt_is_direct_source(rt_vt_receiver_address(surface))) return result;
     if ((material.flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) != 0u) return result;
     int slot = tileset_detail_slot(material.flags_misc);
     if (slot < 0) return result;
@@ -267,20 +293,21 @@ RtVtSample rt_vt_sample(RtSurface surface) {
         result.occlusion = clamp(orm.r, 0.0, 1.0);
         result.roughness = clamp(orm.g, 0.0, 1.0);
         result.metallic = clamp(orm.b, 0.0, 1.0);
+        VtAddress address = rt_vt_receiver_address(surface);
+        result.desired_mip = float(address.desired_mip);
+        result.mapped_mip = float(address.mapped_mip);
         return result;
     }
     if (surface.vt_slot == 0u) return result;
     // Cone footprint -> atlas-UV footprint. An isotropic square footprint is
     // the right model here: the cone has no anisotropy of its own, and
     // uv_density is already the isotropic UV-per-metre of the hit triangle.
-    float duv = max(surface.cone_width, 0.0) * surface.uv_density;
-    float lod = vt_desired_mip(surface.vt_slot, vec2(duv, 0.0), vec2(0.0, duv));
-    VtAddress address = vt_resolve(surface.vt_slot, surface.uv, lod);
+    VtAddress address = rt_vt_address(surface);
     if (!address.valid) return result;
-    vec3 albedo = vt_sample_channel(address, VT_CHANNEL_ALBEDO).rgb;
-    vec3 orm = vt_sample_channel(address, VT_CHANNEL_ORM).rgb;
+    vec3 albedo = vt_sample_material(address, VT_CHANNEL_ALBEDO).rgb;
+    vec3 orm = vt_sample_orm(address).rgb;
     vec3 normal_ts =
-        vt_decode_normal(vt_sample_channel(address, VT_CHANNEL_NORMAL));
+        vt_decode_normal(vt_sample_normal(address));
     // Same tint application as gbuffer.frag's VT branch.
     float tint_blend = clamp(surface.tint.a, 0.0, 1.0);
     result.applied = true;
@@ -349,6 +376,49 @@ RtSurface invalid_rt_surface() {
 // the shared any-hit includes retain their original interface and behavior.
 // 0 = reference (default), 1 = footprint-adaptive, 2 = material channels only.
 layout(constant_id = 5) const uint RT_SURFACE_DETAIL_MODE = 0u;
+// Invocation-private values produced while load_rt_surface already has the
+// triangle vertices. They add no ray payload storage and avoid reloading mesh
+// data in the composed-height marcher.
+vec2 rt_chart_uv_ray;
+float rt_chart_texel_m;
+bool rt_chart_metric_valid;
+
+void apply_rt_composed_height(inout RtSurface surface, VtAddress initial) {
+    if (!rt_chart_metric_valid) return;
+    mat3 world_to_local = mat3(gl_WorldToObjectEXT);
+    vec3 world_ray = normalize(gl_WorldRayDirectionEXT);
+    vec3 local_ray = world_to_local * world_ray;
+    vec3 local_normal = normalize(transpose(mat3(gl_ObjectToWorldEXT)) * surface.normal);
+    float cone_scale = sqrt(dot(world_to_local[0],world_to_local[0]) +
+                            dot(world_to_local[1],world_to_local[1]) +
+                            dot(world_to_local[2],world_to_local[2]));
+    float footprint = max(surface.cone_width * cone_scale, 0.0);
+    float band = max(tileset.pom_a.w, 1e-4);
+    float fade = 1.0 - clamp((surface.hit_t - (tileset.pom_a.z - band)) / band, 0.0, 1.0);
+    int steps = RT_SURFACE_DETAIL_MODE == 2u ? 0 : int(tileset.pom_a.x);
+    VtParallaxSample hit = vt_parallax_sample(surface.vt_slot, surface.uv,
+        float(initial.desired_mip), rt_chart_uv_ray, -dot(local_normal, local_ray),
+        rt_chart_texel_m, footprint, steps, int(tileset.pom_a.y),
+        max(tileset.pom_b.w, 0.0), max(tileset.pom_b.z, 0.0), fade,
+        gl_ObjectRayOriginEXT + gl_HitTEXT * gl_ObjectRayDirectionEXT, local_ray);
+    if (hit.ray_t <= 0.0) return;
+    vec3 albedo = vt_sample_material(hit.address, VT_CHANNEL_ALBEDO).rgb;
+    vec3 orm = vt_sample_orm(hit.address).rgb;
+    vec3 normal = normalize(surface.vt_normal_basis *
+                            vt_decode_normal(vt_sample_normal(hit.address)));
+    if (hit.connected) {
+        albedo = hit.albedo; orm = hit.orm;
+        normal = normalize(transpose(mat3(gl_WorldToObjectEXT)) * hit.normal_local);
+    }
+    surface.position += world_ray * hit.ray_t;
+    surface.hit_t += hit.ray_t;
+    surface.uv = hit.uv;
+    surface.vt_slot=hit.address.layer+1u;
+    surface.uv_density*=hit.uv_density_scale;
+    surface.vt_normal_basis = mat3(albedo, orm, normal);
+    surface.flags |= RT_SURFACE_DETAIL_APPLIED;
+    // visibility_position remains the original hardware/proxy intersection.
+}
 
 float rt_surface_relief_weight(float relief_m, float inward,
                               float local_ray_length, float max_ray_m,
@@ -370,11 +440,18 @@ float rt_surface_relief_weight(float relief_m, float inward,
 // Shading-only displacement: hardware intersection/any-hit remain the proxy.
 // Keep ray origins at that proxy, while BRDF/texture positions use the relief.
 void apply_rt_surface_detail(inout RtSurface surface) {
+    VtAddress initial = rt_vt_address(surface);
+    if (vt_is_direct_source(initial)) {
+#ifdef RT_SURFACE_CLOSEST_HIT_SHADER
+        apply_rt_composed_height(surface, initial);
+#endif
+        return;
+    }
     if (surface.vt_slot == 0u || surface.material_index >= rt_materials.length()) return;
-    RtMaterialGpu material = rt_materials[surface.material_index];
+    RtMaterialGpu material = rt_surface_material(surface);
     if ((material.flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) == 0u) return;
     int slot = tileset_detail_slot(material.flags_misc);
-    if (slot < 0 || slot >= TILESET_MAX_SLOTS) return;
+    if (slot < 0 || slot >= TILESET_SOURCE_SLOTS) return;
     if (tileset.mean_albedo[slot].w <= 0.0 ||
         TILESET_SLOT_SCALAR(tile_size_m,slot) <= 0.0) return;
     mat3 world_to_local = mat3(gl_WorldToObjectEXT);
@@ -423,6 +500,9 @@ void apply_rt_surface_detail(inout RtSurface surface) {
     surface.flags |= RT_SURFACE_DETAIL_APPLIED;
 }
 RtSurface load_rt_surface(vec2 hit_barycentrics) {
+#ifdef RT_SURFACE_CLOSEST_HIT_SHADER
+    rt_chart_metric_valid = false;
+#endif
     uint part_slot = gl_InstanceCustomIndexEXT;
     GpuRtPartRecord part = rt_parts[part_slot];
     if (part.valid == 0u || all(equal(part.vertex_address, uvec2(0u))) ||
@@ -490,6 +570,13 @@ RtSurface load_rt_surface(vec2 hit_barycentrics) {
         // instance transform so non-uniform instance scale is accounted for.
         vec2 duv1 = v1.surface.xy - v0.surface.xy;
         vec2 duv2 = v2.surface.xy - v0.surface.xy;
+#ifdef RT_SURFACE_CLOSEST_HIT_SHADER
+        VtVariantRecord record = vt_variants[part.vt_slot - 1u];
+        rt_chart_metric_valid = vt_parallax_metric(v1.position - v0.position,
+            v2.position - v0.position, duv1, duv2,
+            mat3(gl_WorldToObjectEXT) * normalize(gl_WorldRayDirectionEXT),
+            vec2(record.atlas_w, record.atlas_h), rt_chart_uv_ray, rt_chart_texel_m);
+#endif
         float uv_area = abs(duv1.x * duv2.y - duv1.y * duv2.x);
         mat3 object_to_world = mat3(gl_ObjectToWorldEXT);
         vec3 e1 = object_to_world * (v1.position - v0.position);

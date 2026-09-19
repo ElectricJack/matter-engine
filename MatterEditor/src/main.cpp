@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEngine3 Vulkan world viewer. The production path creates a GLFW
 // NO_API window and presents genuine WorldSession data through VkSceneRenderer.
 // MATTER_CAM, MATTER_WORLD, MATTER_SCREENSHOT and FIFO commands are retained
@@ -181,6 +182,7 @@
 #include "camera_orbit.h"
 #include "editor_model.h"
 #include "editor_props.h"
+#include "vt_trace.h"
 #include "image_preview.h"
 #include "issue_reporter.h"
 #include "profile.h"
@@ -1416,7 +1418,8 @@ int main() {
     if (((registration_census_mode || perf.enabled) && !force_visible) ||
         (hide_window_env && std::strcmp(hide_window_env, "1") == 0))
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    if (perf.enabled)
+    const char* vt_trace_path = std::getenv("MATTER_VT_TRACE");
+    if (perf.enabled || (vt_trace_path && vt_trace_path[0]))
         glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     int initial_window_width = replay.valid && replay.frame_width > 0
         ? static_cast<int>(replay.frame_width) : 1280;
@@ -2763,8 +2766,6 @@ int main() {
     // -- see the fifo_quit_pending resolution after end_frame below.
     bool fifo_quit_pending = false;
 
-    matter::RenderPath fifo_render_path = matter::RenderPath::GpuDriven;
-    bool fifo_render_path_override = false;
     stats.session_status.native_rt_available =
         vulkan->ray_tracing_available();
     bool quit_requested = false;
@@ -2796,6 +2797,8 @@ int main() {
     std::vector<double> perf_water_animation_times;
     viewer::PerfGpuStats perf_gpu_pass_stats;
     PerfFrameTrace perf_frame_trace;
+    editor::VtTrace vt_trace(vt_trace_path);
+    const auto vt_trace_start = std::chrono::steady_clock::now();
     auto perf_previous_frame_start = std::chrono::steady_clock::now();
     auto perf_previous_present = perf_previous_frame_start;
     viewer::FramePacer frame_pacer;
@@ -2915,6 +2918,14 @@ int main() {
          {"offset", "integer", false, "Rows to skip within the matched set"},
          {"limit", "integer", false, "Rows to return, 1 through 200 (default 100)"}},
         "object", false, {}});
+    agent_protocol.add_command({
+        "asset.export", "Export a completed static asset as OBJ/MTL, GLB and PBR/height PNG maps in a new folder",
+        {{"directory", "string", true, "New output folder; existing folders are refused"},
+         {"source", "string", false, "world (default) or workbench"},
+         {"module", "string", false, "Published world root module; required unless part_hash is supplied"},
+         {"part_hash", "string", false, "Decimal root part hash; selects one variant of a repeated module"},
+         {"lod", "integer", false, "Mesh LOD 0 through 15, default 0; children use their nearest available LOD"}},
+        "object", true, {}});
     agent_protocol.add_command({
         "scene.get_object",
         "Inspect one object by typed id: naming, placement, visibility, "
@@ -3388,6 +3399,58 @@ int main() {
         return viewer::scenediff::capture(inventory_snapshot, measured, context,
                                           inputs, std::move(label));
     };
+
+    auto reg_asset_export = registry.must_register_handler<viewer::AssetExport>(
+        matter::evt::CommandScope::App,app_lane,[&](const viewer::AssetExport& command){
+            using Value=matter::jsondoc::Value;
+            viewer::AgentPayload payload;
+            const auto invalid=[&](const std::string& why){payload.status=viewer::agent::Status::InvalidInput;payload.message=why;return viewer::AssetExport::Result::succeeded(std::move(payload));};
+            std::string directory,module,source="world";uint32_t lod=0;uint64_t requested_hash=0;
+            for(const auto& [key,value]:command.arguments.obj){
+                if(key=="lod"){
+                    if(value.kind!=Value::Kind::Number || !std::isfinite(value.num) || value.num<0 || value.num>15 || std::floor(value.num)!=value.num)
+                        return invalid("lod must be an integer between 0 and 15");
+                    lod=uint32_t(value.num);
+                } else {
+                    if(value.kind!=Value::Kind::String || value.str.size()>4096 || value.str.find('\0')!=std::string::npos)
+                        return invalid("export text arguments must be bounded strings without NUL characters");
+                    if(key=="directory")directory=value.str;else if(key=="module")module=value.str;else if(key=="source")source=value.str;
+                    else if(key=="part_hash") {
+                        if(value.str.empty())return invalid("part_hash must be a decimal uint64 string");
+                        for(char digit:value.str){if(digit<'0'||digit>'9'||requested_hash>(UINT64_MAX-uint32_t(digit-'0'))/10)return invalid("part_hash must be a decimal uint64 string");requested_hash=requested_hash*10+uint32_t(digit-'0');}
+                        if(!requested_hash)return invalid("part_hash cannot be zero");
+                    }
+                    else return invalid("unknown asset.export argument");
+                }
+            }
+            if(directory.empty() || (source!="world" && source!="workbench"))return invalid("directory is required; source must be world or workbench");
+            matter::AssetExportReceipt receipt;std::string error;bool ok=false;
+            if(source=="workbench"){
+                if(requested_hash)return invalid("part_hash is only accepted for source=world");
+                if(!module.empty() && module!=bake_lab.workbench().module_name())return invalid("module does not match the open workbench asset");
+                ok=bake_lab.workbench().export_current(directory,lod,receipt,error);
+            } else {
+                if(module.empty() && !requested_hash)return invalid("module or part_hash is required when exporting from the world");
+                part_graph_snapshot::Snapshot graph;uint64_t hash=0;
+                if(session && session->graph_snapshot(graph))for(const auto& [key,node]:graph.nodes)
+                    if(node.is_root && (module.empty() || key==module || node.module==module) && (!requested_hash || node.resolved_hash==requested_hash)){
+                        if(hash && hash!=node.resolved_hash)return invalid("module selects more than one root variant");hash=node.resolved_hash;
+                    }
+                if(!hash)error="module has no published root in the current world";
+                else ok=session->export_asset(hash,lod,directory,receipt,error);
+            }
+            if(!ok){payload.status=viewer::agent::Status::ExecutionFailure;payload.message=error;}
+            else {
+                payload.value.kind=Value::Kind::Object;
+                const auto text_value=[](const std::string& s){Value v;v.kind=Value::Kind::String;v.str=s;return v;};
+                const auto number_value=[](uint64_t n){Value v;v.kind=Value::Kind::UInt64;v.uint64_value=n;return v;};
+                payload.value.set("directory",text_value(receipt.directory));payload.value.set("source_hash",text_value(std::to_string(receipt.source_hash)));
+                payload.value.set("lod",number_value(receipt.lod));payload.value.set("triangles",number_value(receipt.triangles));
+                payload.value.set("vertices",number_value(receipt.vertices));payload.value.set("materials",number_value(receipt.materials));
+                Value files;files.kind=Value::Kind::Array;for(const auto& f:receipt.files)files.arr.push_back(text_value(f));payload.value.set("files",std::move(files));
+            }
+            return viewer::AssetExport::Result::succeeded(std::move(payload));
+        });
 
     auto reg_scene_list_objects =
         registry.must_register_handler<viewer::SceneListObjects>(
@@ -4455,8 +4518,16 @@ int main() {
                     return viewer::FifoRenderPath::Result::failed(
                         "native RT unavailable");
                 }
-                fifo_render_path = cmd.requested;
-                fifo_render_path_override = true;
+                // Use the checkbox's live property. A separate FIFO override
+                // makes later UI changes silently ineffective for this session.
+                const auto result = viewer::fifo_set_property(
+                    editor_props.registry(), "render.gpu.ray_tracing",
+                    cmd.requested == matter::RenderPath::Raytrace ? "true"
+                                                                : "false");
+                if (!result.success) {
+                    std::printf("render_path: %s\n", result.line.c_str());
+                    return viewer::FifoRenderPath::Result::failed(result.line);
+                }
                 stats.session_status.render_path =
                     cmd.requested == matter::RenderPath::Raytrace
                         ? viewer::ViewerRenderPathStatus::NativeRt
@@ -5156,6 +5227,9 @@ int main() {
                     if (begun.request.command == "agent.commands") {
                         attach_agent_ticket(registry.dispatch(viewer::AgentCommands{}),
                                             metadata_terminal);
+                    } else if (begun.request.command == "asset.export") {
+                        viewer::AssetExport command;command.arguments=begun.request.arguments;
+                        attach_agent_ticket(registry.dispatch(std::move(command)),payload_terminal);
                     } else if (begun.request.command == "scene.list_objects") {
                         // Range/enum validation happens HERE so a bad limit or
                         // an unknown kind is invalid_input rather than a handler
@@ -5800,11 +5874,8 @@ int main() {
                     // module's source, mirroring how the browser scopes its rows.
                     std::string project_dir;
                     for (const viewer::WorldEntry& w : worlds) {
-                        std::error_code probe_ec;
-                        if (std::filesystem::is_regular_file(
-                                std::filesystem::path(w.project_dir) / "objects" /
-                                    (std::string(word) + ".js"),
-                                probe_ec)) {
+                        if (!matter::project_layout::object_source(
+                                {(std::filesystem::path(w.project_dir) / "objects").string()}, word).empty()) {
                             project_dir = w.project_dir;
                             break;
                         }
@@ -6029,6 +6100,7 @@ int main() {
         // and the camera snapshot — so a FIFO `cam`/`budget` applies to THIS
         // frame's render exactly as the old inline handling did.
         registry.pump(app_lane, 5.0);
+        bake_lab.workbench().process_pending_export();
         // The armed capture's deadline, checked BEFORE the protocol's generic
         // expiry so the capture-specific timeout message is the one that lands
         // in the ordinary case. Both deadlines are the same request's, so
@@ -6890,10 +6962,7 @@ int main() {
         // — and are cleared again for the Part Workbench's isolation session,
         // which has its own world and its own authored fog and sun.
         matter::RenderOptions options;
-        const bool native_rt_requested =
-            fifo_render_path_override
-                ? fifo_render_path == matter::RenderPath::Raytrace
-                : editor_props.gpu_prefs().ray_tracing;
+        const bool native_rt_requested = editor_props.gpu_prefs().ray_tracing;
         const bool native_rt_enabled =
             vulkan->ray_tracing_available() && native_rt_requested;
         options.path = native_rt_enabled ? matter::RenderPath::Raytrace
@@ -6936,6 +7005,8 @@ int main() {
         options.pixel_budget = stats.pixel_budget;
         options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
+        options.vulkan_forest_history_reset =
+            editor_props.gpu_prefs().forest_history_reset;
         options.vulkan_lighting = stats.lighting;
         // ViewerStats index -> composite.frag mode. The two numberings differ
         // and always have; keep this in step with kDebugViewLabels
@@ -7129,6 +7200,21 @@ int main() {
         // The long assignment block further down copies it field-by-field into
         // ViewerStats, which is what the HUD and every panel actually read.
         const matter::FrameStats& frame_stats = session->frame_stats();
+        // Cache audit uses actual streaming activity, not only a plateau in
+        // resident count while a long-running worker is still cooking.
+        static const bool cache_audit = std::getenv("MATTER_TERRAIN_CACHE_AUDIT") != nullptr;
+        static auto cache_audit_last = std::chrono::steady_clock::now();
+        if (cache_audit && std::chrono::duration<double>(std::chrono::steady_clock::now()-cache_audit_last).count() >= 1.0) {
+            cache_audit_last = std::chrono::steady_clock::now();
+            const auto state = session->streaming_status();
+            std::printf("CACHE_AUDIT state=%u resident=%u inflight=%u bake_ready=%u\n",
+                unsigned(state.state), state.resident_sectors, state.inflight_sectors, unsigned(bake_ready));
+            std::printf("CACHE_VISIBLE_SECTORS revision=%llu valid=%u desired=%u pending=%u\n",
+                (unsigned long long)state.view_revision, unsigned(state.visible_sectors_valid),
+                state.visible_sectors, state.visible_sectors_pending);
+            std::fflush(stdout);
+        }
+
         // QA timeline: wait_idle / wait_event release checks. Here (frame_stats
         // just refreshed, and bake_ready reflects this frame's poll_event
         // drain above) so both waits observe up-to-date state once per frame;
@@ -7529,6 +7615,12 @@ int main() {
         const double perf_present_interval_ms = std::chrono::duration<double, std::milli>(
             perf_present_time - perf_previous_present).count();
         perf_previous_present = perf_present_time;
+        if (frame_presented && vt_trace.enabled()) {
+            vt_trace.record(frame.serial,
+                std::chrono::duration<double, std::milli>(
+                    perf_present_time - vt_trace_start).count(),
+                frame_stats, stats_label);
+        }
         const double perf_frame_cadence_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - perf_frame_start).count();
         hud_frame_ms = hud_frame_ms <= 0.0
@@ -8126,7 +8218,9 @@ int main() {
             std::fprintf(stderr,
                         "STATSVT,%s,active=%d,variants=%u/%u,rejected=%u,"
                         "mesh=%.1f/%.1f MiB,pool=%u/%u,pinned=%u,queue=%u,"
-                        "fills=%llu,evictions=%llu,ind=%.2f/%.0f MiB\n",
+                        "fills=%llu,evictions=%llu,ind=%.2f/%.0f MiB,material_pages=%u,shared_material_refs=%u,"
+                        "coverage_only_pages=%u,occlusion_pages=%u,occlusion_retained_pages=%u,"
+                        "occlusion_allocated_bytes=%llu,enrich_deferred=%llu\n",
                         stats_label.c_str(),
                         frame_stats.vt_active ? 1 : 0,
                         frame_stats.vt_variants,
@@ -8150,7 +8244,14 @@ int main() {
                             (1024.0 * 1024.0),
                         static_cast<double>(
                             frame_stats.vt_indirection_capacity_bytes) /
-                            (1024.0 * 1024.0));
+                            (1024.0 * 1024.0),
+                        frame_stats.vt_material_pages,
+                        frame_stats.vt_shared_material_references,
+                        frame_stats.vt_coverage_only_pages,
+                        frame_stats.vt_occlusion_pages,
+                        frame_stats.vt_occlusion_retained_pages,
+                        static_cast<unsigned long long>(frame_stats.vt_occlusion_allocated_bytes),
+                        static_cast<unsigned long long>(frame_stats.vt_enrich_deferred_total));
             std::fflush(stderr);
             stats_label.clear();
         }
@@ -8472,6 +8573,10 @@ int main() {
                 MATTER_LOGW("profile", "profile: could not write trace to %s\n",
                              trace_path);
         }
+    }
+    if (vt_trace.enabled()) {
+        if (vt_trace.write()) std::printf("vt-trace: wrote capture\n");
+        else MATTER_LOGW("vt", "vt-trace: could not write capture\n");
     }
     // Flush a debounced User-scope autosave that the last frames did not reach.
     // World scope stays explicit-save (plus the automatic flush at every

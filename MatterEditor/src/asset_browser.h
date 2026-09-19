@@ -131,6 +131,7 @@ private:
         // radius, spelled out: "" means editing it can affect any scene in the
         // project, a name means it can affect only that one.
         std::string scene;
+        std::string folder;       // displayed hierarchy, independent of ownership
         std::string source_text;  // cached file contents; reloaded when
                                    // mtime_ns changes (see AssetBrowser::draw).
         Kind kind = Kind::Support;
@@ -161,6 +162,7 @@ private:
     // A world belonging to this project, plus its position in the caller's world
     // list -- which is exactly what "Load" needs to issue viewer.switch_world.
     struct WorldRef {
+        std::string folder;
         std::string world_name;
         int world_index = -1;  // index into the `worlds` vector passed to draw().
     };

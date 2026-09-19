@@ -46,6 +46,12 @@ layout(set = 0, binding = 4, std430) readonly buffer RtMaterialTable {
     RtMaterialGpu rt_materials[];
 };
 
+#define VT_SET 0
+#define VT_DRAW_MATERIAL_TYPE RtMaterialGpu
+#define VT_DRAW_INPUT_BINDING 28
+#include "vt_draw_inputs.glsl"
+#include "rt_primary_inputs.glsl"
+
 layout(set = 0, binding = 11) uniform usampler2D identity_texture;
 
 // GBuffer ORM. Declared for the same reason as bindings 4 and 11 above: it is
@@ -81,6 +87,7 @@ layout(push_constant) uniform ShadowConstants {
     // 1.0 at the default, so `0.002 * sun_cone_scale` below is bit-identical
     // to the 0.002 this shader used to hardcode.
     float sun_cone_scale;
+    float max_normal_bias;
 } constants;
 
 struct VisibilityPayload {
@@ -112,8 +119,10 @@ vec3 proxy_world_from_depth(ivec2 p, ivec2 extent) {
     vec3 world=world_from_depth(p,extent);
     uint identity=texelFetch(identity_texture,p,0).x;
     uint material=impostor_identity_material(identity);
-    if (!impostor_identity_is_card(identity) && material < rt_materials.length() &&
-        (rt_materials[material].flags_misc.x & 32u) != 0u) {
+    RtMaterialGpu displayed;
+    if (!impostor_identity_is_card(identity) &&
+        (rt_primary_composed_height(p) || (rt_primary_material(p, material, displayed) &&
+        (displayed.flags_misc.x & 32u) != 0u))) {
         float ray_t=texelFetch(orm_texture,p,0).a;
         if (!isnan(ray_t) && !isinf(ray_t) && ray_t > 0.0) {
             vec2 uv=(vec2(p)+.5)/vec2(extent);
@@ -168,9 +177,12 @@ void main() {
     // sun angles instead of blowing up toward the horizon.
     uvec2 identity = texelFetch(identity_texture, pixel, 0).rg;
     uint receiver_material=impostor_identity_material(identity.x);
+    RtMaterialGpu receiver_input;
+    const bool has_receiver_input =
+        rt_primary_material(pixel, receiver_material, receiver_input);
     bool surface_receiver=!impostor_identity_is_card(identity.x) &&
-        receiver_material<rt_materials.length() &&
-        (rt_materials[receiver_material].flags_misc.x & 32u)!=0u;
+        (rt_primary_composed_height(pixel) ||
+         (has_receiver_input && (receiver_input.flags_misc.x & 32u)!=0u));
     if (surface_receiver) world=proxy_world_from_depth(pixel,extent);
     // The 2r ray skip is GONE, and so is the reason for it.
     //
@@ -196,7 +208,8 @@ void main() {
     // span metres. Scale the normal offset by the clip-space depth so it
     // grows with distance (coarser LOD = larger triangles = more sag).
     // Reversed-Z: depth ≈ 1 near, ≈ 0 far, so 1/depth ∝ linear distance.
-    float depth_scale = clamp(0.002 / max(depth, 1e-4), ray_start, 0.5);
+    float depth_scale = min(clamp(0.002 / max(depth, 1e-4), ray_start, 0.5),
+                            constants.max_normal_bias);
     // Lift along the GEOMETRIC (flat-facet) normal, not the shading normal in
     // normal_texture. The shading normal carries the terrain field-gradient /
     // tileset detail (issues eb0b1070, 98c8c21e): on coarse 2:1 rungs it tilts
@@ -233,7 +246,6 @@ void main() {
     // the impostor bit masked off. It cannot be set on this path (the early
     // return above took it), so the mask is defence against a future edit that
     // moves or weakens that return, not against today's control flow.
-    const uint shadow_material = impostor_identity_material(identity.x);
     // Water's transmission RT lane shades the terrain below the surface and
     // performs its own sun-visibility trace there.  Applying this primary
     // GBuffer visibility at the water surface as well produces two displaced
@@ -241,8 +253,8 @@ void main() {
     // Leave the primary target neutral; water remains an RT occluder and the
     // physically useful riverbed shadow remains in rt_lighting.rgen.
     const bool is_water_receiver =
-        shadow_material < rt_materials.length() &&
-        (rt_materials[shadow_material].flags_misc.x &
+        has_receiver_input &&
+        (receiver_input.flags_misc.x &
          WATER_SURFACE_MATERIAL_FLAG) != 0u;
     if (is_water_receiver) {
         imageStore(visibility_image, pixel, vec4(1.0));
@@ -252,10 +264,10 @@ void main() {
     // this if block (it previously only tested `!= 0u` inline) so the
     // horizon-occlusion test below can reuse it.
     int shadow_tileset_slot = -1;
-    if (shadow_material < rt_materials.length()) {
-        RtMaterialGpu roof_mat = rt_materials[shadow_material];
+    if (has_receiver_input) {
+        RtMaterialGpu roof_mat = receiver_input;
         shadow_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
-        if ((roof_mat.flags_misc.x & 32u) != 0u) {
+        if (surface_receiver) {
             // Already at the recovered proxy; range-based lifts would move it
             // past real contact occluders. ORM.a is not horizon visibility here.
             shadow_tileset_slot = -1;

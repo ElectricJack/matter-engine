@@ -116,6 +116,11 @@ struct VulkanRayTracingSettings {
     float bias = 0.001f;
     uint32_t samples = 1;
     bool debug_view = false;
+    // Cap the primary sun ray's geometric-normal offset in world metres.
+    // The default retains the terrain terminator correction. Zero traces the
+    // source surface using only `bias` along the light ray, useful for thin
+    // geometry where a screen-depth-derived offset would skip real occluders.
+    float max_normal_bias = 0.5f;
 };
 
 // The single device feature the wireframe view needs
