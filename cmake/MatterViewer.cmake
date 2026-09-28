@@ -424,6 +424,28 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
 
+    add_test(NAME static_surface_vt_tests COMMAND static_surface_vt_tests)
+    set_tests_properties(static_surface_vt_tests PROPERTIES LABELS vulkan
+        PASS_REGULAR_EXPRESSION "ALL PASS" FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    # The only executor of the GPU face-material bake. It loads the castle
+    # stone recipe and shared-lib roots relative to the repository root, and
+    # counts validation errors itself rather than printing a count.
+    add_test(NAME solid_face_projection_gpu_tests COMMAND solid_face_projection_gpu_tests)
+    set_tests_properties(solid_face_projection_gpu_tests PROPERTIES LABELS vulkan
+        PASS_REGULAR_EXPRESSION "solid_face_projection_gpu_tests: PASS"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    # One ctest per smoke mode that the PowerShell fault gate
+    # (MatterEditor/tools/smoke_vulkan_faults.ps1) does not run.
+    foreach(mode geometry-pages vt-queue vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas water-field-nort)
+        string(REPLACE "-" "_" mode_name "${mode}")
+        add_test(NAME smoke_${mode_name} COMMAND vulkan_smoke_tests)
+        set_tests_properties(smoke_${mode_name} PROPERTIES LABELS vulkan
+            ENVIRONMENT "MATTER_VK_SMOKE_MODE=${mode}"
+            PASS_REGULAR_EXPRESSION "ALL PASS" FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    endforeach()
+
     add_test(NAME vulkan_scene_oracle_tests
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/MatterEditor/tools/tests/vulkan_scene_oracle_tests.ps1"

@@ -103,19 +103,20 @@ Measure-first list (do not fix blind): (1) GPU zone breakdown; (2) hardware-coun
 ## Tier 3 — test gating, docs, hygiene
 
 **Tests that exist but never run**
-- `add_test` for `static_surface_vt_tests` and `solid_face_projection_gpu_tests` (`cmake/MatterViewer.cmake:285-322`); the latter is the only executor of the GPU face-material bake.
-- Mode ctests for `geometry-pages`, `vt-material-domain`, `vt-pom-work`, `vt-receiver-material`, `vt-module-residency`, `vt-queue`, `vt-export`, `vt-surface-connections`, `vt-feedback-pair`, `rt-empty-tlas`, `water-field-nort` (15 of 20 new smoke modes are ungated).
-- Supply `MATTER_VT_CLAY_FIXTURE` / `MATTER_VT_PERIODIC_CLAY_FIXTURE` via `ENVIRONMENT` or split those blocks into opt-in tests (`vt_compositor_tests.cpp:1658, 2022`).
-- Register `tools/tests/test_vt_density.py`, `test_vt_acceptance.py`, `test_geometry_paging_report.py` in CTest (pattern at `cmake/MatterPackaging.cmake:119`).
+- Done (plan Task 22): `add_test` for `static_surface_vt_tests` and `solid_face_projection_gpu_tests` (`cmake/MatterViewer.cmake:285-322`); the latter is the only executor of the GPU face-material bake. It runs from the repo root and passes on `solid_face_projection_gpu_tests: PASS`.
+- Done (plan Task 22, `smoke_<mode>` ctests, all pass): mode ctests for `geometry-pages`, `vt-material-domain`, `vt-pom-work`, `vt-receiver-material`, `vt-module-residency`, `vt-queue`, `vt-export`, `vt-surface-connections`, `vt-feedback-pair`, `rt-empty-tlas`, `water-field-nort` (15 of 20 new smoke modes are ungated).
+- Supply `MATTER_VT_CLAY_FIXTURE` / `MATTER_VT_PERIODIC_CLAY_FIXTURE` via `ENVIRONMENT` or split those blocks into opt-in tests (`vt_compositor_tests.cpp:1658, 2048`). Left opt-in by plan Task 22: both variables name a directory of eight `clay-projected-<seed>.fst` files at about 2 MB each (16.7 MB total), over the 1 MB check-in limit. `solid_face_projection_gpu_tests` writes them when `MATTER_CLAY_FACE_DUMP=<dir>` is set, so a follow-up can generate them in the build directory (a CTest `FIXTURES_SETUP` on that test) and add an opt-in `vt_compositor_clay_tests` that requires the fixture, with nothing checked in.
+- Done (plan Task 22: `vt_density_tests`, `vt_acceptance_tests`, `geometry_paging_report_tests`): register `tools/tests/test_vt_density.py`, `test_vt_acceptance.py`, `test_geometry_paging_report.py` in CTest (pattern at `cmake/MatterPackaging.cmake:119`).
 - Port `bank_noalloc_tests` to the Windows toolchain so the zero-allocation gate is measurable on the canonical build.
 - Restore or re-cover `test_reload_sees_a_same_size_commit` in `asset_store_tests.cpp`.
 - Either add the 23 new suites to `MatterEngine3/tests/Makefile` or state that the Make test path is retired.
+- `MatterEditor/tools/smoke_vulkan_faults.ps1` fails on timing, not on a test failure. On 2026-09-28 (tip `35186eaa`, MSVC RelWithDebInfo, RTX 4090) `animation-skin` took 65 s run alone against the gate's 30 s default, and `rt` took 78 s against its 90 s limit (the script's comment says ~35 s). Both print `ALL PASS` and `validation errors: 0`. Raise the two limits or find what doubled the runtime.
 - Fix `vt_acceptance.py` (passes on absent evidence, `:169-173`; `REQUIRED` set mismatches `vt_trace.h`) and `vt_churn_report.py` (stdout/stderr correlation); document both.
 
 **Docs**
 - Document `MATTER_GBUFFER_POM_PATH` (non-default values are deliberately wrong output) and `MATTER_GEOMETRY_VISIBLE_PROFILE` in `control-surface.md`; add `asset.export` there; update the STATSVT column description.
 - `docs/agent/asset-export.md`: 8192 → 16384.
-- `.claude/skills/qa-smoke/SKILL.md`: 12-of-57 framing, the CMake ctest path, MSVC build commands.
+- Done (plan Task 22): `.claude/skills/qa-smoke/SKILL.md`: 12-of-57 framing, the CMake ctest path, MSVC build commands.
 - `ROADMAP.md`: add the geometry-paging / sector-bundle workstream.
 - CLAUDE.md "JS world-script tests": `--experimental-vm-modules` is required by `castle_dsl_harness.mjs`.
 - `projects/world_demo/README.md` endorses copying `objects/templates/WorldSector.js`; six byte-identical 471-line copies exist. Replace with a shared-lib sector module plus per-scene parameters, or at minimum a test asserting the copies stay identical.
