@@ -106,12 +106,14 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
         // behind, and listing it only produces a load error on click.
         std::set<std::string> seen;
         if (has_scenes) {
-            for (const auto& script : matter::project_layout::scene_scripts(scenes)) {
+            matter::project_layout::Diagnostics diag;
+            for (const auto& script : matter::project_layout::scene_scripts(scenes, &diag)) {
                 const std::string name = script.stem().string();
                 const auto group = script.parent_path().parent_path().lexically_relative(scenes);
                 seen.insert(name);
                 add_entry(project, name, group == "." ? "" : group.generic_string());
             }
+            for (const auto& d : diag.duplicates) MATTER_LOGW("ui", "%s", d.c_str());
         }
 
         // Flat layout: worlds/<Name>.js. Still scanned so a project can be

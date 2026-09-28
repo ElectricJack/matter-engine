@@ -36,6 +36,7 @@
 #include "asset_browser.h"
 #include <cstdlib>
 #include "matter/project_layout.h"
+#include "matter/log.h"
 #include "asset_browser_ids.h"
 
 #include "ui.h"          // WorldEntry, ViewerStats (kept out of the header to
@@ -267,16 +268,18 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
             }
         };
 
+        matter::project_layout::Diagnostics diag;
         const fs::path shared_objects = fs::path(project.path) / "objects";
-        add_objects(matter::project_layout::object_files(shared_objects), "", shared_objects, "Shared");
+        add_objects(matter::project_layout::object_files(shared_objects, &diag), "", shared_objects, "Shared");
 
         const fs::path scenes_dir = fs::path(project.path) / "scenes";
-        for (const auto& script : matter::project_layout::scene_scripts(scenes_dir)) {
+        for (const auto& script : matter::project_layout::scene_scripts(scenes_dir, &diag)) {
             const auto scene = script.parent_path();
-            add_objects(matter::project_layout::object_files(scene / "objects"),
+            add_objects(matter::project_layout::object_files(scene / "objects", &diag),
                         script.stem().string(), scene / "objects",
                         "Scenes/" + scene.lexically_relative(scenes_dir).generic_string());
         }
+        for (const auto& d : diag.duplicates) MATTER_LOGW("asset_browser", "%s", d.c_str());
 
         // shared-lib listing: names only, not interactive (part-workbench.md
         // I.3: "shared-lib: noise, curves, ... (listed, not openable)").

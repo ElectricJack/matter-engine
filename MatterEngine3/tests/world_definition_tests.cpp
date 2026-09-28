@@ -232,16 +232,27 @@ void test_grouped_scene_and_object_resolution() {
     part_graph::FileModuleResolver shared(host, cfg.objects_dir);
     CHECK(shared.load_source("Rock", source) && source == "// shared rock", "single-root callers discover groups too");
 
-    fixture.write("objects/another/Rock.js", "// ambiguous");
-    bool duplicate = false;
-    try { (void)cfg.object_roots(); }
-    catch (const std::runtime_error& e) { duplicate = std::string(e.what()).find("Duplicate object 'Rock'") != std::string::npos; }
-    CHECK(duplicate, "duplicate module names inside a tier fail clearly");
+    const auto another_rock = fixture.write("objects/another/Rock.js", "// ambiguous");
+    matter::project_layout::Diagnostics diag;
+    const auto roots = matter::project_layout::object_roots({cfg.scene_objects_dir, cfg.objects_dir}, &diag);
+    CHECK(diag.duplicates.size() == 1 && diag.duplicates[0].find("Duplicate object 'Rock'") != std::string::npos,
+          "duplicate module names inside a tier are reported");
+    CHECK(!roots.empty(), "duplicate module names do not abort root discovery");
+    CHECK(fs::path(resolver.source_path_for("Rock")) == rock, "the first Rock in sorted order still resolves");
+    part_graph::FileModuleResolver rediscovered(host, std::vector<std::string>{cfg.scene_objects_dir, cfg.objects_dir});
+    CHECK(fs::path(rediscovered.source_path_for("Rock")) == another_rock,
+          "rediscovery picks the first Rock in sorted directory order");
     fixture.write("scenes/other/BrickProof/BrickProof.js", "// ambiguous");
-    duplicate = false;
+    diag = {};
+    const auto deduped = matter::project_layout::scene_scripts(fixture.root / "scenes", &diag);
+    CHECK(diag.duplicates.size() == 1 && diag.duplicates[0].find("Duplicate scene 'BrickProof'") != std::string::npos,
+          "duplicate scene identities are reported");
+    CHECK(deduped == std::vector<fs::path>{fixture.root / "scenes/other/BrickProof/BrickProof.js"},
+          "the first BrickProof in sorted order wins and the loser is not listed");
+    bool threw = false;
     try { (void)viewer::LocalProviderConfig::for_project(fixture.root.string(), "BrickProof", ""); }
-    catch (const std::runtime_error& e) { duplicate = std::string(e.what()).find("Duplicate scene 'BrickProof'") != std::string::npos; }
-    CHECK(duplicate, "duplicate scene identities fail clearly");
+    catch (const std::exception&) { threw = true; }
+    CHECK(!threw, "a duplicate scene never throws out of for_project");
 }
 
 // Phase 1 (repo-layout-and-cache-consolidation plan) cache-leak fix:
