@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "matter/vulkan_device.h"
+#include "profile.h"
 #include "matter/display_dither.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/lod_distance.h"
@@ -453,6 +454,61 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
         CHECK(traced(first_part.part_hash, rebound) &&
                   traced(second_part.part_hash, second),
               "water field: RT records preserve the same two distinct identities");
+    }
+    // Revisit both frame slots, then replace a published field. The descriptor
+    // guard must skip each settled slot and rewrite both on the new views.
+    const auto record_field_frame = [&](uint32_t& slot,
+                                        uint32_t& prepare_writes) {
+        matter::VulkanFrame next{};
+        if (!vulkan.begin_frame(next, error) ||
+            !renderer.prepare_frame(next, matrices, camera.position, 1.0f,
+                                    error))
+            return false;
+        slot = next.frame_slot;
+        prepare_writes = renderer.frame_descriptors_written();
+        const bool recorded =
+            renderer.record_cull_and_render(next, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(next, error);
+        const bool submitted = recorded && vulkan.end_frame(next, error);
+        renderer.finish_ray_tracing_frame(next.serial, submitted);
+        vulkan.wait_idle();
+        return submitted;
+    };
+    std::vector<uint32_t> settled_prepare_writes(capped_frame.frame_slot_count);
+    for (uint32_t i = 0; i < capped_frame.frame_slot_count; ++i) {
+        uint32_t slot = UINT32_MAX, writes = 0;
+        CHECK(record_field_frame(slot, writes),
+              error.empty() ? "water field: settled frame records"
+                            : error.c_str());
+        CHECK(slot < settled_prepare_writes.size(),
+              "water field: expected a valid frame slot");
+        if (slot < settled_prepare_writes.size())
+            settled_prepare_writes[slot] = writes;
+    }
+    viewer::WaterFieldBinding refreshed;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x505u), &rebound,
+              capped_frame.serial, refreshed, field_error),
+          field_error.message.c_str());
+    CHECK(renderer.set_part_water_field_binding(first_part.part_hash,
+                                                refreshed, error) &&
+              renderer.update_instances(
+                  {{first_part.part_hash, identity, 0x711u},
+                   {second_part.part_hash, identity, 0x712u}}, error),
+          error.empty() ? "water field: bind refreshed field" : error.c_str());
+    for (uint32_t i = 0; i < capped_frame.frame_slot_count; ++i) {
+        uint32_t slot = UINT32_MAX, writes = 0;
+        CHECK(record_field_frame(slot, writes),
+              error.empty() ? "water field: refreshed frame records"
+                            : error.c_str());
+        const uint32_t refreshed_descriptors =
+            vulkan.ray_tracing_available() ? 66u : 33u;
+        CHECK(slot < settled_prepare_writes.size() &&
+                  writes >= settled_prepare_writes[slot] +
+                                refreshed_descriptors &&
+                  renderer.test_water_field_descriptors_match(slot, refreshed),
+              "water field: changed views rewrite raster and RT descriptors in each slot");
     }
     CHECK(vulkan.validation_error_count() == 0u,
           "water field: immutable uploads produce no Vulkan validation errors");
@@ -7720,6 +7776,32 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
             std::printf("input snapshot settled descriptor writes: %u, %u\n", a, b);
             CHECK(a < kTilesetBankDescriptors && b < kTilesetBankDescriptors,
                   "rt tileset samplers are not rewritten on a frame with no tileset change");
+            // The renderer's frame mark lands before its final descriptor
+            // calls. Fill the recent-frame window with unchanged draws first.
+            for (int i = 0; i < 16; ++i) draw_pixel();
+            CHECK(renderer.frame_descriptors_written() == b,
+                  "input snapshot: settled descriptor count stays stable");
+            std::array<matter::profile::FrameRecord, 16> recent{};
+            const int count = matter::profile::copy_recent(
+                recent.data(), static_cast<int>(recent.size()));
+            const int descriptor_zone =
+                matter::profile::register_zone("vk.descriptor_update");
+            uint64_t update_ns = 0, wall_ns = 0;
+            std::array<uint64_t, 16> update_times{};
+            for (int i = 0; i < count; ++i) {
+                update_times[i] = recent[i].zone_ns[descriptor_zone];
+                update_ns += update_times[i];
+                wall_ns += recent[i].wall_ns;
+            }
+            if (count > 0) {
+                std::sort(update_times.begin(), update_times.begin() + count);
+                std::printf("input snapshot settled descriptor CPU: median %.3f us, p95 %.3f us, mean %.3f us/frame, %.4f%% of frame wall (%d frames)\n",
+                            update_times[count / 2] / 1000.0,
+                            update_times[count - 1] / 1000.0,
+                            update_ns / (1000.0 * count),
+                            wall_ns ? 100.0 * update_ns / wall_ns : 0.0,
+                            count);
+            }
         }
         const auto idle_control = device_idle_count();
         vulkan.wait_idle();

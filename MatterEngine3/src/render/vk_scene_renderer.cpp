@@ -5258,6 +5258,7 @@ void VkSceneRenderer::update_descriptor_sets(
     uint32_t copy_count, const VkCopyDescriptorSet* copies) {
     for (uint32_t i = 0; i < write_count; ++i)
         frame_descriptors_written_ += writes[i].descriptorCount;
+    PROFILE_SCOPE("vk.descriptor_update");
     vkUpdateDescriptorSets(device, write_count, writes, copy_count, copies);
 }
 
@@ -5952,6 +5953,7 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
     std::array<std::array<VkDescriptorImageInfo,
                           kWaterFieldBindingSlots>, 4>
         image_infos{};
+    bool views_changed = false;
     for (std::uint32_t channel = 0u; channel != image_infos.size();
          ++channel) {
         for (std::uint32_t slot = 0u; slot != kWaterFieldBindingSlots;
@@ -5961,8 +5963,19 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
             info.imageView =
                 water_field_resources_.descriptor_view(slot, channel);
             info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            views_changed = views_changed ||
+                frame.water_field_views[channel][slot] != info.imageView;
             frame.water_field_views[channel][slot] = info.imageView;
         }
+    }
+    const bool write_raster =
+        !frame.water_field_raster_descriptors_valid || views_changed;
+    const bool write_rt = rt_set != VK_NULL_HANDLE &&
+        (!frame.water_field_rt_descriptors_valid || views_changed);
+    if (!write_raster && !write_rt) {
+        std::copy(std::begin(generations), std::end(generations),
+                  std::begin(frame.water_field_generations));
+        return true;
     }
     const VkDescriptorBufferInfo buffer_info{
         frame.water_field_records.buffer, 0u,
@@ -5983,12 +5996,14 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
     writes[4].descriptorCount = 1u;
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[4].pBufferInfo = &buffer_info;
-    update_descriptor_sets(vulkan_->device(),
-                           static_cast<std::uint32_t>(writes.size()),
-                           writes.data(), 0u, nullptr);
-    frame.water_field_raster_descriptors_valid = true;
+    if (write_raster) {
+        update_descriptor_sets(vulkan_->device(),
+                               static_cast<std::uint32_t>(writes.size()),
+                               writes.data(), 0u, nullptr);
+        frame.water_field_raster_descriptors_valid = true;
+    }
 
-    if (rt_set != VK_NULL_HANDLE) {
+    if (write_rt) {
         for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
             writes[channel].dstSet = rt_set;
             writes[channel].dstBinding = 21u + channel;
