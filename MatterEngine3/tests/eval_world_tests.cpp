@@ -742,7 +742,9 @@ class TapePlain extends World {
         const int scree = MaterialRegistryDefineDynamic(&def, "Scree");
         const int snow = MaterialRegistryDefineDynamic(&def, "AlpineSnow");
         const int meadow = MaterialRegistryDefineDynamic(&def, "AlpineMeadow");
-        // The shipped world now also declares the forest's materials while
+        CHECK(MaterialRegistryDefineDynamic(&def, "Mountain.GeometryRock") >= 30,
+              "dynamic geometry rock material registered for StreamMountain evaluation");
+        // The shipped world also declares the forest's materials while
         // loading its module; mirror those loader assignments for eval_world.
         for (const char* name : {"mountain.forest.bark", "mountain.forest.branch",
                                  "mountain.forest.needles", "mountain.forest.cone",
