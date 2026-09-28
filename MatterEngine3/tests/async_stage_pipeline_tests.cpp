@@ -4,13 +4,66 @@
 #include <future>
 #include <memory>
 #include <cstdio>
+#include <cstring>
+#include <string>
 using namespace std::chrono_literals;
-struct Work { int id=0; std::shared_ptr<int> pin; };
+struct Work { int id=0; std::shared_ptr<int> pin; std::string error; };
+struct MoveFailure {
+    bool armed=false;
+    unsigned thrown=0;
+};
+struct MovingWork {
+    int id=0;
+    std::shared_ptr<MoveFailure> failure;
+    MovingWork()=default;
+    MovingWork(int id, std::shared_ptr<MoveFailure> failure) : id(id), failure(std::move(failure)) {}
+    MovingWork(MovingWork&& other) { *this=std::move(other); }
+    MovingWork& operator=(MovingWork&& other) {
+        if(other.failure && other.failure->armed) {
+            other.failure->armed=false;
+            ++other.failure->thrown;
+            throw std::runtime_error("queue transfer failed");
+        }
+        id=other.id;failure=std::move(other.failure);return *this;
+    }
+};
 template<class Predicate> void until(Predicate done) {
     const auto end=std::chrono::steady_clock::now()+5s;
     while(!done()){assert(std::chrono::steady_clock::now()<end);std::this_thread::yield();}
 }
 int main() {
+    for(bool after_prepare : {false,true}) {
+        // A handoff failure must release capacity and leave both lanes usable.
+        streaming::AsyncStagePipeline<MovingWork> pipeline(1,1,
+            [&](auto& values){if(!after_prepare)for(auto& value:values)if(value.failure)value.failure->armed=true;},
+            [&](MovingWork& value){if(after_prepare && value.failure)value.failure->armed=true;},
+            [](MovingWork&,const char*){});
+        auto failure=std::make_shared<MoveFailure>();
+        assert(pipeline.submit({1,failure}));
+        until([&]{return pipeline.available()==1;});
+        assert(failure->thrown==1 && pipeline.take().empty());
+        assert(pipeline.submit({2,{}}));
+        std::deque<MovingWork> done;until([&]{done=pipeline.take();return !done.empty();});
+        assert(done.size()==1 && done[0].id==2 && pipeline.available()==1);
+    }
+    for(bool in_prepare : {false,true})for(bool standard_exception : {false,true}) {
+        // Both exception categories on both lanes survive a throwing reporter
+        // and deliver its fallback diagnostic to the publication lane.
+        const auto fail=[&]{if(standard_exception)throw std::runtime_error("stage failed");throw 42;};
+        streaming::AsyncStagePipeline<Work> pipeline(1,1,
+            [&](auto& values){if(!in_prepare && values[0].id==9)fail();},
+            [&](Work& value){if(in_prepare && value.id==9)fail();},
+            [](Work& value,const char* why){
+                if(std::strcmp(why,"failure callback threw")!=0)throw std::runtime_error("reporter failed");
+                value.error=why;
+            });
+        assert(pipeline.submit({9,{}}));
+        std::deque<Work> done;until([&]{done=pipeline.take();return !done.empty();});
+        assert(done.size()==1 && done[0].error=="failure callback threw" && pipeline.available()==1);
+        assert(pipeline.submit({10,{}}));
+        until([&]{done=pipeline.take();return !done.empty();});
+        assert(done.size()==1 && done[0].id==10 && done[0].error.empty());
+    }
     {
         std::promise<void> preparing,release,second_read;
         auto prepared=preparing.get_future(),gate=release.get_future(),second=second_read.get_future();
@@ -53,6 +106,16 @@ int main() {
         assert(shutdown.wait_for(10ms)==std::future_status::timeout && !weak.expired());
         release.set_value();assert(shutdown.wait_for(5s)==std::future_status::ready);shutdown.get();
         assert(weak.expired());
+    }
+    {
+        // A failure callback that throws must not take the process down.
+        streaming::AsyncStagePipeline<Work> pipeline(2,2,
+            [](auto&){throw std::runtime_error("read failed");},
+            [](Work&){},
+            [](Work&,const char*){throw std::runtime_error("failure callback threw");});
+        assert(pipeline.submit({9,{}}));
+        std::deque<Work> done;until([&]{done=pipeline.take();return !done.empty();});
+        assert(done.size()==1 && pipeline.available()==2);
     }
     std::puts("ALL PASS: asynchronous overlap, bounded admission, cancellation, failures and shutdown pins");
 }

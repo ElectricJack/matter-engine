@@ -13660,8 +13660,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             timing("feedback_cpu",paging.feedback);timing("collect_cpu",paging.collect_cpu);
             timing("accept_cpu",paging.accept_cpu);timing("upload_loop_cpu",paging.upload_loop_cpu);
             timing("publish_cpu",paging.publish_cpu);timing("scene_check_cpu",paging.scene_check);
-            MATTER_LOGI("geometry", "paging_admission rejected=%llu deferred=%llu",
-                (unsigned long long)paging.admission_rejections, (unsigned long long)paging.admission_deferred);
+            MATTER_LOGI("geometry", "paging_admission rejected=%llu deferred=%llu hierarchy_failures=%llu",
+                (unsigned long long)paging.admission_rejections, (unsigned long long)paging.admission_deferred,
+                (unsigned long long)paging.hierarchy_failures);
             MATTER_LOGI("geometry", "paging_coverage rejected_assets=%u unready_assets=%u source_fallbacks=%u",
                 paging.rejected_assets,paging.unready_assets,paging.source_fallbacks);
             timing("cpu_cut",paging.cpu_cut);timing("snapshot",paging.snapshot);

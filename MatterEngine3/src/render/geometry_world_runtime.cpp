@@ -9,6 +9,7 @@
 #include "profile.h"
 #include "lod_distance.h"
 #include "matter/vulkan_device.h"
+#include "matter/log.h"
 #include <algorithm>
 #include <deque>
 #include <chrono>
@@ -185,6 +186,7 @@ struct GeometryWorldRuntime::Impl {
     struct RejectedAdmission {
         asset_store::BlobHash manifest;
         uint64_t revision = 0, seen = 0;
+        bool hierarchy_failed = false;
     };
     std::map<uint64_t, RejectedAdmission> rejected_admissions;
     uint64_t admission_revision = 0;
@@ -399,11 +401,24 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         output = admitted; error.clear(); return true;
     }
     auto& d = *d_; ++d.epoch;
+    bool detached = false;
     PROFILE_SCOPE_NAMED(adopt_scope, "geometry.adopt_hierarchies");
     for (auto& ready : d.hierarchy_pipeline->take()) {
         auto asset=d.assets.find(ready.asset);
         if (asset==d.assets.end() || asset->second.lease.id!=ready.lease) continue;
-        if (!ready.error.empty()) { error=ready.error; return false; }
+        if (!ready.error.empty()) {
+            MATTER_LOGW("geometry", "hierarchy build for asset %016llx failed: %s; asset falls back to its source part",
+                        static_cast<unsigned long long>(ready.asset), ready.error.c_str());
+            // Remove the live lease as well as rejecting readmission; leaving
+            // it in assets would continue drawing its old hierarchy forever.
+            d.rejected_admissions[ready.asset] = {
+                asset->second.source->manifest->hash, d.admission_revision, d.epoch, true};
+            d.residency.detach(asset->second.lease);
+            d.assets.erase(asset);
+            detached = true;
+            if (d.profiling) ++d.profile.hierarchy_failures;
+            continue;
+        }
         Impl::adopt_hierarchy(asset->second,ready);
         d.invalidate_scene();
     }
@@ -427,7 +442,7 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
             const auto manifest = part->geometry_pages->manifest->hash;
             auto rejected = d.rejected_admissions.find(instance.part_hash);
             if (rejected != d.rejected_admissions.end() && rejected->second.manifest == manifest &&
-                rejected->second.revision == d.admission_revision) {
+                (rejected->second.hierarchy_failed || rejected->second.revision == d.admission_revision)) {
                 rejected->second.seen = d.epoch;
                 if(d.profiling)++d.profile.admission_deferred;
                 continue;
@@ -463,7 +478,6 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
             visible_leases.push_back(found->second.lease.id);
     }
     if(d.profiling)d.profile.admission.add(elapsed_ms(admission_start));
-    bool detached = false;
     for (auto it = d.assets.begin(); it != d.assets.end();) {
         if (it->second.seen != d.epoch) { d.residency.detach(it->second.lease); it = d.assets.erase(it); detached = true; }
         else ++it;
@@ -645,7 +659,11 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     };
     for(auto& ready:d.scene_pipeline->take()) {
         d.scene_pending=false;
-        if(!ready.error.empty()){error=ready.error;return false;}
+        if(!ready.error.empty()) {
+            MATTER_LOGW("geometry", "scene assembly failed: %s; keeping the previous scene", ready.error.c_str());
+            if(d.profiling)++d.profile.scene_discarded;
+            continue;
+        }
         if(matches_scene(ready.sources,ready.bias,ready.height,ready.fov,ready.detail)) {
             const auto cut_start=PagingClock::now();
             if(!renderer.set_geometry_cut(ready.nodes,ready.roots,ready.jobs,error,true)) return false;

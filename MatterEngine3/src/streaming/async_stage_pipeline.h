@@ -4,6 +4,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 #include <algorithm>
@@ -54,44 +55,87 @@ public:
     }
 private:
     struct Item { T value; uint64_t generation; };
+    void report_failure(T& value, const char* why) noexcept {
+        try { failure_(value, why); }
+        catch (...) {
+            // Give the owner one chance to record a reporter failure too.
+            // An unconditionally throwing reporter must not kill the lane.
+            try { failure_(value, "failure callback threw"); }
+            catch (...) {}
+        }
+    }
     void io_loop() {
         for (;;) {
-            std::vector<T> batch; uint64_t generation;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                wake_.wait(lock,[&]{return stopping_ || !pending_.empty();});
-                if(stopping_)return;
-                generation=pending_.front().generation;
-                const auto count=std::min(batch_,pending_.size()); batch.reserve(count);
-                for(size_t i=0;i<count;++i){batch.push_back(std::move(pending_.front().value));pending_.pop_front();}
-            }
-            try { read_(batch); }
-            catch(const std::exception& e){for(auto& value:batch)failure_(value,e.what());}
-            catch(...){for(auto& value:batch)failure_(value,"unknown I/O exception");}
-            {
+            std::vector<T> batch;
+            size_t active = 0; // Items removed from pending but not yet handed off.
+            try {
+                uint64_t generation;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    wake_.wait(lock,[&]{return stopping_ || !pending_.empty();});
+                    if(stopping_)return;
+                    generation=pending_.front().generation;
+                    const auto count=std::min(batch_,pending_.size());
+                    try { batch.reserve(count); }
+                    catch (...) {
+                        // Drop one request instead of hot-spinning on an
+                        // allocation that cannot currently be satisfied.
+                        pending_.pop_front(); --outstanding_; throw;
+                    }
+                    for(size_t i=0;i<count;++i) {
+                        try { batch.push_back(std::move(pending_.front().value)); }
+                        catch (...) {
+                            // A throwing move may have changed its source.
+                            pending_.pop_front(); --outstanding_; throw;
+                        }
+                        pending_.pop_front(); ++active;
+                    }
+                }
+                try { read_(batch); }
+                catch(const std::exception& e){for(auto& value:batch)report_failure(value,e.what());}
+                catch(...){for(auto& value:batch)report_failure(value,"unknown I/O exception");}
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if(stopping_ || generation!=generation_) {
+                        outstanding_-=active; active=0;
+                    } else for(auto& value:batch) {
+                        ready_.push_back({std::move(value),generation}); --active;
+                    }
+                }
+            } catch (...) {
+                // Failed queue transfers cannot escape the thread or strand
+                // capacity. Already transferred items still belong to ready_.
                 std::lock_guard<std::mutex> lock(mutex_);
-                if(stopping_ || generation!=generation_)outstanding_-=batch.size();
-                else for(auto& value:batch)ready_.push_back({std::move(value),generation});
+                outstanding_-=active;
             }
             wake_.notify_all();
         }
     }
     void prepare_loop() {
         for (;;) {
-            Item item;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                wake_.wait(lock,[&]{return stopping_ || !ready_.empty();});
-                if(stopping_)return;
-                item=std::move(ready_.front());ready_.pop_front();
-            }
-            try { prepare_(item.value); }
-            catch(const std::exception& e){failure_(item.value,e.what());}
-            catch(...){failure_(item.value,"unknown preparation exception");}
-            {
+            std::optional<Item> item;
+            bool active = false;
+            try {
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    wake_.wait(lock,[&]{return stopping_ || !ready_.empty();});
+                    if(stopping_)return;
+                    try { item.emplace(std::move(ready_.front())); }
+                    catch (...) { ready_.pop_front(); --outstanding_; throw; }
+                    ready_.pop_front(); active=true;
+                }
+                try { prepare_(item->value); }
+                catch(const std::exception& e){report_failure(item->value,e.what());}
+                catch(...){report_failure(item->value,"unknown preparation exception");}
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if(stopping_ || item->generation!=generation_)--outstanding_;
+                    else completed_.push_back(std::move(item->value));
+                    active=false;
+                }
+            } catch (...) {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if(stopping_ || item.generation!=generation_)--outstanding_;
-                else completed_.push_back(std::move(item.value));
+                if(active)--outstanding_;
             }
         }
     }
