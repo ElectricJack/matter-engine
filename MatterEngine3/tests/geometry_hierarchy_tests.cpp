@@ -19,6 +19,11 @@
 #include <set>
 #include <thread>
 #include <atomic>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 static MeshIndexed grid(uint32_t n,bool materials=false) {
     MeshIndexed mesh;
@@ -268,6 +273,138 @@ static void residency_checks(asset_store::PageCache& cache) {
     }
     CHECK(residency.dispatch(1, 8).size() == 1, "budget-delayed page remains eligible after pressure clears");
     residency.detach(delayed);
+}
+static void batched_writer_checks(const MeshIndexed& source) {
+    std::string error;
+    const auto dir = (std::filesystem::temp_directory_path() /
+        ("me3_geometry_batched_writer_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))).string();
+    {
+        geometry::RootCache roots(dir);
+        geometry::CompileConfig config;
+        geometry::CacheReport report;
+        for (int i = 0; i < 5; ++i) {
+            const auto asset = geometry::cache_asset(dir, "asset-" + std::to_string(i), source, config, {}, error, &roots, &report);
+            CHECK(asset && !asset->roots.empty(), "batched writer returns a usable asset before commit");
+            CHECK(asset && asset->manifest, "uncommitted assets retain their manifest for render and prepared-cache consumers");
+            CHECK(error.empty(), "successful writes clear the preceding cache miss error");
+        }
+        const auto stats = roots.writer_stats();
+        CHECK(stats.assets_written == 5 && stats.commits <= 1, "five assets cost at most one index commit");
+        CHECK(geometry::cache_asset(dir, "asset-4", {}, config, {}, error, &roots, &report, true) && !report.compiled,
+              "the writer cache can reload a pending asset without recompiling");
+        CHECK(roots.writer_stats().assets_written == 5, "pending cache hits do not rewrite an asset");
+        CHECK(roots.stats().disk_reads == 0, "cooked assets are returned and reused without reading their uncommitted pages");
+        CHECK(roots.flush_writer(error), error.c_str());
+        CHECK(roots.writer_stats().pending_assets == 0, "flush drains pending assets");
+        const auto commits = roots.writer_stats().commits;
+        CHECK(roots.flush_writer(error) && roots.writer_stats().commits == commits, "empty flush does not rewrite the index");
+        geometry::RootCache reader(dir);
+        for (int i = 0; i < 5; ++i)
+            CHECK(reader.load("asset-" + std::to_string(i), error) != nullptr, "a fresh reader sees every committed asset");
+    }
+    {
+        geometry::RootCache tiny(dir + "-tiny", 32);
+        geometry::CompileConfig config;
+        CHECK(!geometry::cache_asset(dir + "-tiny", "asset", source, config, {}, error, &tiny),
+              "newly cooked roots obey the same memory budget as loaded roots");
+        CHECK(error.find("budget exceeded") != std::string::npos && tiny.stats().budget_rejections > 0,
+              "new root admission reports budget exhaustion");
+    }
+    std::filesystem::remove_all(dir);
+    std::filesystem::remove_all(dir + "-tiny");
+}
+static void writer_lifecycle_checks() {
+    const auto dir = (std::filesystem::temp_directory_path() /
+        ("me3_geometry_writer_lifecycle_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))).string();
+    std::shared_ptr<const geometry::CachedAsset> retained;
+    std::string error;
+    const auto source = grid(2);
+    geometry::CompileConfig config;
+    {
+        geometry::RootCache roots(dir);
+        for (int i = 0; i < 32; ++i)
+            CHECK(geometry::cache_asset(dir, "batch-" + std::to_string(i), source, config, {}, error, &roots), error.c_str());
+        CHECK(roots.writer_stats().assets_written == 32 && roots.writer_stats().commits >= 1 &&
+              roots.writer_stats().pending_assets < 32, "automatic commits bound the pending batch");
+        CHECK(roots.flush_writer(error), error.c_str());
+        retained = geometry::cache_asset(dir, "retry", source, config, {}, error, &roots);
+        CHECK(retained != nullptr, error.c_str());
+        const auto commits = roots.writer_stats().commits;
+        std::filesystem::create_directory(dir + "/refs.tmp");
+        CHECK(!roots.flush_writer(error) && !error.empty(), "reference commit failure is reported");
+        CHECK(roots.writer_stats().commits == commits && roots.writer_stats().pending_assets == 1,
+              "failed commit retains the pending batch for retry");
+        CHECK(roots.load("retry", error) != nullptr, "pending roots survive a failed reference commit");
+        std::filesystem::remove(dir + "/refs.tmp");
+        CHECK(roots.flush_writer(error) && roots.writer_stats().pending_assets == 0, "retry commits the retained batch");
+        std::array<std::shared_ptr<const geometry::CachedAsset>, 4> results;
+        std::array<std::thread, 4> workers;
+        std::atomic<bool> start{false};
+        for (size_t i = 0; i < workers.size(); ++i) workers[i] = std::thread([&, i] {
+            while (!start.load()) std::this_thread::yield();
+            std::string worker_error;
+            results[i] = geometry::cache_asset(dir, "race", source, config, {}, worker_error, &roots);
+        });
+        start.store(true);
+        for (auto& worker : workers) worker.join();
+        for (const auto& result : results) CHECK(result && !result->roots.empty(), "concurrent cooks all receive usable roots");
+        CHECK(roots.writer_stats().assets_written == 34, "concurrent same-key cooks write one asset");
+        // Leave the last asset pending: destruction is the final commit boundary.
+    }
+    CHECK(retained && retained->manifest && !retained->roots.empty(), "returned pages remain pinned after writer teardown");
+    if (retained) {
+        MeshIndexed decoded;
+        CHECK(geometry::decode_mesh(retained->roots.front(), decoded, error) && !decoded.indices.empty(),
+              "root payload remains valid after writer teardown");
+    }
+    {
+        geometry::RootCache reader(dir);
+        CHECK(reader.load("retry", error) && reader.load("race", error), "fresh readers see retry and destructor commits");
+    }
+    retained.reset();
+    std::filesystem::remove_all(dir);
+}
+static void writer_publication_checks(const std::filesystem::path& directory) {
+    const auto source = grid(16);
+    std::vector<Tri> triangles; std::vector<TriEx> shading;
+    to_tri(source, triangles, shading);
+    script_host::BakedGeometry baked;
+    baked.blas = std::make_unique<BLASManager>();
+    baked.blas->register_triangles(triangles.data(), static_cast<int>(triangles.size()), shading.data());
+    constexpr uint64_t hash = 0x7772697465726661ull;
+    const auto path = (directory / "failed-writer-publication").string();
+    const auto pages = path + "/geometry-pages";
+    std::filesystem::create_directories(pages);
+#ifdef _WIN32
+    const auto pid = _getpid();
+#else
+    const auto pid = getpid();
+#endif
+    const auto blocker = pages + "/index." + std::to_string(pid) + ".tmp";
+    std::filesystem::create_directory(blocker);
+    viewer::PartStore store(path); store.set_geometry_pages_enabled(true);
+    auto staged = store.stage_from_bake(hash, baked);
+    CHECK(staged.lp.geometry_pages && !staged.lp.geometry_pages->roots.empty(), "blocked commit fixture has pending roots");
+    CHECK(!staged.ok, "failed index commit prevents staged geometry publication");
+    CHECK(!store.stage_load(hash).ok, "pending cache hit cannot stage through a failed commit");
+    CHECK(!store.get_or_load(hash), "synchronous cache hit cannot publish pending geometry through a failed commit");
+    std::string error;
+    asset_store::PageCacheConfig config; config.store.dir = pages;
+    auto reader = asset_store::PageCache::open(config, error);
+    CHECK(reader != nullptr, error.c_str());
+    if (!staged.lp.geometry_pages || staged.lp.geometry_pages->roots.empty() || !reader) {
+        std::filesystem::remove(blocker); return;
+    }
+    const auto& root = staged.lp.geometry_pages->roots.front();
+    CHECK(!root.children.empty(), "publication fixture has fine-page dependencies");
+    if (!root.children.empty())
+        CHECK(!reader->read({root.children.front().page})[0].page, "uncommitted fine pages are invisible to an independent reader");
+    std::filesystem::remove(blocker);
+    CHECK(store.get_or_load(hash) != nullptr, "synchronous pending hit retries the publication barrier");
+    CHECK(reader->refresh(), "reader refreshes after retry");
+    if (!root.children.empty())
+        CHECK(reader->read({root.children.front().page})[0].page != nullptr,
+              "synchronous publication commits fine pages before returning");
 }
 static void part_cache_checks(const std::filesystem::path& directory) {
     const auto source = grid(16);
@@ -593,6 +730,9 @@ int main(int argc,char** argv) {
               report.lookup == CacheLoadStatus::Hit && !report.compiled,
               "fresh cache reader loads cooked hierarchy without source");
     }
+    batched_writer_checks(source);
+    writer_lifecycle_checks();
+    writer_publication_checks(path);
     part_cache_checks(path);
     std::vector<NodeRef> loaded_roots;
     CHECK(decode_roots(cache->read_manifest("unique").page,loaded_roots,error),error.c_str());

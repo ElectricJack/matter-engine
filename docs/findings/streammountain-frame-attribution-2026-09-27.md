@@ -400,3 +400,87 @@ refers to in `docs/vg-vt-work-queue-2026-09-19.md`.
     as the only candidate worth an early-out.
 11. **1.8 Compact feedback target.** `vt_feedback_readback` is 0.11 ms of GPU
     and `vt.fb_scan` is 0.63–0.69 ms of CPU (§2.1, §3.1). Demote.
+
+## Cook after batched commits
+
+Task 18, measured on 2026-09-28 against the Task 17 cold capture above. The
+MSVC editor includes the persistent `RootCache` writer and batched index/ref
+publication. Only this worktree's `projects/world_demo/.cache/StreamMountain/geometry-pages`
+was removed; the 6.7 GiB `parts` cache stayed warm. GPU usage before launch was
+1,326 MiB / 0%. The same audit profile, camera and settings from §4.2 were used.
+
+The plan's `--world` invocation is stale: this tool requires a mode. From native
+Windows Python, the command was:
+
+```text
+py -3 tools/terrain_cache_audit.py prepare --out C:/tmp/attr/cold_after
+```
+
+This uses the tool's default 1,800-second limit. The baseline used 5,400 seconds
+and failed at 4,412 seconds, so the throughput comparison below cuts both runs
+at 1,800 seconds. Raw logs, environment, capture and `result.json` remain in
+`C:/tmp/attr/cold_after/`; none are committed.
+
+| Measurement | Task 17 cold | Batched writer cold |
+|---|---:|---:|
+| Root bake: world / publish / total | 60.098 / 614.937 / 675.082 s | 49.029 / 648.096 / 697.183 s |
+| First terrain cache event | 723.775 s | 745.608 s |
+| Terrain assets compiled by 1,800 s | 118 | 113 |
+| Last resident-sector count before 1,800 s | 308 | 298 |
+| End of process | GPU OOM at 4,412.222 s | Requested quit at 1,800 s; editor exited normally at 1,932.258 s |
+| Audit `completed` / `valid` | false / false | false / false |
+
+Shutdown drained ten more terrain cooks: the final capture contains 123 terrain
+attempts and 19 prop attempts. Two terrain assets failed with `geometry vertex
+outside bounds`, hashes `b202773bf55424f4` and `d6d2d2b7faed5068`. Both exact
+failures also occur in the baseline. The audit command therefore returned 1,
+although its child editor exited 0. This is an incomplete preparation sample,
+not a passing cold-load acceptance run. There is **no end-to-end load speedup
+demonstrated** by these runs.
+
+The 140 successful writes in the after capture all have matching keys in the
+baseline. Their summed timings (worker-seconds, not wall time) are:
+
+| Instrumented work, same 140 assets | Before | After |
+|---|---:|---:|
+| `page_write_profile` encode | 94.995 | 93.358 |
+| `page_write_profile` pack puts | 59.069 | 51.154 |
+| Manifest publication plus index/ref commits | 192.919 | 182.468 |
+| `cache_write_profile total_ms` | 570.288 | 439.658 |
+| Commit work outside `cache_write_profile` | included above | 24.573 |
+| Recorded write/commit subtotal | 570.288 | 464.231 |
+
+The after publication row adds 0.022 seconds of deferred manifest publication
+to 182.446 seconds of explicit commits. `cache_commit_profile in_write=1` is
+already included in the per-asset write duration; only `in_write=0` is added
+to the subtotal. That subtotal is 18.6% lower, but it does **not** include mutex
+wait before a separate batch-boundary flush, or staging work outside the write
+timer. It must not be read as total cook time saved. The new capture records
+120 commits for 140 successful assets: 105 singles, ten pairs and five triples.
+The old writer committed every successful asset separately. This confirms
+batching in the production path as well as in the regression test.
+
+For the 113 terrain keys present in both first-1,800-second windows, median
+compile time was 61.526 seconds before and 61.500 seconds after; summed compile
+time was 8,424.351 versus 8,552.748 worker-seconds. Compilation still dominates.
+One cold run per version, differing completion order, and an incomplete world
+limit the comparison; the persistent writer addresses a measured storage cost,
+not the dominant compilation cost.
+
+Verification for this change:
+
+- Canonical `RelWithDebInfo` builds of `geometry_hierarchy_tests`,
+  `matter_asset_store_tests` and `matter_editor`: exit 0, built sequentially.
+- `geometry_hierarchy_tests.exe`, from `MatterEngine3/tests`: `ALL PASS`.
+  Covers pre-commit roots/manifest, bank budget, dedup, automatic and explicit
+  commits, failed-commit retry, concurrent same-key cooks, destructor durability,
+  and blocking publication until fine pages are committed. Three intentional
+  index-commit error diagnostics come from the failure fixture.
+- `matter_asset_store_tests.exe`: `628 checks, 0 failures` and
+  `All AssetStoreLib tests passed`.
+- The required initial build failed on missing `writer_stats` / `flush_writer`.
+  Review then found two publication barriers missing from the plan sketch; a
+  blocked-index regression failed four checks before the fix and passed after it.
+  The manifest is preserved in memory because runtime admission and prepared
+  sectors consume its identity and metadata. Producer pages use the same bank
+  budget as disk-loaded pages.

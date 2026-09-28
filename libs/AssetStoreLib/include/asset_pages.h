@@ -109,6 +109,9 @@ public:
     // never be accepted against an older index. Failure leaves caller-owned
     // previous handles intact; no partially visible revision is returned.
     PageResult read_manifest(const std::string& key);
+    // Admit an encoded producer page without re-reading disk. Uses the same
+    // bank, eviction and pin accounting as read(); does not publish a ref.
+    PageResult insert(const std::vector<uint8_t>& bytes, std::string& error);
     void clear();
     PageCacheStats stats() const;
 private:
@@ -123,9 +126,11 @@ private:
 // All dependencies must already be present (including this writer's pending
 // pages). Generic RefTable::compact is NOT dependency-aware and must not be
 // used on a page store; traverse retained manifests before offline maintenance.
+// With commit=false, only stage the blob and ref. The owner must later call
+// store.flush_index() followed by refs.flush() before publishing to readers.
 bool publish_page_manifest(BlobStore& store, RefTable& refs, const std::string& key,
                            const std::vector<uint8_t>& manifest, const PageLimits& limits,
-                           BlobHash& out, std::string& error);
+                           BlobHash& out, std::string& error, bool commit = true);
 
 // Offline maintenance: follow dependencies from EVERY semantic reference and
 // explicit retained revision. Fails closed on corruption/missing dependencies

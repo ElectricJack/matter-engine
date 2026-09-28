@@ -2,6 +2,7 @@
 #include "store_format.h"
 #include "store_os.h"
 #include <algorithm>
+#include <cstring>
 #include <map>
 #include <iterator>
 #include <set>
@@ -336,6 +337,44 @@ PageResult PageCache::read_manifest(const std::string& key) {
     }
     return result;
 }
+PageResult PageCache::insert(const std::vector<uint8_t>& bytes, std::string& error) {
+    auto& d = *d_;
+    PageView view;
+    if (!decode_page(bytes.data(), bytes.size(), d.cfg.limits, view, error))
+        return {PageStatus::Corrupt, {}};
+    const auto hash = hash_bytes(bytes.data(), bytes.size());
+    ++d.counters.requests;
+    auto existing = d.entries.find(hash);
+    if (existing != d.entries.end()) {
+        existing->second.touch = ++d.tick; ++d.counters.hits;
+        error.clear(); return {PageStatus::Ok, existing->second.page};
+    }
+    const size_t quantum = d.cfg.bank->quantum();
+    const size_t charge = bytes.size() > SIZE_MAX-(quantum-1) ? SIZE_MAX :
+        (bytes.size()+quantum-1)&~(quantum-1);
+    const auto rejected = [&]() -> PageResult {
+        ++d.counters.budget_rejections;
+        error = "page payload budget exceeded";
+        return {PageStatus::BudgetExceeded, {}};
+    };
+    if (charge == SIZE_MAX || !d.reserve(charge)) return rejected();
+    auto allocation = std::make_shared<Impl::Allocation>();
+    allocation->bank = d.cfg.bank;
+    while (!allocation->bank->acquire(bytes.size(), allocation->lease)) {
+        if (!d.reserve(charge, true)) return rejected();
+    }
+    allocation->bytes = charge; allocation->ledger = d.ledger;
+    d.ledger->bytes.fetch_add(charge);
+    std::memcpy(allocation->lease.data, bytes.data(), bytes.size());
+    auto page = std::make_shared<CachedPage>();
+    page->hash = hash; page->bytes = static_cast<const uint8_t*>(allocation->lease.data);
+    page->size = bytes.size(); page->allocation = allocation;
+    // Rebase validated views onto the retained allocation.
+    for (auto& section : view.sections) section.data = page->bytes + (section.data - bytes.data());
+    page->view = std::move(view);
+    d.entries[hash] = {page, ++d.tick};
+    error.clear(); return {PageStatus::Ok, std::move(page)};
+}
 void PageCache::clear() { d_->entries.clear(); }
 PageCacheStats PageCache::stats() const {
     auto result = d_->counters; result.resident_payload_bytes = d_->ledger->bytes.load();
@@ -343,18 +382,18 @@ PageCacheStats PageCache::stats() const {
 }
 bool publish_page_manifest(BlobStore& store, RefTable& refs, const std::string& key,
                            const std::vector<uint8_t>& manifest, const PageLimits& limits,
-                           BlobHash& out, std::string& error) {
+                           BlobHash& out, std::string& error, bool commit) {
     PageView view;
     if (!decode_page(manifest.data(), manifest.size(), limits, view, error)) return false;
     for (const auto& h : view.dependencies)
         if (!store.contains(h)) return fail(error, "manifest dependency is not present");
     BlobHash hash;
-    if (store.put(manifest.data(), manifest.size(), &hash) != Status::Ok || !store.flush_index()) {
+    if (store.put(manifest.data(), manifest.size(), &hash) != Status::Ok || (commit && !store.flush_index())) {
         error = store.last_error(); return false;
     }
     RefInfo previous;
     const bool had_previous = refs.peek(key, &previous);
-    if (!refs.put(key, hash, view.kind, manifest.size()) || !refs.flush()) {
+    if (!refs.put(key, hash, view.kind, manifest.size()) || (commit && !refs.flush())) {
         if (had_previous) refs.put(key, previous.hash, previous.kind, previous.size);
         else refs.erase(key);
         return fail(error, "manifest reference publication failed");

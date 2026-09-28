@@ -369,6 +369,15 @@ PartStore::PartStore(std::string cache_root)
 uint64_t PartStore::prepared_identity_lookup(uint64_t request) {
     return prepared_identities_ ? prepared_identities_->lookup(request) : 0;
 }
+PartStore::~PartStore() { flush_geometry_writer(); }
+bool PartStore::flush_geometry_writer() {
+    std::string error;
+    if (!geometry_roots_.flush_writer(error)) {
+        MATTER_LOGW("geometry", "bake batch commit failed: %s", error.c_str());
+        return false;
+    }
+    return true;
+}
 bool PartStore::prepared_identity_remember(uint64_t request,uint64_t resolved,std::string& error) {
     return prepared_identities_ && prepared_identities_->remember(request,resolved,error);
 }
@@ -1841,7 +1850,7 @@ PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
                                             float terrain_texels_per_meter) {
     if (!terrain_sector && geometry_pages_for(part_hash)) {
         auto cached = stage_geometry_cached(part_hash);
-        if (cached.ok) return cached;
+        if (cached.ok) { cached.ok = flush_geometry_writer(); return cached; }
     }
     StagedPart staged;
     staged.part_hash = part_hash;
@@ -1859,6 +1868,9 @@ PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
         stage_from_snapshot(part_hash, snapshot, nullptr, first_rung,
                             terrain_sector, warp, terrain_texels_per_meter);
     out.read_ms = read_ms;
+    // This staging job is returning to the bake coordinator. Publish the
+    // batch before runtime readers can request its fine-page dependencies.
+    if (!flush_geometry_writer() && out.lp.geometry_pages) out.ok = false;
     return out;
 }
 
@@ -1979,6 +1991,7 @@ PartStore::StagedPart PartStore::stage_from_bake(
     // is the one staging path holding the bake's own output. A pointer copy,
     // so it costs nothing and cannot diverge from what the bake produced.
     out.lp.boundary = baked.boundary;
+    if (!flush_geometry_writer() && out.lp.geometry_pages) out.ok = false;
     return out;
 }
 
@@ -2176,6 +2189,7 @@ bool PartStore::save_prepared_sector(StagedPart& s,const std::string& policy,std
     if(!s.ok || !s.staging || !p.children.empty() || p.animation_asset || p.shared_surface || !p.rigid_lod_mesh_data.empty() ||
        !p.flat_refs.empty() || !p.impostors.empty() || !p.render_policy.child_overrides.empty() || p.render_policy.shared_surfaces ||
        (!p.lod_mesh_data.empty() && !p.geometry_pages)){error="unsupported prepared sector";return false;}
+    if (p.geometry_pages && !geometry_roots_.flush_writer(error)) return false;
     try {
         // Keep the canonical source for CPU tracing/export consumers. Transient
         // eviction may delete its scratch copy after publication.
@@ -2250,7 +2264,12 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     if (cached != loaded_.end()) return &cached->second;
     if (geometry_pages_for(part_hash)) {
         auto paged = stage_geometry_cached(part_hash);
-        if (paged.ok) return commit_staged(std::move(paged));
+        if (paged.ok) {
+            // A staging worker may still own an uncommitted batch. Pending
+            // roots are readable in memory, but fine pages need the index.
+            if (!flush_geometry_writer()) return nullptr;
+            return commit_staged(std::move(paged));
+        }
     }
     // A cold decode. On the render thread (via build_expansion during a publish)
     // this is the hitch the install-time child pre-warm exists to eliminate; the
@@ -2545,6 +2564,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     // Non-partitioned coherent part: stage it (touches no shared state) then
     // commit it (bounded). Split so a streaming worker can call stage_load().
     StagedPart staged = stage_from_snapshot(part_hash, snapshot_, animation_asset);
+    if (!flush_geometry_writer() && staged.lp.geometry_pages) return nullptr;
     if (!staged.ok) return nullptr;
     return commit_staged(std::move(staged));
 }

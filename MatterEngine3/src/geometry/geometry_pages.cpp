@@ -142,7 +142,8 @@ bool decode_mesh(const NodeView& node,MeshIndexed& out,std::string& error) {
 }
 bool write_hierarchy(const Hierarchy& hierarchy,asset_store::BlobStore& store,asset_store::RefTable& refs,
                      const std::string& key,const asset_store::PageLimits& limits,std::vector<NodeRef>& roots,std::string& error,
-                     const std::vector<asset_store::PageSection>& metadata) {
+                     const std::vector<asset_store::PageSection>& metadata, bool commit,
+                     std::vector<NodeRef>* all_refs, std::vector<uint8_t>* manifest_bytes) {
     using namespace asset_store;
     if(hierarchy.nodes.empty()||hierarchy.roots.empty())return fail(error,"empty hierarchy");
     std::vector<uint32_t> parents(hierarchy.nodes.size(),0);
@@ -191,8 +192,10 @@ bool write_hierarchy(const Hierarchy& hierarchy,asset_store::BlobStore& store,as
     if(!encode_page(manifest_kind,sections,{dependencies.begin(),dependencies.end()},limits,manifest,error))return false;
     BlobHash manifest_hash;
     const auto publish_start=Clock::now();
-    if(!publish_page_manifest(store,refs,key,manifest,limits,manifest_hash,error))return false;
+    if(!publish_page_manifest(store,refs,key,manifest,limits,manifest_hash,error,commit))return false;
     if(std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))MATTER_LOGI("geometry","page_write_profile key=%s nodes=%zu bytes=%llu batches=%zu encode_ms=%.3f put_ms=%.3f publish_ms=%.3f",key.c_str(),hierarchy.nodes.size(),(unsigned long long)encoded_bytes,batches,encode_ms,put_ms,elapsed(publish_start));
+    if(all_refs)*all_refs=std::move(encoded);
+    if(manifest_bytes)*manifest_bytes=std::move(manifest);
     roots=std::move(root_refs);return true;
 }
 bool decode_roots(asset_store::PageHandle manifest,std::vector<NodeRef>& roots,std::string& error) {
