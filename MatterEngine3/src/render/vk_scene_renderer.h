@@ -1494,6 +1494,10 @@ public:
             ? parts_[it->second].vt_slots[rung] : vt::kVtNoSlot;
     }
     bool test_vt_input_update_pending() const { return vt_inputs_dirty_; }
+    // A rejected input push must release the residency fill gate.
+    bool test_vt_fills_gated() const { return vt_ && vt_->input_update_pending(); }
+    // Reject the next compositor input push before any setter runs.
+    void test_fail_next_vt_input_push() noexcept { test_fail_next_vt_input_push_ = true; }
     void test_pause_vt_page_fills(bool paused) {
         if (vt_) vt_->pause_page_fills_for_test(paused);
     }
@@ -3201,10 +3205,11 @@ private:
     // Feeds the tier-1 compositor the two inputs only the renderer knows: the
     // bound detail tileset slots and the materialId -> (detail slot, fallback
     // albedo/ORM) table. Source images and draw input rows are retained by
-    // immutable snapshots. Capacity pressure coalesces desired changes and
-    // defers fills; accepted inputs dirty their dependencies. The conservative
-    // wait remains until primary RT material selection is versioned too.
+    // immutable snapshots. Capacity pressure coalesces desired changes while
+    // the last published inputs keep serving fills. Accepted inputs dirty
+    // their dependencies; repeated rejected pushes have a bounded retry budget.
     void push_vt_compositor_inputs();
+    void note_vt_input_push_failure(const char* why);
     // Writes scene-set bindings 9-13 (draw-slot table, pool, indirection,
     // variant records, feedback image) for one frame's descriptor set.
     void write_vt_descriptors_for_frame(FrameResources& frame);
@@ -3648,6 +3653,7 @@ private:
     // create -- tier-2 is additive, so that is a quality loss, not a fault.
     vt::VtEnricher* vt_enricher_ = nullptr;
     bool vt_inputs_dirty_ = true;
+    uint32_t vt_input_push_failures_ = 0;
     // Last effective inputs used by the compositor. Revisions alone are not
     // content changes; material/source differences select dependent owners.
     bool vt_inputs_pushed_ = false;
@@ -4146,6 +4152,7 @@ private:
     bool test_fail_animation_bounds_upload_once_ = false;
     bool test_fail_next_environment_flush_ = false;
     bool test_fail_next_atmosphere_generation_ = false;
+    bool test_fail_next_vt_input_push_ = false;
     bool test_fail_next_atmosphere_descriptor_publication_ = false;
 #endif
 };

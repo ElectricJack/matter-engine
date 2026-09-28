@@ -995,6 +995,7 @@ class VtResidency {
     std::array<std::shared_ptr<const VtInputSnapshot>, kVtMaxInputSnapshots>
         active_input_snapshots() const;
     void set_input_update_pending(bool pending) { input_update_pending_ = pending; }
+    bool input_update_pending() const { return input_update_pending_; }
     VkDeviceSize variant_buffer_size() const { return variant_buffer_.size; }
     VkImageView feedback_view() const { return feedback_source_view_; }
     uint32_t    feedback_width() const { return feedback_w_; }

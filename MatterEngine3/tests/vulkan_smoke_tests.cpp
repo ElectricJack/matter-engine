@@ -7776,11 +7776,58 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
                   "input snapshot: source load uses no device idle");
         }
         std::remove(path.c_str());
+        {
+            // A rejected push must release the gate immediately, then retry
+            // the same authoring change without needing a world reload.
+            settle();
+            const auto fills_before = renderer.vt_stats().fills_total;
+            materials[kMaterialA].base_roughness[3] = .77f;
+            renderer.test_fail_next_vt_input_push();
+            update_input_materials(4);
+            draw_pixel();
+            CHECK(!renderer.test_vt_fills_gated(),
+                  "input snapshot: rejected push releases the fill gate");
+            CHECK(renderer.test_vt_input_update_pending(),
+                  "input snapshot: rejected push keeps the edit pending for retry");
+            settle();
+            CHECK(renderer.vt_stats().fills_total > fills_before,
+                  "input snapshot: fills resume after a rejected push");
+        }
+        {
+            const auto retained = draw_pixel();
+            const auto fills_before = renderer.vt_stats().fills_total;
+            materials[kMaterialA].base_roughness[3] = .66f;
+            update_input_materials(5);
+            for (int failure = 0; failure < 8; ++failure) {
+                renderer.test_fail_next_vt_input_push();
+                const auto held = draw_pixel();
+                CHECK(!renderer.test_vt_fills_gated(),
+                      "input snapshot: repeated rejection releases the fill gate");
+                CHECK(renderer.test_vt_input_update_pending() == (failure < 7),
+                      "input snapshot: retries stop after eight consecutive failures");
+                CHECK(close4(held.orm, retained.orm, 1e-5f),
+                      "input snapshot: rejected push retains the published material");
+            }
+            draw_pixel();
+            CHECK(!renderer.test_vt_input_update_pending() &&
+                      renderer.vt_stats().fills_total == fills_before,
+                  "input snapshot: exhausted retry budget stays idle");
+            materials[kMaterialA].base_roughness[3] = .55f;
+            update_input_materials(6);
+            renderer.test_fail_next_vt_input_push();
+            draw_pixel();
+            CHECK(!renderer.test_vt_fills_gated() && renderer.test_vt_input_update_pending(),
+                  "input snapshot: a new authoring change gets a fresh retry budget");
+            settle();
+            CHECK(!renderer.test_vt_input_update_pending() &&
+                      renderer.vt_stats().fills_total > fills_before,
+                  "input snapshot: a new authoring change rearms publication");
+        }
         materials[kMaterialA].flags_misc[1] = 0u;
-        update_input_materials(4);
+        update_input_materials(7);
         const auto pressure_flat = settle();
         materials[kMaterialA].flags_misc[1] = 1u;
-        update_input_materials(5);
+        update_input_materials(8);
         const auto pressure_detail = settle();
         auto previous = pressure_detail;
         uint32_t deferred_frames = 0, published_frames = 0;
@@ -7789,7 +7836,7 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
             // Every edit is distinct even when coalescing skips an alternating
             // detail setting. This exercises all eight retained bank indices.
             materials[kMaterialA].base_roughness[3] = .2f + .01f * edit;
-            update_input_materials(6u + edit);
+            update_input_materials(9u + edit);
             const auto fills_before = renderer.vt_stats().fills_total;
             const auto pixel = draw_pixel();
             if (renderer.test_vt_input_update_pending()) {

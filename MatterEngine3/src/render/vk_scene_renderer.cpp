@@ -3026,6 +3026,7 @@ void VkSceneRenderer::destroy_pipeline() {
     vt_compositor_ = nullptr;   // borrowed; the residency layer owned it
     vt_enricher_ = nullptr;     // ditto (WP-H)
     vt_inputs_dirty_ = true;
+    vt_input_push_failures_ = 0;
     vt_inputs_pushed_ = false;
     vt_materials_pushed_.clear();
     vt_tileset_revisions_.fill(0);
@@ -6830,6 +6831,19 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     return true;
 }
 
+void VkSceneRenderer::note_vt_input_push_failure(const char* why) {
+    constexpr uint32_t kMaxConsecutiveFailures = 8;
+    ++vt_input_push_failures_;
+    MATTER_LOGE("vk", "VT input push rejected (%u/%u): %s", vt_input_push_failures_,
+                kMaxConsecutiveFailures, why);
+    if (vt_input_push_failures_ >= kMaxConsecutiveFailures) {
+        MATTER_LOGE("vk", "VT input push giving up; rendering continues from the last published snapshot");
+        vt_inputs_dirty_ = false;
+        // The next authoring change starts a fresh bounded retry sequence.
+        vt_input_push_failures_ = 0;
+    }
+}
+
 // Stages the tier-1 compositor's source views and decoded material table,
 // then queues replacements for resident owners that consume changed inputs.
 //
@@ -6842,7 +6856,23 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
 // it is not silently running every publish in a streaming world.
 void VkSceneRenderer::push_vt_compositor_inputs() {
     if (!vt_compositor_ || !vt_inputs_dirty_) return;
+    // Gate fills only while publishing. Every rejected or deferred push
+    // releases the gate so the previous snapshot can keep serving fills.
+    // Rejections retain the newest desired inputs until the retry cap;
+    // a later authoring change rearms publication after that cap is reached.
+    struct PendingGate {
+        vt::VtResidency* vt;
+        bool published = false;
+        ~PendingGate() { if (!published) vt->set_input_update_pending(false); }
+    } gate{vt_.get()};
     vt_->set_input_update_pending(true);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_next_vt_input_push_) {
+        test_fail_next_vt_input_push_ = false;
+        note_vt_input_push_failure("injected test failure");
+        return;
+    }
+#endif
 
     // Canonicalize exactly the inputs the compositor consumes. Appending an
     // unused material or advancing a table revision must not rebuild the world.
@@ -6886,14 +6916,14 @@ void VkSceneRenderer::push_vt_compositor_inputs() {
     }
     if (!material_inputs_changed && !tilesets_changed) {
         vt_inputs_dirty_ = false;
-        vt_->set_input_update_pending(false);
+        vt_input_push_failures_ = 0;
         return;
     }
 
     uint32_t bank = vt::kVtMaxInputSnapshots;
     for (uint32_t i = 0; i < vt::kVtMaxInputSnapshots; ++i)
         if (vt_draw_snapshot_registry_[i].expired()) { bank = i; break; }
-    if (bank == vt::kVtMaxInputSnapshots) return; // coalesce newest desired inputs; defer old fills
+    if (bank == vt::kVtMaxInputSnapshots) return; // coalesce desired inputs; keep prior snapshot serving fills
     auto binding = std::make_shared<VtDrawInputSnapshot>();
     binding->params = tileset_params_staging_;
     binding->gpu.meta[0] = static_cast<uint32_t>(material_count);
@@ -6936,8 +6966,8 @@ void VkSceneRenderer::push_vt_compositor_inputs() {
         }
         std::string error;
         if (!vt_compositor_->set_tilesets(slots, tileset::kMaxTilesetSlots, error)) {
-            MATTER_LOGE("vk", "VT compositor tileset bind failed: %s", error.c_str());
-            return; // keep dirty; never publish a snapshot the setter rejected
+            note_vt_input_push_failure(error.c_str());
+            return; // keep dirty until the cap; never publish a rejected snapshot
         }
     }
     if (material_inputs_changed)
@@ -6949,10 +6979,12 @@ void VkSceneRenderer::push_vt_compositor_inputs() {
                                        : vt::VtInvalidationReason::SourceInputs)
             : vt::VtInvalidationReason::MaterialInputs;
         if (!vt_->set_input_snapshot(snapshot, changed_materials, reason)) {
-            MATTER_LOGE("vk", "VT draw input snapshot publication rejected");
+            note_vt_input_push_failure("draw input snapshot publication rejected");
             return;
         }
     }
+    gate.published = true; // set_input_snapshot already cleared the pending flag
+    vt_input_push_failures_ = 0;
     vt_draw_snapshot_registry_[bank] = snapshot;
     vt_draw_materials_pushed_ = draw_materials;
     vt_draw_material_count_pushed_ = static_cast<uint32_t>(material_count);
