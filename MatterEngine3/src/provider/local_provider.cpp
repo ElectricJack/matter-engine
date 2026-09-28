@@ -1506,6 +1506,15 @@ LocalProviderConfig make_engine_local_provider_config(
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
+// Out-of-line so the implicit inline destructor is not emitted in every
+// including TU. LocalProvider owns unique_ptrs to part_surface::SourceCache
+// (unguarded) and, under MATTER_HAVE_SCRIPT_HOST, script_host::ScriptHost /
+// part_graph::FileModuleResolver / part_graph::HostBaker. All are complete in
+// this TU (part_surface.h, script_host.h, part_graph.h are included above), so a
+// defaulted destructor is well-formed here; a headless consumer TU that builds
+// and destroys a LocalProvider need not see those definitions.
+LocalProvider::~LocalProvider() = default;
+
 #if defined(MATTER_HAVE_SCRIPT_HOST)
 void LocalProvider::bind_solid_source_baker(script_host::ScriptHost& host) const {
     if (!cfg_.vk_solid_source_bake) return;

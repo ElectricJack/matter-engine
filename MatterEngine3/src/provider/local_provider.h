@@ -607,6 +607,11 @@ inline ProviderWorldDefinition adapt_world_definition(
 class LocalProvider : public WorldProvider {
 public:
     explicit LocalProvider(LocalProviderConfig cfg);
+    // Defined out-of-line in local_provider.cpp: the implicit inline destructor
+    // would need part_surface::SourceCache (forward-declared above, held as a
+    // unique_ptr member) complete in every TU that destroys a LocalProvider,
+    // which the headless consumer TUs do not include.
+    ~LocalProvider();
 
     // Product assembly seam for a completed PhysX bake.  The existing
     // renderer callback is marshalled via cfg_.gpu_run here; worker lifecycle
