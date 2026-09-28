@@ -1039,8 +1039,9 @@ public:
     // Bake Lab: snapshot of the hierarchical span trace recorded by the most
     // recent (or in-flight) bake. Valid after BakeFinished; calling during a
     // bake is safe and yields a consistent partial tree (open spans keep
-    // end_ms == bake_trace::kOpenEndMs). Root children are the execute_bake
-    // stages (install/compose/publish; a resolve-cache hit skips the first two).
+    // end_ms == bake_trace::kOpenEndMs). Root children include resolve-cache
+    // preflight spans followed by the execute_bake stages (install/compose/
+    // publish; a resolve-cache hit skips the first two stages).
     void last_bake_trace(bake_trace::Span& out) const;
 
     // Phase C Task 7: enqueue a seed-driven world reroll. Stores
