@@ -401,9 +401,9 @@ Current projects and their relationships. Dependencies run one way only:
    - Build: `make -C libs/AssetStoreLib` -> `build/libasset_store.a`;
      `make -C libs/AssetStoreLib test`, and `bench` for the pack-vs-small-files
      measurement (docs/asset-store-benchmark-2026-08-05.md)
-   - **No consumers yet.** Adopting it as the engine's cache is M5's second half
-     (docs/superpowers/plans/2026-08-04-lod-vt-migration.md), deliberately not
-     done alongside the library's first appearance
+   - The CPU geometry hierarchy compiler (`MatterEngine3/src/geometry/`) consumes
+     binary pages through `asset_pages.h`. Production world/GPU integration and
+     migration of the older part/material caches remain separate work.
 
 10. **libs/ProfileLib** - Always-on lightweight profiler (C++)
     - No dependencies. Compiled into MatterEngine3 and MatterEditor. Provides

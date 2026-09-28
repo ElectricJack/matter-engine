@@ -1,0 +1,42 @@
+{
+  "scope": "Startup VT rows with queued demand, new fills, or new owners. Validation enabled. Not the fixed warm active/edit workload or performance acceptance. Stage percentiles are not additive.",
+  "rows": 919,
+  "stages": {
+    "cpu_begin_ms": {
+      "samples": 919,
+      "p50_ms": 0.2049,
+      "p95_ms": 0.4864,
+      "p99_ms": 0.725,
+      "max_ms": 1.3947
+    },
+    "cpu_pre_pass_ms": {
+      "samples": 919,
+      "p50_ms": 1.7396,
+      "p95_ms": 9.2472,
+      "p99_ms": 25.2419,
+      "max_ms": 36.2945
+    },
+    "cpu_post_pass_ms": {
+      "samples": 919,
+      "p50_ms": 0.0233,
+      "p95_ms": 0.0667,
+      "p99_ms": 0.1104,
+      "max_ms": 0.1872
+    },
+    "cpu_registration_ms": {
+      "samples": 919,
+      "p50_ms": 0.44200003147125244,
+      "p95_ms": 2.6660001277923584,
+      "p99_ms": 4.38200044631958,
+      "max_ms": 62.4900016784668
+    }
+  },
+  "total": {
+    "samples": 919,
+    "p50_ms": 2.7497000114440917,
+    "p95_ms": 10.865100000026077,
+    "p99_ms": 26.065900000047495,
+    "max_ms": 65.6089016784668
+  },
+  "max_queue": 221
+}

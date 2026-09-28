@@ -10,8 +10,10 @@
 // The aux channel is copied uncompressed by the CPU-side recorder.
 //
 // QUALITY TIER: "fast / mode-6 dominant" per the plan — in fact mode 6
-// exclusively, with bounding-box endpoints, per-endpoint P-bit fitting and
-// line-projection index selection. That is the deterministic low-cost tier
+// exclusively, with bounding-box endpoints, signed channel correlation,
+// per-endpoint P-bit fitting and line-projection index selection. The signed
+// candidate must beat the old box diagonal's decoded error before replacing it.
+// That is the deterministic low-cost tier
 // the spec budgets for tier-1 page fills; the CPU bc7enc path (bc_encode.h)
 // remains the high-quality reference for slices/tails-fallback.
 //
@@ -62,12 +64,7 @@ uint quant7(uint t, uint p) {
 }
 uint recon8(uint e7, uint p) { return (e7 << 1) | p; }
 
-uvec4 encode_bc7_mode6(uvec4 texel[16]) {
-    uvec4 lo = texel[0], hi = texel[0];
-    for (int i = 1; i < 16; ++i) {
-        lo = min(lo, texel[i]);
-        hi = max(hi, texel[i]);
-    }
+uvec4 encode_bc7_line(uvec4 texel[16], uvec4 lo, uvec4 hi, out uint squared_error) {
     // Per-endpoint P-bit: pick the bit minimizing summed absolute
     // reconstruction error across the four channels (tie -> P = 0).
     uint p0 = 0u, p1 = 0u;
@@ -99,6 +96,7 @@ uvec4 encode_bc7_mode6(uvec4 texel[16]) {
     vec4 d = e1 - e0;
     float den = dot(d, d);
     uint idx[16];
+    squared_error = 0u;
     for (int i = 0; i < 16; ++i) {
         float t = 0.0;
         if (den > 1e-6) t = clamp(dot(vec4(texel[i]) - e0, d) / den, 0.0, 1.0);
@@ -110,6 +108,12 @@ uvec4 encode_bc7_mode6(uvec4 texel[16]) {
             if (err < best_err) { best_err = err; best = w; }
         }
         idx[i] = best;
+        // Score the exact integer BC7 interpolation, including quantized
+        // endpoints, so a candidate cannot win by hiding its rounding error.
+        uint weight = kWeight4[best];
+        uvec4 decoded = (uvec4(e0) * (64u - weight) + uvec4(e1) * weight + 32u) >> 6u;
+        ivec4 error = ivec4(decoded) - ivec4(texel[i]);
+        squared_error += uint(error.x*error.x + error.y*error.y + error.z*error.z + error.w*error.w);
     }
     // Anchor constraint: index 0 must have its MSB clear; otherwise swap
     // endpoints and invert every index.
@@ -135,6 +139,36 @@ uvec4 encode_bc7_mode6(uvec4 texel[16]) {
     put_bits(blockBits, pos, idx[0], 3u);         // anchor: 3 bits
     for (int i = 1; i < 16; ++i) put_bits(blockBits, pos, idx[i], 4u);
     return blockBits;
+}
+
+uvec4 encode_bc7_mode6(uvec4 texel[16]) {
+    uvec4 lo=texel[0],hi=texel[0],sum=uvec4(0);
+    for (int i=0;i<16;++i) {
+        lo=min(lo,texel[i]);hi=max(hi,texel[i]);sum+=texel[i];
+    }
+    uint error;
+    uvec4 block=encode_bc7_line(texel,lo,hi,error);
+    uvec4 span=hi-lo;
+    int axis=0;
+    for (int c=1;c<4;++c) if (span[c]>span[axis]) axis=c;
+    if (span[axis]==0u) return block;
+    // Componentwise minima/maxima alone force every channel to rise together.
+    // Red clay against gray mortar instead has red rising while green/blue
+    // fall. Associate each channel with the widest channel using exact signed
+    // covariance. Positive correlations preserve the original fast path.
+    uvec4 cross_sum=uvec4(0);
+    for (int i=0;i<16;++i) cross_sum+=texel[i]*texel[i][axis];
+    ivec4 covariance=ivec4(cross_sum*16u)-ivec4(sum*sum[axis]);
+    bool flipped=false;
+    for (int c=0;c<4;++c) if (covariance[c]<0) {
+        uint swap=lo[c];lo[c]=hi[c];hi[c]=swap;flipped=true;
+    }
+    if (flipped) {
+        uint candidate_error;
+        uvec4 candidate=encode_bc7_line(texel,lo,hi,candidate_error);
+        if (candidate_error<error) block=candidate;
+    }
+    return block;
 }
 
 // ---- BC4 (one 8-byte half of BC5) -----------------------------------------

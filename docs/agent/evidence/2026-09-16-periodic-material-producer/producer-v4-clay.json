@@ -1,0 +1,30 @@
+{
+  "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_VT_TAPE_GPU=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VT_PERIODIC_CLAY_FIXTURE=\"D:/tmp/matter-vt/20260915-stamp-vt/faces\"; $env:MATTER_VT_PERIODIC_DUMP=\"D:/tmp/matter-vt/20260916-periodic-producer/producer-v4/brick-module\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+  "exit": 1,
+  "seconds": 8.998931409998477,
+  "binary_sha256": "6749168ac21ec3b181f4199b6b4613d4c1ced1058fc2d5b2822d20d8faf79a7f",
+  "binary_unchanged": true,
+  "source_changes": [],
+  "input_sha256": {
+    "/mnt/d/tmp/matter-vt/20260915-stamp-vt/faces/clay-projected-0.fst": "bb58b601eec6ae3fd984f80f07a19237538ceab0a725834c4ce1fefc43b7573d",
+    "/mnt/d/tmp/matter-vt/20260915-stamp-vt/faces/clay-projected-1.fst": "f6232c4bbece2f0c3f38dc9955a0e252500149dc1c0b7c4715b0a2cd50bf24d3",
+    "/mnt/d/tmp/matter-vt/20260915-stamp-vt/faces/clay-projected-2.fst": "1237d11a223f0c72c68fb40e6405023aca5fef8a3d9b1edc372ac9b482db12b6",
+    "/mnt/d/tmp/matter-vt/20260915-stamp-vt/faces/clay-projected-3.fst": "470a5009df859c0084020d01696c8434a93477f76e6a6f1c7eb6b31a000d3cd1",
+    "/mnt/d/tmp/matter-vt/20260915-stamp-vt/faces/clay-projected-4.fst": "017dd489fb91a22c5fe9a39b85ac7e1b3200fdb86e24fe98fc8ce7746a8b0fe3",
+    "/mnt/d/tmp/matter-vt/20260915-stamp-vt/faces/clay-projected-5.fst": "bfc93082784824c1685ba00143dfeedf5c6c654c0865c3ec1bb2760a67bd761d",
+    "/mnt/d/tmp/matter-vt/20260915-stamp-vt/faces/clay-projected-6.fst": "8d87958d1084e3193edd955e2e5694a6d223c2432fe74fc17e5e71912481a209",
+    "/mnt/d/tmp/matter-vt/20260915-stamp-vt/faces/clay-projected-7.fst": "0bbb401f297fd5df47cb93b5ea220f234a007234256b5ba42be746757429b5f5"
+  },
+  "input_changes": [],
+  "log_sha256": "fe6ae147833349892a24efcde7b68cd191a82e75f454ddf8405694ed16893d77",
+  "all_pass": false,
+  "zero_validation_errors": true,
+  "producer_metrics": [
+    "PERIODIC_PRODUCER name=geometry-clay logical=1152x256 pages=30 wrap_checks=161760 height_mismatches=0 color_wrap=0.000000 normal_wrap=0.000000 orm_wrap=0.000000 height_error_m=0.000000000 payloads=8 references=84"
+  ],
+  "outputs": {
+    "/mnt/d/tmp/matter-vt/20260916-periodic-producer/producer-v4/brick-module.bin": "ea12baaa5c7e01d8d3a657e1b23df212ac782a0101fc665bf430344bc947328b",
+    "/mnt/d/tmp/matter-vt/20260916-periodic-producer/producer-v4/brick-module.json": "d2c4ca8a5bb8cd18025ed35f821aa3bedadb08f9abb8b27fdfb6b08bdb9e9d6b"
+  },
+  "passed": false
+}

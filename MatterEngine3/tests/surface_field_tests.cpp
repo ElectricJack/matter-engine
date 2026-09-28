@@ -8,10 +8,14 @@
 // per-vertex quantized classification.
 
 #include "check.h"
+#include "vt_cellular_fixture.h"
 #include "../src/terrain_field.h"
 
 #include <cmath>
+#include <algorithm>
+#include <array>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -75,6 +79,241 @@ bool parse_tape(const char* text, SurfaceProgram& prog, std::string& err) {
 
 int main() {
     std::string err;
+
+    {
+        SurfaceProgram receiver;
+        CHECK(parse_tape("input receiver_material\nconst 0.003\nmul r0 r1\n"
+              "const 1\nconst 0\nconst -0.001\nmul r0 r5\nmaterial 30 r3\n"
+              "source 1 r2 r4 r4 r3 r4 r3 r6 -0.255 0\ntint r2 r2 r2\n",receiver,err),
+              "receiver material: categorical identity can select direct-source color and height");
+        CHECK(!receiver.uses_world_inputs(),"receiver material: identity needs no world anchoring");
+        SurfaceRuntime runtime(receiver);
+        const float p[]={12,3,-5},n[]={0,1,0};
+        for(uint32_t id:{0u,17u,255u}) {
+            SurfaceSourceSample sample;SurfaceAppearance appearance;
+            CHECK(runtime.source_at(p,n,nullptr,.01f,sample,id),"receiver material: source evaluates");
+            runtime.appearance_at(p,n,nullptr,appearance,.01f,id);
+            CHECK(std::abs(sample.albedo[0]-.003f*id)<1e-6f &&
+                  std::abs(sample.height_m+.001f*id)<1e-6f &&
+                  std::abs(appearance.tint[0]-.003f*id)<1e-6f,
+                  "receiver material: source and appearance use the same original identity");
+            float weights[1]{};runtime.weights_at(p,n,nullptr,weights);
+            CHECK(weights[0]==1 && runtime.material_handle(0)==30,
+                  "receiver material: output carrier remains independent of original identity");
+        }
+        CHECK(!parse_tape("input receiver_material\nmaterial 30 r0\n",receiver,err),
+              "receiver material: legacy vertex classification cannot silently read a missing category");
+        CHECK(!SurfaceProgram::parse("input receiver_material\nchannel 0 r0\n",receiver,err,
+                                     terrain_field::TapeMode::Habitat),
+              "receiver material: habitat has no mesh receiver identity");
+    }
+
+    {
+        SurfaceProgram direct;
+        CHECK(parse_tape("const 0.25\nconst 1\nmaterial 30 r1\n"
+                         "source 1 r0 r0 r0 r0 r0 r1 r0 0 0.5\n", direct, err),
+              "direct source: versioned coherent material output parses");
+        CHECK(parse_tape("footprint\nconst 1\nmaterial 30 r1\n"
+                         "source 1 r0 r0 r0 r0 r0 r1 r0 0 0.5\n", direct, err),
+              "direct source: physical footprint is a GPU recipe input");
+        if (direct.source.version == 1) {
+            SurfaceRuntime runtime(direct);
+            const float pos[3] = {12, 3, -5}, normal[3] = {0, 1, 0};
+            SurfaceSourceSample sample;
+            float weights[1] = {};
+            runtime.weights_at(pos, normal, nullptr, weights);
+            CHECK(weights[0] == 1.0f && runtime.material_handle(0) == 30,
+                  "direct source: CPU classification keeps the constant carrier independently of shading");
+            CHECK(runtime.source_at(pos, normal, nullptr, .025f, sample),
+                  "direct source: CPU reference evaluates the material");
+            CHECK(sample.albedo[0] == .025f && sample.albedo[2] == .025f &&
+                      sample.orm[0] == 1 && sample.orm[1] == .025f &&
+                      sample.orm[2] == .025f && sample.height_m == .025f && sample.coverage == 1,
+                  "direct source: coherent channels, full coverage and metre height");
+            runtime.source_at(pos, normal, nullptr, 2, sample);
+            CHECK(sample.albedo[0] == 1 && sample.orm[1] == 1 && sample.height_m == .5f,
+                  "direct source: channel and declared height bounds are enforced");
+        }
+        const std::string prefix = "const 0.25\nconst 1\nmaterial 30 r1\n";
+        for (const char* invalid : {
+                 "source 3 r0 r0 r0 r0 r0 r1 r0 0 1\n",
+                 "source 1 r0 r0 r0 r0 r0 r1 r9 0 1\n",
+                 "source 1 r0 r0 r0 r0 r0 r1 r0 1 0\n",
+                 "source 1 r0 r0 r0 r0 r0 r1 r0 0 nan\n",
+                 "source 1 r0 r0 r0 r0 r0 r1 r0 0 1junk\n",
+                 "source 1 r0 r0 r0 r0 r0 r1 r0 0 1 extra\n",
+                 "source 1 r0 r0 r0 r0 r0 r1 r0 0 1\nmaterial 31 r1\n",
+                 "source 1 r0 r0 r0 r0 r0 r1 r0 0 1\nsource 1 r0 r0 r0 r0 r0 r1 r0 0 1\n"})
+            CHECK(!SurfaceProgram::parse(prefix + invalid, direct, err),
+                  "direct source: malformed contract is rejected");
+        CHECK(!parse_tape("input moisture\nconst 1\nmaterial 30 r1\n"
+                          "source 1 r0 r0 r0 r0 r0 r1 r0 0 1\n", direct, err),
+              "direct source: height cannot use receiver lanes without their derivatives");
+        for(const char* lane:{"ny","slope","height","moisture","relief","biome","fslope"}) {
+            const std::string tape=std::string("input ")+lane+"\nconst 1\nmaterial 30 r1\n";
+            CHECK(!SurfaceProgram::parse(tape+"source 1 r0 r0 r0 r1 r0 r1 r0 -10 10\n",direct,err),
+                  "position source: context height remains explicitly rejected");
+            CHECK(SurfaceProgram::parse(tape+"source 2 r0 r0 r0 r1 r0 r1 r0 -10 10\n",direct,err),
+                  "receiver source: interpolated context height is explicit");
+            SurfaceRuntime context(direct);SurfaceSourceSample value;
+            const float p[]={0.f,0.f,0.f},n[]={.6f,.8f,0.f};
+            CHECK(context.source_at(p,n,nullptr,.01f,value) && std::isfinite(value.height_m),
+                  "receiver source: CPU evaluates a finite context height");
+            if(std::string(lane)=="ny") CHECK(std::abs(value.height_m-.8f)<1e-6f,
+                  "receiver source: height reads the supplied normal");
+        }
+        CHECK(!parse_tape("footprint\nmaterial 30 r0\n", direct, err),
+              "direct source: footprint cannot silently change legacy vertex classification");
+    }
+
+    {
+        const auto chain = [](int count) {
+            std::string text = "const 0.25\nconst 1\n";
+            int previous = 0;
+            for (int i = 2; i < count; ++i) {
+                text += "oneminus r" + std::to_string(previous) + "\n";
+                previous = i;
+            }
+            return text + "material 30 r1\n";
+        };
+        SurfaceProgram program;
+        const std::string outputs = "source 1 r511 r511 r511 r511 r511 r1 r511 0 1\n";
+        CHECK(SurfaceProgram::parse(chain(512) + outputs, program, err) && program.ops.size() == 512,
+              "direct source: maximum 512-op program parses without truncation");
+        SurfaceRuntime runtime(program);
+        SurfaceSourceSample sample;
+        const float pos[3] = {0, 0, 0};
+        CHECK(runtime.source_at(pos, nullptr, nullptr, .001f, sample) &&
+                  sample.albedo[0] == .25f && sample.height_m == .25f && sample.orm[0] == 1,
+              "direct source: outputs above register 255 evaluate correctly on CPU");
+        CHECK(!SurfaceProgram::parse(chain(513) + outputs, program, err),
+              "direct source: 513 instructions fail rather than truncating");
+        CHECK(!SurfaceProgram::parse(chain(97), program, err),
+              "legacy classifier: original 96-op boundary remains enforced");
+    }
+
+    // Compare the bounded cellular search with an independent 7^3-site
+    // distance sort. This catches missed competitors at cell boundaries.
+    {
+        const auto random=[](int x,int y,int z,uint32_t seed) {
+            uint32_t h=uint32_t(x)*374761393u+uint32_t(y)*3266489917u+
+                uint32_t(z)*668265263u+seed*2246822519u;
+            h=(h^(h>>13))*1274126177u;h^=h>>16;
+            return double(h&0xffffffu)/16777216.0;
+        };
+        float max_error=0;bool identities=true;unsigned outer_required=0;
+        const float adversarial[][3]={{-24.6171074f,-17.8303261f,3.07759213f},
+            {4.42613792f,-4.13731432f,-3.01780820f},{-25.1124077f,25.4675331f,10.9716444f}};
+        for(uint32_t seed:{317u,0xffffffffu})for(int i=0;i<1027;++i) {
+            float p[]={float((i*37)%101-50)*.037f,float((i*61)%127-63)*.021f,
+                             float((i*19)%89-44)*.043f};
+            if(i>=1024)std::copy(adversarial[i-1024],adversarial[i-1024]+3,p);
+            std::vector<std::array<double,3>> sites;
+            for(int z=-3;z<=3;++z)for(int y=-3;y<=3;++y)for(int x=-3;x<=3;++x) {
+                const int cx=int(std::floor(p[0]))+x,cy=int(std::floor(p[1]))+y,cz=int(std::floor(p[2]))+z;
+                const double dx=cx+random(cx,cy,cz,seed)-p[0];
+                const double dy=cy+random(cx,cy,cz,seed^0x9e37u)-p[1];
+                const double dz=cz+random(cx,cy,cz,seed^0x7f4au)-p[2];
+                sites.push_back({dx*dx+dy*dy+dz*dz,random(cx,cy,cz,seed^0xa511e9b3u),
+                    (std::abs(x)>1||std::abs(y)>1||std::abs(z)>1)?1.0:0.0});
+            }
+            std::sort(sites.begin(),sites.end());
+            outer_required += sites[0][2]!=0 || sites[1][2]!=0;
+            const float expected[]={float(std::sqrt(sites[0][0])),float(sites[1][0]-sites[0][0]),float(sites[0][1])};
+            for(int feature=0;feature<2;++feature)max_error=std::max(max_error,
+                std::abs(surface_cellular3(p[0],p[1],p[2],seed,feature)-expected[feature]));
+            identities &= surface_cellular3(p[0],p[1],p[2],seed,2)==expected[2];
+        }
+        CHECK(max_error<2e-6f && identities && outer_required>0,"cellular3: nearest sites match larger double-precision search");
+        std::printf("CELLULAR3_ORACLE max_error=%.9f identities=%d outer_required=%u\n",max_error,identities?1:0,outer_required);
+        for(const char* feature:{"distance","gap","value"}) {
+            SurfaceProgram cells;
+            CHECK(SurfaceProgram::parse(std::string("input lx\ninput ly\ninput lz\ncellular3 4294967295 ")+feature+
+                " r0 r1 r2\nconst 1\nmaterial 30 r4\nsource 1 r3 r3 r3 r4 r4 r4 r3 0 3\n",cells,err),
+                "cellular3: all feature outputs parse and retain register dependencies");
+            SurfaceRuntime runtime(cells);SurfaceSourceSample sample;
+            const float pos[]={-.2f,.7f,1.25f};runtime.source_at(pos,nullptr,nullptr,.01f,sample);
+            const int kind=std::string(feature)=="distance"?0:std::string(feature)=="gap"?1:2;
+            CHECK(sample.height_m==surface_cellular3(pos[0],pos[1],pos[2],0xffffffffu,kind),
+                "cellular3: tape evaluator dispatches requested feature");
+        }
+        for(float bad:{std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity(),16777216.f})
+            CHECK(surface_cellular3(bad,0,0,317,0)==0 && surface_cellular3(0,bad,0,317,1)==0 &&
+                surface_cellular3(0,0,bad,317,2)==0,"cellular3: invalid coordinates fail closed");
+        for(const char* bad:{"cellular3 -1 gap r0 r0 r0","cellular3 4294967296 gap r0 r0 r0",
+            "cellular3 1 bogus r0 r0 r0","cellular3 1 gap r0 r0","cellular3 1 gap r0 r0 r0 junk",
+            "cellular3 1 gap r0 r0 r1","cellular3 1 gap r0 r0 r0junk"}) {
+            SurfaceProgram rejected;CHECK(!SurfaceProgram::parse(std::string("const 1\n")+bad+"\nmaterial 30 r0\n",rejected,err),
+                "cellular3: malformed seed, feature and registers are rejected");
+        }
+    }
+
+    {
+        SurfaceProgram cells;
+        CHECK(SurfaceProgram::parse(vt_cellular_test::query_stress,cells,err),
+              "cellular3: mixed query sequence parses");
+        SurfaceRuntime runtime(cells);
+        float max_error=0;
+        for(int i=0;i<64;++i) {
+            const float p[]={float(i-31)*.1875f,float(i%7-3)*.3125f,float(i%11-5)*.4375f};
+            const float gap=surface_cellular3(p[0],p[1],p[2],317,1);
+            const float value=surface_cellular3(p[0],p[1],p[2],317,2);
+            const float distance=surface_cellular3(p[0],p[1],p[2],317,0);
+            float expected=gap+value;
+            expected+=distance;
+            expected+=surface_cellular3(p[0]+.375f,p[1],p[2],317,2);
+            expected+=surface_cellular3(p[0]+.375f,p[1],p[2],0xffffffffu,2);
+            expected+=gap;expected+=value;expected+=distance;expected*=.005f;
+            SurfaceSourceSample sample;runtime.source_at(p,nullptr,nullptr,.01f,sample);
+            max_error=std::max(max_error,std::abs(sample.height_m-expected));
+        }
+        CHECK(max_error<1e-8f,"cellular3: seed, position and sample changes never reuse stale results");
+    }
+
+    // Cell-noise identities use integer coordinates, including negative cells.
+    // Goldens are fixed 24-bit hash outputs, independent of the evaluator.
+    {
+        const uint32_t expected[2][4] = {
+            {9534753u, 6792881u, 10464135u, 7016948u},
+            {7621890u, 598305u, 3418982u, 2429044u}};
+        const char* seeds[] = {"317", "4294967295"};
+        for (int seed = 0; seed < 2; ++seed) {
+            SurfaceProgram cells;
+            const std::string program = std::string("input lx\ninput lz\ncell2 ") +
+                seeds[seed] + " r0 r1\nconst 0\nconst 1\nmaterial 30 r4\n"
+                "source 1 r2 r2 r2 r4 r3 r4 r3 0 0\n";
+            const bool parsed = SurfaceProgram::parse(program, cells, err);
+            CHECK(parsed, "cell2: seeded integer-cell operator parses");
+            if (!parsed) continue;
+            SurfaceRuntime runtime(cells);
+            for (int cell = 0; cell < 4; ++cell) {
+                const float normal[3] = {0, 1, 0};
+                float pos[3] = {float(cell % 2 - 1) + .1f, 0, float(cell / 2) + .1f};
+                SurfaceSourceSample a, b;
+                runtime.source_at(pos, normal, nullptr, .001f, a);
+                pos[0] += .7f; pos[2] += .7f;
+                runtime.source_at(pos, normal, nullptr, .25f, b);
+                CHECK(a.albedo[0] == float(expected[seed][cell]) / 16777216.f,
+                      "cell2: negative coordinates and full uint32 seed match golden");
+                CHECK(a.albedo[0] == b.albedo[0],
+                      "cell2: identity is constant within the cell and across footprints");
+            }
+            for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                                  std::numeric_limits<float>::infinity(), 16777216.f, -16777218.f}) {
+                const float pos[3] = {invalid, 0, 0};
+                SurfaceSourceSample sample;
+                runtime.source_at(pos, nullptr, nullptr, .01f, sample);
+                CHECK(sample.albedo[0] == 0, "cell2: undefined integer inputs return neutral zero");
+            }
+        }
+        for (const char* malformed : {"cell2 317 r0", "cell2 317 r0 r0 extra",
+                "cell2 -1 r0 r0", "cell2 4294967296 r0 r0", "cell2 3junk r0 r0",
+                "cell2 317 r1 r0", "cell2 317 r0junk r0"}) {
+            SurfaceProgram rejected;
+            CHECK(!SurfaceProgram::parse(std::string("const 1\n") + malformed +
+                    "\nmaterial 30 r0\n", rejected, err), "cell2: malformed operands fail closed");
+        }
+    }
 
     // ---- parse round-trip ----
     SurfaceProgram prog;

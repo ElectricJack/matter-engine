@@ -1,0 +1,52 @@
+--- a/MatterEngine3/shaders_vk/gbuffer.frag
++++ b/MatterEngine3/shaders_vk/gbuffer.frag
+@@ -22,6 +22,10 @@
+ #define VT_VARIANTS_BINDING 12
+ #define VT_INPUT_BINDING 25
+ #include "vt_common.glsl"
++// Opt-in diagnostic specialization; the default preserves all connected POM.
++// Removing this path at pipeline creation also exposes its register/code cost.
++layout(constant_id = 0) const bool GBUFFER_CONNECTED_POM = true;
++#define VT_POM_CONNECTED_ENABLED GBUFFER_CONNECTED_POM
+ #include "vt_parallax.glsl"
+ #define VT_DRAW_MATERIAL_TYPE MaterialGpu
+ #define VT_DRAW_INPUT_BINDING 26
+--- a/MatterEngine3/shaders_vk/vt_parallax.glsl
++++ b/MatterEngine3/shaders_vk/vt_parallax.glsl
+@@ -218,6 +218,9 @@
+     vec3 proxy_local, vec3 ray_local) {
+     VtParallaxSample base = vt_parallax_chart_sample(slot, uv, lod, uv_ray, inward,
+         texel_m, footprint_m, steps, refine, max_ray_m, relief_cap_m, distance_fade);
++#ifdef VT_POM_CONNECTED_ENABLED
++    if (!VT_POM_CONNECTED_ENABLED) return base;
++#endif
+     if (base.status != VT_POM_INITIAL_BOUNDARY && base.status != VT_POM_PATH_BOUNDARY) return base;
+     float relief = min(vt_height_envelope(base.address).y, max(relief_cap_m, 0.0));
+     float material_texel_m = vt_material_texel_m(base.address);
+--- a/MatterEngine3/src/render/vk_scene_renderer.cpp
++++ b/MatterEngine3/src/render/vk_scene_renderer.cpp
+@@ -4178,6 +4178,24 @@
+     raster_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+     raster_stages[1].module = raster_fragment;
+     raster_stages[1].pName = "main";
++    // Controlled terrain-cost diagnosis. Ordinary launches use the shader's
++    // true default; chart-only deliberately omits connected relief and must
++    // never be reported as visual/performance acceptance.
++    const char* pom_path = std::getenv("MATTER_GBUFFER_POM_PATH");
++    const VkBool32 connected_pom = VK_FALSE;
++    const VkSpecializationMapEntry connected_entry{0, 0, sizeof(connected_pom)};
++    const VkSpecializationInfo connected_specialization{
++        1, &connected_entry, sizeof(connected_pom), &connected_pom};
++    if (pom_path && std::strcmp(pom_path, "chart_only") == 0) {
++        raster_stages[1].pSpecializationInfo = &connected_specialization;
++        MATTER_LOGW("terrain-profile", "G-buffer POM path=chart_only (diagnostic; connected relief omitted)");
++    } else if (pom_path && std::strcmp(pom_path, "reference") != 0) {
++        vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
++        vkDestroyShaderModule(device, raster_fragment, nullptr);
++        vkDestroyShaderModule(device, raster_vertex, nullptr);
++        error = "MATTER_GBUFFER_POM_PATH must be reference or chart_only";
++        return false;
++    }
+     VkVertexInputBindingDescription vertex_binding{
+         0, sizeof(VkRasterVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+     const VkVertexInputAttributeDescription attributes[] = {

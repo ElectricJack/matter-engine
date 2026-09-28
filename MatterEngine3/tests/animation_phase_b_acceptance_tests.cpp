@@ -140,8 +140,8 @@ std::string read_text(const fs::path& path) {
 // Must be captured BEFORE a caller chdir()s into its bake sandbox: these are
 // relative to the test working directory.
 std::vector<fs::path> object_search_path() {
-    return {fs::absolute("../../projects/world_demo/scenes/AnimatedRigGallery/objects"),
-            fs::absolute("../../projects/world_demo/objects")};
+    return {fs::absolute("../../projects/world_demo/scenes/examples/AnimatedRigGallery/objects"),
+            fs::absolute("../../projects/world_demo/objects/props")};
 }
 
 std::string read_object_source(const std::vector<fs::path>& dirs, const char* module) {

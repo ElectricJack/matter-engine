@@ -1,0 +1,66 @@
+{
+  "verification": {
+    "verified_utc": "2026-09-15T13:58:32.366055+00:00",
+    "source_count": 41,
+    "binary_count": 3,
+    "changes": {
+      "sources": [],
+      "binaries": []
+    },
+    "passing_final_revision_builds": 3,
+    "passing_gpu_executions": 11,
+    "known_visible_regression_failures": 12,
+    "validation_errors": [],
+    "native_process_census": {
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-Process | Where-Object { $_.ProcessName -match \"^(editor|vulkan_smoke_tests|vt_compositor_tests|ninja|cl|link|cmake)$\" } | Select-Object ProcessName,Id | ConvertTo-Json -Compress"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  "artifacts": {
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-final-verification.json": "534162eacbbebdf571c8a56112b6166ec5b7ab1f70e26003b4aee3964c774260",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-green-build-vulkan_smoke_tests.log": "c74461d536849da80aa3c66d2f1952fe985d0bb81d277a54312fd783226464bd",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-green-checks.json": "32dd55571e728d3d9cc992520225c85597f929ac628e7c20921b92edb7b84c8d",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-green-source.json": "a08a145f1338aa1784d8d9816cedc1a9dfc41cd0b2467e406228f563c3193693",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-green-test-vt-queue.log": "e8e167c0a42d4f969e7cb6e7b1f01fd0edb0e1db0103fc24e5fb1b4e207985d9",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-initial-build-vulkan_smoke_tests.log": "2da5cca28ea32952d40c229348f45d96cd172ac6081592455c6ad78cae5415be",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-initial-checks.json": "f4718516ed15faeb02117fd79bc2daa03fd44c0b0355285641c69a59d53a6646",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-initial-source.json": "24dce172d6e73f357389d8df0007bb22bb5c024407ee4f3902fa7b86ec57e18c",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-initial-test-vt-queue.log": "e02e840cc0e6afe930c0550b8b5d8b83cdf14e3de1f0dd1376e24b242bb3c1ba",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-build-matter_editor.log": "eb60afb2498cd010629924dcf81e0ab36d48acd7b6890baa2f58a3c1fc197183",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-build-vt_compositor_tests.log": "a8093d89bfb6e1c4ecf4f1ca0aedee851c3b6521e88f0cd58e1638d39eb6c837",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-checks.json": "451472f0e16854ea365df3064fd421116c6b1097c845bbdb4ef048cf25f322ad",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-source.json": "7c5088913ec569fa4229548965cf28c6f102053d548c49024d297fcae9d49577",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-compositor.log": "9f147822bfe6ae9cbb17ac98dd674ecd555b0b9488ca4945dadf9aafb7470b7c",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-surface-parallax.log": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt-enrich-nort.log": "d173b886489bed7ea2c0208c83d312451564b152c9b677d57f81b827db103408",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt-enrich.log": "be6e18ea6c02933295b3b29953045dec7977d9aadbab975ba27811666e09f8c1",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt-feedback.log": "6abfaaf300765dbae4213fabf307782079753fe32392296fea3b5f7728d07d12",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt-input-snapshot.log": "f7a3cd456d862c07c240efb30e7b58cda0cf7563895da31603b049ea8b7f1ff2",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt-normal-frame.log": "5bea7d198ea21ae6bd9e7f966bf3613c722687bfb9e48591d756acaff756e7c2",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt-queue.log": "e8e167c0a42d4f969e7cb6e7b1f01fd0edb0e1db0103fc24e5fb1b4e207985d9",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt-rt.log": "738b1180a42b4f042fb9a6c6882c4c849a3c3179566ae0cece69cf6654e3432a",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt-surfaces.log": "000f8b10797692de99de1dc7d0fd3654873766eae29b4241c257db1dbdb6dff1",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-integration-test-vt.log": "b79250d063167eeb131f1eada704da15f1a9080802c35b0cf6fb88588a7a4415",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-setup-fixed-build-vulkan_smoke_tests.log": "c74461d536849da80aa3c66d2f1952fe985d0bb81d277a54312fd783226464bd",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-setup-fixed-checks.json": "036f7d9b453def87f91c1a059c77197e0675204dd02669b53f854ff84689d0fd",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-setup-fixed-source.json": "5a2dbbb434014ee01e9c36585783b5a6e99a01b58bde15013df59eee6686eaae",
+    "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-setup-fixed-test-vt-queue.log": "404c2d3e4d80a7b9a27a2a95657a1bdad4b6f41f7ce15d6d818dbb174a078991",
+    "docs/agent/evidence/2026-09-15-vt-feedback/draw-input-red-build.log": "9f90ead9bf22b22be0799956bc67ff420f52df06083051764c3a1b83d16c7f68",
+    "docs/agent/evidence/2026-09-15-vt-feedback/draw-input-red-checks.json": "5b1b20a98b371bf8ccfe40694e281fc08715f8a975c32ab62f070ccd7fdeae43",
+    "docs/agent/evidence/2026-09-15-vt-feedback/draw-input-red-source.json": "5b2884fef860377bab31848a0bf6c4b946c72ee24fb104e81e1ba0795d2fc6a3",
+    "docs/agent/evidence/2026-09-15-vt-feedback/draw-input-red-test.log": "f7a3cd456d862c07c240efb30e7b58cda0cf7563895da31603b049ea8b7f1ff2"
+  },
+  "runner": {
+    "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_input_identity_checks.py",
+    "sha256": "95c3a632e558fc7a2bfeeb98791af0bacd310a27d129574c587549c404fdf33b"
+  },
+  "remaining": "Renderer/shader draw-input snapshot consumption and POM continuity are not implemented. The visible regression remains red. The V0-V7 goal is active."
+}

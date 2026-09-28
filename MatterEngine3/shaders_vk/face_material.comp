@@ -1,0 +1,56 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "vt_chart_types.glsl"
+#define VT_TAPE_OPS_SET 0
+#define VT_TAPE_OPS_BINDING 1
+#include "vt_surface_tape.glsl"
+#include "vt_normal_frame.glsl"
+layout(local_size_x=128) in;
+layout(std430,set=0,binding=0) readonly buffer Parameters {
+    uvec4 source_a, source_b, appearance, coating;
+    vec4 height_range;
+    uvec4 limits;
+} job;
+struct Point { vec4 position_footprint, normal_coverage; };
+struct Result { vec4 albedo_height, orm_coverage, normal_reserved; };
+layout(std430,set=0,binding=2) readonly buffer Points { Point points[]; };
+layout(std430,set=0,binding=3) writeonly buffer Results { Result results[]; };
+
+void evaluate(vec3 position, vec3 normal, float footprint, out float regs[VT_TAPE_MAX_REGS]) {
+    // Reusable local recipes have no field lanes or world dependencies. Keep
+    // the exact interpreter used by VT; this is a different input producer.
+    GpuTri tri;
+    tri.p0=tri.p1=tri.p2=tri.n0=tri.n1=tri.n2=vec4(0);
+    tri.mat=tri.wA=tri.wB=tri.wC=uvec4(0);
+    vt_tape_eval(0u,job.limits.y,position,normal.y,clamp(1-normal.y,0,1),
+                 vec3(0),tri,vec3(1,0,0),footprint,regs);
+}
+float height_at(vec3 p,vec3 n,float footprint) {
+    float regs[VT_TAPE_MAX_REGS]; evaluate(p,n,footprint,regs);
+    return vt_source_value(regs[job.source_b.z],job.height_range.x,job.height_range.y,job.height_range.x);
+}
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if (i>=job.limits.x) return;
+    Point p=points[i];
+    Result r; r.albedo_height=r.orm_coverage=r.normal_reserved=vec4(0);
+    if (p.normal_coverage.w==0) { results[i]=r; return; }
+    vec3 pos=p.position_footprint.xyz, n=p.normal_coverage.xyz;
+    float footprint=p.position_footprint.w;
+    float regs[VT_TAPE_MAX_REGS]; evaluate(pos,n,footprint,regs);
+    VtSourceSample s=vt_source_sample(job.source_a,job.source_b,job.height_range.xy,regs);
+    vt_apply_appearance(job.appearance,regs,s.albedo,s.orm);
+    vt_apply_coating(job.coating,regs,s.albedo,s.orm);
+    vec3 detail=n;
+    if (job.height_range.y>job.height_range.x) {
+        mat3 basis=vt_normal_frame(n);
+        float eps=max(.5*footprint,.0001);
+        float hu=height_at(pos+basis[0]*eps,n,footprint)-height_at(pos-basis[0]*eps,n,footprint);
+        float hv=height_at(pos+basis[1]*eps,n,footprint)-height_at(pos-basis[1]*eps,n,footprint);
+        detail=normalize(n-(basis[0]*hu+basis[1]*hv)/(2*eps));
+    }
+    r.albedo_height=vec4(s.albedo,s.height_m);
+    r.orm_coverage=vec4(s.orm,1);
+    r.normal_reserved=vec4(detail,0);
+    results[i]=r;
+}

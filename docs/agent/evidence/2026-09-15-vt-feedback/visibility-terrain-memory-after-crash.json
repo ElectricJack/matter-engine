@@ -1,0 +1,6 @@
+{
+  "command": "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory,TotalVirtualMemorySize,FreeVirtualMemory | ConvertTo-Json -Compress; Get-Process | Sort-Object PrivateMemorySize64 -Descending | Select-Object -First 8 ProcessName,Id,PrivateMemorySize64,WorkingSet64 | ConvertTo-Json -Compress",
+  "exit": 0,
+  "stdout": "{\"TotalVisibleMemorySize\":67026632,\"FreePhysicalMemory\":29163392,\"TotalVirtualMemorySize\":87473864,\"FreeVirtualMemory\":32243104}\n[{\"ProcessName\":\"vmmemWSL\",\"Id\":23168,\"PrivateMemorySize64\":22308507648,\"WorkingSet64\":7783600128},{\"ProcessName\":\"Resilio Sync\",\"Id\":24992,\"PrivateMemorySize64\":9348038656,\"WorkingSet64\":8646815744},{\"ProcessName\":\"chrome\",\"Id\":10228,\"PrivateMemorySize64\":2823065600,\"WorkingSet64\":178208768},{\"ProcessName\":\"steamwebhelper\",\"Id\":27548,\"PrivateMemorySize64\":492527616,\"WorkingSet64\":89473024},{\"ProcessName\":\"Discord\",\"Id\":8672,\"PrivateMemorySize64\":492056576,\"WorkingSet64\":385744896},{\"ProcessName\":\"MsMpEng\",\"Id\":6340,\"PrivateMemorySize64\":422301696,\"WorkingSet64\":365617152},{\"ProcessName\":\"chrome\",\"Id\":2224,\"PrivateMemorySize64\":341716992,\"WorkingSet64\":286756864},{\"ProcessName\":\"steam\",\"Id\":25348,\"PrivateMemorySize64\":314454016,\"WorkingSet64\":96088064}]\n",
+  "stderr": ""
+}

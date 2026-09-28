@@ -1,0 +1,77 @@
+wait_event bake.finished 180
+render_path raster
+set render.fog.density 0
+set render.clouds.layer0_max_density 0
+set render.cloud_shadows.enabled false
+set render.lighting.sun_elevation_deg 25
+set render.lighting.sun_azimuth_deg -120
+set render.lighting.sun_tint [1,1,1]
+set render.lighting.sun_multiplier 1
+set render.lighting.sky_irradiance_multiplier 0.5
+set render.lighting.day_ambient_multiplier 0.5
+wait_frames 320
+stats move-00
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-00.png
+wait_frames 30
+stats move-01
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-01.png
+wait_frames 30
+stats move-02
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-02.png
+wait_frames 30
+stats move-03
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-03.png
+wait_frames 30
+stats move-04
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-04.png
+wait_frames 30
+stats move-05
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-05.png
+wait_frames 30
+stats move-06
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-06.png
+wait_frames 30
+stats move-07
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-07.png
+wait_frames 30
+stats move-08
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-08.png
+wait_frames 30
+stats move-09
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-09.png
+wait_frames 30
+stats move-10
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-10.png
+wait_frames 30
+stats move-11
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-11.png
+wait_frames 30
+stats move-12
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-12.png
+wait_frames 30
+stats move-13
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-13.png
+wait_frames 30
+stats move-14
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-14.png
+wait_frames 30
+stats move-15
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-15.png
+wait_frames 30
+stats move-16
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-16.png
+wait_frames 30
+stats move-17
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-17.png
+wait_frames 30
+stats move-18
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-18.png
+wait_frames 30
+stats move-19
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-19.png
+wait_frames 30
+stats move-20
+shot C:/tmp/matter-rock-motion-v1-raster/move-raster-20.png
+wait_frames 30
+wait_frames 1000
+quit

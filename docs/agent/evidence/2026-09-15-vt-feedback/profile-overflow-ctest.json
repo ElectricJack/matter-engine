@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "$env:MATTER_VK_VALIDATION='1'; & 'C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe' --test-dir 'D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/cmake/windows-msvc/relwithdebinfo' -R '^(matter_profile_tests|vt_input_snapshot_tests)$' --output-on-failure --no-tests=error; exit $LASTEXITCODE"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 15.246298070000194
+}

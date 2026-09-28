@@ -1,0 +1,24 @@
+{
+  "editor_exit": 0,
+  "validation_errors": 0,
+  "gpu_jobs_ms": {
+    "bake.reset": "36493.2",
+    "ConiferBarkDetail": "2819.3",
+    "ConiferBranchDetail": "1539.4",
+    "RedwoodBarkDetail": "1615.9",
+    "stream.publish": "108.0"
+  },
+  "files": {
+    "bake-trace.json": "cf33a27cfda5bf2c5da01dc7185fe0e095898e45932d83391a1a5538c8fc5a76",
+    "close.png": "b3913c23f30f488631250bf50a82b6294971bf9e209d35409e74c338d3013299",
+    "close.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "cmd.txt": "e06b270f019e6383fc1407d81f3b7d588113f8cfeedc5387fb8d863aeda29fe6",
+    "grazing.png": "6ddbb809febafcc53d4fa1c106929660ab2999470ee87437d7c769f9ac9d2461",
+    "grazing.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "log.txt": "a80b81e44727c772a927476feb4b2b5235616daf10b58a3e0ec4020f46866d1b",
+    "overview.png": "9def5477ce4f6e0c7ac889c2346fb0e9204900093918271461a00de910e75ac3",
+    "overview.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "settled.png": "7bf0b41d5aec2c7626a17c53874d957c7605120e0e435f892b4458e337edc5b7",
+    "settled.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+  }
+}

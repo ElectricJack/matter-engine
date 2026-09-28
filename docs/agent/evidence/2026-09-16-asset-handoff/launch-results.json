@@ -1,0 +1,14 @@
+[
+    {
+        "mode":  "census",
+        "exit":  0,
+        "seconds":  0.6231059,
+        "clean_path":  true
+    },
+    {
+        "mode":  "walls-authoring",
+        "exit":  0,
+        "seconds":  11.0987025,
+        "clean_path":  true
+    }
+]

@@ -1,0 +1,10 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 72.75630488499883,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [],
+  "images": {},
+  "passed": false
+}

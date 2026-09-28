@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -55,13 +56,13 @@ const castleMasonryFixtureLib = await import(loadSharedLib('castle_masonry_fixtu
 const castleMasonry = await import(loadSharedLib('castle_masonry'));
 
 const CastleMasonryFixture = await loadRuntimeScript(
-  new URL('../scenes/CastleMasonry/objects/CastleMasonryFixture.js', import.meta.url),
+  new URL('../scenes/castles/materials/CastleMasonry/objects/CastleMasonryFixture.js', import.meta.url),
   'CastleMasonryFixture', 'CastleMasonryFixture part');
 const CastleMasonryGround = await loadRuntimeScript(
-  new URL('../scenes/CastleMasonry/objects/CastleMasonryGround.js', import.meta.url),
+  new URL('../scenes/castles/materials/CastleMasonry/objects/CastleMasonryGround.js', import.meta.url),
   'CastleMasonryGround', 'CastleMasonryGround part');
 const CastleMasonry = await loadRuntimeScript(
-  new URL('../scenes/CastleMasonry/CastleMasonry.js', import.meta.url),
+  new URL('../scenes/castles/materials/CastleMasonry/CastleMasonry.js', import.meta.url),
   'CastleMasonry', 'CastleMasonry world');
 
 // ------------------------------------------------------------ World roots
@@ -140,11 +141,10 @@ for (const key of placedKeys) assert.ok(declaredKeys.has(key), `${key} is declar
 
 // ------------------------------------------------------------ module resolution
 
-const objectsDir = new URL('../objects/', import.meta.url);
 const placedModules = new Set(fixtureInstance.placements.map(item => item.module));
 assert.ok(placedModules.size > 0, 'the fixture placed at least one module kind');
 for (const module of placedModules)
-  assert.ok(existsSync(new URL(`${module}.js`, objectsDir)),
+  assert.ok(existsSync(objectFile(module)),
     `placed module ${module} resolves to projects/world_demo/objects/${module}.js`);
 
 console.log(`castle masonry scene: PASS - ${fixtureInstance.placements.length} placements, ` +

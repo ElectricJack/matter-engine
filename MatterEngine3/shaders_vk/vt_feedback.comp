@@ -1,0 +1,29 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "vt_visible_input.glsl"
+
+// Only the final depth-visible request pair reaches this image. Keep the original
+// fixed (0,0) sample in each 8x8 block, including partial right/bottom blocks.
+layout(local_size_x=8, local_size_y=8) in;
+layout(set=0, binding=0, rgba32ui) uniform readonly uimage2D visible_feedback;
+layout(set=0, binding=1, std430) writeonly buffer Readback { uvec2 requests[]; };
+
+void main() {
+    uvec2 size = uvec2(imageSize(visible_feedback));
+    uvec2 blocks = (size + 7u) / 8u;
+    uvec2 cell = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(cell, blocks))) return;
+    uvec4 pair = imageLoad(visible_feedback, ivec2(cell * 8u));
+    uint count = blocks.x * blocks.y;
+    for (uint owner = 0u; owner < 2u; ++owner) {
+        uvec4 request = (pair >> (16u * owner)) & uvec4(0xffffu);
+        // Primary-shading metadata must never become mip demand.
+        request.w &= VT_VISIBLE_MIP_MASK;
+        if (request.x == 0u) request = uvec4(0u);
+        // Two contiguous planes preserve the CPU collector's run-length
+        // locality. Each entry remains four little-endian uint16 values.
+        requests[owner * count + cell.y * blocks.x + cell.x] =
+            uvec2(request.x | (request.y << 16u),
+                  request.z | (request.w << 16u));
+    }
+}

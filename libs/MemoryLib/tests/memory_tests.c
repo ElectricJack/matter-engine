@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 
 #ifdef _MSC_VER
@@ -296,7 +297,64 @@ static void test_array_null_tolerance(void) {
     printf("  mem_array NULL tolerance tests passed!\n");
 }
 
+#include "mem_bank.h"
+static void test_bank(void) {
+    MemBankConfig cfg = {1024, 64, 16, 0, NULL};
+    MemBank* bank = mem_bank_create(&cfg);
+    MemBankLease a, b, c, d, stale;
+    assert(bank);
+    assert(mem_bank_acquire(bank, 65, &a) && a.capacity == 128);
+    assert((uintptr_t)a.data % 64 == 0);
+    memset(a.data, 77, 65);
+    assert(mem_bank_acquire(bank, 384, &b));
+    assert(mem_bank_acquire(bank, 512, &c));
+    assert(!mem_bank_acquire(bank, 1, &d));
+    assert(!mem_bank_destroy(bank));
+    stale = b;
+    assert(mem_bank_release(bank, b));
+    assert(!mem_bank_release(bank, stale));
+    assert(!mem_bank_acquire(bank, 385, &d));
+    assert(mem_bank_acquire(bank, 300, &d) && d.offset == b.offset);
+    assert(!mem_bank_release(bank, stale));
+    assert(((unsigned char*)a.data)[64] == 77);
+    assert(mem_bank_stats(bank).occupied == 960);
+    assert(mem_bank_stats(bank).requested == 877);
+    assert(mem_bank_release(bank, a));
+    assert(mem_bank_release(bank, c));
+    assert(mem_bank_release(bank, d));
+    assert(mem_bank_stats(bank).largest_free == 1024);
+    for (int i=0; i<10000; ++i) {
+        assert(mem_bank_acquire(bank, 1024, &a));
+        assert(mem_bank_release(bank, a));
+    }
+    assert(mem_bank_stats(bank).backing_allocations == 1);
+    assert(mem_bank_destroy(bank));
+    cfg.external = 1;
+    bank = mem_bank_create(&cfg);
+    assert(bank && mem_bank_acquire(bank, 1, &a) && !a.data && a.offset == 0);
+    assert(mem_bank_stats(bank).backing_allocations == 0);
+    { MemBank* other = mem_bank_create(&cfg);
+      assert(other && !mem_bank_release(other, a)); assert(mem_bank_destroy(other)); }
+    assert(mem_bank_release(bank, a) && mem_bank_destroy(bank));
+    {
+        uint64_t external[8] = {123};
+        MemBankConfig borrowed = {sizeof(external), 8, 1, 1, external};
+        bank = mem_bank_create(&borrowed);
+        assert(bank && mem_bank_acquire(bank, 1, &a));
+        assert(a.data == external && !mem_bank_acquire(bank, 1, &b));
+        assert(mem_bank_release(bank, a));
+        assert(!mem_bank_acquire(bank, SIZE_MAX, &b));
+        assert(mem_bank_destroy(bank) && external[0] == 123);
+        borrowed.storage = (unsigned char*)external+1;
+        assert(!mem_bank_create(&borrowed));
+    }
+    cfg.quantum = 3; assert(!mem_bank_create(&cfg));
+    cfg.quantum = 64; cfg.capacity = 1025; assert(!mem_bank_create(&cfg));
+    printf("  Fixed bank capacity, fragmentation, alignment, lifetime and reuse passed!\n");
+}
+
 int main() {
+    test_bank();
     printf("Running MemPool tests...\n");
     printf("max_align_t alignment: %zu bytes\n\n", _Alignof(MATTER_MAX_ALIGN_T));
 

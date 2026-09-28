@@ -1,0 +1,79 @@
+{
+  "capture": "/mnt/d/tmp/matter-vt/20260914-01/stream-density/profile.json",
+  "timing_acceptance": false,
+  "scope": "Profiler tail from a density diagnostic run; descriptive stage attribution only",
+  "zones": {
+    "vt.invalidations": {
+      "samples": 451,
+      "p50_ms": 0.0001,
+      "p95_ms": 0.0002,
+      "max_ms": 0.0005
+    },
+    "vt.residency_begin": {
+      "samples": 512,
+      "p50_ms": 0.49160000000000004,
+      "p95_ms": 0.7762,
+      "max_ms": 1.0339
+    },
+    "vt.collect": {
+      "samples": 512,
+      "p50_ms": 0.0008,
+      "p95_ms": 0.0016,
+      "max_ms": 0.0070999999999999995
+    },
+    "vt.drain_feedback": {
+      "samples": 512,
+      "p50_ms": 0.4895,
+      "p95_ms": 0.7736000000000001,
+      "max_ms": 1.0307
+    },
+    "vt.fb_dedup": {
+      "samples": 512,
+      "p50_ms": 0.147,
+      "p95_ms": 0.1935,
+      "max_ms": 0.2373
+    },
+    "vt.fb_queue": {
+      "samples": 512,
+      "p50_ms": 0.1011,
+      "p95_ms": 0.1377,
+      "max_ms": 0.18259999999999998
+    },
+    "vt.feedback_target": {
+      "samples": 512,
+      "p50_ms": 0.0002,
+      "p95_ms": 0.0005,
+      "max_ms": 0.0014
+    },
+    "vt.descriptors": {
+      "samples": 512,
+      "p50_ms": 0.0012,
+      "p95_ms": 0.0026,
+      "max_ms": 0.0048
+    },
+    "vt.enrich": {
+      "samples": 484,
+      "p50_ms": 0.0002,
+      "p95_ms": 0.0004,
+      "max_ms": 0.0008
+    },
+    "vt.table_upload": {
+      "samples": 512,
+      "p50_ms": 0.0077,
+      "p95_ms": 0.0143,
+      "max_ms": 0.0415
+    },
+    "vt.fb_scan": {
+      "samples": 512,
+      "p50_ms": 0.1812,
+      "p95_ms": 0.29910000000000003,
+      "max_ms": 0.4213
+    },
+    "vt.push_inputs": {
+      "samples": 500,
+      "p50_ms": 0.0002,
+      "p95_ms": 0.0005,
+      "max_ms": 0.0008
+    }
+  }
+}

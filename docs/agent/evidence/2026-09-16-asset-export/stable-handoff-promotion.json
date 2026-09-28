@@ -1,0 +1,66 @@
+{
+  "current": {
+    "id": "2026-09-16-r2",
+    "directory": "2026-09-16-r2",
+    "asset_export": true
+  },
+  "runtime_verification": {
+    "2026-09-16-r1": {
+      "runtime_files_verified": 17,
+      "errors": []
+    },
+    "2026-09-16-r2": {
+      "runtime_files_verified": 17,
+      "errors": []
+    }
+  },
+  "r1_pilot_files_verified": [
+    {
+      "path": "projects/world_demo/shared-lib/villa_doric_pilot.js",
+      "sha256": "e54a4e761225c168722e33247f511c9e1aac99a7b2ad5ec1969c82d9d6b4aff3"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/villa_marble_pilot.js",
+      "sha256": "fefca757bd021c41ac33a1a421510a2a9406515c4edef0db394d8dda5c12d1f4"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/props.json",
+      "sha256": "fbe8a85318af6aff36ef0f58851a580c81353b2731e0963dc911d3714b6dd80a"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/README.md",
+      "sha256": "44a9314cd915a9ee2069797ba23ea774392501eb89223e063b0c74955b61bdda"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/verify.mjs",
+      "sha256": "305c164bb1fb6c3b023c642a223e290b6c2582dbba18c4d03ce575aed0c31eac"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/VillaDoricColumnStudy.js",
+      "sha256": "6e67e45462eb311aa1045a2600811ed6642d3485b2a57dfa10e44c1b54f1e1da"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/objects/VillaColumnStudyFloor.js",
+      "sha256": "0e0e9b2a1fe67f2657e8f3217d6dde8c5db85daa9ae5b4db07e8c32393761e17"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/objects/VillaDoricColumnPilot.js",
+      "sha256": "de7863516e589e35fff33891f69cae274ee542d8d2e9d69835b0ab67417a68d3"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/objects/VillaLimestonePilotDetail.js",
+      "sha256": "407f60981aef84ad875ddedf4c82c8a2fe9551c61c98199fc7e693bf2271caf6"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/objects/VillaMarblePilotDetail.js",
+      "sha256": "e7510863f93785b350ad18119a83da54f6be775696dc58892942ee67bedbdd79"
+    },
+    {
+      "path": "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/objects/VillaMarblePilotSource.js",
+      "sha256": "91ff68cbb40e1931ba8194c09bb9ff268bb146c0730a5da6eaa0d739e26e1edb"
+    }
+  ],
+  "editor_sha256": "3aac176acbea521dfc6f1c0b017c5f376a2dc5ae7e1b4c7e18bdfc5db932b615",
+  "project": "MatterEditor/build/asset-handoff/2026-09-16-r2/projects/world_demo",
+  "stable_launcher": "MatterEditor/build/asset-handoff/launch.cmd"
+}

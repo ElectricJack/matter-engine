@@ -134,6 +134,12 @@ struct AgentPayload {
 // deterministically ordered page of the authored entities and baked roots in
 // the current world. Ordering and paging live in scene_inventory.h; the
 // handler only snapshots the live sources.
+struct AssetExport {
+    MT_COMMAND_NAME("asset.export");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
 struct SceneListObjects {
     MT_COMMAND_NAME("scene.list_objects");
     using Result = matter::evt::CommandResult<AgentPayload>;

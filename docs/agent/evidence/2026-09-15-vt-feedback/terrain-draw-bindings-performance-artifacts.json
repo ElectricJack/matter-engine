@@ -1,0 +1,205 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 421.7665240399947,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/native-environment.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "1200",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/profile.json",
+    "--env",
+    "MATTER_PIPELINE_PROFILE=1"
+  ],
+  "changed_inputs_during_run": [],
+  "validation_enabled": false,
+  "page_event_logging": false,
+  "pipeline_creation_logging": true,
+  "full_vt_acceptance": false,
+  "analysis_file": "terrain-draw-bindings-performance-summary.json",
+  "gpu_total_ms": {
+    "samples": 601,
+    "p50_ms": 79.53648376464844,
+    "p95_ms": 87.683837890625,
+    "p99_ms": 91.97654724121094,
+    "max_ms": 101.76870727539062
+  },
+  "end_counters": {
+    "active": 1,
+    "variants": 789,
+    "pool_used": 1513,
+    "pool_capacity": 33024,
+    "replacement_reserve_pages": 64,
+    "dirty_pages": 0,
+    "fills_stale_total": 0,
+    "pinned": 789,
+    "queue": 0,
+    "mandatory_queue": 0,
+    "detail_queue": 0,
+    "oldest_mandatory_age_frames": 0,
+    "oldest_detail_age_frames": 0,
+    "fills_total": 1513,
+    "evictions_total": 0,
+    "invalidations_total": 0,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "requests_dropped_total": 0,
+    "enrich_total": 0,
+    "enrich_queue": 0,
+    "shared_refs_total": 0,
+    "finer_rebuilds_total": 0,
+    "mesh_bytes": 288107279,
+    "pool_bytes": 4275683328,
+    "resident_sectors": 2586,
+    "vertex_uploads": 614,
+    "cluster_uploads": 614,
+    "dlss_resets": 0,
+    "output_width": 1920,
+    "output_height": 1080,
+    "internal_width": 1920,
+    "internal_height": 1080,
+    "cpu_begin_ms": 0.2684,
+    "cpu_pre_pass_ms": 0.0202,
+    "cpu_post_pass_ms": 0.0044,
+    "cpu_registration_ms": 0,
+    "gpu_readback_sequence": 4090,
+    "gpu_total_ms": 77.69337463378906,
+    "gpu_vt_page_ms": 0.0010239999974146485,
+    "gpu_vt_feedback_ms": 0.02316799946129322,
+    "gpu_vt_ms": 0.024191999807953835,
+    "fills_per_frame": 8,
+    "tail_fills_per_frame": 8,
+    "enrich_per_frame": 0,
+    "queue_cap": 256,
+    "request_budget_ms": 5.090000152587891,
+    "linger_frames": 4,
+    "evict_protect_frames": 16
+  },
+  "stats_lines": [
+    "STATS,startup_ready,2650.96,0.00,0.00,0.00,0,0,0,0,0,0,0,0,0.0,0.0,0,0,0,0.00,0,0.000,0.000,0.000,0.000,0.000,0.00,0.000,0.000,0.000",
+    "STATS,settle_begin,77.57,2.33,0.16,2.18,789,63,151991,687,39,789,0,32768,274.8,3512.0,320,180,256,478.12,2,0.000,0.239,0.209,4.127,0.174,84.00,77.487,0.030,37.990",
+    "STATS,settle_end,77.44,2.19,0.17,2.00,789,63,151991,687,39,789,0,32768,274.8,3512.0,320,180,256,478.12,2,0.000,0.239,0.219,4.195,0.179,84.00,77.407,0.026,37.956"
+  ],
+  "gpu_distinct_sequences": 601,
+  "prior_source_manifest": "draw-bindings-final-source.json",
+  "settled_cpu_target_pass": false,
+  "comparison_limits": [
+    "One run, not repeated acceptance.",
+    "Project inputs, camera and quality match the older terrain run, but rendered triangles differ: 151991 versus 42175; registered mesh bytes also differ.",
+    "The changed geometry/retained page sets prevent attributing the entire slowdown to snapshot shading.",
+    "GPU VT excludes G-buffer sampling; whole-renderer GPU is reported separately.",
+    "Pipeline creation logging was enabled only for this diagnostic; no native build or graph query overlapped capture."
+  ],
+  "visual_review": "Both final images inspected: matching forest/valley framing and broad lighting. Existing granular ground and noisy foliage persist.",
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/command.json",
+      "bytes": 1676,
+      "sha256": "796ad6f8f664342ee50afd9a387171e3fe02b39e2a0f5af619cbca4b285ab86a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/driver.log",
+      "bytes": 518001,
+      "sha256": "cb30d8c13ba757f3ef172f52a5dbfb7fb96d939dab1615fffdd921a52356e709"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/launch-source.json",
+      "bytes": 55872,
+      "sha256": "7913ee71d4444015165884553c2d92e8a62863be73808c28919d8bab9d46a811"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/native-environment.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/profile.json",
+      "bytes": 3674824,
+      "sha256": "83b43472f234510c81c84a46e81f4e41b4f25c18ccb411f8edac94ef5ddcf97c"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/result.json",
+      "bytes": 2024,
+      "sha256": "b5d5310e76bf6b1fafe7f1ee20b37740fc162bd4cf45811d956286c3304ab297"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/run/cmd.txt",
+      "bytes": 244,
+      "sha256": "6184457aa6cb738c141f964c5cae5b6cd7ec3fe11161ddc98f380146e1c2a383"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/run/log.txt",
+      "bytes": 517508,
+      "sha256": "25b5ea96da6d408397f6cb1d9ec5468e3f8343a719c0dcd4f8ede21c84db8ba8"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/settled.png",
+      "bytes": 5884004,
+      "sha256": "a091c6392d02766cf84a578f069ff4d111830a3b1ba2ae6a928989dfd5c731cc"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/timeline.txt",
+      "bytes": 244,
+      "sha256": "6184457aa6cb738c141f964c5cae5b6cd7ec3fe11161ddc98f380146e1c2a383"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-draw-bindings-performance/vt.jsonl",
+      "bytes": 1798050,
+      "sha256": "afcd29397112c042cecb726f2ed07c7e69fa4243863fd2cd2345fbd19daab235"
+    }
+  ]
+}

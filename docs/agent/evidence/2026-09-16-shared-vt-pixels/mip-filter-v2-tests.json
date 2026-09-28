@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "mode": "cpu",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"cpu\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.8590262260040618,
+      "binary_sha256": "de0350beeb45b19ad8f55145a08fd0d60502a6de594bad67ded4c056fe646aab",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "9e23733e86ca4ca41fe830668a5be05615274b5d747466d07e45445284439296",
+      "passed": true
+    }
+  ]
+}

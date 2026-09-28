@@ -421,6 +421,41 @@ Streamline-proxy-missing fault modes, `rt`, `rt-transmission`, `rt-disabled`,
 `vt-surfaces`, `vt-rt`, `vt-enrich`, `vt-enrich-nort`). Each mode must print
 `validation errors: 0` and `ALL PASS`, and exit 0, or the whole gate fails.
 
+`vt-enrich` also adds, changes and removes surface classification through the
+renderer edit API. It checks the rendered material/contact AO and asserts that
+these edits reuse compositor chart geometry and AO preparation. A geometry
+replacement removes the occluding fin and must rebuild both preparations and
+remove its occlusion. The standalone `vt_compositor_tests` additionally checks
+four delayed weight/field-lane versions against separately submitted references,
+with shared geometry surviving every material version and their retirement.
+
+Additional focused regression modes are `rt-empty-tlas` (enabled volumes with
+scene instances but no selected traceable geometry), `water-field` and
+`water-field-nort` (real field uploads with and without RT capability).
+`rt-empty-tlas` covers startup, return to traceable geometry, and a volume
+bundle resize. Run these modes directly with validation enabled by the smoke
+executable; each must print `validation errors: 0`, `ALL PASS`, and exit 0.
+
+`vt-feedback` exercises production G-buffer visibility and asynchronous VT
+requests with overlapping charted/uncharted surfaces in both orders. It checks
+that hidden owners receive no detail requests, visible owners refine, retained
+pages survive reveal/return, and odd-size target resizes remain valid. CMake
+registers the same mode as `vt_feedback_visibility_tests`.
+
+`vt-feedback-pair` checks the independent receiver/material transport: GPU
+address packing, extraction from the wider visible image, cached readback,
+deduplication and real generation for both owners. It includes tagged background,
+partial screen blocks, repeated demand and resize. Run it together with
+`vt-feedback` for the production raster depth-visibility gate; the paired fixture
+supplies its visible image explicitly and does not render module-mapped walls.
+
+`vt-receiver-material` exercises published planar chart mappings using the real
+compressed module and receiver pages. It checks three sizes/orientations against
+independent physical-coordinate sampling, normal conversion, signed height datum,
+chart POM, paired demand, pending/invalid bindings, removal and reader retirement.
+It is a compute sampling integration fixture; rendered mapped-wall and connected
+corner acceptance remain separate gates.
+
 To run a single mode directly (faster iteration while chasing one failure):
 
 ```powershell
@@ -439,7 +474,7 @@ for the full current set.
 MatterEngine3/tools/seam_suite.sh /tmp/seam-out
 ```
 
-Runs the editor twice against the `SeamLab` world (`projects/world_demo/scenes/SeamLab`
+Runs the editor twice against the `SeamLab` world (`projects/world_demo/scenes/texturing/virtual_texture/SeamLab`
 — a cave-free heightfield built so "anything visible below the surface" is
 unambiguously a defect): once with welds drawn, once with
 `MATTER_NO_SEAM_WELD_DRAW=1`. Reports six checks, each the only detector of one
@@ -667,3 +702,14 @@ Task 10 remains blocked unless that finding says `handoffVisualGate: pass`.
   `MATTER_WORLD=FloorDemo MATTER_TILESET_DUMP_PNG=<dir>`, bake twice into two
   different dump directories, and `img_diff.py` the pairs — a double-bake
   bitwise (or near-bitwise) compare is the real gate, not the smoke suite.
+
+### Optional native VT feedback CPU benchmark
+
+Build `vt_residency_tests` with the canonical MSVC wrapper, then run its executable
+with `MATTER_VT_FEEDBACK_BENCH=1`. This runs the normal correctness suite and adds
+three synthetic 32,400-texel workloads (empty, repeated requests, interleaved
+requests), each with 50 warmups and 1,000 measured iterations.
+`VT_FEEDBACK_BENCH` CSV rows contain pattern, sample count, scan p50/p95 µs,
+whole-collector p50/p95 µs and an output checksum. Timings are evidence, not
+pass/fail limits; run independently of builds or GPU captures. A CPU-memory
+benchmark does not establish GPU-readback or whole-scene performance.

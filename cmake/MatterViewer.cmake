@@ -26,9 +26,9 @@ matter_read_manifest(
 list(FILTER matter_engine_viewer_sources
     INCLUDE REGEX "^MatterEngine3/src/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 22)
+if(NOT matter_engine_viewer_source_count EQUAL 27)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 22 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 27 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -51,11 +51,10 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    # The export pipeline contributes six core sources (including the script
-    # host-facing CLI implementation) to the complete viewer source graph.
-    set(matter_expected_viewer_product_count 197)
+    # 168 core + 21 surface + 27 viewer + retopology.
+    set(matter_expected_viewer_product_count 217)
 else()
-    set(matter_expected_viewer_product_count 196)
+    set(matter_expected_viewer_product_count 216)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
@@ -120,6 +119,23 @@ matter_apply_project_defaults(matter_engine_viewer_objects)
 add_dependencies(matter_engine_viewer_objects matter_embedded_spirv)
 
 if(BUILD_TESTING)
+    # Manual native visual probe: use the real device/Streamline path and the
+    # same bounded source fixtures as the sparse comparison tests.
+    add_executable(sparse_forest_preview MatterEngine3/tests/sparse_forest_preview.cpp)
+    matter_engine_include_directories(sparse_forest_preview PRIVATE)
+    target_include_directories(sparse_forest_preview BEFORE PRIVATE
+        "${CMAKE_BINARY_DIR}/MatterEngine3" "${matter_vulkan_include}"
+        "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include")
+    target_compile_definitions(sparse_forest_preview PRIVATE
+        PLATFORM_DESKTOP NOMINMAX MATTER_HAVE_SCRIPT_HOST MATTER_VULKAN_VIEWER
+        MATTER_VULKAN_ONLY MATTER_HAVE_STREAMLINE=${matter_streamline_enabled} VK_USE_PLATFORM_WIN32_KHR)
+    target_link_libraries(sparse_forest_preview PRIVATE
+        matter_engine_viewer_objects gdi32 winmm user32 shell32 ws2_32 dbghelp)
+    matter_apply_project_defaults(sparse_forest_preview)
+    set_target_properties(sparse_forest_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+        "${CMAKE_SOURCE_DIR}/MatterEditor/build/windows-msvc-forest")
+    matter_stage_streamline_runtime(sparse_forest_preview)
+
     add_executable(vulkan_compat_tests
         MatterEngine3/tests/vulkan_compat_tests.cpp
         MatterEngine3/src/render/vulkan_only_compat.cpp
@@ -136,11 +152,29 @@ if(BUILD_TESTING)
     set_tests_properties(vulkan_compat_tests PROPERTIES LABELS vulkan)
 
     set(matter_vulkan_smoke_sources
+        MatterEngine3/src/geometry/geometry_compiler.cpp
+        MatterEngine3/src/geometry/geometry_pages.cpp
+        MatterEngine3/src/geometry/geometry_cut.cpp
+        MatterEngine3/src/geometry/geometry_residency.cpp
+        MatterEngine3/src/mesh_error.cpp
+        libs/MatterSurfaceLib/src/mesh_simplifier.cpp
+        libs/MatterSurfaceLib/src/mesh_indexed.cpp
         MatterEngine3/src/render/streamline_bridge.cpp
         MatterEngine3/src/render/vk_context.cpp
         MatterEngine3/src/render/vk_resources.cpp
         MatterEngine3/src/render/vk_pipeline.cpp
         MatterEngine3/src/render/vk_scene_renderer.cpp
+        MatterEngine3/src/render/vk_sparse_voxel.cpp
+        MatterEngine3/src/sparse_voxel_bake.cpp
+        MatterEngine3/src/surface_proxy.cpp
+        MatterEngine3/src/part_surface.cpp
+        MatterEngine3/src/projected_face_cache.cpp
+        MatterEngine3/src/face_material_bake.cpp
+        MatterEngine3/src/finite_surface_stamp.cpp
+        MatterEngine3/src/part_asset_v2.cpp
+        libs/MatterSurfaceLib/src/part_asset.cpp
+        libs/MatterSurfaceLib/src/blas_manager.cpp
+        libs/MatterSurfaceLib/src/tlas_manager.cpp
         MatterEngine3/src/render/vk_animation_skinning.cpp
         MatterEngine3/src/render/vk_animation_bounds.cpp
         MatterEngine3/src/animation/animation_budget.cpp
@@ -151,6 +185,8 @@ if(BUILD_TESTING)
         MatterEngine3/src/util/json_doc.cpp
         MatterEngine3/src/render/vt_stub_filler.cpp
         MatterEngine3/src/render/vt_compositor.cpp
+        MatterEngine3/src/render/vt_export.cpp
+        MatterEngine3/src/render/vt_export_mesh.cpp
         MatterEngine3/src/render/vt_enrich.cpp
         MatterEngine3/src/terrain_field.cpp
         MatterEngine3/src/world_lights.cpp
@@ -175,6 +211,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/gpu_meshing/gpu_solid_mesher_vk.cpp
         MatterEngine3/src/render/gpu_meshing/solid_face_projection_common.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_solid_face_projector_vk.cpp
+        MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp
         MatterEngine3/src/render/water_field_vk.cpp
         MatterEngine3/src/render/water_field_vk_resources.cpp
@@ -211,6 +248,7 @@ if(BUILD_TESTING)
         VK_USE_PLATFORM_WIN32_KHR
     )
     target_link_libraries(matter_vulkan_smoke_objects PRIVATE
+        matter_asset_store
         matter_glfw
         matter_flecs
         matter_bc7enc
@@ -263,6 +301,27 @@ if(BUILD_TESTING)
     if(MATTER_ENABLE_PHYSX)
         matter_stage_physx_runtime(solid_face_projection_gpu_tests)
     endif()
+    # Runtime single-rung chart preparation uses the production chart builder
+    # and renderer object graph (the smoke graph omits lod_bake.cpp).
+    add_executable(static_surface_vt_tests MatterEngine3/tests/static_surface_vt_tests.cpp)
+    matter_engine_include_directories(static_surface_vt_tests PRIVATE)
+    target_include_directories(static_surface_vt_tests BEFORE PRIVATE
+        "${CMAKE_BINARY_DIR}/MatterEngine3" "${matter_vulkan_include}"
+        "${CMAKE_SOURCE_DIR}/third_party/glfw/include")
+    target_compile_definitions(static_surface_vt_tests PRIVATE
+        PLATFORM_DESKTOP NOMINMAX MATTER_HAVE_SCRIPT_HOST MATTER_VULKAN_VIEWER
+        MATTER_VULKAN_ONLY MATTER_HAVE_STREAMLINE=${matter_streamline_enabled} VK_USE_PLATFORM_WIN32_KHR
+        "MATTER_VK_TEST_LAYER_PATH=\"${matter_vulkan_runtime}\"")
+    target_link_libraries(static_surface_vt_tests PRIVATE
+        matter_engine_viewer_objects gdi32 winmm user32 shell32 ws2_32 dbghelp)
+    matter_apply_project_defaults(static_surface_vt_tests)
+    matter_apply_test_assertion_policy(static_surface_vt_tests)
+    add_dependencies(static_surface_vt_tests matter_embedded_spirv)
+    matter_stage_streamline_runtime(static_surface_vt_tests)
+    if(MATTER_ENABLE_PHYSX)
+        matter_stage_physx_runtime(static_surface_vt_tests)
+    endif()
+
     add_custom_target(castle_surface_parallax_checks DEPENDS
         matter_editor material_registry_tests world_definition_tests vulkan_smoke_tests)
 
@@ -299,11 +358,14 @@ if(BUILD_TESTING)
         "MATTER_VK_TEST_LAYER_PATH=\"${matter_vulkan_runtime}\""
     )
     target_link_libraries(vulkan_smoke_tests PRIVATE
+        matter_asset_store
         matter_glfw
         matter_flecs
         matter_bc7enc
         matter_profile
         matter_vulkan_sdk
+        matter_mesh_charting
+        matter_spatial
     )
     matter_apply_project_defaults(vulkan_smoke_tests)
     matter_apply_test_assertion_policy(vulkan_smoke_tests)
@@ -313,6 +375,51 @@ if(BUILD_TESTING)
     add_test(NAME vulkan_smoke_tests COMMAND vulkan_smoke_tests)
     set_tests_properties(vulkan_smoke_tests PROPERTIES
         LABELS vulkan
+        PASS_REGULAR_EXPRESSION "ALL PASS"
+        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+
+    add_test(NAME vt_feedback_visibility_tests COMMAND vulkan_smoke_tests)
+    set_tests_properties(vt_feedback_visibility_tests PROPERTIES
+        LABELS vulkan
+        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-feedback"
+        PASS_REGULAR_EXPRESSION "ALL PASS"
+        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+
+    add_test(NAME vt_input_snapshot_tests COMMAND vulkan_smoke_tests)
+    set_tests_properties(vt_input_snapshot_tests PROPERTIES
+        LABELS vulkan
+        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-input-snapshot"
+        PASS_REGULAR_EXPRESSION "ALL PASS"
+        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+
+    add_test(NAME vt_direct_source_tests COMMAND vulkan_smoke_tests)
+    set_tests_properties(vt_direct_source_tests PROPERTIES
+        LABELS vulkan
+        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-direct-source"
+        PASS_REGULAR_EXPRESSION "ALL PASS"
+        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+
+    add_test(NAME vt_surface_material_tests COMMAND vulkan_smoke_tests)
+    set_tests_properties(vt_surface_material_tests PROPERTIES
+        LABELS vulkan
+        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-surfaces"
+        PASS_REGULAR_EXPRESSION "ALL PASS"
+        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+
+    add_test(NAME sparse_voxel_gpu_tests COMMAND vulkan_smoke_tests)
+    set_tests_properties(sparse_voxel_gpu_tests PROPERTIES
+        LABELS vulkan
+        ENVIRONMENT "MATTER_VK_SMOKE_MODE=sparse-voxel"
         PASS_REGULAR_EXPRESSION "ALL PASS"
         FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
@@ -349,7 +456,7 @@ if(BUILD_TESTING)
         VK_USE_PLATFORM_WIN32_KHR
     )
     target_link_libraries(matter_vt_compositor_test_objects PRIVATE
-        matter_glfw matter_flecs matter_vulkan_sdk)
+        matter_glfw matter_flecs matter_vulkan_sdk matter_asset_store)
     matter_apply_project_defaults(matter_vt_compositor_test_objects)
     matter_apply_test_assertion_policy(matter_vt_compositor_test_objects)
     add_dependencies(matter_vt_compositor_test_objects matter_embedded_spirv)
@@ -372,7 +479,7 @@ if(BUILD_TESTING)
         "MATTER_VK_TEST_LAYER_PATH=\"${matter_vulkan_runtime}\""
     )
     target_link_libraries(vt_compositor_tests PRIVATE
-        matter_glfw matter_flecs matter_vulkan_sdk)
+        matter_glfw matter_flecs matter_vulkan_sdk matter_mesh_charting matter_asset_store)
     matter_apply_project_defaults(vt_compositor_tests)
     matter_apply_test_assertion_policy(vt_compositor_tests)
     add_dependencies(vt_compositor_tests matter_embedded_spirv)

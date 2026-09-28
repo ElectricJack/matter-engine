@@ -1,0 +1,29 @@
+{
+  "recorded_utc": "2026-09-18T02:45:02.271272+00:00",
+  "previous_goal_turn": "progress: launched requested native RT/GI review and verified effective RT dispatches plus GI enabled",
+  "classification": "progress: runtime strip chart/retained demand inputs implemented; native validation prepared",
+  "native_build_run": false,
+  "gpu_checks_run": false,
+  "source_diff_check": "passed",
+  "harness_python_syntax": "passed",
+  "interactive_editor_pid": 11400,
+  "review_permission": "pending",
+  "graft_calls": 1,
+  "graft_timeouts": 1,
+  "graft_tokens_saved": 0,
+  "remaining": [
+    "native compilation and static-surface GPU fixture",
+    "actual weld chart cost and material checks in StreamMountain",
+    "automatic bounded terrain/weld neighbor assignment",
+    "streaming, mixed LOD, eviction, edits and raster/RT seam acceptance",
+    "remaining full environment goal and visual approval"
+  ],
+  "sources": {
+    "MatterEngine3/src/matter_engine.cpp": "06d43cdd0f63af395300cb7061a52ae481b0fbf37695a397d097735cea600e2a",
+    "MatterEngine3/src/render/chart_static_surface.h": "7ee6d72d52f94512ed255217c03c829113f43015eb086fb98abfd0d6c1a761b6",
+    "MatterEngine3/tests/static_surface_vt_tests.cpp": "40ed7b6639a53df233fc3f82601cfb32e4084d4e11727c88b10ccba9d7464d49",
+    "cmake/MatterViewer.cmake": "59170e504e5f9d25ce14a7455a283a69dd92f84cdbad8145363ca541a750bd2d",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py": "1c981a624afb3c3153cf431abd414048fe33e62218e28109fb9ac849b6c24cf1",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py": "927b00e9eb60e030fec120772de462219fa5f67dcaeb32d5b24786f5979aa397"
+  }
+}

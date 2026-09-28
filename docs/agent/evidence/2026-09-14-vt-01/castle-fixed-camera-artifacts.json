@@ -1,0 +1,109 @@
+{
+  "driver_exit": 0,
+  "verified_screenshots": 2,
+  "markers": [
+    {
+      "serial": 1508,
+      "marker": "settle_begin",
+      "pool_used": 1715,
+      "fills_total": 4098,
+      "variants": 79,
+      "invalidations_total": 2,
+      "pages_dropped_total": 2296,
+      "evictions_total": 0,
+      "queue": 0
+    },
+    {
+      "serial": 2108,
+      "marker": "settle_end",
+      "pool_used": 1716,
+      "fills_total": 4099,
+      "variants": 79,
+      "invalidations_total": 2,
+      "pages_dropped_total": 2296,
+      "evictions_total": 0,
+      "queue": 0
+    },
+    {
+      "serial": 2112,
+      "marker": "away_begin",
+      "pool_used": 1716,
+      "fills_total": 4099,
+      "variants": 79,
+      "invalidations_total": 2,
+      "pages_dropped_total": 2296,
+      "evictions_total": 0,
+      "queue": 0
+    },
+    {
+      "serial": 2202,
+      "marker": "away_end",
+      "pool_used": 1716,
+      "fills_total": 4099,
+      "variants": 79,
+      "invalidations_total": 2,
+      "pages_dropped_total": 2296,
+      "evictions_total": 0,
+      "queue": 0
+    },
+    {
+      "serial": 2203,
+      "marker": "return_begin",
+      "pool_used": 1716,
+      "fills_total": 4099,
+      "variants": 79,
+      "invalidations_total": 2,
+      "pages_dropped_total": 2296,
+      "evictions_total": 0,
+      "queue": 0
+    },
+    {
+      "serial": 2803,
+      "marker": "return_end",
+      "pool_used": 1717,
+      "fills_total": 4100,
+      "variants": 79,
+      "invalidations_total": 2,
+      "pages_dropped_total": 2296,
+      "evictions_total": 0,
+      "queue": 0
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-fixed-camera/timeline.txt",
+      "bytes": 517,
+      "sha256": "724da4ce6fc1530ce293af4551b768e8bfcb543d3572170d900f81fa714ea8f9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-fixed-camera/vt.jsonl",
+      "bytes": 1055529,
+      "sha256": "8fb8a73ebf7fbd7409087a3898c6661c65ce3448ebce9148ad2ba05ac3b0234b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-fixed-camera/run/log.txt",
+      "bytes": 22730,
+      "sha256": "dd96405d600541ca71f264230edc64d3eadf4e1034dae72ef6b91b9b83ac1a0c"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-fixed-camera/settled.png",
+      "bytes": 2116645,
+      "sha256": "a48d431f955123caa55e6a3cfccf2d289eb8ed9c6afba151dc66e1cc83056db8"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-fixed-camera/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-fixed-camera/returned.png",
+      "bytes": 2117509,
+      "sha256": "dc3a75a6d4c7e6c413f43b0e767b30009815a792464b64903b54f2144185ac9b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-fixed-camera/returned.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    }
+  ]
+}

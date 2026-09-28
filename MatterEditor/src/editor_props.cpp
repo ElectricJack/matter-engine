@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEditor/src/editor_props.cpp
 //
 // The editor's property SCHEMA plus the layer machinery around it. Each
@@ -73,7 +74,9 @@ std::string world_props_path(const std::string& project_dir,
                              const std::string& world_name) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path scene_dir = fs::path(project_dir) / "scenes" / world_name;
+    const auto script = matter::project_layout::scene_script(project_dir, world_name);
+    const fs::path scene_dir = script.empty()
+        ? fs::path(project_dir) / "scenes" / world_name : script.parent_path();
     if (fs::is_directory(scene_dir, ec))
         return (scene_dir / "props.json").string();
     return project_dir + "/editor/worlds/" + world_name + ".props.json";
@@ -312,7 +315,9 @@ const auto s_cloud_shadows = matter::props::group<matter::CloudShadowSettings>(
 const char* const kHorizonDebugLabels[] = {
     "Off", "Map (addressed frame)", "March (reference)",
     "Map (rt_shadow world XZ)", "|Map - March|", "|RT form - March|",
-    "Map (world XZ, no lift)"};
+    "Map (world XZ, no lift)", "Composed VT status", "Composed VT charts",
+    "Composed POM path (raster)", "VT proxy mip (raster)",
+    "VT proxy density (raster)"};
 
 // render.pom — Scope::World, bound to ViewerStats::tileset_pom. Ground
 // parallax-occlusion mapping over the tileset's height channel: how deep the
@@ -355,13 +360,18 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
         .doc("Blends the baked per-direction horizon occlusion toward 0. No "
              "effect on slots loaded from a v1 .gtex."),
     prop(&matter::TilesetPomSettings::horizon_debug, "horizon_debug")
-        .label("Horizon debug").enums(kHorizonDebugLabels, 7).no_serialize()
+        .label("Surface debug").enums(kHorizonDebugLabels, 12).no_serialize()
         .doc("Draws the horizon term over the parallaxed ground in place of "
              "its albedo. Read it with Viewer Debug > Debug view > Raw "
              "albedo; anything lit is unreadable as a field. The march is "
              "the reference -- it steps the same height field the parallax "
              "displaced along, so wherever it and the map disagree, the map "
-             "is misregistered."));
+             "is misregistered. Composed VT modes show traversal status or "
+             "chart identity through the same raw-albedo view. Proxy mip "
+             "encodes requested/resident mip in red/green (divide by 8); "
+             "density encodes log2 finest/resident texels per world metre "
+             "(divide by 12). Blue marks a valid ordinary chart; magenta "
+             "marks unsupported module/metric, black means no VT."));
 
 // render.vt — the chart-VT near band (Phase 0 of the decal/ground-compositing
 // design). Two rows, and they exist because until now there were none: the
@@ -849,7 +859,15 @@ const auto s_gpu = matter::props::group<GpuPrefs>(
         .env("MATTER_FRAME_LIMIT")
         .doc("Pace frames before input sampling. Choose a rate the scene can "
              "sustain with some GPU headroom. Does not lower rendering quality "
-             "or change VSync; zero disables the limit."));
+             "or change VSync; zero disables the limit."),
+    prop(&GpuPrefs::forest_history_reset, "forest_history_reset")
+        .label("Reset temporal history on forest streaming")
+        .doc("On: every terrain streaming update that replaces the sparse-voxel "
+             "forest snapshot restarts the DLSS history, so trees go coarse and "
+             "re-converge over the next frames. Off: the accumulated history is "
+             "kept and tree detail stays stable across streaming updates; newly "
+             "placed trees rely on the upscaler's disocclusion handling. No "
+             "effect in Native mode. Takes effect on the next frame."));
 
 const auto s_gi = matter::props::group<GiPrefs>(
     "render.gi", "Ray-Traced GI",

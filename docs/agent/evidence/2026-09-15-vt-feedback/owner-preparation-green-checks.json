@@ -1,0 +1,66 @@
+[
+  {
+    "name": "owner-preparation-green-compositor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 15.244215965270996,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-compositor-build.log"
+  },
+  {
+    "name": "owner-preparation-green-compositor-test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.6503503322601318,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-compositor-test.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "owner-preparation-green-smoke-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 29.455025911331177,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-smoke-build.log"
+  },
+  {
+    "name": "owner-preparation-green-vt-enrich",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.2487947940826416,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-vt-enrich.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "owner-preparation-green-vt-queue",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.1153104305267334,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-vt-queue.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  }
+]

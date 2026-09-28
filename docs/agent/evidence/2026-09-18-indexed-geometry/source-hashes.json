@@ -1,0 +1,9 @@
+{
+  "MatterEngine3/src/geometry/geometry_indexed_cut.h": "3b3df1fa547059d6eac469cfe90595f41bf6e5bfaa985397af4b508f5e293189",
+  "MatterEngine3/src/geometry/geometry_residency.cpp": "abee3d0c5aed4ab7ee07a030510ab72e91ed4d272cd34976cff1a2185ebcee53",
+  "MatterEngine3/src/render/geometry_world_runtime.cpp": "72003a1a2a9ac5d8b65b03131aa248046819018f855464de09725073fcde2d21",
+  "MatterEngine3/src/render/vk_scene_renderer.cpp": "b76178f3056d7508bc014d51517ba47680c825bb997b5f49b060fcd8e4251e66",
+  "MatterEngine3/tests/geometry_hierarchy_tests.cpp": "4fb0cdf0efd05de4879de6a62a0626acc09cea375310cf67dcb2a9eb60500b17",
+  "projects/world_demo/scenes/streaming/StreamMountain/props.json": "ca12707edafd66ef3529a6b3ec6c22c978138679bfee00fea81ef52413170c1f",
+  "tools/launch-mountain-geometry.ps1": "ff002faf21992d3115bfe920f579e441d340c1cbdfebf1d7028d02c21db5e912"
+}

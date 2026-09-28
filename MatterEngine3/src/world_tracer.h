@@ -37,7 +37,7 @@ struct ResidentPart {
 // Source resident geometry instead of decoding .part files.
 //
 // Without this, build() reads every unique part hash off disk into a private
-// BLASManager plus a TLASManager(65536) -- a second full copy of geometry the
+// BLASManager -- a second full copy of geometry the
 // caller usually already has in RAM, re-read on every rebuild, and rebuilds are
 // triggered by every sector publish. On a streaming world that is O(world) disk
 // I/O on the app thread. Returning true here skips all of it and points the

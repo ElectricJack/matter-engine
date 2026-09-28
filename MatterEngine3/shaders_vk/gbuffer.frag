@@ -1,5 +1,7 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_buffer_reference_uvec2 : require
 
 #include "material_common.glsl"
 #include "impostor_common.glsl"
@@ -18,8 +20,25 @@
 #define VT_POOL_BINDING 10
 #define VT_INDIRECTION_BINDING 11
 #define VT_VARIANTS_BINDING 12
-#define VT_FEEDBACK_BINDING 13
+#define VT_INPUT_BINDING 25
 #include "vt_common.glsl"
+// Opt-in diagnostic specialization; the default preserves all connected POM.
+// Removing this path at pipeline creation also exposes its register/code cost.
+layout(constant_id = 0) const bool GBUFFER_CONNECTED_POM = true;
+layout(constant_id = 1) const bool GBUFFER_POM_WORK = false;
+uvec3 gbuffer_seed_work, gbuffer_walk_work;
+#define VT_POM_CONNECTED_ENABLED GBUFFER_CONNECTED_POM
+#define VT_SEED_TRIANGLE_VISIT() { if (GBUFFER_POM_WORK) ++gbuffer_seed_work.x; }
+#define VT_SEED_NODE_VISIT() { if (GBUFFER_POM_WORK) ++gbuffer_seed_work.y; }
+#define VT_WALK_PROJECTION_VISIT() { if (GBUFFER_POM_WORK) ++gbuffer_seed_work.z; }
+#define VT_WALK_LOCATE_VISIT() { if (GBUFFER_POM_WORK) ++gbuffer_walk_work.x; }
+#define VT_WALK_SAMPLE_VISIT() { if (GBUFFER_POM_WORK) ++gbuffer_walk_work.y; }
+#define VT_WALK_FILTER_VISIT() { if (GBUFFER_POM_WORK) ++gbuffer_walk_work.z; }
+#include "vt_parallax.glsl"
+#define VT_DRAW_MATERIAL_TYPE MaterialGpu
+#define VT_DRAW_INPUT_BINDING 26
+#include "vt_draw_inputs.glsl"
+#include "vt_visible_input.glsl"
 #include "vt_normal_frame.glsl"
 
 #define WATER_SET 1
@@ -117,6 +136,7 @@ layout(location = 2) out vec4 out_orm;
 layout(location = 3) out vec2 out_velocity;
 layout(location = 4) out uvec2 out_material_instance;
 layout(location = 5) out float out_reactivity;
+layout(location = 6) out uvec4 out_vt_feedback;
 
 // Phase 2 (Task 10): conservative depth write. Parallax only ever pushes the
 // displayed surface AWAY from the camera; under this pipeline's reversed-Z
@@ -156,8 +176,23 @@ vec3 lod_debug_color(uint lod) {
 }
 
 void main() {
+    gbuffer_seed_work = gbuffer_walk_work = uvec3(0);
+    out_vt_feedback = uvec4(0u);
+    // Choose compatible inputs before POM, but keep only their identity and
+    // desired mip live across the march. Resolve sampling coordinates where
+    // they are consumed below; indirection is immutable throughout this draw.
+    vec2 atlas_dx = dFdx(in_surface.xy);
+    vec2 atlas_dy = dFdy(in_surface.xy);
+    vec3 local_dx = dFdx(in_part_local_pos);
+    vec3 local_dy = dFdy(in_part_local_pos);
+    float vt_lod = vt_desired_mip(in_vt_slot, atlas_dx, atlas_dy);
+    uint vt_input_snapshot =
+        vt_resolve(in_vt_slot, in_surface.xy, vt_lod).input_snapshot;
+    bool direct_source_page = vt_is_direct_source(vt_resolve(in_vt_slot, in_surface.xy, vt_lod));
     MaterialGpu material;
-    if (in_material_valid != 0u) {
+    if (vt_draw_material(vt_input_snapshot, in_material_index, material)) {
+        // Captured material rows include the compatible source-bank index.
+    } else if (in_material_valid != 0u) {
         material = materials[in_material_index];
     } else {
         material.base_roughness = vec4(0.5, 0.5, 0.5, 1.0);
@@ -233,22 +268,28 @@ void main() {
         // deciding whether the two taps earn their cost; it is NOT a correctness
         // fix, and off is visibly flatter at grazing angles.
         const vec2 base_uv = clamp(in_surface.yz, 0.0, 1.0);
+        const float cell_pixels = float(textureSize(impostorAtlas, 0).x) / float(IMPOSTOR_GRID_DIM);
+        const float footprint = max(length(dFdx(base_uv)), length(dFdy(base_uv))) * cell_pixels;
+        const float atlas_lod = clamp(log2(max(footprint, 1.0)), 0.0,
+                                      float(textureQueryLevels(impostorAtlas) - 1));
+        // The coarser level of a trilinear tap must stay inside this view.
+        const vec2 inset = vec2(0.5 * exp2(ceil(atlas_lod)) / cell_pixels);
         const vec2 parallax = debug_push.impostor_parallax_enabled != 0u
                                   ? in_impostor_parallax.xy
                                   : vec2(0.0);
         vec2 local = base_uv;
         if (debug_push.impostor_parallax_enabled != 0u) {
-            float probe = texture(impostorAtlas,
-                                  vec3((cell + local) / float(IMPOSTOR_GRID_DIM),
-                                       float(slot * 2u))).b;
+            float probe = textureLod(impostorAtlas,
+                                  vec3((cell + clamp(local, inset, 1.0-inset)) / float(IMPOSTOR_GRID_DIM),
+                                       float(slot * 2u)), atlas_lod).b;
             local = clamp(base_uv + parallax * probe, 0.0, 1.0);
-            probe = texture(impostorAtlas,
-                            vec3((cell + local) / float(IMPOSTOR_GRID_DIM),
-                                 float(slot * 2u))).b;
+            probe = textureLod(impostorAtlas,
+                            vec3((cell + clamp(local, inset, 1.0-inset)) / float(IMPOSTOR_GRID_DIM),
+                                 float(slot * 2u)), atlas_lod).b;
             local = clamp(base_uv + parallax * probe, 0.0, 1.0);
         }
-        const vec2 uv = (cell + local) / float(IMPOSTOR_GRID_DIM);
-        const vec4 shade = texture(impostorAtlas, vec3(uv, float(slot * 2u)));
+        const vec2 uv = (cell + clamp(local, inset, 1.0-inset)) / float(IMPOSTOR_GRID_DIM);
+        const vec4 shade = textureLod(impostorAtlas, vec3(uv, float(slot * 2u)), atlas_lod);
         // Alpha cutout. gl_FragDepth is already written by this shader, so
         // early depth WRITE was off regardless; discard costs the depth TEST
         // nothing extra here.
@@ -268,7 +309,7 @@ void main() {
         // identical on screen and have nothing else in common.
         if (shade.a < kImpostorAlphaCutout &&
             debug_push.wireframe_enabled == 0u) discard;
-        const vec4 baked_tint = texture(impostorAtlas, vec3(uv, float(slot * 2u + 1u)));
+        const vec4 baked_tint = textureLod(impostorAtlas, vec3(uv, float(slot * 2u + 1u)), atlas_lod);
         base_color = resolveBaseColor(material, baked_tint);
         // The B channel is DEPTH now, not AO (it was a constant 1.0 for every
         // DSL-built part). Leaving `ao` at the vertex default keeps ambient
@@ -389,6 +430,8 @@ void main() {
     // exactly like a debug view that renders a flat colour, which is a
     // remarkably good disguise.
     float horizon_debug_value = -1.0;
+    uint composed_pom_status = VT_POM_OFF;
+    uint composed_pom_chart = 0u;
 
     // The interpolated geometric normal, computed once. Every site below that
     // needs the surface frame (the warp frame, both ground samplers, the VT
@@ -471,10 +514,11 @@ void main() {
     // Ground tileset branch (Task 7): MaterialGpu.flags_misc.y low byte
     // carries detailSlot+1 (0 = no tileset). When present, the Wang-sampled
     // ground texture replaces the material's flat base color/normal/ORM.
-    int tileset_slot = tileset_detail_slot(material.flags_misc);
-    const bool finished_domain = (material.flags_misc.x & MATERIAL_SURFACE_DETAIL) != 0u && !is_impostor;
+    int tileset_slot = direct_source_page ? -1 : tileset_detail_slot(material.flags_misc);
+    const bool finished_domain = !direct_source_page &&
+        (material.flags_misc.x & MATERIAL_SURFACE_DETAIL) != 0u && !is_impostor;
     bool finished_surface = false;
-    if (finished_domain && in_vt_slot != 0u && tileset_slot >= 0 && tileset_slot < TILESET_MAX_SLOTS)
+    if (finished_domain && in_vt_slot != 0u && tileset_slot >= 0 && tileset_slot < TILESET_SOURCE_SLOTS)
         finished_surface = tileset.mean_albedo[tileset_slot].w > 0.0 &&
                            TILESET_SLOT_SCALAR(tile_size_m, tileset_slot) > 0.0;
     if (tileset_slot >= 0 && !is_impostor && !finished_domain) {
@@ -930,19 +974,57 @@ void main() {
     // in_vt_slot is `flat` and comes from the draw record, so it is
     // quad-uniform — the derivatives below are well defined.
     if (in_vt_slot != 0u && !finished_surface) {
-        vec2 atlas_uv = in_surface.xy;
-        float vt_lod =
-            vt_desired_mip(in_vt_slot, dFdx(atlas_uv), dFdy(atlas_uv));
-        VtAddress vt = vt_resolve(in_vt_slot, atlas_uv, vt_lod);
+        VtAddress vt = vt_resolve(in_vt_slot, in_surface.xy, vt_lod);
+        bool connected_pom = false;
+        uvec4 pom_origin_request=uvec4(0),pom_neighbor_request=uvec4(0);
+        vec3 connected_albedo = vec3(0), connected_orm = vec3(0), connected_normal = vec3(0);
+        if (direct_source_page) {
+            if (int(tileset.vt_near.w + 0.5) == 8)
+                composed_pom_chart = vt_aux_chart(uvec4(vt_sample_aux(vt) * 255.0 + 0.5));
+            vec3 ray_world = normalize(in_world_pos - frame.camera_eye_pixel_budget.xyz);
+            vec3 ray_local = transpose(in_vt_normal_matrix) * ray_world;
+            VtVariantRecord record = vt_variants[in_vt_slot - 1u];
+            vec2 uv_ray; float texel_m;
+            if (vt_parallax_metric(local_dx, local_dy, atlas_dx, atlas_dy, ray_local,
+                    vec2(record.atlas_w, record.atlas_h), uv_ray, texel_m)) {
+                float footprint = max(length(local_dx) * frame.surface_detail_sampling.x,
+                                      length(local_dy) * frame.surface_detail_sampling.y);
+                float distance_m = length(in_world_pos - frame.camera_eye_pixel_budget.xyz);
+                float band = max(tileset.pom_a.w, 1e-4);
+                float fade = 1.0 - clamp((distance_m - (tileset.pom_a.z - band)) / band, 0.0, 1.0);
+                VtParallaxSample hit = vt_parallax_sample(in_vt_slot, in_surface.xy, vt_lod,
+                    uv_ray, -dot(normalize(in_normal), ray_local), texel_m, footprint,
+                    int(tileset.pom_a.x), int(tileset.pom_a.y), max(tileset.pom_b.w, 0.0),
+                    max(tileset.pom_b.z, 0.0), fade, in_part_local_pos, ray_local);
+                vt = hit.address;
+                pom_origin_request=hit.origin_request;pom_neighbor_request=hit.neighbor_request;
+                connected_pom = hit.connected;
+                connected_albedo = hit.albedo; connected_orm = hit.orm; connected_normal = hit.normal_local;
+                surface_ray_t = hit.ray_t;
+                // Keep the route in a diagnostic-only high bit; low bits keep
+                // the established status palette and no buffer ABI changes.
+                composed_pom_status = hit.status | (hit.connected ? 256u : 0u);
+                vec4 clip = frame.world_to_clip * vec4(in_world_pos + ray_world * hit.ray_t, 1.0);
+                if (hit.ray_t > 0.0 && clip.w > 0.0)
+                    frag_depth = min(frag_depth, clip.z / clip.w);
+            }
+        }
         if (vt.valid) {
-            vt_write_feedback(vt, ivec2(gl_FragCoord.xy));
-            vec3 vt_albedo = vt_sample_channel(vt, VT_CHANNEL_ALBEDO).rgb;
-            vec3 vt_orm = vt_sample_channel(vt, VT_CHANNEL_ORM).rgb;
-            vec4 vt_aux = vt_sample_channel(vt, VT_CHANNEL_AUX);
+            out_vt_feedback = vt_pack_visible_feedback(vt_feedback_request(vt), vt.module_request);
+            if(pom_neighbor_request.x!=0u)
+                out_vt_feedback=vt_pack_visible_feedback(pom_origin_request,pom_neighbor_request);
+            vec3 vt_albedo = vt_sample_material(vt, VT_CHANNEL_ALBEDO).rgb;
+            vec3 vt_orm = vt_sample_orm(vt).rgb;
+            vec4 vt_aux = vt_sample_aux(vt);
             vec3 vt_normal_ts =
-                vt_decode_normal(vt_sample_channel(vt, VT_CHANNEL_NORMAL));
+                vt_decode_normal(vt_sample_normal(vt));
             vec3 page_normal_ws = normalize(in_vt_normal_matrix *
                 vt_frame_decode(vt_normal_ts, normalize(in_normal)));
+            if (connected_pom) {
+                vt_albedo = connected_albedo;
+                vt_orm = connected_orm;
+                page_normal_ws = normalize(in_vt_normal_matrix * connected_normal);
+            }
             // Near detail is already world-space. Re-express both operands
             // in one robust world frame only for their final composition.
             vec3 page_world_ts = vt_frame_encode(page_normal_ws, geo_n);
@@ -972,10 +1054,12 @@ void main() {
             float rough_ratio = 1.0;
             if (near_band > 0.0) {
                 int aux_material = int(vt_aux.r * 255.0 + 0.5);
-                int aux_slot =
-                    uint(aux_material) < frame.counts.z
-                        ? tileset_detail_slot(materials[aux_material].flags_misc)
-                        : -1;
+                MaterialGpu aux_record;
+                int aux_slot = -1;
+                if (vt_draw_material(vt.input_snapshot, uint(aux_material), aux_record))
+                    aux_slot = tileset_detail_slot(aux_record.flags_misc);
+                else if (uint(aux_material) < frame.counts.z)
+                    aux_slot = tileset_detail_slot(materials[aux_material].flags_misc);
                 int ratio_slot = aux_slot >= 0 ? aux_slot : tileset_slot;
                 vec3 detail = detail_albedo;
                 vec3 detail_orm_here = detail_orm;
@@ -1113,8 +1197,8 @@ void main() {
         // pixel. Keeping one footprint for every channel avoids marching one
         // heightfield and shading a differently filtered material surface.
         float footprint = max(
-            length(dFdx(in_part_local_pos)) * frame.surface_detail_sampling.x,
-            length(dFdy(in_part_local_pos)) * frame.surface_detail_sampling.y);
+            length(local_dx) * frame.surface_detail_sampling.x,
+            length(local_dy) * frame.surface_detail_sampling.y);
         float distance_m = length(in_world_pos - frame.camera_eye_pixel_budget.xyz);
         float fade_m = max(tileset.pom_a.w, 1e-4);
         float fade = 1.0 - clamp((distance_m - (tileset.pom_a.z - fade_m)) / fade_m, 0.0, 1.0);
@@ -1141,6 +1225,53 @@ void main() {
     // returns this untouched and runs the display pass in passthrough, so the
     // swapchain byte IS round(value * 255).
     if (horizon_debug_value >= 0.0) base_color = vec3(horizon_debug_value);
+    // Appended diagnostic modes retain the existing horizon enum numbering.
+    // Read through Raw albedo; shading/depth still execute their normal path.
+    int surface_debug = int(tileset.vt_near.w + 0.5);
+    if (surface_debug == 7)
+        base_color = vt_parallax_status_color(composed_pom_status & 255u);
+    else if (surface_debug == 8)
+        base_color = direct_source_page
+            ? lod_debug_color(composed_pom_chart ^ (in_vt_slot * 1664525u))
+            : vec3(0.25);
+    else if (surface_debug == 9)
+        base_color = (composed_pom_status & 256u) != 0u
+            ? vec3(1,1,0) : vt_parallax_status_color(composed_pom_status & 255u);
+    else if (surface_debug == 10 || surface_debug == 11) {
+        // Inspect the proxy coordinate independently of the displaced hit.
+        // RGB is (desired mip / 8, resident mip / 8, valid) in mode 10;
+        // mode 11 is (log2(finest t/m) / 12, log2(resident t/m) / 12, valid).
+        // Black is no VT; magenta is a module mapping/degenerate metric.
+        // These are ordinary chart-page metrics, not live tileset detail.
+        VtAddress sample_at_proxy = vt_resolve(in_vt_slot, in_surface.xy, vt_lod);
+        base_color = vec3(0);
+        if (sample_at_proxy.valid) {
+            base_color = vec3(1,0,1);
+            if (sample_at_proxy.material_chart == 0xffffffffu) {
+                if (surface_debug == 10) {
+                    base_color = vec3(float(sample_at_proxy.desired_mip) / 8.0,
+                                      float(sample_at_proxy.mapped_mip) / 8.0, 1);
+                } else {
+                    VtVariantRecord record = vt_variants[in_vt_slot - 1u];
+                    vec2 unused_ray; float world_texel_m;
+                    if (vt_parallax_metric(dPdx, dPdy, atlas_dx, atlas_dy, vec3(0),
+                            vec2(record.atlas_w, record.atlas_h), unused_ray, world_texel_m)) {
+                        float density = log2(1.0 / world_texel_m);
+                        base_color = vec3(clamp(density / 12.0, 0.0, 1.0),
+                            clamp((density - float(sample_at_proxy.mapped_mip)) / 12.0, 0.0, 1.0), 1);
+                    }
+                }
+            }
+        }
+    }
+
+    // Opt-in work census. Raw albedo preserves round(log2(count+1)/24*255).
+    // Mode 9 selects walk hops/samples/filter taps; other modes select seed
+    // triangle tests/node visits/all geometry projections. Timing this
+    // instrumented shader is not performance acceptance. Specialization
+    // removes these counters and color replacement from ordinary rendering.
+    if (GBUFFER_POM_WORK)
+        base_color = clamp(log2(vec3(surface_debug == 9 ? gbuffer_walk_work : gbuffer_seed_work) + 1.0) / 24.0, 0.0, 1.0);
 
     // Applied AFTER every material, tileset/POM, VT and horizon-debug write to
     // base_color, so the view-off path (lod_tint_enabled == 0) stays
@@ -1180,7 +1311,7 @@ void main() {
     // the half-float alpha lane. RT reconstructs the original proxy point
     // for visibility, avoiding normals derived across displaced mortar steps.
     out_orm = vec4(roughness, metallic, ao,
-        finished_domain ? surface_ray_t : clamp(horizon_sun_visibility, 0.0, 1.0));
+        (finished_domain || direct_source_page) ? surface_ray_t : clamp(horizon_sun_visibility, 0.0, 1.0));
     out_reactivity = clamp(water_reactivity, 0.0, 1.0);
     out_velocity = in_velocity_valid.z > 0.5
                        ? in_velocity_valid.xy
@@ -1203,6 +1334,11 @@ void main() {
     // OR is then a no-op and that fragment keeps the pre-fix behaviour. That is
     // a fragment with no material at all, so there is nothing to lose and no
     // new failure mode -- every reader fails its bounds test either way.
+    // Finished surfaces carry their captured version without requesting pages.
+    // Chartless and impostor fragments keep the no-version tag.
+    out_vt_feedback.w = vt_visible_input_word(out_vt_feedback.w,
+        !is_impostor ? vt_input_snapshot : 0xffffffffu);
+    if (direct_source_page && !is_impostor) out_vt_feedback.w |= VT_VISIBLE_COMPOSED_HEIGHT;
     out_material_instance =
         uvec2(in_material_index |
                   (is_impostor ? IMPOSTOR_IDENTITY_BIT : 0u),

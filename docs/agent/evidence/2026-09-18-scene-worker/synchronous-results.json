@@ -1,0 +1,50 @@
+{
+  "movement": {
+    "count": 959,
+    "median_ms": 32.42630000000281,
+    "p95_ms": 49.37299999999959,
+    "max_ms": 82.86330000000089
+  },
+  "stages": {
+    "update_cpu": {
+      "count": 2982,
+      "total_ms": 24360.234000000004,
+      "max_ms": 62.236,
+      "mean_ms": 8.169092555331993
+    },
+    "hierarchy_pack": {
+      "count": 796556,
+      "total_ms": 6414.589,
+      "max_ms": 0.716,
+      "mean_ms": 0.008052904001727437
+    },
+    "scene_worker": {
+      "count": 0,
+      "total_ms": 0.0,
+      "max_ms": 0.0,
+      "mean_ms": 0.0
+    },
+    "cut_upload_cpu": {
+      "count": 1088,
+      "total_ms": 3103.269,
+      "max_ms": 9.016,
+      "mean_ms": 2.852269301470588
+    }
+  },
+  "queues": {
+    "reads_sampled_peak": 1023,
+    "decode_queue_sampled_peak": 34,
+    "completions_sampled_peak": 83,
+    "prepared_sampled_peak": 0,
+    "uploads_sampled_peak": 30,
+    "published": 51261,
+    "reservation_stalls": 0,
+    "upload_limit_frames": 58,
+    "cpu_deferrals": 0,
+    "failures": 0,
+    "watchdogs": 0,
+    "gpu_stalls": 0,
+    "scratch_stalls": 0,
+    "evictions": 0
+  }
+}

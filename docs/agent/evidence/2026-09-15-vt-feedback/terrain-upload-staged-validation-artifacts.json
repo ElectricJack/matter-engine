@@ -1,0 +1,146 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 357.42120586300007,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "MATTER_VK_VALIDATION=1",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/profile.json"
+  ],
+  "source_manifest": "upload-staged-final-source.json",
+  "changed_inputs_during_run": [],
+  "validation_enabled": true,
+  "validation_error_lines": [],
+  "skip_or_oversize_lines": [],
+  "settled_counter_gate": true,
+  "analysis_exit": 0,
+  "analysis_command": [
+    "python3",
+    "tools/vt_acceptance.py",
+    "--trace",
+    "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/vt.jsonl",
+    "--output",
+    "docs/agent/evidence/2026-09-15-vt-feedback/terrain-upload-staged-validation-summary.json",
+    "--begin-marker",
+    "settle_begin",
+    "--end-marker",
+    "settle_end",
+    "--required-frames",
+    "600",
+    "--require-settled"
+  ],
+  "full_vt_acceptance": false,
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/command.json",
+      "bytes": 1503,
+      "sha256": "bf279da6bb8d05ac2699ff848c8642b12df617918664acb1a4b76e184d56176c"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/driver.log",
+      "bytes": 640683,
+      "sha256": "c238393522fdac1d843c166e3fa88885805953d53a92f4aa308b2c27f88b7d6b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/launch-source.json",
+      "bytes": 52771,
+      "sha256": "8463acee3d7734c0afdd09e10a3995f784c1de9c1124887fad1077c7f4e1fbac"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/profile.json",
+      "bytes": 3677896,
+      "sha256": "b8552dd04004744fc13516e43abd2f66ae2514a73deec4d59f34db8c10ff6115"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/result.json",
+      "bytes": 1700,
+      "sha256": "f1a10fb96a0d2d3ccb7dae3390764304b71a2fa4a7545fe9551313b613076023"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/run/cmd.txt",
+      "bytes": 223,
+      "sha256": "0a43cdd1fc344fd75986a746d361a564d4a3add79605b66f79597661464e195a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/run/log.txt",
+      "bytes": 640192,
+      "sha256": "25d9ab1044b0f522a7f847534c6b776d534d46a08bcb13ee4b4fe3022f878a74"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/settled.png",
+      "bytes": 5907957,
+      "sha256": "7657943fb42c58a232559f6dacfd749950fa5a7064c68e43bf39371de20f7a7a",
+      "dimensions": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/timeline.txt",
+      "bytes": 223,
+      "sha256": "0a43cdd1fc344fd75986a746d361a564d4a3add79605b66f79597661464e195a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-upload-staged-validation/vt.jsonl",
+      "bytes": 1820204,
+      "sha256": "e3c504d6b5d63ba3e5625ee9ef120e3adff6565e565e15310609be0ab15a452d"
+    }
+  ],
+  "visual_review": "1920x1080 final image inspected against worker reference: same forest/valley composition and broad appearance. Existing noise/tiling remains visible. Final frame only, not intermediate continuity acceptance."
+}

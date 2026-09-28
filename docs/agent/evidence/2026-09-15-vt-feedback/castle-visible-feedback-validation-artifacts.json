@@ -1,0 +1,157 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 151.79688333399827,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "CastleUpgraded",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=-15,24,43,16.062178,7,7.674546",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=1",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/profile.json",
+    "--env",
+    "MATTER_VK_VALIDATION=1"
+  ],
+  "source_manifest": "visibility-final-source.json",
+  "changed_inputs_during_run": [],
+  "validation_enabled": true,
+  "page_event_logging": true,
+  "validation_error_lines": [],
+  "skip_or_oversize_lines": [],
+  "analysis_command": [
+    "python3",
+    "tools/vt_acceptance.py",
+    "--trace",
+    "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/vt.jsonl",
+    "--output",
+    "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/castle-visible-feedback-validation-summary.json",
+    "--begin-marker",
+    "settle_begin",
+    "--end-marker",
+    "settle_end",
+    "--required-frames",
+    "600",
+    "--require-settled"
+  ],
+  "analysis_exit": 0,
+  "settled_counter_gate": true,
+  "full_vt_acceptance": false,
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/analysis-result.json",
+      "bytes": 488,
+      "sha256": "04bf0328b34556510bef2d9b338815b0edbd6dcf70a4258b5b6d8ed670de98ed"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/analysis.log",
+      "bytes": 1931,
+      "sha256": "ef2c78d29bd0016933f23f8263ba0b5dd9b7876c39fd33ab4329ce0e22ab7daf"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/camera.path",
+      "bytes": 372076,
+      "sha256": "5caac095539bfdb731cf9728e88b348190e8b1ff065352bb022ccc9715e10662"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/command.json",
+      "bytes": 1520,
+      "sha256": "89e7b476a315883a7eb424a983d4236c43d85aecaf1b712b9122455e0530e7e9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/driver.log",
+      "bytes": 360874,
+      "sha256": "03ad84a705363db28a99a88443a1ca8717045d3bd6c1d9556265fa0bb2f95ea7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/launch-source.json",
+      "bytes": 54173,
+      "sha256": "1f731ac877e400fa90713e43837d555c557b6dc33db5ed221be0aa0a35bafcf4"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/profile.json",
+      "bytes": 3679588,
+      "sha256": "64ae05522eae7624d0164ef3cdcf83ad7c58055ab055c381ad5dfb3fe704c96f"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/result.json",
+      "bytes": 1717,
+      "sha256": "efa0746846141cf1149564c25364cdafd3b38545b3d5c375515c676afd28806d"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/run/cmd.txt",
+      "bytes": 225,
+      "sha256": "e7dfbd8e0cca8dac5db4aa003acf03936f89adaf39144675a9c0f8b659cc2746"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/run/log.txt",
+      "bytes": 360374,
+      "sha256": "021af1042658b96767e58fcb52d16e31caacd904d9f7a89df6ea2f4087c80868"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/settled.png",
+      "bytes": 2115705,
+      "sha256": "1209bbea4609593a29a3221c5a0b184221b01516af9cb4b712459e77dcabdc98",
+      "dimensions": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/timeline.txt",
+      "bytes": 225,
+      "sha256": "e7dfbd8e0cca8dac5db4aa003acf03936f89adaf39144675a9c0f8b659cc2746"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/vt.jsonl",
+      "bytes": 1219787,
+      "sha256": "83f6767e31bcb69ba3e29758954ca9c349ec7961b868c497ff78094ad1144dde"
+    }
+  ],
+  "visual_review": "1920x1080 final image inspected: same blue-castle framing and broad appearance as preceding identity capture; existing dotted/noisy wall and roof appearance remains. Final frame only, not intermediate temporal continuity acceptance."
+}

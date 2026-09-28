@@ -1,0 +1,114 @@
+{
+  "moving-command-reuse-v1": {
+    "movement": {
+      "count": 959,
+      "median_ms": 43.10829999999987,
+      "p95_ms": 57.38730000000214,
+      "max_ms": 150.62389999999868
+    },
+    "stages": {
+      "update_cpu": {
+        "count": 2953,
+        "total_ms": 29936.026,
+        "max_ms": 131.684,
+        "mean_ms": 10.137496105655266
+      },
+      "publish_cpu": {
+        "count": 2953,
+        "total_ms": 6486.539999999999,
+        "max_ms": 26.557,
+        "mean_ms": 2.1965932949542832
+      },
+      "snapshot": {
+        "count": 17207,
+        "total_ms": 2297.337,
+        "max_ms": 1.204,
+        "mean_ms": 0.13351176846632185
+      },
+      "hierarchy_pack": {
+        "count": 734600,
+        "total_ms": 7092.323,
+        "max_ms": 1.225,
+        "mean_ms": 0.009654673291587259
+      },
+      "cut_upload_cpu": {
+        "count": 1016,
+        "total_ms": 5044.241999999999,
+        "max_ms": 12.899,
+        "mean_ms": 4.9648051181102355
+      }
+    },
+    "queues": {
+      "reads_sampled_peak": 0,
+      "decode_queue_sampled_peak": 151,
+      "completions_sampled_peak": 86,
+      "prepared_sampled_peak": 615,
+      "uploads_sampled_peak": 171,
+      "published": 51537,
+      "reservation_stalls": 0,
+      "upload_limit_frames": 65,
+      "cpu_deferrals": 0,
+      "failures": 0,
+      "watchdogs": 0,
+      "gpu_stalls": 0,
+      "scratch_stalls": 0,
+      "evictions": 0
+    }
+  },
+  "moving-publication-batch-v1": {
+    "movement": {
+      "count": 959,
+      "median_ms": 46.94060000000172,
+      "p95_ms": 60.73210000000108,
+      "max_ms": 183.02279999999882
+    },
+    "stages": {
+      "update_cpu": {
+        "count": 2806,
+        "total_ms": 31560.037,
+        "max_ms": 158.78,
+        "mean_ms": 11.24734034212402
+      },
+      "publish_cpu": {
+        "count": 2806,
+        "total_ms": 4970.965999999999,
+        "max_ms": 16.989,
+        "mean_ms": 1.7715488239486812
+      },
+      "snapshot": {
+        "count": 16997,
+        "total_ms": 2524.847,
+        "max_ms": 3.849,
+        "mean_ms": 0.14854662587515446
+      },
+      "hierarchy_pack": {
+        "count": 731428,
+        "total_ms": 8218.769,
+        "max_ms": 1.806,
+        "mean_ms": 0.011236607020786736
+      },
+      "cut_upload_cpu": {
+        "count": 1014,
+        "total_ms": 5838.348000000001,
+        "max_ms": 17.455,
+        "mean_ms": 5.757739644970415
+      }
+    },
+    "queues": {
+      "reads_sampled_peak": 177,
+      "decode_queue_sampled_peak": 0,
+      "completions_sampled_peak": 110,
+      "prepared_sampled_peak": 342,
+      "uploads_sampled_peak": 363,
+      "published": 51571,
+      "reservation_stalls": 0,
+      "upload_limit_frames": 75,
+      "cpu_deferrals": 0,
+      "failures": 0,
+      "watchdogs": 0,
+      "gpu_stalls": 0,
+      "scratch_stalls": 0,
+      "evictions": 0
+    }
+  }
+}

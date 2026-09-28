@@ -1,0 +1,21 @@
+{
+  "close": {
+    "mean_absolute_byte_difference": 2.655817708333333,
+    "fraction_pixels_any_channel_gt_1": 0.54007421875
+  },
+  "grazing": {
+    "mean_absolute_byte_difference": 3.6450501302083333,
+    "fraction_pixels_any_channel_gt_1": 0.5621435546875
+  },
+  "stats": [
+    "[bake-timing] install=18ms world=222ms publish=4ms total=265ms (world-kind: ROOTS ONLY \u00e2\u20ac\u201d the sector fill is NOT in this number, see [stream.fill])",
+    "[stream.fill] COMPLETE: 28 sectors resident in 1.17 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)",
+    "STATS,overview,11.89,0.01,0.13,0.75,11,7,570,3,1,11,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.075,0.000,0.000,0.000,14.25,11.137,0.021,10.958",
+    "STATSVT,overview,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=186/25600,pinned=11,queue=0,fills=186,evictions=0,ind=0.04/64 MiB,material_pages=186,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0",
+    "STATS,close,8.02,0.01,0.13,0.71,11,4,388,5,2,11,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.074,0.000,0.000,0.000,14.25,7.805,0.018,7.629",
+    "STATSVT,close,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=196/25600,pinned=11,queue=0,fills=196,evictions=0,ind=0.04/64 MiB,material_pages=196,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0",
+    "STATS,grazing,8.16,0.01,0.13,0.60,11,5,400,4,2,11,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.073,0.000,0.000,0.000,14.25,7.670,0.017,7.500",
+    "STATSVT,grazing,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=214/25600,pinned=11,queue=0,fills=215,evictions=0,ind=0.04/64 MiB,material_pages=214,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0"
+  ],
+  "interpretation": "POM on/off image changes only; native height/depth tests establish displacement semantics. No performance acceptance."
+}

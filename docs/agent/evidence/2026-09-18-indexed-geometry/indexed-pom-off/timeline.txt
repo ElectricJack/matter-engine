@@ -1,0 +1,30 @@
+render_path native_rt
+set render.gi.enabled true
+set render.pom.enabled false
+wait_idle 3 240
+cam 425 25 1465 419 23 1455
+stats indexed-pom-off-start
+wait_frames 120
+stats indexed-pom-off-120
+shot C:\tmp\matter-blas-mountain\indexed-pom-off\early.png
+wait_frames 1080
+wait_frames 60
+stats indexed-pom-off-steady-0
+wait_frames 60
+stats indexed-pom-off-steady-1
+wait_frames 60
+stats indexed-pom-off-steady-2
+wait_frames 60
+stats indexed-pom-off-steady-3
+wait_frames 60
+stats indexed-pom-off-steady-4
+shot C:\tmp\matter-blas-mountain\indexed-pom-off\settled.png
+cam 475 38 1510 420 23 1455
+wait_frames 180
+stats indexed-pom-off-moved
+shot C:\tmp\matter-blas-mountain\indexed-pom-off\moved.png
+cam 425 25 1465 419 23 1455
+wait_frames 240
+stats indexed-pom-off-returned
+shot C:\tmp\matter-blas-mountain\indexed-pom-off\returned.png
+quit

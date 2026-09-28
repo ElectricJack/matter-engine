@@ -1,0 +1,93 @@
+{
+  "profile": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-visible-feedback-validation/profile.json",
+  "sample_semantics": "Per-frame accumulated exported scope durations in ms; parent/child scopes are not additive. Final bounded profiler history, not an active-work cohort.",
+  "quantile": "nearest-rank ceil(p*n)-1",
+  "validation_enabled": true,
+  "page_event_logging": true,
+  "scopes": {
+    "draw.vt_requests": {
+      "samples": 512,
+      "p95_ms": 0.0019,
+      "max_ms": 0.0221,
+      "sum_ms": 0.6465
+    },
+    "raster.vt_pre": {
+      "samples": 512,
+      "p95_ms": 0.0793,
+      "max_ms": 0.1667,
+      "sum_ms": 29.5244
+    },
+    "raster.vt_post": {
+      "samples": 512,
+      "p95_ms": 0.052399999999999995,
+      "max_ms": 0.18880000000000002,
+      "sum_ms": 20.0405
+    },
+    "vt.push_inputs": {
+      "samples": 512,
+      "p95_ms": 0.0014,
+      "max_ms": 0.0026,
+      "sum_ms": 0.4153
+    },
+    "vt.residency_begin": {
+      "samples": 512,
+      "p95_ms": 0.2802,
+      "max_ms": 0.5079,
+      "sum_ms": 88.9363
+    },
+    "vt.collect": {
+      "samples": 512,
+      "p95_ms": 0.0052,
+      "max_ms": 0.022,
+      "sum_ms": 1.6693
+    },
+    "vt.drain_feedback": {
+      "samples": 512,
+      "p95_ms": 0.2736,
+      "max_ms": 0.4995,
+      "sum_ms": 86.0185
+    },
+    "vt.fb_dedup": {
+      "samples": 512,
+      "p95_ms": 0.019100000000000002,
+      "max_ms": 0.11220000000000001,
+      "sum_ms": 8.3027
+    },
+    "vt.fb_queue": {
+      "samples": 512,
+      "p95_ms": 0.0686,
+      "max_ms": 0.167,
+      "sum_ms": 20.8509
+    },
+    "vt.feedback_target": {
+      "samples": 511,
+      "p95_ms": 0.0014,
+      "max_ms": 0.0025,
+      "sum_ms": 0.3904
+    },
+    "vt.descriptors": {
+      "samples": 512,
+      "p95_ms": 0.0476,
+      "max_ms": 0.104,
+      "sum_ms": 16.8484
+    },
+    "vt.enrich": {
+      "samples": 512,
+      "p95_ms": 0.0016,
+      "max_ms": 0.0050999999999999995,
+      "sum_ms": 0.4515
+    },
+    "vt.table_upload": {
+      "samples": 512,
+      "p95_ms": 0.0064,
+      "max_ms": 0.0217,
+      "sum_ms": 1.9074
+    },
+    "vt.fb_scan": {
+      "samples": 512,
+      "p95_ms": 0.18630000000000002,
+      "max_ms": 0.4154,
+      "sum_ms": 51.5027
+    }
+  }
+}

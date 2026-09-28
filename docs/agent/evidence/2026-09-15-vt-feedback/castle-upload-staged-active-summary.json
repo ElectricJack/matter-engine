@@ -1,0 +1,312 @@
+{
+  "purpose": "Short validation-enabled startup diagnostic after staged GPU preparation; not performance acceptance",
+  "source_manifest": "upload-staged-source.json",
+  "scope_basis": "nonempty per-frame scope accumulations; nearest-rank percentiles; inclusive parent/child times are not additive",
+  "vt_rows": 520,
+  "last_counters": {
+    "variants": 79,
+    "pool_used": 2804,
+    "pinned": 79,
+    "queue": 0,
+    "dirty_pages": 0,
+    "fills_total": 3826,
+    "fills_failed_total": 0,
+    "fills_stale_total": 0,
+    "invalidations_total": 2,
+    "evictions_total": 0
+  },
+  "preparation_limits": {
+    "allocations_per_frame": 2,
+    "upload_bytes_per_frame": 1048576,
+    "cpu_budget_ms": 0.35,
+    "copy_slice_bytes": 65536,
+    "time_bound_is_checked_between_operations": true
+  },
+  "scope_samples": [
+    {
+      "thread_id": 1,
+      "name": "cull.vt_begin",
+      "samples": 503,
+      "sum_ms": 200.0248,
+      "p50_ms": 0.3588,
+      "p95_ms": 0.6959,
+      "p99_ms": 1.03,
+      "max_ms": 1.6838
+    },
+    {
+      "thread_id": 1,
+      "name": "cull.vt_demand",
+      "samples": 503,
+      "sum_ms": 24.2823,
+      "p50_ms": 0.052399999999999995,
+      "p95_ms": 0.0901,
+      "p99_ms": 0.1413,
+      "max_ms": 0.1775
+    },
+    {
+      "thread_id": 1,
+      "name": "draw.vt_requests",
+      "samples": 503,
+      "sum_ms": 72.10719999999999,
+      "p50_ms": 0.0015,
+      "p95_ms": 0.3451,
+      "p99_ms": 1.5264000000000002,
+      "max_ms": 39.4066
+    },
+    {
+      "thread_id": 1,
+      "name": "raster.vt_post",
+      "samples": 503,
+      "sum_ms": 14.0116,
+      "p50_ms": 0.0249,
+      "p95_ms": 0.046700000000000005,
+      "p99_ms": 0.0804,
+      "max_ms": 0.21359999999999998
+    },
+    {
+      "thread_id": 1,
+      "name": "raster.vt_pre",
+      "samples": 503,
+      "sum_ms": 611.6833,
+      "p50_ms": 1.008,
+      "p95_ms": 2.4923,
+      "p99_ms": 3.7885999999999997,
+      "max_ms": 4.2708
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.candidates",
+      "samples": 476,
+      "sum_ms": 37.755,
+      "p50_ms": 0.0684,
+      "p95_ms": 0.1731,
+      "p99_ms": 0.2666,
+      "max_ms": 0.4596
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.collect",
+      "samples": 502,
+      "sum_ms": 2.1692,
+      "p50_ms": 0.0027,
+      "p95_ms": 0.0050999999999999995,
+      "p99_ms": 0.008,
+      "max_ms": 0.7893
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.descriptors",
+      "samples": 502,
+      "sum_ms": 17.7956,
+      "p50_ms": 0.032600000000000004,
+      "p95_ms": 0.0601,
+      "p99_ms": 0.13090000000000002,
+      "max_ms": 0.29969999999999997
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.drain_feedback",
+      "samples": 502,
+      "sum_ms": 145.8651,
+      "p50_ms": 0.2532,
+      "p95_ms": 0.5362,
+      "p99_ms": 0.8002,
+      "max_ms": 1.0788
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.enrich",
+      "samples": 502,
+      "sum_ms": 0.3222,
+      "p50_ms": 0.0005,
+      "p95_ms": 0.0013,
+      "p99_ms": 0.0024,
+      "max_ms": 0.0157
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fb_dedup",
+      "samples": 502,
+      "sum_ms": 11.4401,
+      "p50_ms": 0.0207,
+      "p95_ms": 0.0356,
+      "p99_ms": 0.0451,
+      "max_ms": 0.1405
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fb_queue",
+      "samples": 499,
+      "sum_ms": 67.1384,
+      "p50_ms": 0.108,
+      "p95_ms": 0.2721,
+      "p99_ms": 0.447,
+      "max_ms": 0.7646000000000001
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fb_scan",
+      "samples": 500,
+      "sum_ms": 61.4693,
+      "p50_ms": 0.1138,
+      "p95_ms": 0.25830000000000003,
+      "p99_ms": 0.3732,
+      "max_ms": 0.597
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.feedback_target",
+      "samples": 500,
+      "sum_ms": 0.9746,
+      "p50_ms": 0.0007,
+      "p95_ms": 0.0017,
+      "p99_ms": 0.0025,
+      "max_ms": 0.5612
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fill",
+      "samples": 476,
+      "sum_ms": 221.7835,
+      "p50_ms": 0.4075,
+      "p95_ms": 0.7891,
+      "p99_ms": 1.2732,
+      "max_ms": 3.2916
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fill_select",
+      "samples": 480,
+      "sum_ms": 191.4047,
+      "p50_ms": 0.3598,
+      "p95_ms": 1.0419,
+      "p99_ms": 1.2726,
+      "max_ms": 1.802
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.geometry_upload",
+      "samples": 259,
+      "sum_ms": 25.029700000000002,
+      "p50_ms": 0.0434,
+      "p95_ms": 0.3623,
+      "p99_ms": 0.3937,
+      "max_ms": 0.4087
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.gpu_prepare",
+      "samples": 260,
+      "sum_ms": 133.9767,
+      "p50_ms": 0.45239999999999997,
+      "p95_ms": 0.9478,
+      "p99_ms": 1.1079,
+      "max_ms": 1.3611
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.invalidate_dependencies",
+      "samples": 2,
+      "sum_ms": 0.442,
+      "p50_ms": 0.17930000000000001,
+      "p95_ms": 0.2627,
+      "p99_ms": 0.2627,
+      "max_ms": 0.2627
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.mesh_alloc",
+      "samples": 215,
+      "sum_ms": 90.7477,
+      "p50_ms": 0.42260000000000003,
+      "p95_ms": 0.8039,
+      "p99_ms": 0.9986,
+      "max_ms": 1.129
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.mesh_copy",
+      "samples": 60,
+      "sum_ms": 21.725,
+      "p50_ms": 0.15380000000000002,
+      "p95_ms": 1.9136,
+      "p99_ms": 3.0252,
+      "max_ms": 3.0252
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.mesh_entry",
+      "samples": 476,
+      "sum_ms": 8.1924,
+      "p50_ms": 0.0029,
+      "p95_ms": 0.039799999999999995,
+      "p99_ms": 0.3496,
+      "max_ms": 2.0185999999999997
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.push_inputs",
+      "samples": 502,
+      "sum_ms": 0.9789,
+      "p50_ms": 0.0007,
+      "p95_ms": 0.0016,
+      "p99_ms": 0.0029,
+      "max_ms": 0.3235
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.residency_begin",
+      "samples": 502,
+      "sum_ms": 149.1505,
+      "p50_ms": 0.2575,
+      "p95_ms": 0.543,
+      "p99_ms": 0.8288,
+      "max_ms": 1.4485999999999999
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.surface_upload",
+      "samples": 160,
+      "sum_ms": 11.9012,
+      "p50_ms": 0.026,
+      "p95_ms": 0.35810000000000003,
+      "p99_ms": 0.3752,
+      "max_ms": 0.377
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.table_upload",
+      "samples": 502,
+      "sum_ms": 27.517500000000002,
+      "p50_ms": 0.0458,
+      "p95_ms": 0.116,
+      "p99_ms": 0.1802,
+      "max_ms": 0.2283
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.wait_idle",
+      "samples": 3,
+      "sum_ms": 0.19569999999999999,
+      "p50_ms": 0.0432,
+      "p95_ms": 0.11309999999999999,
+      "p99_ms": 0.11309999999999999,
+      "max_ms": 0.11309999999999999
+    },
+    {
+      "thread_id": 2,
+      "name": "vt.cpu_prepare",
+      "samples": 58,
+      "sum_ms": 139.2284,
+      "p50_ms": 0.6239,
+      "p95_ms": 24.7692,
+      "p99_ms": 32.0874,
+      "max_ms": 32.0874
+    }
+  ],
+  "comparison_limitations": [
+    "Different startup work arrival and retained page sets; maxima are diagnostic, not a controlled whole-scene speedup.",
+    "Driver calls and OS scheduling cannot be preempted by the elapsed-time check.",
+    "Registration, feedback, page composition, source waits and other VT work remain outside the GPU-preparation allowance."
+  ]
+}

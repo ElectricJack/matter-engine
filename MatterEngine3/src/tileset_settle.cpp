@@ -13,6 +13,7 @@
 // pose_hash golden test. Reordering it changes baked output.
 
 #include "tileset_settle.h"
+#include "bake_trace.h"
 
 #include <chrono>
 #include <cmath>
@@ -121,6 +122,7 @@ SettleWorld::SettleWorld(float torus_size, const HeightField& base, const Settle
     b3WorldDef wdef = b3DefaultWorldDef();
     wdef.gravity = b3Vec3{ 0.0f, -9.8f * S, 0.0f };
     impl_->world = b3CreateWorld(&wdef);
+    BAKE_COUNT("physics_worlds_created", 1.0);
 
     // Base terrain: use b3HeightField (dedicated heightfield shape) instead of a
     // triangle mesh. A mesh of N*N cells produces 2*(N-1)^2 triangles; at the

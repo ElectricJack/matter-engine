@@ -1,0 +1,31 @@
+{
+  "red": {
+    "build_exit": 0,
+    "test_exit": 1,
+    "failures": 6
+  },
+  "green": {
+    "build_exit": 0,
+    "test_exit": 0
+  },
+  "build_command": [
+    "./tools/build-windows-from-wsl.sh",
+    "RelWithDebInfo",
+    "matter_profile_tests"
+  ],
+  "test_command": [
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/matter_profile_tests.exe"
+  ],
+  "sources_and_test_binary": {
+    "libs/ProfileLib/include/profile.h": "85f0ec2ee35599fe5d076aaf4ece2f8c3f258b3ea5da6b6f6660ea6e2f2fc958",
+    "libs/ProfileLib/src/profile.cpp": "62b7b4b9358657600de1c46f3b74cf0423e3c896961a3d0ec49d7e81e44bf384",
+    "libs/ProfileLib/tests/profile_tests.cpp": "d3f9923768ca70af85c66f3e69689276ad811635512195ba8c74213958c6afeb",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/matter_profile_tests.exe": "ab33802d6f1796cb7a17459214453e7f195512d687b83a1c20a2ddb98415e8bf"
+  },
+  "notes": [
+    "The green test also verifies that a rejected scope preserves nesting of accepted scopes.",
+    "Counter capacity 32 to 64 adds 256 bytes per FrameRecord, or 128 KiB across the 512-frame history, plus registry name/accumulator storage.",
+    "Excess registrations now return -1; accepted-name timings/counts remain isolated. Trace metadata reports rejection attempts.",
+    "Scene profile coverage on the revised profiler remains to be measured. Dedicated VT trace results predate this profiler change."
+  ]
+}

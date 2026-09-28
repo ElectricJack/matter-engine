@@ -1,0 +1,38 @@
+[
+  {
+    "seconds": 58.0599521999975,
+    "line": "[geometry] pages assets=2 pages=65 inflight=0 gpu=242768 scratch=0 bindings=67 stale=0"
+  },
+  {
+    "seconds": 61.81110429999535,
+    "line": "[geometry] pages assets=3 pages=76 inflight=0 gpu=384460 scratch=0 bindings=79 stale=0"
+  },
+  {
+    "seconds": 65.56055149999884,
+    "line": "[geometry] pages assets=3 pages=80 inflight=0 gpu=423276 scratch=0 bindings=83 stale=0"
+  },
+  {
+    "seconds": 69.31145419999666,
+    "line": "[geometry] pages assets=3 pages=80 inflight=0 gpu=423276 scratch=0 bindings=83 stale=0"
+  },
+  {
+    "seconds": 73.06094879999728,
+    "line": "[geometry] pages assets=3 pages=80 inflight=0 gpu=423276 scratch=0 bindings=83 stale=0"
+  },
+  {
+    "seconds": 76.8113577999975,
+    "line": "[geometry] pages assets=4 pages=89 inflight=0 gpu=532376 scratch=0 bindings=93 stale=0"
+  },
+  {
+    "seconds": 80.56624209999427,
+    "line": "[geometry] pages assets=6 pages=112 inflight=0 gpu=791956 scratch=0 bindings=118 stale=0"
+  },
+  {
+    "seconds": 84.31325719999586,
+    "line": "[geometry] pages assets=6 pages=112 inflight=0 gpu=791956 scratch=0 bindings=118 stale=0"
+  },
+  {
+    "seconds": 88.06338219999452,
+    "line": "[geometry] pages assets=8 pages=167 inflight=0 gpu=1228364 scratch=0 bindings=175 stale=0"
+  }
+]

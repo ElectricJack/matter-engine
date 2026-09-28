@@ -46,8 +46,8 @@
  *   metadata, not as a check that runs.
  *
  * Where this sits
- *   Path: libs/AssetStoreLib/include/asset_store.h -- the library's ONLY
- *   public header. AssetStoreLib is a leaf of the dependency graph: it needs
+ *   Path: libs/AssetStoreLib/include/asset_store.h -- the blob/ref
+ *   public header; asset_pages.h adds the binary page cache. AssetStoreLib is a leaf of the dependency graph: it needs
  *   MemoryLib (`mem_arena.h`) and nothing else -- no engine headers, no
  *   raylib, no Vulkan. The implementation lives in libs/AssetStoreLib/src/:
  *   blob_store.cpp (packs, index, ReadBatch), ref_table.cpp (semantic keys and
@@ -58,9 +58,8 @@
  *   `make -C libs/AssetStoreLib test`, and `bench` for the pack-vs-small-files
  *   measurement written up in docs/asset-store-benchmark-2026-08-05.md.
  *
- *   The engine has no consumer of this library yet -- adopting it as the bake
- *   cache is the second half of M5 in
- *   docs/superpowers/plans/2026-08-04-lod-vt-migration.md.
+ *   The geometry hierarchy compiler consumes asset_pages.h. Production world
+ *   streaming and the legacy bake-cache migration remain separate work.
  *
  * Typical use
  *   Writer:  BlobStore::open({dir}) -> put() x N -> flush_index(). Nothing is
@@ -148,7 +147,11 @@ struct StoreConfig {
      * 64-256 MB; the default is 64 MB. Tests use small values. */
     uint64_t max_pack_bytes = 64ull * 1024 * 1024;
 
-    /* Read-only handles take no writer lock and never modify the store. Open
+    /* Bound index-file staging separately from retained page payloads. */
+    uint64_t max_index_bytes = 256ull * 1024 * 1024;
+
+    /* Read-only handles take no writer lock and never modify payloads or indexes.
+     * They hold a shared readers.lock lease (creating that empty file if needed). Open
      * one per reader thread. */
     bool read_only = false;
 
@@ -162,11 +165,22 @@ struct StoreConfig {
      * by no more than this many bytes are fetched in a single read. */
     uint32_t batch_gap_bytes = 64 * 1024;
 
+    /* Bound a coalesced range and its TOTAL holes, not just each join. A
+     * single larger blob is read alone; page consumers must reject oversized
+     * pages before admission. Zero disables merging, not these limits. */
+    uint64_t batch_max_bytes = 4ull * 1024 * 1024;
+    uint64_t batch_max_overread_bytes = 64 * 1024;
+
     /* TEST HOOK. When non-zero, the next put() writes exactly this many bytes
      * of payload and then calls _exit(3) -- a real, hard process death partway
      * through a real append, with the pack file left torn on disk. Used by the
      * crash-mid-write test. Zero (the default) in every non-test build. */
     uint64_t debug_abort_mid_payload = 0;
+    /* TEST HOOK: refuse payload durability before index publication. */
+    bool debug_fail_pack_flush = false;
+    /* TEST HOOK: publish a newer index after this reader captures its bytes. */
+    void (*debug_after_index_read)(void*) = nullptr;
+    void* debug_after_index_read_context = nullptr;
 };
 
 /* Where a blob physically lives. Exposed so a benchmark or a locality-aware
@@ -195,12 +209,19 @@ struct CompactStats {
 
 class ReadBatch;
 
+struct BlobInput { const void* data = nullptr; size_t size = 0; };
+struct WriteBatchStats {
+    uint64_t bytes_written = 0;
+    uint32_t write_calls = 0, blobs_written = 0;
+};
+
 /* One open handle on one store directory.
  *
  * Constructed only through open() -- the constructor is private -- and
  * non-copyable. A writer handle holds the cross-process lock on
  * <dir>/store.lock for its whole lifetime, so at most one writer exists per
- * store; read-only handles take no lock and never modify anything.
+ * store; read-only handles take a shared maintenance lease and never modify
+ * payloads or indexes.
  *
  * NOT thread-safe. Open one handle per thread. The index, the cached pack file
  * handles and the pending-append bookkeeping are plain members with no
@@ -242,22 +263,34 @@ public:
      * path. */
     Status put(const void* data, size_t len, BlobHash* out_hash);
 
+    /* Explicit regeneration after Corrupt: verify the replacement's content
+     * identity, append new bytes even if the old index names this hash, and
+     * publish via the usual flush_index(). Old snapshots remain valid (and
+     * continue reporting corruption) until reloaded. Ordinary put retains its
+     * cheap dedup path and does not re-read every already stored payload. */
+    Status repair_blob(const BlobHash& expected, const void* data, size_t len);
+
+    /* Bounded staging, one append per touched pack, caller order retained.
+     * Includes headers/padding in max_bytes. Deduplicates before writing.
+     * Does not commit. On IO failure an appended prefix may remain pending;
+     * the caller must not publish a manifest for a failed batch. */
+    Status put_batch(const std::vector<BlobInput>& inputs, size_t max_bytes,
+                     std::vector<BlobHash>& hashes, WriteBatchStats* stats = nullptr);
+
     /* Commits every pending put: writes a fresh index to <dir>/index.tmp,
      * flushes the packs and the temp file, then renames it over
      * <dir>/index.bin. That rename is the commit point. */
     bool flush_index();
 
-    /* Rewrites the surviving blobs into a fresh pack generation, in the order
-     * given -- so the caller controls locality -- and drops everything else.
-     * Commits by index rename, then deletes the old packs (best effort; any
-     * pack a reader still holds open is swept on the next writer open).
-     *
-     * A reader holding a pre-compaction index keeps reading the old packs,
-     * correctly, until it calls reload_index(). Once the old generation is
-     * deleted, a reader that has still not reloaded sees IoError rather than
-     * wrong bytes -- reads never silently cross generations. Readers that
-     * reload each batch (the expected pattern) never notice. */
-    bool compact(const BlobHash* keep, size_t keep_count, CompactStats* out);
+    /* Rewrites survivors into a new generation in caller-specified order.
+     * Requires quiescent readers: returns false while any read-only handle
+     * holds readers.lock, including readers that have not opened a pack yet.
+     * Readers opened during maintenance fail and may retry. Close reader
+     * handles before offline maintenance; RAM page pins need not be dropped.
+     * Commits by index rename, then deletes old packs. require_all refuses
+     * missing/corrupt survivors (needed for dependency-bearing pages). */
+    bool compact(const BlobHash* keep, size_t keep_count, CompactStats* out,
+                 bool require_all = false);
 
     /* ---- read side ---- */
 
@@ -302,6 +335,9 @@ public:
     uint64_t live_bytes() const;   /* sum of indexed payload lengths */
     uint64_t pack_bytes() const;   /* bytes actually occupied on disk */
     uint32_t generation() const;
+    // In-memory read snapshot revision; changes on a successful index reload,
+    // including append/repair commits that do not change pack generation.
+    uint64_t snapshot_revision() const;
     std::string pack_path(uint32_t pack_id) const;
     const std::string& dir() const;
     bool read_only() const;
@@ -336,6 +372,9 @@ struct BatchStats {
     uint64_t bytes_delivered = 0;
     uint32_t misses = 0;
     uint32_t corrupt = 0;
+    uint32_t checksum_count = 0; /* unique payloads actually validated */
+    uint32_t duplicate_requests = 0;
+    uint64_t unique_bytes_delivered = 0;
 };
 
 /* A batch of reads, submitted together.
@@ -389,6 +428,15 @@ public:
      * Returns false only if the batch could not be executed at all; per-blob
      * failures are reported in each result's status. */
     bool submit(MemArena* arena);
+    // Bounded caller-owned, 8-byte-aligned storage. Never allocates payloads.
+    // Undersized storage fails before performing reads or writes.
+    bool submit(void* buffer, size_t capacity);
+
+    /* Exact arena payload capacity needed for the current index/config,
+     * including holes and 8-byte allocation rounding. No reads or allocation
+     * in the arena. SIZE_MAX means overflow. The store must not be modified
+     * between planning and submit (the usual thread-confined contract). */
+    size_t allocation_bytes() const;
 
     /* Valid only after submit(). Indexing is unchecked -- `i` must be less
      * than size(), and before the first submit() there are no results at all. */
@@ -397,6 +445,7 @@ public:
     const BatchStats& stats() const;
 
 private:
+    bool submit_impl(MemArena*, void*, size_t);
     struct Impl;
     std::unique_ptr<Impl> d_;
 };

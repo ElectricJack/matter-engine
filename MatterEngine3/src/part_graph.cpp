@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEngine3/src/part_graph.cpp
 //
 // Implementation of SP-3 (see part_graph.h for the layer's contract and for why
@@ -595,20 +596,11 @@ namespace part_graph {
 // child placements by it); the host path reuses it for resolve_hash/bake.
 
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir)
-    : host_(host) {
-    if (!schemas_dir.empty()) roots_.push_back(std::move(schemas_dir));
-}
+    : host_(host), roots_(matter::project_layout::object_roots({schemas_dir})) {}
 
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host,
                                        std::vector<std::string> roots)
-    : host_(host), roots_(std::move(roots)) {
-    // Empty roots would make every module silently unresolvable; drop them so
-    // an unset scene tier degrades to "project tier only" rather than to
-    // "reads from the process cwd".
-    roots_.erase(std::remove_if(roots_.begin(), roots_.end(),
-                                [](const std::string& r) { return r.empty(); }),
-                 roots_.end());
-}
+    : host_(host), roots_(matter::project_layout::object_roots(roots)) {}
 
 bool FileModuleResolver::load_source(const std::string& module, std::string& out) {
     for (const std::string& root : roots_) {

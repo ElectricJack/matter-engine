@@ -162,7 +162,8 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                         float texels_per_meter, float cone_deg, bool unify,
                         chart_atlas::ChartAtlasRung& base,
                         std::vector<Tri>& base_tris,
-                        chart_atlas::ChartAtlasRung& out) {
+                        chart_atlas::ChartAtlasRung& out,
+                        bool align_material_grid) {
     // MATTER_VT_CHART_LOG=1: one line per rung charted, through every one of
     // the five callers (this function is the only funnel). A rung that ends
     // here with charts=0 is a rung that will never enter vt_rung_mask
@@ -193,7 +194,7 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         return true;
     }
     const bool built = build_chart_rung(tris, triex, texels_per_meter,
-                                        cone_deg, out);
+                                        cone_deg, out, align_material_grid);
     if (!built) {
         if (chart_log)
             MATTER_LOGW("vt-chart",
@@ -420,11 +421,13 @@ bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
 // `out` empty and `triex` unmodified for a mesh it cannot chart.
 bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       float texels_per_meter, float cone_deg,
-                      chart_atlas::ChartAtlasRung& out) {
+                      chart_atlas::ChartAtlasRung& out,
+                      bool align_material_grid) {
     namespace mc = mesh_charting;
     out = {};
     const int n = (int)tris.size();
     if (n <= 0 || triex.size() != tris.size() || !(texels_per_meter > 0.0f) ||
+        !std::isfinite(texels_per_meter) || !std::isfinite(cone_deg) ||
         !(cone_deg > 0.0f) || cone_deg >= 90.0f)
         return false;
 
@@ -459,6 +462,7 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     const float inf = std::numeric_limits<float>::infinity();
     std::vector<float> minU((size_t)n_charts,  inf), minV((size_t)n_charts,  inf);
     std::vector<float> maxU((size_t)n_charts, -inf), maxV((size_t)n_charts, -inf);
+    std::vector<uint32_t> chart_tri_counts((size_t)n_charts,0);
     auto project = [&](int c, const float3& p, float& u, float& v) {
         const float* tc = &T[(size_t)c * 3];
         const float* bc = &B[(size_t)c * 3];
@@ -467,6 +471,7 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     };
     for (int t = 0; t < n; ++t) {
         const int c = cid[t];
+        ++chart_tri_counts[c];
         const float3* v[3] = { &tris[t].vertex0, &tris[t].vertex1, &tris[t].vertex2 };
         for (int k = 0; k < 3; ++k) {
             float u, w;
@@ -478,8 +483,9 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         }
     }
 
-    // Pack at the requested density; halve until the page-aligned atlas fits
-    // within kVtMaxAtlasDim (the clamp policy). Floor: 1/64 texel per meter.
+    // Keep the requested density when it fits. Otherwise find a fitting
+    // bracket by halving, then refine it: a slightly oversized atlas should
+    // not lose half its linear resolution. Floor: 1/64 texel per meter.
     const int page   = (int)chart_atlas::kVtPagePayload;
     const int gutter = (int)chart_atlas::kChartGutterTexels;
     const int maxdim = (int)chart_atlas::kVtMaxAtlasDim;
@@ -487,22 +493,59 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     int atlas_w = 0, atlas_h = 0;
     std::vector<mc::PagedChartSize> sizes((size_t)n_charts);
     std::vector<mc::PagedChartPlacement> placements;
-    bool packed = false;
-    while (tpm >= 1.0f / 64.0f) {
+    std::vector<float> gridU=minU, gridV=minV;
+    auto pack_at = [&](float density) {
         for (int c = 0; c < n_charts; ++c) {
             const float eu = maxU[c] - minU[c];
             const float ev = maxV[c] - minV[c];
-            sizes[c].content_w = std::max(1, (int)std::ceil((double)eu * tpm));
-            sizes[c].content_h = std::max(1, (int)std::ceil((double)ev * tpm));
+            gridU[c]=minU[c];gridV[c]=minV[c];
+            // Large quads have reusable interiors. At most one page of leading
+            // padding per axis anchors them to the same physical grid. Do not
+            // inflate tiny caps, curve strips or complex terrain charts that
+            // cannot use the current planar material-page sharing path.
+            if(align_material_grid && chart_tri_counts[c]==2 &&
+               double(eu)*density>=2*page && double(ev)*density>=2*page) {
+                gridU[c]=float(std::floor(double(minU[c])*density/page)*page/density);
+                gridV[c]=float(std::floor(double(minV[c])*density/page)*page/density);
+            }
+            const double width = std::ceil(double(maxU[c]-gridU[c]) * density);
+            const double height = std::ceil(double(maxV[c]-gridV[c]) * density);
+            // Reject an impossible extent before converting it to an integer.
+            if (!std::isfinite(width) || !std::isfinite(height) ||
+                width > maxdim - 2*gutter || height > maxdim - 2*gutter)
+                return false;
+            sizes[c].content_w = std::max(1, (int)width);
+            sizes[c].content_h = std::max(1, (int)height);
         }
-        if (mc::pack_charts_paged(sizes, page, gutter, maxdim,
-                                  atlas_w, atlas_h, placements)) {
+        return mc::pack_charts_paged(sizes, page, gutter, maxdim,
+                                    atlas_w, atlas_h, placements);
+    };
+    bool packed = false;
+    float failed_density = 0;
+    while (tpm >= 1.0f / 64.0f) {
+        if (pack_at(tpm)) {
             packed = true;
             break;
         }
+        failed_density = tpm;
         tpm *= 0.5f;
     }
     if (!packed) return false;
+    if (failed_density > 0) {
+        float fitting = tpm, failing = failed_density;
+        // Bounded work only on clamped meshes. Page rounding and shelf order
+        // need not be globally monotonic; retain a verified fit, not a claim
+        // that the search finds the mathematically optimal packing.
+        for (unsigned attempt = 0; attempt < 6; ++attempt) {
+            const float candidate = fitting + (failing-fitting)*0.5f;
+            if (pack_at(candidate)) fitting = candidate;
+            else failing = candidate;
+        }
+        tpm = fitting;
+        // The last probe may have failed; restore every placement and origin
+        // from the same accepted density used to generate the final UVs.
+        if (!pack_at(tpm)) return false;
+    }
 
     // Chart-grouped triangle order (counting sort — deterministic).
     std::vector<uint32_t> first((size_t)n_charts, 0), count((size_t)n_charts, 0);
@@ -523,7 +566,7 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         const float* tc = &T[(size_t)c * 3];
         const float* bc = &B[(size_t)c * 3];
         for (int i = 0; i < 3; ++i) {
-            e.origin[i]    = minU[c] * tc[i] + minV[c] * bc[i];
+            e.origin[i]    = gridU[c] * tc[i] + gridV[c] * bc[i];
             e.tangent[i]   = tc[i];
             e.bitangent[i] = bc[i];
         }
@@ -546,8 +589,8 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         for (int k = 0; k < 3; ++k) {
             float u, w;
             project(c, *v[k], u, w);
-            const float tx = (float)placements[c].x + (float)gutter + (u - minU[c]) * tpm;
-            const float ty = (float)placements[c].y + (float)gutter + (w - minV[c]) * tpm;
+            const float tx = (float)placements[c].x + (float)gutter + (u - gridU[c]) * tpm;
+            const float ty = (float)placements[c].y + (float)gutter + (w - gridV[c]) * tpm;
             uv[k]->x = tx * inv_w;
             uv[k]->y = ty * inv_h;
         }
@@ -705,7 +748,8 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
             // is the one copy of that rule; see its header note).
             if (chart_rung_unified(geo, charted_ex, tpm, chart_opts->cone_deg,
                                    chart_opts->unify_parameterisation,
-                                   unified_base, unified_base_tris, rung_charts))
+                                   unified_base, unified_base_tris, rung_charts,
+                                   chart_opts->align_material_grid))
                 ex = charted_ex.data();
         }
         // register_triangles may deduplicate (returning an existing handle), so we
@@ -1042,7 +1086,8 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
             // can be > 0.
             if (chart_rung_unified(geo, charted_ex, tpm, chart_opts->cone_deg,
                                    chart_opts->unify_parameterisation,
-                                   unified_base, unified_base_tris, rung_charts))
+                                   unified_base, unified_base_tris, rung_charts,
+                                   chart_opts->align_material_grid))
                 ex = charted_ex.data();
         }
         g_ladder_chart_us[census_slot(lvl)].fetch_add(

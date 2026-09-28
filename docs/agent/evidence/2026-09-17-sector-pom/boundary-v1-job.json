@@ -1,0 +1,21 @@
+{
+  "pid": 895615,
+  "result": "docs/agent/evidence/2026-09-17-sector-pom/boundary-v1-result.json",
+  "log": "docs/agent/evidence/2026-09-17-sector-pom/boundary-v1-supervisor.log",
+  "steps": [
+    [
+      "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py",
+      "sector-boundary-v1",
+      "vt_compositor_tests",
+      "vulkan_smoke_tests",
+      "matter_editor"
+    ],
+    [
+      "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py",
+      "sector-boundary-v1",
+      "compositor",
+      "vt-pom-work",
+      "vt-composed-seam"
+    ]
+  ]
+}

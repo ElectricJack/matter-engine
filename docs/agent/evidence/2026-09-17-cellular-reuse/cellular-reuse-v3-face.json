@@ -1,0 +1,12 @@
+{
+  "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/solid_face_projection_gpu_tests.exe\"; exit $LASTEXITCODE",
+  "exit": 0,
+  "seconds": 14.690542525000637,
+  "binary_sha256": "9d74941ee3fffc0868c5789c1f127b3dad3606847d121aa8728288f4be1f81ae",
+  "binary_unchanged": true,
+  "source_changes": [],
+  "pass_marker": true,
+  "validation_errors": [],
+  "log_sha256": "5669c1317c2cf56b475a2da1cc758061bcecd7932a4f3c4b9fbda00bda1904c3",
+  "passed": true
+}

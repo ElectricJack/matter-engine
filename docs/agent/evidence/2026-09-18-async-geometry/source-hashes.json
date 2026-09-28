@@ -1,0 +1,12 @@
+{
+  "libs/AssetStoreLib/include/asset_store.h": "cf78d4124637b9172a51b1cd290aa96479d938a8597cde92d17b3929eadd3df9",
+  "libs/AssetStoreLib/include/asset_pages.h": "0f1bd9689e34d5c5818c5d74e65a3196b6f7e45d527ebcfd93eb2bac0c85f8fd",
+  "libs/AssetStoreLib/src/asset_pages.cpp": "5c06f64576671bb4d03251d6e2d65a43241a09e11ab492795e70b7d6164b95ba",
+  "libs/AssetStoreLib/src/blob_store.cpp": "36566f08996edad0dc167f1f918eed764a399a9ceb2be5ea5d89969b682dfa25",
+  "MatterEngine3/src/streaming/async_stage_pipeline.h": "01a8cd5129c56d95e3e0198c0976285d68847c9e413126ee0b4369ac61ad610d",
+  "MatterEngine3/src/render/geometry_world_runtime.cpp": "ba350d8f78d8bb4101687a8860b538011eaf87dd3b2b7806d33902e00ad4a5f0",
+  "MatterEngine3/src/render/geometry_world_runtime.h": "673fd5e5ae15eca6c3f65645aeebc1b54e33f47564b3be335756011c09583f51",
+  "MatterEngine3/src/render/vk_scene_renderer.cpp": "9f1be534c7b68ec60ab00b37066f499cc77e49e827bff72450f773e2da6c2ce8",
+  "MatterEngine3/src/render/blas_disk_cache.h": "c820f3268d9e3dddb9c6713d04754b8413f953a44489d6e7219e0d1a72eb5ecf",
+  "MatterEngine3/src/matter_engine.cpp": "b1166dc315e0c320753adab9c8202e4c8da32ee53785ec45f3052125221db39d"
+}

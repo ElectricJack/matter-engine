@@ -86,6 +86,17 @@ std::vector<TriAdj> build_adjacency(const float* positions, const unsigned short
 std::vector<TriAdj> build_adjacency(const float* positions, const unsigned int* indices,
                                     int triCount);
 
+// Surface traversal needs an unambiguous, oriented manifold neighbor, unlike
+// segmentation's historical first-pair rule above. This opt-in variant welds
+// by the same exact positions but closes EVERY claimant of a non-manifold
+// edge. Same-direction edge pairs and duplicate/oppositely wound copies of a
+// triangle also stay closed. Degenerate/non-finite triangles have no links.
+// An ordinary, consistently wound curved surface is connected across UV splits.
+// The caller must supply valid vertex indices, as for build_adjacency.
+std::vector<TriAdj> build_surface_adjacency(const float* positions,
+                                           const unsigned int* indices,
+                                           int triCount);
+
 // Greedy flood fill: seeds are visited in ascending triangle order, and a
 // neighbour joins the chart when its face normal is within coneDeg of the
 // chart's running average normal. Because the average moves as the chart

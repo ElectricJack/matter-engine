@@ -1,0 +1,65 @@
+{
+  "previous_goal_turn": "progress",
+  "source_manifest": "feedback-cost-integration-source.json",
+  "source_count": 64,
+  "binary_count": 4,
+  "changed_tested_inputs": [],
+  "process_census_command": [
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "$p = @(Get-Process -Name editor,vulkan_smoke_tests,vt_compositor_tests,vt_residency_tests,cl,link,ninja,cmake,ctest -ErrorAction SilentlyContinue | Select-Object ProcessName,Id); ConvertTo-Json -InputObject $p -Compress; exit 0"
+  ],
+  "process_census_exit": 0,
+  "native_processes": [],
+  "captures": {
+    "terrain-feedback-cost-performance": {
+      "driver_exit": 0,
+      "analysis_exit": 0,
+      "settled_gate": true,
+      "selected_frames": 601,
+      "cpu_demand_hooks_registration": {
+        "samples": 601,
+        "p50_ms": 0.5054,
+        "p95_ms": 0.8118000000474975,
+        "p99_ms": 1.0232,
+        "max_ms": 1.435200000094995
+      },
+      "settled_cpu_target_pass": false,
+      "profile_registry": {
+        "zones": 102,
+        "zone_capacity": 128,
+        "counters": 40,
+        "counter_capacity": 64,
+        "rejected_zone_registrations": 0,
+        "rejected_counter_registrations": 0
+      }
+    },
+    "castle-feedback-cost-performance": {
+      "driver_exit": 0,
+      "analysis_exit": 0,
+      "settled_gate": true,
+      "selected_frames": 601,
+      "cpu_demand_hooks_registration": {
+        "samples": 601,
+        "p50_ms": 0.21970000004749746,
+        "p95_ms": 0.33760000004749746,
+        "p99_ms": 0.4894000000949949,
+        "max_ms": 0.6513000000949949
+      },
+      "settled_cpu_target_pass": false,
+      "profile_registry": {
+        "zones": 87,
+        "zone_capacity": 128,
+        "counters": 36,
+        "counter_capacity": 64,
+        "rejected_zone_registrations": 0,
+        "rejected_counter_registrations": 0
+      }
+    }
+  },
+  "evidence_links": "pass",
+  "full_vt_acceptance": false,
+  "next_work": "Reuse unchanged demand selection with current wanted ages and durable registration/linger/pressure behavior, then repeat native performance acceptance. Other V0\u2013V7 obligations remain open."
+}

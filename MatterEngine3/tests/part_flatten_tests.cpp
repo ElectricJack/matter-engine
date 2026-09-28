@@ -596,9 +596,9 @@ static void test_topological_boundary_lock() {
     Mesh in = {0};
     in.vertexCount   = side * side;
     in.triangleCount = N * N * 2; // 128
-    in.vertices = (float*)MemAlloc(sizeof(float) * vpos.size());
+    in.vertices = (float*)std::malloc(sizeof(float) * vpos.size());
     for (size_t k = 0; k < vpos.size(); ++k) in.vertices[k] = vpos[k];
-    in.indices = (unsigned short*)MemAlloc(sizeof(unsigned short) * idx.size());
+    in.indices = (unsigned short*)std::malloc(sizeof(unsigned short) * idx.size());
     for (size_t k = 0; k < idx.size(); ++k) in.indices[k] = idx[k];
 
     // Collect topological boundary vertex positions from the input: edges with
@@ -660,10 +660,10 @@ static void test_topological_boundary_lock() {
     CHECK(missing == 0,
           "topological lock: all boundary vertex positions preserved bit-identical");
 
-    MemFree(in.vertices); MemFree(in.indices);
-    if (out.vertices) MemFree(out.vertices);
-    if (out.indices)  MemFree(out.indices);
-    if (out.normals)  MemFree(out.normals);
+    std::free(in.vertices); std::free(in.indices);
+    if (out.vertices) std::free(out.vertices);
+    if (out.indices)  std::free(out.indices);
+    if (out.normals)  std::free(out.normals);
     printf(missing == 0 && out.triangleCount < in.triangleCount ? "PASSED\n" : "FAILED\n");
 }
 

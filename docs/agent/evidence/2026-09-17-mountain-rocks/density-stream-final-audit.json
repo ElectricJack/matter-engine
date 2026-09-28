@@ -1,0 +1,21 @@
+{
+  "latest_build": "stream-rock-source-v1",
+  "source_count": 1020,
+  "source_changes": [],
+  "binaries_match": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe": true,
+    "MatterEditor/build/windows-msvc/editor.exe": true
+  },
+  "latest_native_tests_pass": true,
+  "density_checks_at_previous_checkpoint": {
+    "provider": true,
+    "partstore": true,
+    "mountain": true
+  },
+  "stream_capture_valid": true,
+  "renderer_receipts_pass": true,
+  "material_integration_pass": true,
+  "visual_approval": false,
+  "live_editor_or_build_processes": [],
+  "full_goal_complete": false
+}

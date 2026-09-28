@@ -1,0 +1,435 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 453.06839874599973,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/native-environment.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "1200",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/profile.json",
+    "--env",
+    "MATTER_PIPELINE_PROFILE=1"
+  ],
+  "changed_inputs_during_run": [],
+  "validation_enabled": false,
+  "page_event_logging": false,
+  "pipeline_creation_logging": true,
+  "full_vt_acceptance": false,
+  "analysis_command": [
+    "python3",
+    "tools/vt_acceptance.py",
+    "--trace",
+    "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/vt.jsonl",
+    "--output",
+    "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-performance-summary.json",
+    "--begin-marker",
+    "settle_begin",
+    "--end-marker",
+    "settle_end",
+    "--required-frames",
+    "600",
+    "--require-settled"
+  ],
+  "analysis_exit": 0,
+  "analysis_file": "terrain-input-idle-performance-summary.json",
+  "gpu_total_ms": {
+    "samples": 601,
+    "p50_ms": 79.61030578613281,
+    "p95_ms": 89.0791015625,
+    "p99_ms": 94.14588928222656,
+    "max_ms": 111.95216369628906
+  },
+  "gpu_distinct_sequences": 601,
+  "end_counters": {
+    "active": 1,
+    "variants": 789,
+    "pool_used": 1513,
+    "pool_capacity": 33024,
+    "replacement_reserve_pages": 64,
+    "dirty_pages": 0,
+    "fills_stale_total": 0,
+    "pinned": 789,
+    "queue": 0,
+    "mandatory_queue": 0,
+    "detail_queue": 0,
+    "oldest_mandatory_age_frames": 0,
+    "oldest_detail_age_frames": 0,
+    "fills_total": 1513,
+    "evictions_total": 0,
+    "invalidations_total": 0,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "requests_dropped_total": 0,
+    "enrich_total": 0,
+    "enrich_queue": 0,
+    "shared_refs_total": 0,
+    "finer_rebuilds_total": 0,
+    "mesh_bytes": 288107279,
+    "pool_bytes": 4275683328,
+    "resident_sectors": 2586,
+    "vertex_uploads": 608,
+    "cluster_uploads": 608,
+    "dlss_resets": 0,
+    "output_width": 1920,
+    "output_height": 1080,
+    "internal_width": 1920,
+    "internal_height": 1080,
+    "cpu_begin_ms": 0.2852,
+    "cpu_pre_pass_ms": 0.027,
+    "cpu_post_pass_ms": 0.0051,
+    "cpu_registration_ms": 0,
+    "gpu_readback_sequence": 4114,
+    "gpu_total_ms": 87.94633483886719,
+    "gpu_vt_page_ms": 0.0010239999974146485,
+    "gpu_vt_feedback_ms": 0.02112000063061714,
+    "gpu_vt_ms": 0.022144000977277756,
+    "fills_per_frame": 8,
+    "tail_fills_per_frame": 8,
+    "enrich_per_frame": 0,
+    "queue_cap": 256,
+    "request_budget_ms": 5.090000152587891,
+    "linger_frames": 4,
+    "evict_protect_frames": 16
+  },
+  "stats_lines": [
+    "STATS,startup_ready,2574.00,0.00,0.00,0.00,0,0,0,0,0,0,0,0,0.0,0.0,0,0,0,0.00,0,0.000,0.000,0.000,0.000,0.000,0.00,0.000,0.000,0.000",
+    "STATS,settle_begin,80.47,2.11,0.53,2.30,789,63,151991,687,39,789,0,32768,274.8,3512.0,320,180,256,478.12,2,0.000,0.239,0.206,4.072,0.184,84.00,80.055,0.027,38.614",
+    "STATS,settle_end,77.07,2.83,0.25,2.19,789,63,151991,687,39,789,0,32768,274.8,3512.0,320,180,256,478.12,2,0.000,0.239,0.223,3.999,0.176,84.00,78.042,0.026,38.624"
+  ],
+  "profile_registry": {
+    "zones": 99,
+    "zone_capacity": 128,
+    "counters": 37,
+    "counter_capacity": 64,
+    "rejected_zone_registrations": 0,
+    "rejected_counter_registrations": 0
+  },
+  "vt_cpu_scopes": {
+    "cull.vt_demand": {
+      "samples": 512,
+      "p50_ms": 0.36010000000000003,
+      "p95_ms": 0.6179349999999999,
+      "p99_ms": 0.716614,
+      "max_ms": 0.8096
+    },
+    "cull.vt_begin": {
+      "samples": 512,
+      "p50_ms": 0.17195,
+      "p95_ms": 0.325795,
+      "p99_ms": 0.43200199999999994,
+      "max_ms": 0.6191
+    },
+    "vt.push_inputs": {
+      "samples": 512,
+      "p50_ms": 0.0007,
+      "p95_ms": 0.0015,
+      "p99_ms": 0.0018,
+      "max_ms": 0.0026
+    },
+    "vt.residency_begin": {
+      "samples": 512,
+      "p50_ms": 0.1577,
+      "p95_ms": 0.31009999999999993,
+      "p99_ms": 0.41577399999999987,
+      "max_ms": 0.5764
+    },
+    "vt.collect": {
+      "samples": 512,
+      "p50_ms": 0.0016,
+      "p95_ms": 0.0035449999999999987,
+      "p99_ms": 0.0043,
+      "max_ms": 0.0075
+    },
+    "vt.drain_feedback": {
+      "samples": 512,
+      "p50_ms": 0.1541,
+      "p95_ms": 0.30669499999999994,
+      "p99_ms": 0.4109629999999999,
+      "max_ms": 0.5644
+    },
+    "vt.fb_dedup": {
+      "samples": 512,
+      "p50_ms": 0.019399999999999997,
+      "p95_ms": 0.022845,
+      "p99_ms": 0.029244999999999993,
+      "max_ms": 0.1855
+    },
+    "vt.fb_queue": {
+      "samples": 512,
+      "p50_ms": 0.0357,
+      "p95_ms": 0.07804499999999999,
+      "p99_ms": 0.09077999999999997,
+      "max_ms": 0.1388
+    },
+    "vt.feedback_target": {
+      "samples": 512,
+      "p50_ms": 0.0004,
+      "p95_ms": 0.001,
+      "p99_ms": 0.0016889999999999987,
+      "max_ms": 0.0112
+    },
+    "vt.descriptors": {
+      "samples": 512,
+      "p50_ms": 0.00675,
+      "p95_ms": 0.014644999999999998,
+      "p99_ms": 0.02033399999999999,
+      "max_ms": 0.037200000000000004
+    },
+    "vt.enrich": {
+      "samples": 512,
+      "p50_ms": 0.0003,
+      "p95_ms": 0.0007,
+      "p99_ms": 0.0011,
+      "max_ms": 0.0014
+    },
+    "vt.table_upload": {
+      "samples": 512,
+      "p50_ms": 0.016800000000000002,
+      "p95_ms": 0.038634999999999996,
+      "p99_ms": 0.0504,
+      "max_ms": 0.1232
+    },
+    "vt.fb_scan": {
+      "samples": 512,
+      "p50_ms": 0.07885,
+      "p95_ms": 0.21916999999999992,
+      "p99_ms": 0.34507899999999997,
+      "max_ms": 0.44160000000000005
+    }
+  },
+  "pipeline_creation": [
+    {
+      "kind": "compute",
+      "ms": 0.1491,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3417 ms=0.149100 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.2722,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3467 ms=0.272200 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.2417,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3467 ms=0.241700 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 991.2609,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4279 ms=991.260900 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1253,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4357 ms=0.125300 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1297,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4398 ms=0.129700 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1074,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4431 ms=0.107400 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0126,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4473 ms=0.012600 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0132,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4491 ms=0.013200 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.6968,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4644 ms=0.696800 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.6009,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:4895 ms=0.600900 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0938,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:4910 ms=0.093800 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0992,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_display_pipeline:5023 ms=0.099200 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.104,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_overlay_line_pipeline:5141 ms=0.104000 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 3.7448,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_gi_temporal_pipeline:3554 ms=3.744800 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.0877,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_gi_atrous_pipeline:3614 ms=0.087700 result=0"
+    },
+    {
+      "kind": "ray_tracing",
+      "ms": 41929.5861,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=ray_tracing caller=create_ray_tracing_pipeline:4035 ms=41929.586100 result=0"
+    }
+  ],
+  "validation_error_lines": [],
+  "source_manifest": "input-idle-integration-source.json",
+  "comparison_limits": [
+    "One current-revision sample; compare repetitions separately.",
+    "Dedicated VT GPU time excludes draw sampling.",
+    "Compare geometry/page/input identities before attributing timing differences.",
+    "Known broad RT/primary-light-cull assertions reproduce on the archived evaluation build."
+  ],
+  "settled_cpu_target_pass": false,
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/analysis.log",
+      "bytes": 1933,
+      "sha256": "577d5c8962701fafd50a1e50f856383cec2041b490311c672f1e2384aba234ad"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/command.json",
+      "bytes": 1658,
+      "sha256": "8345be391bdd92b51dc620332b0a7f44d2228752c4d97fbc514d27590eca9c81"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/driver.log",
+      "bytes": 517493,
+      "sha256": "edce3be37e399bf36e811c868773476c5dea596fc7f253e09d26cda44e70d439"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/launch-source.json",
+      "bytes": 57196,
+      "sha256": "fd11affa13e9dd45b4747cd74ddde0a042b72c7ab56a10900e90df5f4820c85f"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/native-environment.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/profile.json",
+      "bytes": 3773292,
+      "sha256": "0256d5b60d4f5ad974efd11a6e9e9841789d4906d87055897965edd19f09f0fe"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/result.json",
+      "bytes": 2007,
+      "sha256": "c8fc779c1cf3752d753d068484e759e680ef599e57498c6356b05ade33e55331"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/run/cmd.txt",
+      "bytes": 241,
+      "sha256": "3de1cd8c8db4115b8b5f4772bc2aaf29d8231884612b137e41b7547c7790b9a7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/run/log.txt",
+      "bytes": 517006,
+      "sha256": "970469b732959e5c94ba77e91f298496919408c4bc373cbb01dc74754102f3ba"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/settled.png",
+      "bytes": 5886970,
+      "sha256": "0fa724438fab4657801143cb301d40c70b17264d962639c0e17ec627053b8009"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/timeline.txt",
+      "bytes": 241,
+      "sha256": "3de1cd8c8db4115b8b5f4772bc2aaf29d8231884612b137e41b7547c7790b9a7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/vt.jsonl",
+      "bytes": 1779697,
+      "sha256": "133cda65e63d11d57f3aaf8c8ba390989e937b91a81b9ac10d9f4c338c0edf36"
+    }
+  ],
+  "analysis_script": {
+    "path": "/mnt/d/tmp/matter-vt/20260915-feedback/summarize_input_idle_performance.py",
+    "sha256": "3cb6d7f8de9469c8fc418760ca35beb29603b5c838dae7613c0bbb3b293d158f"
+  },
+  "visual_review": "Final 1920x1080 screenshot inspected: the forest/valley framing, granular ground, sparse/noisy foliage and broad lighting remain. No layered-material appearance improvement or intermediate image-continuity proof is claimed."
+}

@@ -1,0 +1,21 @@
+render_path native_rt
+set render.gi.enabled true
+wait_idle 3 240
+cam 425 25 1465 419 23 1455
+stats profile-warm-start
+wait_frames 120
+stats profile-warm-120
+shot C:\tmp\matter-blas-mountain\profile-warm\early.png
+wait_frames 1080
+wait_frames 60
+stats profile-warm-steady-0
+wait_frames 60
+stats profile-warm-steady-1
+wait_frames 60
+stats profile-warm-steady-2
+wait_frames 60
+stats profile-warm-steady-3
+wait_frames 60
+stats profile-warm-steady-4
+shot C:\tmp\matter-blas-mountain\profile-warm\settled.png
+quit

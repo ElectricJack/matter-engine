@@ -73,6 +73,7 @@
 
 #include "matter/events.h"
 #include "matter/query.h"
+#include "matter/asset_export.h"
 
 #include "bake_trace.h"   // bake_trace::Span — see last_bake_trace()
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
@@ -250,6 +251,14 @@ struct RenderOptions {
                                       // (off by default: mesh-session winding
                                       // is not guaranteed for all part kinds)
     DlssMode dlss_mode = DlssMode::Native;
+    // Whether replacing the sparse-voxel forest snapshot (streaming placement
+    // updates, catalog swaps) resets the whole-frame DLSS/temporal history.
+    // True is the conservative default: every tree pixel restarts its
+    // stochastic accumulation, which reads as the forest going coarse and
+    // re-converging after each terrain update. False keeps the accumulated
+    // history and lets the upscaler's own disocclusion handling cover the
+    // newly placed trees, the same way streamed mesh parts already behave.
+    bool vulkan_forest_history_reset = true;
     VulkanRayTracingSettings vulkan_ray_tracing{};
     VulkanGiSettings vulkan_gi{};
     VulkanLightingOverrides vulkan_lighting{};
@@ -411,11 +420,25 @@ struct FrameStats {
     uint32_t vt_variants = 0;          // registered (variant, rung) layers
     uint32_t vt_max_variants = 0;      // MATTER_VT_MAX_VARIANTS, post-clamp
     uint32_t vt_pool_used = 0;         // occupied physical page slots
+    uint32_t vt_material_pages = 0;
+    uint32_t vt_shared_material_references = 0;
+    uint32_t vt_coverage_only_pages = 0;
+    uint32_t vt_occlusion_pages = 0;          // published receiver factors
+    uint32_t vt_occlusion_retained_pages = 0; // includes pending GPU retirement
+    uint64_t vt_occlusion_allocated_bytes = 0; // actual slab allocations, including slack
+    uint64_t vt_enrich_deferred_total = 0;
     uint32_t vt_pool_capacity = 0;
+    uint32_t vt_replacement_reserve_pages = 0;
+    uint32_t vt_dirty_pages = 0;
+    uint64_t vt_fills_stale_total = 0;
     uint32_t vt_pool_pinned = 0;       // always-resident tails
     uint32_t vt_fills_last_frame = 0;
     uint32_t vt_requests_last_frame = 0;
     uint32_t vt_queue_depth = 0;
+    uint32_t vt_mandatory_queue_depth = 0;
+    uint32_t vt_detail_queue_depth = 0;
+    uint64_t vt_oldest_mandatory_age_frames = 0;
+    uint64_t vt_oldest_detail_age_frames = 0;
     uint32_t vt_rejected_variants = 0; // fell back to legacy (budget/layers)
     // M6: registrations that reused an existing layer because it had the same
     // parameterisation, and rebuilds a finer rung forced. shared_refs is the
@@ -424,6 +447,19 @@ struct FrameStats {
     uint64_t vt_finer_rebuilds_total = 0;
     uint64_t vt_fills_total = 0;
     uint64_t vt_evictions_total = 0;
+    uint64_t vt_invalidations_total = 0;
+    uint64_t vt_pages_dropped_total = 0;
+    uint64_t vt_fills_failed_total = 0;
+    uint64_t vt_requests_dropped_total = 0;
+    uint64_t vt_enrich_total = 0;
+    uint32_t vt_enrich_queue_depth = 0;
+    uint64_t vt_cpu_frame_serial = 0;
+    // CPU wall time for demand selection and the three VT renderer hooks.
+    // Registration is separate as draw_vt_requests_ms. No GPU duration implied.
+    double vt_cpu_demand_ms = 0;
+    double vt_cpu_begin_ms = 0;
+    double vt_cpu_pre_pass_ms = 0;
+    double vt_cpu_post_pass_ms = 0;
     uint64_t vt_pool_bytes = 0;
     uint64_t vt_mesh_bytes = 0;        // CPU mesh copies held for the filler
     uint64_t vt_mesh_budget_bytes = 0; // MATTER_VT_MESH_BUDGET_MB, in bytes
@@ -1038,6 +1074,12 @@ public:
 
 
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
+
+    // Offline static asset export, app thread BEFORE begin_frame. Requires a
+    // completed bake and resident CPU geometry. Writes one NEW directory with
+    // OBJ/MTL, GLB and PBR/height PNG maps; failures preserve the destination.
+    bool export_asset(uint64_t part_hash, uint32_t lod, const std::string& directory,
+                      AssetExportReceipt& out, std::string& error);
 
     // GPU pick: read the identity buffer at a viewport pixel and resolve
     // it to a static instance (part_hash) or dynamic entity. Coordinates

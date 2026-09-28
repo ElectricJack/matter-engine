@@ -1,0 +1,108 @@
+{
+  "images": {
+    "cliff-albedo": {
+      "mean_absolute_byte_difference": 3.5008251953125,
+      "fraction_pixels_any_channel_gt_1": 0.9003388671875
+    },
+    "cliff-flat": {
+      "mean_absolute_byte_difference": 6.845290690104167,
+      "fraction_pixels_any_channel_gt_1": 0.99834765625
+    },
+    "cliff-grazing-albedo": {
+      "mean_absolute_byte_difference": 2.834593424479167,
+      "fraction_pixels_any_channel_gt_1": 0.7407197265625
+    },
+    "cliff-grazing-flat": {
+      "mean_absolute_byte_difference": 5.703478515625,
+      "fraction_pixels_any_channel_gt_1": 0.830763671875
+    },
+    "cliff-grazing-lit": {
+      "mean_absolute_byte_difference": 5.6760944010416665,
+      "fraction_pixels_any_channel_gt_1": 0.8305322265625
+    },
+    "cliff-grazing-normal": {
+      "mean_absolute_byte_difference": 6.456031575520833,
+      "fraction_pixels_any_channel_gt_1": 0.7698544921875
+    },
+    "cliff-lit": {
+      "mean_absolute_byte_difference": 6.829291341145833,
+      "fraction_pixels_any_channel_gt_1": 0.9980576171875
+    },
+    "cliff-normal": {
+      "mean_absolute_byte_difference": 7.183931640625,
+      "fraction_pixels_any_channel_gt_1": 0.929796875
+    },
+    "close-albedo": {
+      "mean_absolute_byte_difference": 7.649739583333334e-05,
+      "fraction_pixels_any_channel_gt_1": 0.0
+    },
+    "close-flat": {
+      "mean_absolute_byte_difference": 5.081996419270833,
+      "fraction_pixels_any_channel_gt_1": 0.977095703125
+    },
+    "close-lit": {
+      "mean_absolute_byte_difference": 6.316078125,
+      "fraction_pixels_any_channel_gt_1": 0.996046875
+    },
+    "close-normal": {
+      "mean_absolute_byte_difference": 0.00015657552083333333,
+      "fraction_pixels_any_channel_gt_1": 0.0
+    },
+    "grazing-albedo": {
+      "mean_absolute_byte_difference": 0.2562337239583333,
+      "fraction_pixels_any_channel_gt_1": 0.0709814453125
+    },
+    "grazing-flat": {
+      "mean_absolute_byte_difference": 3.656466471354167,
+      "fraction_pixels_any_channel_gt_1": 0.54609375
+    },
+    "grazing-lit": {
+      "mean_absolute_byte_difference": 3.5786813151041668,
+      "fraction_pixels_any_channel_gt_1": 0.5452783203125
+    },
+    "grazing-normal": {
+      "mean_absolute_byte_difference": 0.049097981770833334,
+      "fraction_pixels_any_channel_gt_1": 0.0225517578125
+    },
+    "overview-albedo": {
+      "mean_absolute_byte_difference": 0.08156087239583333,
+      "fraction_pixels_any_channel_gt_1": 0.0210693359375
+    },
+    "overview-lit": {
+      "mean_absolute_byte_difference": 1.5830615234375,
+      "fraction_pixels_any_channel_gt_1": 0.1496611328125
+    },
+    "overview-normal": {
+      "mean_absolute_byte_difference": 0.010632161458333334,
+      "fraction_pixels_any_channel_gt_1": 0.0061376953125
+    }
+  },
+  "timings": {
+    "overview": {
+      "before_ms": 33.441,
+      "after_ms": 32.962500000000006,
+      "delta_percent": -1.4308782632098227
+    },
+    "grazing": {
+      "before_ms": 18.293,
+      "after_ms": 16.837,
+      "delta_percent": -7.959328704969115
+    },
+    "cliff": {
+      "before_ms": 30.0295,
+      "after_ms": 27.866,
+      "delta_percent": -7.204582160875139
+    },
+    "cliff-grazing": {
+      "before_ms": 36.723,
+      "after_ms": 36.7255,
+      "delta_percent": 0.006807722680601813
+    },
+    "close": {
+      "before_ms": 6.217,
+      "after_ms": 5.5275,
+      "delta_percent": -11.090558147016239
+    }
+  },
+  "note": "Recipe and density unchanged. Terrain Y-frame correction can intentionally change source evaluation. Non-isolated timings; no causal attribution or performance acceptance."
+}

@@ -1,0 +1,60 @@
+{
+  "driver_exit": 0,
+  "verified_screenshots": 1,
+  "timing_acceptance": false,
+  "density_frame": 4200,
+  "trace_observation": [
+    {
+      "serial": 4951,
+      "vt_serial": 4200,
+      "variants": 789,
+      "pool_used": 1630,
+      "pool_capacity": 33024,
+      "pinned": 789,
+      "queue": 0,
+      "mandatory_queue": 0,
+      "detail_queue": 0,
+      "fills_total": 1630,
+      "invalidations_total": 0,
+      "pages_dropped_total": 0,
+      "evictions_total": 0,
+      "output_width": 1920,
+      "output_height": 1080,
+      "internal_width": 1920,
+      "internal_height": 1080,
+      "cpu_pre_pass_ms": 811.6603
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/stream-density/timeline.txt",
+      "bytes": 193,
+      "sha256": "7a88ab5960eb9b75648ba37021295486fae499e580212f56ec27bfe290657180"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/stream-density/vt.jsonl",
+      "bytes": 1831726,
+      "sha256": "8dfdb325b2aa1def525d306d630a1cf1e01c4f7b6ea2b0bb65dd0cdd470a259c"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/stream-density/run/log.txt",
+      "bytes": 924308,
+      "sha256": "09ec43df42d12dc13eb2722a611478b2f0cf0bb7ab84f84707f35daea81212b3"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/stream-density/density.png",
+      "bytes": 5908529,
+      "sha256": "c39f126ce9e8c11f21bdf6c45757d17ca19dc017576f26bc4fde23d9fcbd8fd1"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/stream-density/density.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/stream-density/profile.json",
+      "bytes": 3668006,
+      "sha256": "c2d9c94b0c69dfed5099ee8d356f8672ff469a59e63e31fac7ebd54f9249365d"
+    }
+  ]
+}

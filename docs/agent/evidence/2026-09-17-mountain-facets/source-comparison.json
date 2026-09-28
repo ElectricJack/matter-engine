@@ -1,0 +1,12 @@
+{
+  "baseline": "vt-atlas16k-v1",
+  "candidate": "mountain-facets-v1",
+  "changed_sources": [
+    "projects/world_demo/shared-lib/mountain_surface.js"
+  ],
+  "unchanged_native_editor": true,
+  "height_bound_m": [
+    -0.086118125,
+    -0.0021
+  ]
+}

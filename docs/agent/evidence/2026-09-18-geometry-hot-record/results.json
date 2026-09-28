@@ -1,0 +1,150 @@
+{
+  "moving-flat-dependencies-v1": {
+    "movement": {
+      "samples": 959,
+      "median_ms": 23.259100000002945,
+      "p95_ms": 35.373200000001816,
+      "max_ms": 79.16300000000047
+    },
+    "scopes": {
+      "geometry.update": {
+        "mean_ms": 16.9277251953125,
+        "max_ms": 57.167300000000004,
+        "count": 512
+      },
+      "geometry.adopt_hierarchies": {
+        "mean_ms": 0.0780890625,
+        "max_ms": 0.6322000000000001,
+        "count": 512
+      },
+      "geometry.admission": {
+        "mean_ms": 0.4366298828125,
+        "max_ms": 5.7121,
+        "count": 512
+      },
+      "geometry.stream_pages": {
+        "mean_ms": 4.7236027343750004,
+        "max_ms": 29.137900000000002,
+        "count": 512
+      },
+      "geometry.scene_completion": {
+        "mean_ms": 0.0148818359375,
+        "max_ms": 0.09090000000000001,
+        "count": 512
+      },
+      "geometry.scene_assembly": {
+        "mean_ms": 6.814118359375,
+        "max_ms": 22.6703,
+        "count": 512
+      },
+      "geometry.retain_snapshots": {
+        "mean_ms": 0.0128248046875,
+        "max_ms": 0.0426,
+        "count": 512
+      },
+      "geometry.reclaim_dispatch": {
+        "mean_ms": 0.2359837890625,
+        "max_ms": 9.7313,
+        "count": 512
+      },
+      "geometry.publish_scene": {
+        "mean_ms": 4.587400390625,
+        "max_ms": 11.1999,
+        "count": 512
+      },
+      "build.prepare_frame": {
+        "mean_ms": 5.003299609375,
+        "max_ms": 13.5953,
+        "count": 512
+      },
+      "geometry.invalidate_published": {
+        "mean_ms": 0.45736,
+        "max_ms": 0.9815,
+        "count": 325
+      }
+    },
+    "main_stages_per_motion_frame_ms": {
+      "update_cpu": 13.187330208333332,
+      "instance_setup": 0.26778541666666666,
+      "snapshot": 2.4323083333333333,
+      "cpu_cut": 1.1783531250000001,
+      "hierarchy_pack": 1.3142541666666665,
+      "publish_cpu": 2.2785104166666668,
+      "cut_upload_cpu": 3.1406093749999995
+    }
+  },
+  "moving-hot-record-v1": {
+    "movement": {
+      "samples": 959,
+      "median_ms": 22.489300000001094,
+      "p95_ms": 32.91730000000098,
+      "max_ms": 65.89849999999933
+    },
+    "scopes": {
+      "geometry.update": {
+        "mean_ms": 15.717356640625,
+        "max_ms": 45.781699999999994,
+        "count": 512
+      },
+      "geometry.adopt_hierarchies": {
+        "mean_ms": 0.0742623046875,
+        "max_ms": 0.6379,
+        "count": 512
+      },
+      "geometry.admission": {
+        "mean_ms": 0.4151623046875,
+        "max_ms": 4.7136000000000005,
+        "count": 512
+      },
+      "geometry.stream_pages": {
+        "mean_ms": 4.64887890625,
+        "max_ms": 22.3317,
+        "count": 512
+      },
+      "geometry.scene_completion": {
+        "mean_ms": 0.0144255859375,
+        "max_ms": 0.17980000000000002,
+        "count": 512
+      },
+      "geometry.scene_assembly": {
+        "mean_ms": 6.4724259765625,
+        "max_ms": 20.5084,
+        "count": 512
+      },
+      "geometry.retain_snapshots": {
+        "mean_ms": 0.0120453125,
+        "max_ms": 0.054200000000000005,
+        "count": 512
+      },
+      "geometry.reclaim_dispatch": {
+        "mean_ms": 0.21174375,
+        "max_ms": 8.8178,
+        "count": 512
+      },
+      "geometry.publish_scene": {
+        "mean_ms": 3.8452119140625,
+        "max_ms": 8.1813,
+        "count": 512
+      },
+      "build.prepare_frame": {
+        "mean_ms": 4.9088556640625,
+        "max_ms": 11.4515,
+        "count": 512
+      },
+      "geometry.invalidate_published": {
+        "mean_ms": 0.46024587155963304,
+        "max_ms": 1.0424,
+        "count": 327
+      }
+    },
+    "main_stages_per_motion_frame_ms": {
+      "update_cpu": 13.724281249999999,
+      "instance_setup": 0.29276874999999997,
+      "snapshot": 2.3862864583333336,
+      "cpu_cut": 1.3449197916666666,
+      "hierarchy_pack": 1.5228447916666668,
+      "publish_cpu": 2.559323958333333,
+      "cut_upload_cpu": 3.0128833333333334
+    }
+  }
+}

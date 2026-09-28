@@ -74,6 +74,10 @@ struct SectorStreamingStatus {
     uint64_t generation = 0;         // bumped when the anchor re-seeds residency
     uint32_t resident_sectors = 0;   // sectors currently loaded
     uint32_t inflight_sectors = 0;   // requests issued but not yet completed
+    uint64_t view_revision = 0;      // camera snapshot used by worker counts
+    bool visible_sectors_valid = false;
+    uint32_t visible_sectors = 0;
+    uint32_t visible_sectors_pending = 0; // target sector rung not yet published
 };
 // Pipeline PHASE tag for the anchor-sampling system ("MatterStreamingUpdate"),
 // not a component you add to an entity.

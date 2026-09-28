@@ -1,0 +1,18 @@
+{
+  "pid": 897392,
+  "result": "docs/agent/evidence/2026-09-17-sector-pom/boundary-v2-result.json",
+  "log": "docs/agent/evidence/2026-09-17-sector-pom/boundary-v2-supervisor.log",
+  "steps": [
+    [
+      "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py",
+      "sector-boundary-v2",
+      "vulkan_smoke_tests",
+      "matter_editor"
+    ],
+    [
+      "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py",
+      "sector-boundary-v2",
+      "vt-pom-work"
+    ]
+  ]
+}

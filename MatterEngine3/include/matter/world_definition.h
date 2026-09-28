@@ -350,6 +350,8 @@ struct TilesetPomSettings {
     //   used to ask it (world XZ at the roof-escape-lifted point),
     //   4 |map - march|, 5 |rt-form - march|, 6 the rt form without the
     //   roof-escape lift (3 vs 6 isolates the lift, 6 vs 1 the frame).
+    //   7 composed status, 8 chart identity, 9 ordinary/connected POM route;
+    //   10 proxy requested/resident mip, 11 proxy finest/resident world density.
     // Consumed by TilesetParamsGpu::vt_near_band[3]; see gbuffer.frag's
     // render.pom.horizon_debug block. Session-scoped in the property registry
     // so it cannot survive a relaunch.
@@ -421,6 +423,16 @@ struct WorldSettings {
     // With nesting off there are no levels to descend, so the streamer forces
     // this back off rather than half-honouring it.
     bool volumetric_sectors = false;
+
+    // Finest streamed-terrain chart density, authored as
+    // streaming.terrainTexelsPerMeter. Runtime charts are rebuilt on reload;
+    // nested levels retain the existing density/size scaling and atlas cap.
+    float terrain_texels_per_meter = 16.0f;
+
+    // Opt-in modules receiving the world's direct surface recipe, in addition
+    // to terrain. Static, singly placed, rigid receivers only; original asset
+    // materials remain authoritative for unselected/shared receivers.
+    std::vector<std::string> surface_receiver_modules;
 
     // Tile pitch in world metres. With nested_sectors on this is the LEVEL 0
     // (finest) tile and level L tiles are sector_size << L across.

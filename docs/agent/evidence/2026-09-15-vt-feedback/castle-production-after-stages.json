@@ -1,0 +1,114 @@
+{
+  "vt.candidates": {
+    "samples": 2,
+    "p50_ms": 0.0111,
+    "p95_ms": 0.013,
+    "p99_ms": 0.013,
+    "max_ms": 0.013
+  },
+  "vt.collect": {
+    "samples": 512,
+    "p50_ms": 0.0019,
+    "p95_ms": 0.0033,
+    "p99_ms": 0.0046,
+    "max_ms": 0.0265
+  },
+  "vt.descriptors": {
+    "samples": 512,
+    "p50_ms": 0.0027,
+    "p95_ms": 0.0046,
+    "p99_ms": 0.0054,
+    "max_ms": 0.0064
+  },
+  "vt.drain_feedback": {
+    "samples": 512,
+    "p50_ms": 0.1386,
+    "p95_ms": 0.1889,
+    "p99_ms": 0.2496,
+    "max_ms": 0.3023
+  },
+  "vt.enrich": {
+    "samples": 508,
+    "p50_ms": 0.0004,
+    "p95_ms": 0.0008,
+    "p99_ms": 0.001,
+    "max_ms": 0.0017
+  },
+  "vt.fb_dedup": {
+    "samples": 512,
+    "p50_ms": 0.0176,
+    "p95_ms": 0.0221,
+    "p99_ms": 0.0288,
+    "max_ms": 0.045700000000000005
+  },
+  "vt.fb_queue": {
+    "samples": 512,
+    "p50_ms": 0.056,
+    "p95_ms": 0.0767,
+    "p99_ms": 0.0877,
+    "max_ms": 0.139
+  },
+  "vt.fb_scan": {
+    "samples": 512,
+    "p50_ms": 0.0578,
+    "p95_ms": 0.088,
+    "p99_ms": 0.146,
+    "max_ms": 0.2012
+  },
+  "vt.feedback_target": {
+    "samples": 455,
+    "p50_ms": 0.0003,
+    "p95_ms": 0.0008,
+    "p99_ms": 0.0012,
+    "max_ms": 0.0028
+  },
+  "vt.fill": {
+    "samples": 2,
+    "p50_ms": 0.0654,
+    "p95_ms": 0.07579999999999999,
+    "p99_ms": 0.07579999999999999,
+    "max_ms": 0.07579999999999999
+  },
+  "vt.fill_select": {
+    "samples": 2,
+    "p50_ms": 0.0058,
+    "p95_ms": 0.0087,
+    "p99_ms": 0.0087,
+    "max_ms": 0.0087
+  },
+  "vt.invalidations": {
+    "samples": 395,
+    "p50_ms": 0.0001,
+    "p95_ms": 0.0001,
+    "p99_ms": 0.0003,
+    "max_ms": 0.0007
+  },
+  "vt.mesh_entry": {
+    "samples": 2,
+    "p50_ms": 0.0028,
+    "p95_ms": 0.003,
+    "p99_ms": 0.003,
+    "max_ms": 0.003
+  },
+  "vt.push_inputs": {
+    "samples": 511,
+    "p50_ms": 0.0005,
+    "p95_ms": 0.0011,
+    "p99_ms": 0.0014,
+    "max_ms": 0.002
+  },
+  "vt.residency_begin": {
+    "samples": 512,
+    "p50_ms": 0.1424,
+    "p95_ms": 0.1936,
+    "p99_ms": 0.2548,
+    "max_ms": 0.3108
+  },
+  "vt.table_upload": {
+    "samples": 512,
+    "p50_ms": 0.0036,
+    "p95_ms": 0.0056,
+    "p99_ms": 0.0087,
+    "max_ms": 0.0391
+  }
+}

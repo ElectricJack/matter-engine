@@ -1,0 +1,13 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 184.051881004998,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [
+    "bake error [ClayBrickWall]: bake failed for part: ClayBrickWall",
+    "bake error [ClayBrickWall]: bake failed for part: ClayBrickWall"
+  ],
+  "vt_stats": [],
+  "images": {},
+  "passed": false
+}

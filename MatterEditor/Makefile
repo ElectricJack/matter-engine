@@ -533,7 +533,9 @@ $(VK_EMBEDDED_HEADER): FORCE
 	$(MAKE) -C $(ME3_DIR) vulkan-spirv
 
 build/windows/vulkan_smoke_tests.exe: \
+        ../libs/AssetStoreLib/src/store_hash.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
+        ../libs/MeshChartingLib/src/mesh_charting.cpp \
         src/ui_lighting_controls.cpp src/ui.h \
         $(ME3_DIR)/include/matter/vulkan_device.h \
         $(ME3_DIR)/src/render/gpu_matrix_pack.h \
@@ -543,6 +545,11 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.h \
         $(ME3_DIR)/src/render/vk_pipeline.h \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
+        $(ME3_DIR)/src/render/vk_sparse_voxel.h \
+        $(ME3_DIR)/src/sparse_voxel_bake.h \
+        $(ME3_DIR)/src/surface_proxy.h \
+        $(ME3_DIR)/tests/sparse_voxel_fixture_io.h \
+        $(ME3_DIR)/tests/sparse_voxel_vk_tests.h \
         $(ME3_DIR)/src/render/vk_volumetrics.h \
         $(ME3_DIR)/src/render/vk_atmosphere.h \
         $(ME3_DIR)/src/render/vk_cloud_shadows.h \
@@ -556,6 +563,9 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        $(ME3_DIR)/src/render/vk_sparse_voxel.cpp \
+        $(ME3_DIR)/src/sparse_voxel_bake.cpp \
+        $(ME3_DIR)/src/surface_proxy.cpp \
         $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
         $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
         $(ME3_DIR)/src/animation/animation_budget.cpp \
@@ -586,11 +596,16 @@ build/windows/vulkan_smoke_tests.exe: \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp src/ui_lighting_controls.cpp \
+	    ../libs/AssetStoreLib/src/store_hash.cpp -I../libs/AssetStoreLib/include \
+	    ../libs/MeshChartingLib/src/mesh_charting.cpp \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/vk_sparse_voxel.cpp \
+	    $(ME3_DIR)/src/sparse_voxel_bake.cpp \
+	    $(ME3_DIR)/src/surface_proxy.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
 	    $(ME3_DIR)/src/animation/animation_budget.cpp \
@@ -635,7 +650,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include \
 	    -I../libs/MathLib/include \
-	    -I$(ME3_DIR)/tests \
+	    -I../libs/MeshChartingLib/include -I$(ME3_DIR)/tests \
 	    -I../third_party/raylib/src/external/glfw/include \
 	    -I$(OZZ_INCLUDE) \
 	    -I$(FLECS_DIR) \
@@ -677,8 +692,17 @@ build/windows/vulkan_compat_tests.exe: \
 # unbuildable for as long as those zones have existed. ProfileLib is not
 # header-only, so profile.cpp is on the source list too (same as
 # vulkan_smoke_tests.exe above).
+# Finished-page codec uses AssetStore's envelope and bank-backed page handles.
+VT_PAGE_STORE_SRC := $(addprefix ../libs/AssetStoreLib/src/,store_hash.cpp store_os.cpp blob_store.cpp ref_table.cpp asset_pages.cpp)
+VT_PAGE_MEMORY_OBJ := build/windows/vt_page_mem_arena.o build/windows/vt_page_mem_bank.o
+build/windows/vt_page_%.o: ../libs/MemoryLib/src/%.c
+	@mkdir -p $(dir $@)
+	$(WIN_CC) -std=c17 -O2 -I../libs/MemoryLib/include -c $< -o $@
+
 build/windows/vt_compositor_tests.exe: \
+        $(VT_PAGE_STORE_SRC) $(VT_PAGE_MEMORY_OBJ) \
         $(ME3_DIR)/tests/vt_compositor_tests.cpp \
+        ../libs/MeshChartingLib/src/mesh_charting.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
         $(ME3_DIR)/src/render/vt_compositor.h \
         $(ME3_DIR)/src/render/vt_types.h \
@@ -693,6 +717,8 @@ build/windows/vt_compositor_tests.exe: \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vt_compositor_tests.cpp \
+	    $(VT_PAGE_STORE_SRC) $(VT_PAGE_MEMORY_OBJ) -I../libs/AssetStoreLib/include \
+	    ../libs/MeshChartingLib/src/mesh_charting.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
 	    $(ME3_DIR)/src/terrain_field.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \

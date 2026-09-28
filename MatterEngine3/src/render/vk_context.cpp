@@ -1436,8 +1436,9 @@ struct VulkanDevice::Impl {
         // wireframe control as unavailable rather than pretending it works.
         features2.features.fillModeNonSolid =
             wireframe_enabled ? VK_TRUE : VK_FALSE;
+        // R16_UNORM composed VT height also needs this on raster-only devices.
         features2.features.shaderStorageImageExtendedFormats =
-            ray_tracing_enabled ? VK_TRUE : VK_FALSE;
+            rt_features2.features.shaderStorageImageExtendedFormats;
         // Phase 1 tileset Vulkan port (Task 6): the ground tileset sampler
         // wants anisotropic filtering. Gate the enable on the earlier
         // rt_features2 query (vkGetPhysicalDeviceFeatures2 above) so we never
@@ -2692,6 +2693,10 @@ struct VulkanDevice::Impl {
             resource->next = nullptr;
             delete resource;
         }
+        // Frame keep-alives may own raw Vulkan objects (for example BLAS
+        // serialization query pools), not just registered buffer controls.
+        // Drop them after the completion wait and before destroying the device.
+        for (FrameSlot& frame : frames) frame.retained.clear();
         if (device_lifetime)
             device_lifetime->destroy_registered_resources();
         for (FrameSlot& frame : frames) {

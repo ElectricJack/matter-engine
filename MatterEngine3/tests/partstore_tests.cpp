@@ -1200,7 +1200,119 @@ static void test_scoped_verified_bundle_reads() {
         "corrupt snapshot never weakens ordinary full checksum validation");
 }
 
+static void test_authored_vt_density() {
+    namespace fs=std::filesystem;
+    const auto root=fs::temp_directory_path()/"me3_partstore_vt_density";
+    struct Cleanup {fs::path path;~Cleanup(){std::error_code ec;fs::remove_all(path,ec);}} cleanup{root};
+    fs::create_directories(root/"parts");
+    constexpr uint64_t hash=0x0102030405060708ull;
+    const auto path=(root/part_asset::cache_path_resolved(hash)).string();
+    matter::PartRenderPolicy policy;
+    std::vector<uint8_t> bytes;
+    CHECK(matter::encode_part_render_policy(hash,policy,bytes),"density: legacy policy encodes");
+    const std::vector<uint8_t> expected={0x4d,0x52,0x54,0x50,2,0,0,0,8,7,6,5,4,3,2,1,1,0,0,0,0};
+    CHECK(bytes==expected,"density: default policy retains exact v2 bytes");
+    CHECK(publish_static_part_and_flat(root,hash),"density: canonical and clustered flat fixture");
+    const auto write_bytes=[&](const auto& value){return part_bundle::write_section(path,hash,
+        part_bundle::kSectionRenderPolicy,value.data(),value.size());};
+    for(uint8_t version:{uint8_t(1),uint8_t(2)}) {
+        auto legacy=expected;legacy[4]=version;
+        matter::PartRenderPolicy loaded;loaded.vt_texels_per_meter=256;
+        CHECK(write_bytes(legacy) && matter::load_part_render_policy(path,hash,0,loaded) &&
+              loaded.vt_texels_per_meter==0,"density: legacy versions reset to inherited density");
+    }
+    policy.vt_texels_per_meter=128;
+    CHECK(matter::encode_part_render_policy(hash,policy,bytes) && bytes.size()==25 && bytes[4]==3,
+          "density: authored value uses bounded v3 record");
+    matter::PartRenderPolicy decoded;
+    CHECK(write_bytes(bytes) && matter::load_part_render_policy(path,hash,0,decoded) &&
+          decoded.vt_texels_per_meter==128,"density: v3 round trip");
+    for(float value:{-1.f,0.f,.5f,2049.f,std::numeric_limits<float>::infinity(),
+                     std::numeric_limits<float>::quiet_NaN()}) {
+        auto malformed=bytes;uint32_t bits;std::memcpy(&bits,&value,4);
+        for(unsigned i=0;i<4;++i)malformed[21+i]=uint8_t(bits>>(8*i));
+        CHECK(write_bytes(malformed) && !matter::load_part_render_policy(path,hash,0,decoded) &&
+              decoded.vt_texels_per_meter==0,"density: malformed v3 value fails closed");
+        if(value!=0) {
+            auto invalid=policy;invalid.vt_texels_per_meter=value;std::vector<uint8_t> rejected;
+            CHECK(!matter::encode_part_render_policy(hash,invalid,rejected),"density: invalid writer input rejected");
+        }
+    }
+    auto truncated=bytes;truncated.pop_back();
+    CHECK(write_bytes(truncated) && !matter::load_part_render_policy(path,hash,0,decoded),
+          "density: truncated float rejected");
+    auto trailing=bytes;trailing.push_back(0);
+    CHECK(write_bytes(trailing) && !matter::load_part_render_policy(path,hash,0,decoded),
+          "density: trailing bytes rejected");
+    CHECK(write_bytes(bytes),"density: restore valid owner policy");
+    const char* inherited=std::getenv("MATTER_VT_PROP_TEXELS_PER_METER");
+    const bool had_environment=inherited!=nullptr;
+    const std::string saved_environment=inherited?inherited:"";
+    const auto set_density=[](const char* value){
+#ifdef _WIN32
+        _putenv_s("MATTER_VT_PROP_TEXELS_PER_METER",value?value:"");
+#else
+        if(value)setenv("MATTER_VT_PROP_TEXELS_PER_METER",value,1);
+        else unsetenv("MATTER_VT_PROP_TEXELS_PER_METER");
+#endif
+    };
+    const auto charts_have_density=[](const viewer::LoadedPart* part,float density){
+        if(!part)return false;
+        size_t count=0;
+        for(const auto& rung:part->lod_charts)for(const auto& chart:rung.charts){
+            ++count;if(chart.texels_per_meter!=density)return false;
+        }
+        return count>0;
+    };
+    set_density(nullptr);
+    {
+        viewer::PartStore flat(root.string());const auto* part=flat.get_or_load(hash);
+        CHECK(part && !part->clusters.empty() && charts_have_density(part,128),
+              "density: clustered flat charts use authored root policy");
+        viewer::PartStore staged(root.string());auto part_stage=staged.stage_load(hash);
+        CHECK(part_stage.ok && charts_have_density(&part_stage.lp,128),
+              "density: staged compositional charts use same authored policy");
+    }
+    for(const char* value:{"32","NaN","2049","garbage"}) {
+        set_density(value);viewer::PartStore store(root.string());
+        const auto* part=store.get_or_load(hash);
+        CHECK(charts_have_density(part,std::strcmp(value,"32")==0?32.f:128.f) &&
+              part->render_policy.vt_texels_per_meter==128,
+              "density: diagnostic override is validated and never mutates asset policy");
+    }
+    set_density(nullptr);
+    // Legacy v2 flat loader also regenerates charts from the canonical policy.
+    {
+        BLASManager source;TLASManager tlas(4);std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels lods;
+        CHECK(part_asset::load_v2(path,hash,source,tlas,kids,lods),"density: read canonical geometry");
+        if(lods.empty()){part_asset::LodLevel rung;rung.blas_indices={0};rung.screen_size_threshold=INFINITY;lods.push_back(rung);}
+        CHECK(part_asset::save_v2((root/part_asset::cache_path_flat(hash)).string(),source,tlas,nullptr,0,lods,hash),
+              "density: publish legacy flat fixture");
+        viewer::PartStore store(root.string());
+        CHECK(charts_have_density(store.get_or_load(hash),128),"density: legacy flat uses authored root policy");
+    }
+    // Composite ownership is explicit: merged triangles use the parent's
+    // local density; separately loaded child instances retain their own.
+    const uint64_t child_hash=hash+1;
+    CHECK(publish_static_part(root,child_hash),"density: child fixture");
+    auto child_policy=policy;child_policy.vt_texels_per_meter=256;
+    CHECK(matter::save_part_render_policy((root/part_asset::cache_path_resolved(child_hash)).string(),
+          child_hash,child_policy),"density: child policy");
+    policy.child_overrides={matter::RayTracingOverride::Inherit};
+    CHECK(publish_static_composite(root,hash,{child_instance(child_hash)},policy) && publish_flat(root,hash),
+          "density: parent fixture");
+    {
+        viewer::PartStore store(root.string());
+        CHECK(charts_have_density(store.get_or_load(hash),128) &&
+              charts_have_density(store.get_or_load(child_hash),256),"density: parent and child retain owner-local densities");
+    }
+    set_density(had_environment?saved_environment.c_str():nullptr);
+    std::printf("PARTSTORE_VT_DENSITY legacy=compatible clustered_legacy_staged=checked override=checked\n");
+}
+
 int main() {
+    test_authored_vt_density();
     test_scoped_verified_bundle_reads();
     test_singleton_flat_adopts_persisted_bvh();
     test_singleton_flat_reuses_exact_rungs();

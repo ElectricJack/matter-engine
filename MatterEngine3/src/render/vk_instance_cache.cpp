@@ -16,6 +16,7 @@
 
 #include "../provider/sector_resolver.h"
 
+#include <cstring>
 #include <utility>
 
 namespace viewer {
@@ -43,7 +44,8 @@ uint64_t fingerprint_one(const ResolvedInstance& instance) noexcept {
 // FNV-1a over the concatenated bytes of every instance's four identity fields.
 // Because it is a running fold, it is sensitive to ORDER as well as content:
 // the same set resolved in a different order is a miss. O(n) with no
-// allocation; called once per matches() and once per store().
+// allocation. Retained for callers that need a content fingerprint; the hot
+// flat-cache check below uses exact comparisons instead of this serial fold.
 uint64_t fingerprint_resolved_instances(
     const std::vector<ResolvedInstance>& resolved) noexcept {
     uint64_t fingerprint = 1469598103934665603ull;
@@ -63,15 +65,30 @@ uint64_t fingerprint_resolved_instances(
 
 bool VulkanInstanceCache::matches(
     const std::vector<ResolvedInstance>& resolved) const noexcept {
-    return valid_ && resolved_count_ == resolved.size() &&
-           fingerprint_ == fingerprint_resolved_instances(resolved);
+    if (!valid_ || resolved_keys_.size() != resolved.size()) return false;
+    for (size_t i = 0; i < resolved.size(); ++i) {
+        const auto& source = resolved[i];
+        const auto& key = resolved_keys_[i];
+        if (source.part_hash != key.part_hash || source.stable_id != key.stable_id ||
+            source.segment != key.segment ||
+            std::memcmp(source.transform, key.transform, sizeof(key.transform)) != 0)
+            return false;
+    }
+    return true;
 }
 
 void VulkanInstanceCache::store(
     const std::vector<ResolvedInstance>& resolved,
     std::vector<VkSceneInstance> instances) {
-    fingerprint_ = fingerprint_resolved_instances(resolved);
-    resolved_count_ = resolved.size();
+    resolved_keys_.resize(resolved.size());
+    for (size_t i = 0; i < resolved.size(); ++i) {
+        const auto& source = resolved[i];
+        auto& key = resolved_keys_[i];
+        key.part_hash = source.part_hash;
+        key.stable_id = source.stable_id;
+        key.segment = source.segment;
+        std::memcpy(key.transform, source.transform, sizeof(key.transform));
+    }
     instances_ = std::move(instances);
     valid_ = true;
     ++expansion_count_;
@@ -87,8 +104,7 @@ void VulkanInstanceCache::invalidate_sources() noexcept {
 }
 
 void VulkanInstanceCache::invalidate_expansion() noexcept {
-    fingerprint_ = 0;
-    resolved_count_ = 0;
+    resolved_keys_.clear();
     valid_ = false;
     instances_.clear();
 }

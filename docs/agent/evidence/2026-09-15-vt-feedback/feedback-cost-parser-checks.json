@@ -1,0 +1,10 @@
+{
+  "red_exit": 1,
+  "red_result": "Two new missing-demand reporting tests error on the old analyzer; original nine tests pass.",
+  "green_exit": 0,
+  "green_tests": 11,
+  "red_log": "feedback-cost-timing-parser-red.log",
+  "green_log": "feedback-cost-timing-parser-green.log",
+  "source_sha256": "86969d0a23a16a21c98047586f5947ea316d0299dff33057cc86f6570199ecd0",
+  "test_sha256": "b7f544d88ad61e30b258fb2b613c88d7690b5c771d76affc8df53e05c4d759ed"
+}

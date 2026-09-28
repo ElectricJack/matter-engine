@@ -1,0 +1,5 @@
+render_path native_rt
+set render.gi.enabled true
+set render.pom.enabled false
+cam 425 25 1465 419 23 1455
+stats perf-camera-confirmed

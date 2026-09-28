@@ -32,13 +32,13 @@ struct alignas(16) Params {
 };
 struct alignas(16) Projection {
     float origin[4], u[4], v[4], n[4], rect[4], interval[4], bounds_min[4], bounds_max[4];
-    std::uint32_t limits[4];
+    std::uint32_t limits[4], region[4];
 };
 struct Pixel {
     float normal_height[4];
     std::uint32_t status[4];
 };
-static_assert(sizeof(Pixel) == 32 && sizeof(Projection) == 144, "projection GPU ABI");
+static_assert(sizeof(Pixel) == 32 && sizeof(Projection) == 160, "projection GPU ABI");
 void vector(float *out, matter::Float3 v) {
     out[0] = v.x;
     out[1] = v.y;
@@ -126,10 +126,10 @@ struct GpuSolidFaceProjector::Impl {
         ready = true;
         return true;
     }
-    bool prepare(const FaceJob &j, const FaceLayout &l, std::string &e) {
+    bool prepare(const FaceJob &j, const FaceLayout &l, const FaceRegion &r, std::string &e) {
         if (!initialize(e))
             return false;
-        count = l.width * l.height;
+        count = r.width * r.height;
         VkDeviceSize sizes[] = {sizeof(Params), j.source.op_count * sizeof(SolidOp),
                                 sizeof(Projection), count * sizeof(Pixel)};
         for (int i = 0; i < 4; ++i)
@@ -162,6 +162,10 @@ struct GpuSolidFaceProjector::Impl {
         f.limits[1] = l.height;
         f.limits[2] = j.max_steps;
         f.limits[3] = j.refine_steps;
+        f.region[0] = r.x;
+        f.region[1] = r.y;
+        f.region[2] = r.width;
+        f.region[3] = r.height;
         if (!matter::upload_buffer(vk, buffers[0], &p, sizeof(p), 0, e) ||
             !matter::upload_buffer(vk, buffers[1], j.source.ops, sizes[1], 0, e) ||
             !matter::upload_buffer(vk, buffers[2], &f, sizeof(f), 0, e))
@@ -220,12 +224,28 @@ GpuSolidFaceProjector::GpuSolidFaceProjector(matter::VulkanDevice &v)
 GpuSolidFaceProjector::~GpuSolidFaceProjector() = default;
 bool GpuSolidFaceProjector::project(const FaceJob &j, FacePatch &out, FaceStats &stats, Error &e,
                                     const BuildControl &control) {
+    stats = {};
+    FaceLayout l;
+    if (!current(j, control, e) || !validate_face_job(j, l, e)) return false;
+    return prepare(j, out, stats, e, control, {1024 * 1024, 1});
+}
+bool GpuSolidFaceProjector::prepare(const FaceJob &j, FacePatch &out, FaceStats &stats, Error &e,
+                                    const BuildControl &control, const FacePreparationLimits &limits) {
+    return prepare_solid_face(j,
+        [this](const FaceJob &job, const FaceRegion &region, std::vector<FaceTexel> &pixels,
+               FaceStats &s, Error &error, const BuildControl &c) {
+            return project_region(job, region, pixels, s, error, c);
+        }, out, stats, e, control, limits);
+}
+bool GpuSolidFaceProjector::project_region(const FaceJob &j, const FaceRegion &r,
+                                          std::vector<FaceTexel> &out, FaceStats &stats, Error &e,
+                                          const BuildControl &control) {
     auto start = Clock::now();
     stats = {};
     e = {};
     FaceLayout l;
     auto &s = *impl_;
-    if (!current(j, control, e) || !validate_face_job(j, l, e))
+    if (!current(j, control, e) || !validate_face_region(j, r, l, e))
         return false;
     if (s.poisoned)
         return fail(e, ErrorCode::VulkanFailure, "face service unusable after failed submission");
@@ -233,7 +253,7 @@ bool GpuSolidFaceProjector::project(const FaceJob &j, FacePatch &out, FaceStats 
         return fail(e, ErrorCode::Unavailable, "Vulkan face service unavailable");
     try {
         std::string message;
-        if (!s.prepare(j, l, message))
+        if (!s.prepare(j, l, r, message))
             return fail(e, ErrorCode::VulkanFailure, message);
         stats.prepare_ms = ms(start);
         if (!current(j, control, e))
@@ -256,34 +276,24 @@ bool GpuSolidFaceProjector::project(const FaceJob &j, FacePatch &out, FaceStats 
             stats.readback_copy_ms = ms(copy);
         }
         stats.host_scratch_bytes = s.scratch.capacity() * sizeof(Pixel);
-        FacePatch result;
-        result.frame = j.frame;
-        result.layout = l;
-        result.u_min_m = j.u_min_m;
-        result.u_max_m = j.u_max_m;
-        result.v_min_m = j.v_min_m;
-        result.v_max_m = j.v_max_m;
-        result.height_min_m = j.height_min_m;
-        result.height_max_m = j.height_max_m;
-        result.material = j.source.material;
-        result.recipe_digest = face_recipe_digest(j);
-        result.texels.resize(s.count);
+        std::vector<FaceTexel> result(s.count);
         for (std::uint32_t i = 0; i < s.count; ++i) {
             const auto &p = pixels[i];
+            const auto x = r.x + i % r.width, y = r.y + i / r.width;
             if (p.status[1])
                 return fail(
                     e, p.status[1] == 1 ? ErrorCode::LimitExceeded : ErrorCode::ArtifactFailure,
                     "projected ray failed (status " + std::to_string(p.status[1]) +
                         ") pixel=" + std::to_string(i) + " xy=" +
-                        std::to_string(i % l.width) + "," + std::to_string(i / l.width) +
-                        " uv_m=" + std::to_string(j.u_min_m + (i % l.width + .5f)*l.pitch_u_m) +
-                        "," + std::to_string(j.v_min_m + (i / l.width + .5f)*l.pitch_v_m) +
+                        std::to_string(x) + "," + std::to_string(y) +
+                        " uv_m=" + std::to_string(j.u_min_m + (x + .5f)*l.pitch_u_m) +
+                        "," + std::to_string(j.v_min_m + (y + .5f)*l.pitch_v_m) +
                         " height_m=" + std::to_string(p.normal_height[3]) +
                         " field_m=" + std::to_string(p.normal_height[0]) +
                         " steps=" + std::to_string(p.status[2]) + "; no partial patch");
             if (p.status[0] > 1 || p.status[3] || p.status[2] > j.max_steps)
                 return fail(e, ErrorCode::ArtifactFailure, "invalid face GPU status");
-            auto &t = result.texels[i];
+            auto &t = result[i];
             t.coverage = p.status[0];
             stats.max_steps_used = std::max(stats.max_steps_used, p.status[2]);
             for (float f : p.normal_height)
