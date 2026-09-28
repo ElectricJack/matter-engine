@@ -76,7 +76,7 @@ finials and the Gothic ornament are procedural approximations rather than scans.
 | `KreuzensteinBridge`     | Three open arches, stone piers, rising flagstone deck and parapets              |
 | `KreuzensteinCourt`      | Individual paving stones, low well and hall steps                               |
 | `KreuzensteinGround`     | Hillside, approach path, foundation rock and shrubs                             |
-| `KreuzensteinBrick`      | Reusable voxel-CSG stone, four material/shape variants                          |
+| `KreuzensteinBrick`      | Reusable voxel-CSG stone, four material/shape variants (project `objects/`)     |
 
 ## DSL implementation
 
@@ -90,7 +90,9 @@ per-brush `tint`, so color is supplied through material handles.
 The uniquely named `shared-lib/kreuzenstein.js` contains the architectural
 helpers. The engine resolver accepts flat shared-lib imports, so it lives at
 project level; only this scene imports it. Scene-local object files own the
-building composition and dimensions.
+building composition and dimensions. `KreuzensteinBrick` lives in the project
+`objects/` tier because the shared library places it by name and can be
+imported by other scenes.
 
 Each building is evaluated in two stages. `masonry` emits brick placements and
 is an `expand: true` world root, promoting the stones to independent scene

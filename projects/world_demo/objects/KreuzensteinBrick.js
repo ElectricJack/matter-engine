@@ -1,5 +1,7 @@
 // One individually meshed voxel stone. Reused with affine placements, never a texture.
 // A 20-cell edge preserves a slightly rounded, chipped hand-dressed silhouette.
+// Shared-lib/kreuzenstein.js places this part by name, so it must live in the
+// project objects/ tier where every importing scene can resolve it.
 class KreuzensteinBrick extends Part {
   static lodBudgets = [1];
   static noImpostor = true;

@@ -10,6 +10,17 @@ const root = path.resolve(
   "../../..",
 );
 const scene = path.join(root, "projects/world_demo/scenes/castles/layouts/Kreuzenstein");
+const objectDirs = [
+  path.join(scene, "objects"),
+  path.join(root, "projects/world_demo/objects"),
+];
+function readObject(module) {
+  for (const dir of objectDirs) {
+    const file = path.join(dir, module + ".js");
+    if (fs.existsSync(file)) return fs.readFileSync(file, "utf8");
+  }
+  throw new Error(`${module}.js not found under ${objectDirs.join(", ")}`);
+}
 const prelude = fs
   .readFileSync(path.join(root, "MatterEngine3/src/part_base.js.h"), "utf8")
   .split('R"JS(')[1]
@@ -91,9 +102,10 @@ function evaluate(module, params) {
     };
   }
   vm.runInContext(prelude, context);
-  const source = fs
-    .readFileSync(path.join(scene, "objects", module + ".js"), "utf8")
-    .replace(/^import .*;$/m, "const Geo=CastleGeometry;");
+  const source = readObject(module).replace(
+    /^import .*;$/m,
+    "const Geo=CastleGeometry;",
+  );
   vm.runInContext(
     helper + "\n" + source + "\nglobalThis.Ctor=" + module + ";",
     context,
