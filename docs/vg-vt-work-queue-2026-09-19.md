@@ -126,3 +126,21 @@ Measure-first list (do not fix blind): (1) GPU zone breakdown; (2) hardware-coun
 - Normalize the dense one-liner formatting in the new renderer, compositor and part_surface code before it becomes the baseline of a 20k-line file.
 - Split `vk_scene_renderer.cpp` (20,482 lines) along the visible seams: sparse binding, geometry cut, export marshaller, tileset source-bank state machine.
 - Move the ~3,600 lines of header-only implementation in `src/render/` (`vt_prepare.h` worker thread, `blas_disk_cache.h`, prepared caches, ten `vt_*.h`) into `.cpp` files in the manifests.
+
+## Baseline 2026-09-27
+
+Tip `d006f20e`, MSVC RelWithDebInfo via `./tools/build-windows-from-wsl.sh`. CPU suites ran from `MatterEngine3/tests`, one at a time; smoke modes ran from `MatterEditor/build/cmake/windows-msvc/relwithdebinfo`, one at a time.
+
+- Build `matter_editor`: rc=0.
+- Build `all`: rc=1. Four test objects fail with C2027/C2338: `matter_engine_headless_consumer_tests`, `authored_world_provider_cache_tests`, `conifer_lod_provider_tests`, `viewer_logic_tests`. All four instantiate the implicit `viewer::LocalProvider::~LocalProvider`, which deletes `std::unique_ptr<part_surface::SourceCache>` (`MatterEngine3/src/provider/local_provider.h:878`) while that type is only forward-declared (`:96`). `matter_engine_cpu_tests` depends on the first of these targets, so it fails too. The eight targets this plan names each build rc=0.
+- `vt_residency_tests`: rc=0, `ALL PASS`.
+- `geometry_hierarchy_tests`: rc=0, `ALL PASS`.
+- `async_queue_tests`: rc=0, `ALL PASS`.
+- `async_stage_pipeline_tests`: rc=0, `ALL PASS: asynchronous overlap, bounded admission, cancellation, failures and shutdown pins`.
+- `world_definition_tests`: rc=1, `22 FAILURE(S)`. All 22 come from `test_shared_lib_only_names_shared_objects`: `shared-lib/kreuzenstein.js` names `KreuzensteinBrick` (moved to `objects/` on main in `135ac7cc`, which this branch lacks), `shared-lib/villa_doric_pilot.js` names `VillaDoricColumnPilot`, and `shared-lib/villa_website_kit.js` names 20 `Villa*` modules that each live only in a scene `objects/` folder.
+- `partstore_tests`: rc=0, `partstore_tests: ALL PASS`.
+- smoke `vt-feedback`: rc=0, `ALL PASS`, `validation errors: 0`.
+- smoke `vt-input-snapshot`: rc=0, `ALL PASS`, `validation errors: 0`.
+- smoke `vt-direct-source`: rc=0, `ALL PASS`, `validation errors: 0`.
+- smoke `vt-surfaces`: rc=0, `ALL PASS`, `validation errors: 0`.
+- smoke `sparse-voxel`: rc=0, `ALL PASS`, `validation errors: 0`.
