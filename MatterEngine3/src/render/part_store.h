@@ -361,6 +361,7 @@ struct WarpAnchor {
 class PartStore {
 public:
     explicit PartStore(std::string cache_root);
+    ~PartStore();
 
     // True if the part is loaded in memory OR a .part exists on disk. Drives reconcile.
     // A miss in the resident map falls through to a ::stat of the scratch dir
@@ -622,6 +623,7 @@ private:
     // purpose: every LoadedPart* this class hands out must survive later
     // insertions, and only erasing that key invalidates one.
     StagedPart stage_geometry_cached(uint64_t part_hash);
+    bool flush_geometry_writer();
     bool geometry_pages_enabled_ = false;
     bool geometry_filter_active_ = false;
     std::set<uint64_t> geometry_filter_;

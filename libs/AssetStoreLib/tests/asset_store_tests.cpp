@@ -1326,6 +1326,29 @@ static void test_asset_pages(const std::string& root) {
     BlobHash mh;
     CHECK(publish_page_manifest(*writer, *refs, "asset/one", manifest, limits, mh, error), "publish manifest after pages");
     RefInfo ri; CHECK(refs->peek("asset/one", &ri) && ri.hash == mh, "published identity");
+    PageCacheConfig batch_config; batch_config.store = cfg;
+    auto batch_reader = PageCache::open(batch_config, error);
+    CHECK(batch_reader && !batch_reader->read_manifest("asset/batched").page, "reader starts before batched publication");
+    BlobHash batched_hash;
+    CHECK(publish_page_manifest(*writer, *refs, "asset/batched", manifest, limits, batched_hash, error, false),
+          "stage manifest without committing");
+    CHECK(batch_reader && !batch_reader->read_manifest("asset/batched").page, "uncommitted reference is invisible to readers");
+    CHECK(writer->flush_index() && refs->flush(), "commit a batch in index then reference order");
+    CHECK(batch_reader && batch_reader->read_manifest("asset/batched").page, "existing reader observes committed batch");
+    PageCacheConfig memory_config; memory_config.store = cfg; memory_config.resident_bytes = manifest.size();
+    auto memory_cache = PageCache::open(memory_config, error);
+    CHECK(memory_cache != nullptr, "open in-memory page admission cache");
+    if (memory_cache) {
+        auto admitted = memory_cache->insert(manifest, error);
+        CHECK(admitted.page && admitted.page->hash == batched_hash && memory_cache->stats().disk_reads == 0,
+              "encoded producer page is admitted without a disk read");
+        CHECK(memory_cache->insert(manifest, error).page == admitted.page, "producer pages reuse existing immutable allocations");
+        CHECK(memory_cache->insert(bytes, error).status == PageStatus::BudgetExceeded, "producer admission cannot exceed pinned budget");
+        auto corrupt = manifest; corrupt[0] ^= 1;
+        CHECK(memory_cache->insert(corrupt, error).status == PageStatus::Corrupt, "invalid producer page is rejected");
+        memory_cache.reset();
+        CHECK(admitted.page && admitted.page->view.kind == 10, "producer page remains valid after cache teardown");
+    }
     auto invalid = hash_bytes("absent", 6);
     CHECK(encode_page(10, {}, {invalid}, limits, manifest, error), "encode missing dependency");
     CHECK(!publish_page_manifest(*writer, *refs, "asset/one", manifest, limits, mh, error), "reject missing dependency");

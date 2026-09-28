@@ -67,7 +67,9 @@ bool decode_receivers(const NodeView&, std::vector<ReceiverCorner>&, std::string
 bool write_hierarchy(const Hierarchy&, asset_store::BlobStore&, asset_store::RefTable&,
                      const std::string& key, const asset_store::PageLimits&,
                      std::vector<NodeRef>& roots, std::string& error,
-                     const std::vector<asset_store::PageSection>& metadata = {});
+                     const std::vector<asset_store::PageSection>& metadata = {},
+                     bool commit = true, std::vector<NodeRef>* all_refs = nullptr,
+                     std::vector<uint8_t>* manifest_bytes = nullptr);
 bool decode_roots(asset_store::PageHandle manifest, std::vector<NodeRef>& roots, std::string& error);
 
 struct CutConfig { uint32_t max_nodes = 4096, max_selected = 4096, max_requests = 1024; };

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <cstdlib>
+#include <map>
 #include "matter/log.h"
 
 namespace geometry {
@@ -31,12 +32,59 @@ struct RootCache::Impl {
     asset_store::PageCacheConfig config;
     std::unique_ptr<asset_store::PageCache> cache;
     mutable std::mutex mutex;
+    // Pending assets must be loadable before their refs are visible on disk.
+    // These pins use the same bounded page bank as disk-loaded roots.
+    std::map<std::string, std::shared_ptr<const CachedAsset>> pending;
+    mutable std::mutex writer_mutex;
+    std::unique_ptr<asset_store::BlobStore> writer;
+    std::unique_ptr<asset_store::RefTable> writer_refs;
+    WriterStats writer_stats;
+    std::chrono::steady_clock::time_point last_commit{};
+    static constexpr uint32_t kCommitEveryAssets = 32;
+    static constexpr std::chrono::seconds kCommitEvery{2};
+    bool open_writer(std::string& error) {
+        if (writer) return true;
+        writer = asset_store::BlobStore::open(config.store, &error);
+        if (!writer) return false;
+        writer_refs = asset_store::RefTable::open(*writer, {}, &error);
+        if (!writer_refs) { writer.reset(); return false; }
+        last_commit = std::chrono::steady_clock::now();
+        return true;
+    }
+    // Caller owns writer_mutex; lock order is always writer_mutex -> mutex.
+    bool commit(std::string& error, bool in_write = false) {
+        if (!writer || !writer_stats.pending_assets) { error.clear(); return true; }
+        const auto start = std::chrono::steady_clock::now();
+        if (!writer->flush_index()) { error = writer->last_error(); return false; }
+        if (!writer_refs->flush()) { error = "geometry manifest reference commit failed"; return false; }
+        if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+            MATTER_LOGI("geometry", "cache_commit_profile assets=%llu in_write=%u total_ms=%.3f",
+                static_cast<unsigned long long>(writer_stats.pending_assets), unsigned(in_write),
+                std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now() - start).count());
+        writer_stats.pending_assets = 0;
+        ++writer_stats.commits;
+        last_commit = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(mutex);
+        pending.clear();
+        error.clear(); return true;
+    }
 };
 RootCache::RootCache(std::string directory, uint64_t bytes) : d_(new Impl) {
     d_->config.store.dir = std::move(directory); d_->config.resident_bytes = bytes;
     d_->config.bank = asset_store::PageBank::create(static_cast<size_t>(bytes));
 }
-RootCache::~RootCache() = default;
+RootCache::~RootCache() {
+    std::string error;
+    if (!flush_writer(error)) MATTER_LOGW("geometry", "writer shutdown commit failed: %s", error.c_str());
+}
+bool RootCache::flush_writer(std::string& error) {
+    std::lock_guard<std::mutex> lock(d_->writer_mutex);
+    return d_->commit(error);
+}
+RootCache::WriterStats RootCache::writer_stats() const {
+    std::lock_guard<std::mutex> lock(d_->writer_mutex);
+    return d_->writer_stats;
+}
 const std::string& RootCache::directory() const { return d_->config.store.dir; }
 asset_store::PageCacheStats RootCache::stats() const {
     std::lock_guard<std::mutex> lock(d_->mutex);
@@ -45,6 +93,11 @@ asset_store::PageCacheStats RootCache::stats() const {
 std::shared_ptr<const CachedAsset> RootCache::load(const std::string& key, std::string& error, CacheLoadStatus* status) {
     if (status) *status = CacheLoadStatus::Failed;
     std::lock_guard<std::mutex> lock(d_->mutex);
+    const auto pending = d_->pending.find(key);
+    if (pending != d_->pending.end()) {
+        if (status) *status = CacheLoadStatus::Hit;
+        error.clear(); return pending->second;
+    }
     if (!d_->config.bank) { error = "geometry root bank allocation failed"; return {}; }
     if (!d_->cache) {
         std::error_code ec;
@@ -100,9 +153,46 @@ std::shared_ptr<const CachedAsset> RootCache::load(const std::string& key, std::
     if (status) *status = CacheLoadStatus::Hit;
     error.clear(); return result;
 }
-std::shared_ptr<const CachedAsset> load_asset(const std::string& directory,
-                                            const std::string& key, std::string& error) {
-    RootCache cache(directory); return cache.load(key, error);
+std::shared_ptr<const CachedAsset> RootCache::write_asset(const std::string& key, const Hierarchy& hierarchy,
+    const std::vector<asset_store::PageSection>& metadata, std::string& error, double* write_ms) {
+    const auto start = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> writer_lock(d_->writer_mutex);
+    if (!d_->open_writer(error)) return {};
+    CacheLoadStatus status;
+    if (auto existing = load(key, error, &status)) return existing;
+    if (status != CacheLoadStatus::Missing) return {};
+    std::vector<NodeRef> roots, all_refs;
+    std::vector<uint8_t> manifest;
+    if (!write_hierarchy(hierarchy, *d_->writer, *d_->writer_refs, key, d_->config.limits,
+                         roots, error, metadata, false, &all_refs, &manifest)) return {};
+    ++d_->writer_stats.assets_written;
+    ++d_->writer_stats.pending_assets;
+    if ((d_->writer_stats.pending_assets >= Impl::kCommitEveryAssets ||
+         std::chrono::steady_clock::now() - d_->last_commit >= Impl::kCommitEvery) && !d_->commit(error, true)) return {};
+    // The reader index may not include these bytes yet. Admit the in-memory
+    // encoding through the reader's bank to preserve dedup and aggregate caps.
+    std::lock_guard<std::mutex> lock(d_->mutex);
+    if (!d_->cache) d_->cache = asset_store::PageCache::open(d_->config, error);
+    if (!d_->cache) return {};
+    auto result = std::make_shared<CachedAsset>();
+    result->key = key; result->directory = directory();
+    result->manifest = d_->cache->insert(manifest, error).page;
+    if (!result->manifest) return {};
+    for (size_t i = 0; i < hierarchy.roots.size(); ++i) {
+        const auto& node = hierarchy.nodes[hierarchy.roots[i]];
+        std::vector<NodeRef> children;
+        for (auto child : node.children) children.push_back(all_refs[child]);
+        std::vector<uint8_t> bytes;
+        if (!encode_node(node, children, d_->config.limits, bytes, error)) return {};
+        auto page = d_->cache->insert(bytes, error).page;
+        if (!page) return {};
+        NodeView root;
+        if (!decode_node(page, root, error)) return {};
+        result->roots.push_back(std::move(root));
+    }
+    if (d_->writer_stats.pending_assets) d_->pending[key] = result;
+    if (write_ms) *write_ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now() - start).count();
+    error.clear(); return result;
 }
 std::shared_ptr<const CachedAsset> cache_asset(const std::string& directory,
     const std::string& key, const MeshIndexed& source, const CompileConfig& config,
@@ -110,13 +200,10 @@ std::shared_ptr<const CachedAsset> cache_asset(const std::string& directory,
     CacheReport local; if (!report) report = &local; *report = {};
     using Clock = std::chrono::steady_clock;
     const auto elapsed = [](Clock::time_point t) { return std::chrono::duration<double,std::milli>(Clock::now()-t).count(); };
-    if (roots && roots->directory() != directory) { error = "geometry root cache directory mismatch"; return {}; }
-    const auto load = [&] {
-        if (roots) return roots->load(key, error, &report->lookup);
-        RootCache temporary(directory); return temporary.load(key, error, &report->lookup);
-    };
+    if (!roots) { error = "geometry cache write requires a RootCache"; return {}; }
+    if (roots->directory() != directory) { error = "geometry root cache directory mismatch"; return {}; }
     auto start = Clock::now();
-    auto cached = load(); report->lookup_ms = elapsed(start);
+    auto cached = roots->load(key, error, &report->lookup); report->lookup_ms = elapsed(start);
     if (cached) return cached;
     report->reason = error;
     if (cache_only || report->lookup != CacheLoadStatus::Missing) return {};
@@ -125,33 +212,13 @@ std::shared_ptr<const CachedAsset> cache_asset(const std::string& directory,
     if (!compile(source, config, hierarchy, error)) { report->compile_ms = elapsed(start); return {}; }
     report->compile_ms = elapsed(start);
     start = Clock::now();
-    // Compile in parallel; serialize only the writer session and its commit.
-    // Existing BlobStore's cross-process lease remains the disk authority.
-    static std::mutex writer_mutex;
-    double writer_wait_ms=0, recheck_ms=0, open_ms=0, hierarchy_write_ms=0;
-    {
-        std::lock_guard<std::mutex> lock(writer_mutex);
-        writer_wait_ms=elapsed(start);
-        auto step=Clock::now();
-        const auto initial = report->lookup;
-        if (auto cached = load()) { report->lookup = initial; return cached; }
-        recheck_ms=elapsed(step); step=Clock::now();
-        const auto second = report->lookup; report->lookup = initial;
-        if (second != CacheLoadStatus::Missing) return {};
-        asset_store::StoreConfig store_config; store_config.dir = directory;
-        auto store = asset_store::BlobStore::open(store_config, &error);
-        if (!store) return {};
-        auto refs = asset_store::RefTable::open(*store, {}, &error);
-        if (!refs) return {};
-        open_ms=elapsed(step);step=Clock::now();
-        std::vector<NodeRef> roots;
-        if (!write_hierarchy(hierarchy, *store, *refs, key, {}, roots, error, metadata)) return {};
-        hierarchy_write_ms=elapsed(step);
-    }
+    double hierarchy_write_ms = 0;
+    auto result = roots->write_asset(key, hierarchy, metadata, error, &hierarchy_write_ms);
     report->write_ms = elapsed(start);
     if(std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
-        MATTER_LOGI("geometry", "cache_write_profile key=%s writer_wait_ms=%.3f recheck_ms=%.3f open_ms=%.3f hierarchy_write_ms=%.3f total_ms=%.3f",key.c_str(),writer_wait_ms,recheck_ms,open_ms,hierarchy_write_ms,report->write_ms);
-    const auto initial = report->lookup;
-    auto result = load(); report->lookup = initial; return result;
+        MATTER_LOGI("geometry", "cache_write_profile key=%s hierarchy_write_ms=%.3f total_ms=%.3f pending=%llu",
+            key.c_str(), hierarchy_write_ms, report->write_ms,
+            static_cast<unsigned long long>(roots->writer_stats().pending_assets));
+    return result;
 }
 } // namespace geometry
