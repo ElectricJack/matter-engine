@@ -12,7 +12,8 @@ From that handoff directory, run `launch-villa-column.cmd`, or:
 ```
 
 F11 toggles the editor panels. The column is `VillaDoricColumnPilot` in this
-scene's local `objects/` directory. Geometry lives in
+project `objects/architecture/villa/` directory, since the shared library
+names it. Geometry lives in
 `../../../../shared-lib/villa_doric_pilot.js`.
 
 ## Design and dimensions
