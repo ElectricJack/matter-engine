@@ -1092,6 +1092,7 @@ static ScriptHost::LodBudgetSpec read_lod_budgets(JSContext* ctx, JSValueConst a
 }
 
 ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source) {
+    ++stats_.lod_evaluations;
     LodBudgetSpec out;
 
     std::string className = find_part_class_name(source);
@@ -1140,6 +1141,7 @@ static bool read_no_impostor(JSContext* ctx, JSValueConst authored) {
 }
 
 bool ScriptHost::eval_no_impostor(const std::string& source) {
+    ++stats_.lod_evaluations;
     std::string className = find_part_class_name(source);
     if (className.empty()) return false;
 
@@ -1389,6 +1391,7 @@ static ScriptHost::LodAuthoring read_lods(JSContext* ctx, JSValueConst authored)
 }
 
 ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
+    ++stats_.lod_evaluations;
     LodAuthoring out;
 
     std::string className = find_part_class_name(source);

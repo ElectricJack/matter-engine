@@ -162,6 +162,18 @@ class MillimetreTwig extends Part {
               && root_plan.no_impostor, "RecordingBaker forwards root opt-out");
         CHECK(provider.ensure_part_baked(root, err), "demand subtree including metadata succeeds");
         if (!err.empty()) std::printf("%s\n", err.c_str());
+        {
+            // The publish loop revisits cached nodes; their authored plans
+            // were installed on the first visit and are not re-derived.
+            const auto& host = provider.host_baker().host();
+            const auto evals_before = host.stats().lod_evaluations;
+            CHECK(provider.ensure_part_baked(root, err), "revisiting the cached subtree succeeds");
+            CHECK(host.stats().lod_evaluations == evals_before,
+                  "a cached node does not re-evaluate its LOD plan on every visit");
+            if (host.stats().lod_evaluations != evals_before)
+                std::printf("  lod evaluations on revisit: %llu\n",
+                            (unsigned long long)(host.stats().lod_evaluations - evals_before));
+        }
         part_asset::StaticLodPlan w, n;
         CHECK(part_asset::load_static_lod_plan(cache + "/" + part_asset::cache_path_static_lods(wood), wood, w), "wood plan is published");
         CHECK(w.no_impostor && w.level_at == std::vector<double>({0, 6, 22}), "wood has exact authored switch distances and no impostor");
@@ -265,9 +277,13 @@ class MillimetreTwig extends Part {
         }
 
         // Simulate a pre-fix cached body: replace its plan with an empty plan.
+        // Such a body is written by an older binary, so the session that
+        // meets it is a new one; plans install once per hash per session.
         part_asset::StaticLodPlan missing;
         CHECK(part_asset::save_static_lod_plan(cache + "/" + part_asset::cache_path_static_lods(wood), wood, missing), "prepare cached body without authored metadata");
-        CHECK(provider.ensure_part_baked(wood, err), "cached demand body restores missing authored ladder");
+        viewer::LocalProvider next_session(cfg);
+        CHECK(next_session.install_graph(err, part_graph::BakePolicy::RootsOnly), "next session installs over the warm cache");
+        CHECK(next_session.ensure_part_baked(wood, err), "cached demand body restores missing authored ladder");
         CHECK(part_asset::load_static_lod_plan(cache + "/" + part_asset::cache_path_static_lods(wood), wood, w)
               && w.level_hashes.size() == 3 && w.no_impostor, "cache-hit repair retains all rungs");
     }

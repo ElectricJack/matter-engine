@@ -546,6 +546,14 @@ public:
 
     uint64_t fold_cache_hits() const { return fold_hits_; }
     uint64_t fold_cache_misses() const { return fold_misses_; }
+
+    // Work counters for this host's lifetime. lod_evaluations counts calls to
+    // eval_lods / eval_no_impostor / eval_lod_budgets, each of which builds a
+    // fresh QuickJS runtime to read one class static. Owner-thread only, like
+    // the last_* scratch below.
+    struct Stats { uint64_t lod_evaluations = 0; };
+    const Stats& stats() const { return stats_; }
+
     // Clears the fold cache. Called by set_shared_lib_root() to invalidate cached
     // folded sources when the shared-lib root changes. Engine reload does not call
     // this because install_graph() recreates the ScriptHost (fresh cache by design).
@@ -604,6 +612,7 @@ private:
     std::unordered_map<std::string, uint64_t> request_source_prefixes_;
     uint64_t fold_hits_ = 0;
     uint64_t fold_misses_ = 0;
+    Stats stats_;
 };
 
 } // namespace script_host

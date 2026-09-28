@@ -3652,6 +3652,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     hit_count_   = 0;
     install_bake_count_ = 0;
     baked_hashes_.clear();
+    lod_plans_installed_.clear();
     part_surfaces_.clear(); part_surface_cache_.reset(); sources_without_surface_.clear();
 
     // Clear cross-phase state
@@ -3922,6 +3923,11 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             }
         }
 
+        // Authored LOD plans reach the flattener once per hash per session.
+        // A cached node revisited by the publish loop must not rebuild three
+        // QuickJS runtimes to re-derive a plan it already installed.
+        if (cached && lod_plans_installed_.count(hash)) return true;
+
         // Match graph install: authored parameter rungs and noImpostor must
         // reach the flattener before a body can become drawable.
         if (!host_baker_->bake_static_lods(bi.source, bi.params, bi.child_hashes,
@@ -3944,6 +3950,9 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             ++baked_count_;
             baked_hashes_.insert(hash);
         }
+        // Recorded only once the whole node succeeded: the early-out above
+        // also skips ensure_part_surface, so a failure there still retries.
+        lod_plans_installed_.insert(hash);
 
         return true;
     };
@@ -4876,6 +4885,7 @@ bool LocalProvider::restore_from_cache(
     hit_count_    = 0;
     install_bake_count_ = 0;
     baked_hashes_.clear();
+    lod_plans_installed_.clear();
     part_surfaces_.clear(); part_surface_cache_.reset(); sources_without_surface_.clear();
     roots_.clear();
     root_transforms_.clear();

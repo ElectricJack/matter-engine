@@ -364,6 +364,9 @@ public:
     // skipped — production installs never call this setter.
     void set_bake_observer(BakeObserver* observer) { observer_ = observer; }
 
+    // The host this baker evaluates through; tests read its work counters.
+    const script_host::ScriptHost& host() const { return host_; }
+
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;

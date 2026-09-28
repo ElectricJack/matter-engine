@@ -81,6 +81,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Vulkan .gtex bake payload types, passed by reference through the
@@ -669,7 +670,9 @@ public:
     // Task 13 (Phase C): on-demand bake primitives.
     // Bake one part (and, post-order, any unbaked children in its subtree) using
     // the retained bake_plan from the last install_graph(). cached() short-circuits
-    // per node; also runs bake_lod_variants for freshly-baked nodes. Safe to call
+    // the body bake per node; each node's authored LOD plans (static lods,
+    // lodBudgets, noImpostor) are installed on its first visit this session,
+    // cached or not, and a cached revisit skips them. Safe to call
     // from the worker thread after install_graph (host_ is idle post-install).
     // Returns false (with err set) on bake failure; true on success or already cached.
     bool ensure_part_baked(uint64_t part_hash, std::string& err);
@@ -879,6 +882,9 @@ private:
     int                  baked_tileset_count_ = 0;
     int                  install_bake_count_ = 0; // counter for install-phase on_part callbacks
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
+    // Hashes whose authored LOD plans ensure_part_baked() installed this
+    // session; a cached revisit of one skips re-deriving its plan.
+    std::unordered_set<uint64_t> lod_plans_installed_;
     std::map<uint64_t,std::shared_ptr<const part_surface::Prepared>> part_surfaces_;
     std::unique_ptr<part_surface::SourceCache> part_surface_cache_;
     std::set<std::string> sources_without_surface_;
