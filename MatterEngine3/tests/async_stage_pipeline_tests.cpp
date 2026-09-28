@@ -42,6 +42,11 @@ int main() {
         assert(pipeline.submit({1,failure}));
         until([&]{return pipeline.available()==1;});
         assert(failure->thrown==1 && pipeline.take().empty());
+        // The owner must learn that its completion was lost so it can clear
+        // pending state and retry, even though the queue has regained capacity.
+        assert(pipeline.take_dropped()==1);
+        assert(pipeline.take_dropped()==0);
+        pipeline.cancel();
         assert(pipeline.submit({2,{}}));
         std::deque<MovingWork> done;until([&]{done=pipeline.take();return !done.empty();});
         assert(done.size()==1 && done[0].id==2 && pipeline.available()==1);

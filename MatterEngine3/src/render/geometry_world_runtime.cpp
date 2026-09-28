@@ -422,6 +422,21 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         Impl::adopt_hierarchy(asset->second,ready);
         d.invalidate_scene();
     }
+    if(const auto dropped=d.hierarchy_pipeline->take_dropped()) {
+        // A failed allocation/move may lose the completion payload itself.
+        // Reconcile every pending owner when cancelling that generation so no
+        // hierarchy_pending flag can prevent future refinement indefinitely.
+        d.hierarchy_pipeline->cancel();
+        for(auto& entry:d.assets)if(entry.second.hierarchy_pending) {
+            auto& asset=entry.second;
+            asset.hierarchy_pending=false;
+            asset.pending_pages.clear();
+            Impl::invalidate(asset);
+        }
+        d.invalidate_scene();
+        MATTER_LOGW("geometry", "hierarchy worker dropped %zu items; retrying pending hierarchies with previous coverage", dropped);
+        if(d.profiling)d.profile.hierarchy_failures+=dropped;
+    }
     adopt_scope.stop();
     PROFILE_SCOPE_NAMED(admission_scope, "geometry.admission");
     struct UpdateTimer { Impl& d; PagingClock::time_point start=PagingClock::now();
@@ -677,6 +692,12 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         } else if(d.profiling)++d.profile.scene_discarded;
         // Keep the large assembly allocation for the next worker submission.
         d.packing_nodes.swap(ready.nodes);d.packing_roots.swap(ready.roots);d.packing_jobs.swap(ready.jobs);
+    }
+    if(const auto dropped=d.scene_pipeline->take_dropped()) {
+        d.scene_pipeline->cancel();
+        d.scene_pending=false;
+        MATTER_LOGW("geometry", "scene worker dropped %zu items; keeping the previous scene and retrying", dropped);
+        if(d.profiling)d.profile.scene_discarded+=dropped;
     }
     stage_clock=PagingClock::now();
     const bool scene_matches=matches_scene(d.scene_sources,d.scene_bias,d.scene_height,d.scene_fov,d.scene_detail);

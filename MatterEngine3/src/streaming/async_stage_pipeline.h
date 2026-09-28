@@ -44,10 +44,17 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         result.swap(completed_); outstanding_-=result.size(); return result;
     }
+    // Queue allocation/move failures cannot always produce a T completion.
+    // Owners must reconcile pending state when this returns a nonzero count.
+    size_t take_dropped() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto count=dropped_; dropped_=0; return count;
+    }
     void cancel() {
         std::lock_guard<std::mutex> lock(mutex_); ++generation_;
         outstanding_-=pending_.size()+ready_.size()+completed_.size();
         pending_.clear(); ready_.clear(); completed_.clear();
+        dropped_=0;
     }
     void counts(size_t& reads, size_t& preparing, size_t& done) const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -68,8 +75,8 @@ private:
         for (;;) {
             std::vector<T> batch;
             size_t active = 0; // Items removed from pending but not yet handed off.
+            uint64_t generation = 0;
             try {
-                uint64_t generation;
                 {
                     std::unique_lock<std::mutex> lock(mutex_);
                     wake_.wait(lock,[&]{return stopping_ || !pending_.empty();});
@@ -80,13 +87,13 @@ private:
                     catch (...) {
                         // Drop one request instead of hot-spinning on an
                         // allocation that cannot currently be satisfied.
-                        pending_.pop_front(); --outstanding_; throw;
+                        pending_.pop_front(); --outstanding_; ++dropped_; throw;
                     }
                     for(size_t i=0;i<count;++i) {
                         try { batch.push_back(std::move(pending_.front().value)); }
                         catch (...) {
                             // A throwing move may have changed its source.
-                            pending_.pop_front(); --outstanding_; throw;
+                            pending_.pop_front(); --outstanding_; ++dropped_; throw;
                         }
                         pending_.pop_front(); ++active;
                     }
@@ -107,6 +114,7 @@ private:
                 // capacity. Already transferred items still belong to ready_.
                 std::lock_guard<std::mutex> lock(mutex_);
                 outstanding_-=active;
+                if(generation==generation_)dropped_+=active;
             }
             wake_.notify_all();
         }
@@ -121,7 +129,7 @@ private:
                     wake_.wait(lock,[&]{return stopping_ || !ready_.empty();});
                     if(stopping_)return;
                     try { item.emplace(std::move(ready_.front())); }
-                    catch (...) { ready_.pop_front(); --outstanding_; throw; }
+                    catch (...) { ready_.pop_front(); --outstanding_; ++dropped_; throw; }
                     ready_.pop_front(); active=true;
                 }
                 try { prepare_(item->value); }
@@ -135,11 +143,14 @@ private:
                 }
             } catch (...) {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if(active)--outstanding_;
+                if(active) {
+                    --outstanding_;
+                    if(item->generation==generation_)++dropped_;
+                }
             }
         }
     }
-    size_t capacity_,batch_,outstanding_=0;
+    size_t capacity_,batch_,outstanding_=0,dropped_=0;
     uint64_t generation_=0;
     bool stopping_=false;
     Read read_; Prepare prepare_; Failure failure_;
