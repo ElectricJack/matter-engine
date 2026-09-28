@@ -1,6 +1,9 @@
 # Build artifacts
 /build/
 *.obj
+# ...except the OBJ-export golden fixtures, which are Wavefront text, not MSVC
+# objects (MatterEngine3/tests/obj_export_golden_tests.cpp compares them).
+!MatterEngine3/tests/fixtures/export/*.obj
 *.so
 *.dylib
 *.dll

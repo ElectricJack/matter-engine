@@ -18,12 +18,15 @@ Golden fixtures for `make -C MatterEngine3/tests run-obj-export-golden`
   enough to read in a diff.
 * `<Part>.obj` — the geometry, verbatim, for the parts small enough to pin.
   Compared through the vendored parser with a numeric tolerance rather than
-  byte-for-byte; see the test's header for why.
+  byte-for-byte; see the test's header for why. The root `.gitignore` ignores
+  `*.obj` (MSVC objects) and carries an explicit exception for this directory;
+  without it a regenerated fixture silently never gets committed.
 
 ## Why CastleStone has no .obj
 
-Its LOD 0 is ~3400 triangles: a 600 KB text fixture that any mesher change
-would rewrite wholesale, for no more coverage than its digest already gives.
+Its LOD 0 is ~54,000 triangles (~3,400 before the vg-vt bake changes): a
+multi-megabyte text fixture that any mesher change would rewrite wholesale, for
+no more coverage than its digest already gives.
 The export spec asked for size limits on these fixtures, and the test enforces
 them (64 KB for a pinned OBJ, 8 KB for an MTL) — CastleStone is the part that
 does not fit, so it is pinned by digest and MTL only.
