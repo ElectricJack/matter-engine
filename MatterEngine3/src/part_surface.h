@@ -39,8 +39,11 @@ bool prepare(const script_host::EvaluatedFiniteSurface&, const std::string& cach
 bool prepare_direct(const script_host::EvaluatedDirectSurface&,
     std::shared_ptr<const Prepared>&, gpu_meshing::Error&,
     const gpu_meshing::BuildControl& = {});
-// Scratch survives registration (residency takes its own copy). Require each
-// receiver vertex to match exactly one outward source plane; no texture scale.
+// Scratch survives registration (residency takes its own copy). The returned
+// context ALSO aliases `prepared`: surface_tape_text and surface_materials point
+// into it. The caller must keep the same shared_ptr<const Prepared> alive until
+// VtResidency::register_variant / update_variant_surface has returned. Require
+// each receiver vertex to match exactly one outward source plane; no texture scale.
 struct BindingScratch { std::vector<uint32_t> ids; std::vector<uint8_t> weights; };
 bool bind(const Prepared&, vt::VtPartContext&, BindingScratch&, std::string& error);
 }

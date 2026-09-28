@@ -90,6 +90,10 @@ bool prepare(const script_host::EvaluatedFiniteSurface& recipe, const std::strin
                     m[4]*x[0]+m[5]*x[1]+m[6]*x[2],m[8]*x[0]+m[9]*x[1]+m[10]*x[2]};
                 if(point){v.x+=m[3];v.y+=m[7];v.z+=m[11];}return v;
             };
+            if(p.source>=bank.size()||!bank[p.source]||!bank[p.source]->sources) {
+                error={ErrorCode::InvalidInput,"finite placement references source "+
+                    std::to_string(p.source)+" of "+std::to_string(bank.size())};return false;
+            }
             const auto& catalog=*bank[p.source]->sources;
             for(size_t b=0;b<catalog.bindings.size();++b) {
                 const auto& original=catalog.bindings[b];
@@ -136,6 +140,10 @@ bool prepare(const script_host::EvaluatedFiniteSurface& recipe, const std::strin
                         m[4]*x[0]+m[5]*x[1]+m[6]*x[2]+(point?m[7]:0),
                         m[8]*x[0]+m[9]*x[1]+m[10]*x[2]+(point?m[11]:0)};
                 };
+                if(p.source>=bank.size()||!bank[p.source]||!bank[p.source]->sources) {
+                    error={ErrorCode::InvalidInput,"periodic placement references source "+
+                        std::to_string(p.source)+" of "+std::to_string(bank.size())};return false;
+                }
                 const auto& catalog=*bank[p.source]->sources;
                 const auto before=placed.size();
                 for(const auto& original:catalog.bindings) {

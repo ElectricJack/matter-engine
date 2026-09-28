@@ -80,6 +80,28 @@ void test_authored_density(const fs::path& root) {
           "plain numeric density declaration is supported");
     std::printf("PART_VT_DENSITY merged_params=checked disk_memory=equal invalid_metadata=rejected\n");
 }
+// `composite` is a valid version-2 recipe with two sources and one periodic
+// module, so each refusal below comes from the placement index itself.
+void test_placement_source_out_of_range(const fs::path& root,const viewer::LocalProviderConfig& cfg,
+                                        const script_host::EvaluatedFiniteSurface& composite) {
+    CHECK(composite.sources.size()==2 && !composite.placements.empty() && !composite.modules.empty() &&
+          !composite.modules[0].placements.empty(),"out-of-range fixture starts from a complete composite");
+    if(composite.placements.empty()||composite.modules.empty()||composite.modules[0].placements.empty())return;
+    part_surface::SourceCache cache;part_surface::Stats stats;gpu_meshing::Error e;
+    std::shared_ptr<const part_surface::Prepared> out;
+    auto bad=composite;bad.placements[0].source=7; // no such source
+    CHECK(!part_surface::prepare(bad,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,out,stats,e,{},&cache) && !out,
+          "placement with an out-of-range source is refused");
+    CHECK(e.code==gpu_meshing::ErrorCode::InvalidInput && e.message.find("source 7 of 2")!=std::string::npos,
+          "refusal names the source index");
+    auto bad_module=composite;bad_module.modules[0].placements[0].source=2; // one past the bank
+    e={};
+    CHECK(!part_surface::prepare(bad_module,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,out,stats,e,{},&cache) && !out,
+          "periodic module placement with an out-of-range source is refused");
+    CHECK(e.code==gpu_meshing::ErrorCode::InvalidInput && e.message.find("periodic placement")!=std::string::npos &&
+          e.message.find("source 2 of 2")!=std::string::npos,"module refusal names the source index");
+    std::printf("PART_SURFACE_SOURCE_RANGE receiver=refused module=refused\n");
+}
 void run() {
     const auto root=fs::temp_directory_path()/("matter-part-surface-"+
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -234,6 +256,7 @@ class Composite extends Part {static finiteSurface(){
               periodic,stats,preparation_error,{},&cache) && periodic==previous,
               "a module with no matching source plane fails atomically and retains prior material");
     }
+    test_placement_source_out_of_range(root,cfg,composite);
     std::printf("PART_SURFACE cold_faces=6 warm_geometry_dispatches=0 publication=atomic receiver_binding=passed\n");
     write(root/"objects/Stone.js",R"(
 class Stone extends Part {
