@@ -327,10 +327,22 @@ git commit -m "layout: report duplicate scene/object names instead of throwing o
 
 ### Task 4: `CommandQueue::pop_wait` cannot spin
 
+**Approved correction (2026-09-28, reopened `smart-torrent.4`):** Review Focus 3's
+total-budget contract takes precedence over the original implementation's
+`&& pending_.empty()` deadline guard. Stop after a cancelled skip once the
+deadline expires, even with a remaining backlog, and consume `idle_wake_` on
+that idle return. A zero-budget call may therefore return idle before reaching
+the surviving command; a later call must still deliver it. Real-command
+delivery continues to preserve a pending idle wake. Add regressions for an
+explicitly cancelled `RebakeCone` burst with concurrent shutdown, and for
+push/cancel/wake/expired-pop followed by a timed pop that must not return idle
+immediately again. The snippets below incorporate this approved deviation.
+
 **Files:**
 - Modify: `MatterEngine3/src/async_bake.cpp:243-261`
 - Modify: `MatterEngine3/src/async_bake.h:160-168` (lock-order comment)
-- Test: `MatterEngine3/tests/async_queue_tests.cpp` (add one test, register in `main()` at `:432`)
+- Test: `MatterEngine3/tests/async_queue_tests.cpp` (budget, cancelled-cone shutdown, and idle-wake regressions; register in `main()`)
+- Document: `docs/superpowers/plans/2026-09-27-vg-vt-stabilization-and-measurement.md` (this correction)
 
 **Interfaces:**
 - Consumes: `CommandQueue::push`, `pop_wait`, `wake_idle`, `shut_down` as declared in `async_bake.h:140-153`.
@@ -340,9 +352,8 @@ git commit -m "layout: report duplicate scene/object names instead of throwing o
 
 Add before `main()`:
 ```cpp
-// A burst of superseded commands is skipped inside the caller's budget: the
-// deadline is re-checked after every cancelled skip, so the loop cannot spin
-// past `ms` even when the channel keeps handing back cancelled entries.
+// An expired budget stops cancelled-command cleanup without losing the live
+// command at the tail; a later call with time available delivers it.
 static void test_pop_wait_cancelled_burst_honours_budget() {
     std::printf("[test_pop_wait_cancelled_burst_honours_budget]\n");
     CommandQueue cq;
@@ -351,13 +362,17 @@ static void test_pop_wait_cancelled_burst_honours_budget() {
     const auto start = std::chrono::steady_clock::now();
     const bool got = cq.pop_wait(out, /*ms=*/0, idle);
     const auto took = std::chrono::steady_clock::now() - start;
-    CHECK(got && !idle && out.kind == CommandKind::BakeAll, "the surviving BakeAll is delivered");
-    CHECK(took < std::chrono::milliseconds(200), "cancelled burst is skipped promptly");
+    CHECK(!got && idle, "expired budget returns idle before draining the cancelled burst");
+    CHECK(took < std::chrono::milliseconds(200), "cancelled burst yields promptly");
+    CHECK(cq.pop_wait(out, /*ms=*/1000, idle) && !idle && out.kind == CommandKind::BakeAll,
+          "the surviving BakeAll remains available to a later call");
     cq.shut_down();
     printf("ok pop_wait_cancelled_burst_honours_budget\n");
 }
 ```
 Register it in `main()` after `test_idle_wake_releases_parked_consumer();`.
+Also register `test_pop_wait_cancelled_cones_allow_shutdown()` and
+`test_cancelled_pop_consumes_idle_wake()` for the two added regression cases.
 
 - [ ] **Step 2: Run to verify current behaviour**
 
@@ -365,7 +380,12 @@ Register it in `main()` after `test_idle_wake_releases_parked_consumer();`.
 ./tools/build-windows-from-wsl.sh RelWithDebInfo async_queue_tests
 (cd MatterEngine3/tests && ../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/async_queue_tests.exe | tail -3)
 ```
-Expected: this test passes today (the mirror invariant holds), which is fine: it pins the contract the fix must keep. The fix is defensive against mirror drift, which cannot be triggered from the public API.
+Expected before the approved correction: the zero-budget survivor test fails
+because the call drains cancelled commands past expiry, and the idle-wake test
+fails because the next timed call returns immediately. The cancelled-cone test
+also checks that the queued tail remains after expiry, detecting unbounded
+cleanup without depending on the machine's speed. Mirror drift itself cannot
+be triggered from the public API.
 
 - [ ] **Step 3: Make the loop drift-safe**
 
@@ -392,7 +412,11 @@ bool CommandQueue::pop_wait(Command& out, int ms, bool& out_timed_out) {
         }
         pending_.pop_front();
         if (tmp.token && tmp.token->is_cancelled()) {
-            if (std::chrono::steady_clock::now() >= deadline && pending_.empty()) { out_timed_out = true; return false; }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                idle_wake_ = false;
+                out_timed_out = true;
+                return false;
+            }
             continue;
         }
         in_flight_ = tmp.token; out = std::move(tmp); return true;
@@ -412,12 +436,13 @@ In `async_bake.h:160-168` replace the sentence beginning `pop touches ch_ first`
 
 - [ ] **Step 5: Run the suite**
 
-Same command as Step 2. Expected: `ALL PASS`, including the four existing `pop_wait`/`idle_wake` tests.
+Same command as Step 2. Expected: `ALL PASS`, including the four existing
+`pop_wait`/`idle_wake` tests and all three cancellation regression cases.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add MatterEngine3/src/async_bake.cpp MatterEngine3/src/async_bake.h MatterEngine3/tests/async_queue_tests.cpp
+git add MatterEngine3/src/async_bake.cpp MatterEngine3/src/async_bake.h MatterEngine3/tests/async_queue_tests.cpp docs/superpowers/plans/2026-09-27-vg-vt-stabilization-and-measurement.md
 git commit -m "async_bake: pop_wait resynchronises on mirror drift and re-checks its deadline per skip"
 ```
 

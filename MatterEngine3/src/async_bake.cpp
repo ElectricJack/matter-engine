@@ -241,23 +241,33 @@ bool CommandQueue::pop(Command& out) {
 // non-blocking attempt.
 bool CommandQueue::pop_wait(Command& out, int ms, bool& out_timed_out) {
     out_timed_out = false;
-    const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(std::max(0,ms));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, ms));
     std::unique_lock<std::mutex> lock(m_);
     for (;;) {
-        if (!service_cv_.wait_until(lock,deadline,[&]{return shut_down_ || !pending_.empty() || idle_wake_;})) {
-            out_timed_out=true;return false;
+        if (!service_cv_.wait_until(lock, deadline, [&] { return shut_down_ || !pending_.empty() || idle_wake_; })) {
+            out_timed_out = true; return false;
         }
-        if(shut_down_)return false;
+        if (shut_down_) return false;
         // Command priority is decided under the same lock as producers. A
         // wake cannot slip ahead of a queued reload or shutdown command.
-        if(pending_.empty()) {
-            idle_wake_=false;out_timed_out=true;return false;
-        }
+        if (pending_.empty()) { idle_wake_ = false; out_timed_out = true; return false; }
         Command tmp;
-        if(!ch_.try_pop(tmp))continue; // single consumer; pending mirrors ch_
+        if (!ch_.try_pop(tmp)) {
+            // pending_ says a command exists but the channel is empty. That is
+            // a mirror drift, not a reason to spin: resynchronise and report
+            // the wait as idle so the caller re-enters with a fresh budget.
+            pending_.clear(); idle_wake_ = false; out_timed_out = true; return false;
+        }
         pending_.pop_front();
-        if(tmp.token && tmp.token->is_cancelled())continue;
-        in_flight_=tmp.token;out=std::move(tmp);return true;
+        if (tmp.token && tmp.token->is_cancelled()) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                idle_wake_ = false;
+                out_timed_out = true;
+                return false;
+            }
+            continue;
+        }
+        in_flight_ = tmp.token; out = std::move(tmp); return true;
     }
 }
 void CommandQueue::wake_idle() {
