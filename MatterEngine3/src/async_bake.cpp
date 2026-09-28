@@ -260,7 +260,11 @@ bool CommandQueue::pop_wait(Command& out, int ms, bool& out_timed_out) {
         }
         pending_.pop_front();
         if (tmp.token && tmp.token->is_cancelled()) {
-            if (std::chrono::steady_clock::now() >= deadline && pending_.empty()) { out_timed_out = true; return false; }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                idle_wake_ = false;
+                out_timed_out = true;
+                return false;
+            }
             continue;
         }
         in_flight_ = tmp.token; out = std::move(tmp); return true;
