@@ -3,6 +3,7 @@
 #include "part_bundle.h"   // M4: the part body is the REP0 section
 #include "part_render_policy.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -11,10 +12,12 @@
 #include <fstream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "render/lod_distance.h"
 #include "render/part_store.h"
+#include "render/prepared_sector_cache.h"
 #include "render/raster_cull.h"
 #include "part_asset_v2.h"
 #include "lod_select.h"
@@ -54,13 +57,90 @@ struct ScopedEnvironmentOverride {
     ScopedEnvironmentOverride(const char* key, const char* value)
         : name(key), had_value(std::getenv(key) != nullptr),
           saved(had_value ? std::getenv(key) : "") {
-        setenv_compat(name, value);
+        if (value) setenv_compat(name, value);
+        else unsetenv_compat(name);
     }
     ~ScopedEnvironmentOverride() {
         if (had_value) setenv_compat(name, saved.c_str());
         else unsetenv_compat(name);
     }
 };
+
+static void test_partstore_construction_commits_no_banks(const std::filesystem::path& root) {
+    std::printf("[test_partstore_construction_commits_no_banks]\n");
+    const ScopedEnvironmentOverride unset("MATTER_PREPARED_SECTOR_CACHE", nullptr);
+    viewer::PartStore store((root / "lazy").string());
+    CHECK(!store.prepared_sector_cache_active(),
+          "PartStore does not commit a 128 MiB prepared-sector bank at construction");
+    store.set_geometry_pages_enabled(false);
+    CHECK(!store.prepared_sector_cache_active(), "disabled geometry leaves prepared cache inactive");
+    store.set_geometry_pages_enabled(true);
+    CHECK(store.prepared_sector_cache_active(), "geometry opt-in activates the prepared cache");
+
+    const ScopedEnvironmentOverride disabled("MATTER_PREPARED_SECTOR_CACHE", "0");
+    viewer::PartStore opted_out((root / "lazy-opt-out").string());
+    CHECK(!opted_out.prepared_sector_cache_active(), "environment opt-out leaves the prepared cache inactive");
+
+    const ScopedEnvironmentOverride enabled("MATTER_PREPARED_SECTOR_CACHE", "1");
+    viewer::PartStore opted_in((root / "lazy-opt-in").string());
+    CHECK(opted_in.prepared_sector_cache_active(), "environment opt-in activates the prepared cache");
+}
+
+static void test_prepared_sector_bank_failure_is_deferred() {
+    std::printf("[test_prepared_sector_bank_failure_is_deferred]\n");
+    try {
+        // A zero-sized bank is deterministically rejected by PageBank, without
+        // asking the allocator for an enormous block or depending on free RAM.
+        viewer::prepared_sector::Cache cache("unused-prepared-sector-bank", 2, 0);
+        std::string error;
+        CHECK(!cache.read("missing", error) && error.find("bank allocation") != std::string::npos,
+              "read reports bank allocation failure without throwing at construction");
+        error.clear();
+        CHECK(!cache.write("missing", {1, 2, 3}, error) && error.find("bank allocation") != std::string::npos,
+              "write retries initialization and reports bank allocation failure");
+    } catch (const std::exception&) {
+        CHECK(false, "prepared cache construction does not allocate banks or throw on bank failure");
+    }
+}
+
+static void test_prepared_sector_concurrent_first_use() {
+    namespace fs = std::filesystem;
+    std::printf("[test_prepared_sector_concurrent_first_use]\n");
+    const auto root = fs::temp_directory_path() / "me3_prepared_sector_lazy";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); }
+    } cleanup{root};
+    fs::remove_all(root);
+    const ScopedEnvironmentOverride disabled("MATTER_PREPARED_SECTOR_CACHE", "0");
+    viewer::PartStore store(root.string());
+    viewer::prepared_sector::Cache reader((root / "cache").string(), 4, 512u << 10);
+    {
+        viewer::prepared_sector::Cache writer((root / "cache").string(), 1, 512u << 10);
+        std::string error;
+        for (unsigned i = 0; i < 8; ++i)
+            CHECK(writer.write(std::to_string(i), std::vector<uint8_t>(4096, uint8_t(i)), error),
+                  "first write initializes banks and persists a prepared payload");
+    }
+    std::atomic<unsigned> ready{0}, failures{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> workers;
+    for (unsigned i = 0; i < 8; ++i) workers.emplace_back([&, i] {
+        ++ready;
+        while (!start.load()) std::this_thread::yield();
+        std::string error;
+        if (store.load_prepared_sector(i + 1, "lazy", error).ok || error != "missing") ++failures;
+        const auto page = reader.read(std::to_string(i), error);
+        const auto* row = page ? page->view.find(1) : nullptr;
+        if (!row || row->size != 4096 ||
+            !std::all_of(row->data, row->data + row->size, [i](uint8_t b) { return b == i; })) ++failures;
+    });
+    while (ready.load() != 8) std::this_thread::yield();
+    start = true;
+    for (auto& worker : workers) worker.join();
+    CHECK(failures.load() == 0, "concurrent first reads initialize owners and banks safely");
+    CHECK(store.prepared_sector_cache_active(), "explicit prepared load activates the cache on demand");
+}
 
 // An empty cache plus cache-only mode refuses terrain page compilation. The
 // retained static fallback must have a hard cap even for a dense source.
@@ -1441,6 +1521,9 @@ static void test_authored_vt_density() {
 }
 
 int main() {
+    test_partstore_construction_commits_no_banks(std::filesystem::temp_directory_path());
+    test_prepared_sector_bank_failure_is_deferred();
+    test_prepared_sector_concurrent_first_use();
     test_terrain_page_failure_bounds_static_fallback();
     test_terrain_page_success_keeps_static_fallback();
     test_authored_vt_density();
