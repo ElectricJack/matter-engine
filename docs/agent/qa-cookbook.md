@@ -414,12 +414,18 @@ MatterEditor/tools/smoke_vulkan_faults.ps1 `
 
 The fault harness runs the smoke exe **12 times**, once per
 `MATTER_VK_SMOKE_MODE` value, each
-under a per-mode timeout (30 s from the Makefile's override, except `rt`
-90 s and `rt-transmission` 45 s, which raise their own floor): the two
+under a per-mode timeout (30 s from the caller's override, except `rt`
+180 s, `rt-transmission` 45 s, `animation-skin` 120 s, and `vt-rt` 120 s,
+which raise their own floors): the two
 Streamline-proxy-missing fault modes, `rt`, `rt-transmission`, `rt-disabled`,
 `rt-unavailable`, `animation-skin`, and the five chart-VT modes (`vt`,
 `vt-surfaces`, `vt-rt`, `vt-enrich`, `vt-enrich-nort`). Each mode must print
 `validation errors: 0` and `ALL PASS`, and exit 0, or the whole gate fails.
+
+The harness prints each mode's elapsed time and timeout after a pass. The
+longer RT, animation, and VT-in-RT limits reflect passing RTX 4090 runs
+measured at 78 s, 65 s, and 66 s respectively; the gate still kills a mode
+that exceeds its limit.
 
 `vt-enrich` also adds, changes and removes surface classification through the
 renderer edit API. It checks the rendered material/contact AO and asserts that

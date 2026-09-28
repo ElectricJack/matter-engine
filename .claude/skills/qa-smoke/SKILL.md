@@ -11,7 +11,8 @@ make -C MatterEngine3/tests vulkan-smoke
 
 Delegates to `make -C MatterEditor vulkan-smoke`, which builds the smoke exes
 and runs `MatterEditor/tools/smoke_vulkan_faults.ps1` — each mode is its own
-process, 30s timeout by default (`rt` 90s, `rt-transmission` 45s). Every mode
+process, 30s timeout by default (`rt` 180s, `rt-transmission` 45s,
+`animation-skin` 120s, `vt-rt` 120s). Every mode
 must print `validation errors: 0` and `ALL PASS`, exit 0, or the gate fails.
 
 ## The 12 modes
