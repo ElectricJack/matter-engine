@@ -19,7 +19,8 @@
 // engine's one selection rule lives in
 // MatterEngine3/src/render/lod_distance.h.
 //
-// Threading. PartStore holds no lock of its own; the split is by method.
+// Threading. Prepared-cache initialization and I/O synchronize internally;
+// resident part state is confined by method.
 //   - stage_load(), stage_from_bake(), and the private read_coherent_snapshot()
 //     / snapshot_from_baked() / stage_from_snapshot() touch NO shared state and
 //     are meant to run on a streaming worker while the app thread renders. This
@@ -397,6 +398,8 @@ public:
     bool prepared_identity_remember(uint64_t request, uint64_t resolved, std::string& error);
     StagedPart load_prepared_sector(uint64_t hash, const std::string& policy, std::string& error);
     bool save_prepared_sector(StagedPart& staged, const std::string& policy, std::string& error);
+    // Reports the cache owner, whose payload banks remain lazy until first I/O.
+    bool prepared_sector_cache_active() const;
 
     // Decode `part_hash` and bake its ladder WITHOUT touching any shared state.
     // Safe to call from a streaming worker while the app thread renders.
@@ -501,7 +504,7 @@ public:
     BLASManager& blas() { return blas_; }
     const std::string& cache_root() const { return cache_root_; }
     // Configure before staging begins. Opt-in while native acceptance expands.
-    void set_geometry_pages_enabled(bool enabled) { geometry_pages_enabled_ = enabled; }
+    void set_geometry_pages_enabled(bool enabled);
     void set_geometry_page_filter(std::set<uint64_t> hashes) {
         geometry_filter_active_ = true; geometry_filter_ = std::move(hashes);
     }
@@ -632,6 +635,8 @@ private:
     }
     std::string                       cache_root_;
     geometry::RootCache               geometry_roots_;
+    prepared_sector::Cache& prepared_sectors();
+    mutable std::mutex               prepared_sectors_mutex_;
     std::shared_ptr<prepared_sector::Cache> prepared_sectors_;
     std::shared_ptr<prepared_identity::Cache> prepared_identities_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir

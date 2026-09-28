@@ -1,7 +1,8 @@
 #pragma once
 // Derived, same-ABI sector records in AssetStore binary packs. Payload layout
 // has its own policy key and explicit ABI signature; no pointers are persisted.
-// Rebuild incompatible records. Reads use preallocated, independently evictable payload banks.
+// Rebuild incompatible records. Payload banks are independently evictable and
+// allocated on first use, so an unused cache commits no backing storage.
 #include "part_store.h"
 #include "asset_binary.h"
 #include <filesystem>
@@ -102,7 +103,21 @@ class Cache {
     struct Reader { std::shared_ptr<asset_store::PageBank> bank; std::unique_ptr<asset_store::PageCache> cache; std::mutex mutex; };
     std::array<Reader,8> readers_;
     uint32_t reader_count_=1;
+    std::mutex banks_mutex_;
     std::mutex writer_mutex_;
+    bool ensure_banks(std::string& error) {
+        // Readers and the writer may arrive together on their first use. Keep
+        // successfully allocated banks on failure so a later call can retry.
+        std::lock_guard<std::mutex> lock(banks_mutex_);
+        for(uint32_t i=0;i<reader_count_;++i) {
+            if(readers_[i].bank)continue;
+            // Each eviction domain needs its own address range: a shared bank
+            // lets other readers strand free space that this one cannot reclaim.
+            readers_[i].bank=asset_store::PageBank::create(cfg_.resident_bytes,256);
+            if(!readers_[i].bank){error="prepared sector bank allocation failed";return false;}
+        }
+        return true;
+    }
 public:
     explicit Cache(std::string dir, uint32_t readers=0, uint64_t reader_bytes=128ull<<20) {
         if (!readers) {
@@ -113,14 +128,6 @@ public:
         }
         reader_count_=readers>=1 && readers<=8 ? readers : 1;
         cfg_.store.dir=std::move(dir); cfg_.resident_bytes=reader_bytes;
-        // Independent eviction domains need independent address ranges. Sharing
-        // an unpartitioned bank lets other readers strand free space in small
-        // holes that this reader cannot coalesce by evicting its own entries.
-        // Reserve every bank up front; reads never allocate backing storage.
-        for(uint32_t i=0;i<reader_count_;++i) {
-            readers_[i].bank=asset_store::PageBank::create(cfg_.resident_bytes,256);
-            if(!readers_[i].bank)throw std::runtime_error("prepared sector bank allocation failed");
-        }
         cfg_.limits.max_bytes=max_bytes; cfg_.max_read_bytes=max_bytes;
         if (const char* value=std::getenv("MATTER_PREPARED_SECTOR_READ_AHEAD_MB")) {
             char* end=nullptr; const auto mb=std::strtoul(value,&end,10);
@@ -130,6 +137,7 @@ public:
     }
     asset_store::PageHandle read(const std::string& key,std::string& error,ReadTiming* timing=nullptr){
         const auto start=std::chrono::steady_clock::now();
+        if(!ensure_banks(error))return {};
         auto& reader=readers_[std::hash<std::string>{}(key)%reader_count_];
         std::lock_guard<std::mutex> lock(reader.mutex);
         const auto acquired=std::chrono::steady_clock::now();
@@ -161,6 +169,7 @@ public:
         error.clear();return result.page;
     }
     bool write(const std::string& key,std::vector<uint8_t> payload,std::string& error){
+        if(!ensure_banks(error))return false;
         std::vector<uint8_t> bytes;asset_store::PageSection section;section.type=1;section.bytes=std::move(payload);
         if(!asset_store::encode_page(kind,{section},{},cfg_.limits,bytes,error))return false;
         std::lock_guard<std::mutex> lock(writer_mutex_);

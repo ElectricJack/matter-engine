@@ -360,7 +360,9 @@ uint64_t geometry_root_budget() {
 }
 PartStore::PartStore(std::string cache_root)
     : cache_root_(std::move(cache_root)), geometry_roots_(cache_root_ + "/geometry-pages", geometry_root_budget()),
-      prepared_sectors_(std::make_shared<prepared_sector::Cache>(cache_root_ + "/prepared-sectors")) {
+      prepared_sectors_(nullptr) {
+    const char* prepared_switch=std::getenv("MATTER_PREPARED_SECTOR_CACHE");
+    if(prepared_switch && std::string(prepared_switch)!="0")prepared_sectors();
     const char* enabled=std::getenv("MATTER_PREPARED_IDENTITY_CACHE");
     const char* cook=std::getenv("MATTER_PREPARED_IDENTITY_COOK");
     if(enabled && std::string(enabled)=="1")
@@ -368,6 +370,20 @@ PartStore::PartStore(std::string cache_root)
 }
 uint64_t PartStore::prepared_identity_lookup(uint64_t request) {
     return prepared_identities_ ? prepared_identities_->lookup(request) : 0;
+}
+prepared_sector::Cache& PartStore::prepared_sectors() {
+    std::lock_guard<std::mutex> lock(prepared_sectors_mutex_);
+    if(!prepared_sectors_)
+        prepared_sectors_=std::make_shared<prepared_sector::Cache>(cache_root_ + "/prepared-sectors");
+    return *prepared_sectors_;
+}
+bool PartStore::prepared_sector_cache_active() const {
+    std::lock_guard<std::mutex> lock(prepared_sectors_mutex_);
+    return prepared_sectors_ != nullptr;
+}
+void PartStore::set_geometry_pages_enabled(bool enabled) {
+    if(enabled)prepared_sectors();
+    geometry_pages_enabled_=enabled;
 }
 PartStore::~PartStore() { flush_geometry_writer(); }
 bool PartStore::flush_geometry_writer() {
@@ -2155,7 +2171,7 @@ PartStore::StagedPart PartStore::load_prepared_sector(uint64_t hash,const std::s
     const auto start=std::chrono::steady_clock::now();StagedPart out;
     try {
         prepared_sector::ReadTiming read_timing;
-        auto page=prepared_sectors_->read(prepared_key(hash,policy),error,&read_timing);if(!page)return out;
+        auto page=prepared_sectors().read(prepared_key(hash,policy),error,&read_timing);if(!page)return out;
         const auto source_start=std::chrono::steady_clock::now();
         if(!std::filesystem::exists(cache_root_+"/"+part_asset::cache_path_resolved(hash))){error="prepared source artifact missing";return out;}
         const auto decode_start=std::chrono::steady_clock::now();
@@ -2205,7 +2221,7 @@ bool PartStore::save_prepared_sector(StagedPart& s,const std::string& policy,std
         prepared_sector::Archive a;std::string key=p.geometry_pages?p.geometry_pages->key:"";
         asset_store::BlobHash manifest=p.geometry_pages?p.geometry_pages->manifest->hash:asset_store::BlobHash{};
         prepared_sector::transfer(a,s,key,manifest);
-        return prepared_sectors_->write(prepared_key(s.part_hash,policy),std::move(a.bytes),error);
+        return prepared_sectors().write(prepared_key(s.part_hash,policy),std::move(a.bytes),error);
     }catch(const std::exception& e){error=e.what();return false;}
 }
 
