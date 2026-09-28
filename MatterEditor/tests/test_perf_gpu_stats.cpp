@@ -41,10 +41,11 @@ int main() {
     stats.add(sample);
     std::ostringstream output;
     stats.append_json(output);
-    contains(output.str(), "\"total\":{\"samples\":20,\"median_ms\":10.5,\"p95_ms\":19}");
-    contains(output.str(), "\"rt_local_direct\":{\"samples\":20,\"median_ms\":0,\"p95_ms\":0}");
-    contains(output.str(), "\"cull\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null}");
-    contains(output.str(), "\"atmosphere\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null}");
+    contains(output.str(), "\"p95_method\":\"nearest_rank\",\"p99_method\":\"nearest_rank\"");
+    contains(output.str(), "\"total\":{\"samples\":20,\"median_ms\":10.5,\"p95_ms\":19,\"p99_ms\":20,\"max_ms\":20}");
+    contains(output.str(), "\"rt_local_direct\":{\"samples\":20,\"median_ms\":0,\"p95_ms\":0,\"p99_ms\":100,\"max_ms\":100}");
+    contains(output.str(), "\"cull\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"max_ms\":null}");
+    contains(output.str(), "\"atmosphere\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"max_ms\":null}");
     stats.reset();
     sample = {};
     sample.sequence = 1;
@@ -53,7 +54,7 @@ int main() {
     stats.add(sample);
     std::ostringstream single;
     stats.append_json(single);
-    contains(single.str(), "\"total\":{\"samples\":1,\"median_ms\":7,\"p95_ms\":7}");
+    contains(single.str(), "\"total\":{\"samples\":1,\"median_ms\":7,\"p95_ms\":7,\"p99_ms\":7,\"max_ms\":7}");
     // One combined GI frame followed by two split-resolution frames. Children
     // must aggregate only actual dispatches, including legitimate zero time;
     // held/stale values from a combined frame must not become child samples.
@@ -69,9 +70,9 @@ int main() {
     stats.add(sample);
     std::ostringstream combined;
     stats.append_json(combined);
-    contains(combined.str(), "\"rt_gi_diffuse\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null}");
-    contains(combined.str(), "\"rt_gi_reflection_transmission\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null}");
-    contains(combined.str(), "\"primary_light_cull\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null}");
+    contains(combined.str(), "\"rt_gi_diffuse\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"max_ms\":null}");
+    contains(combined.str(), "\"rt_gi_reflection_transmission\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"max_ms\":null}");
+    contains(combined.str(), "\"primary_light_cull\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"max_ms\":null}");
     ++sample.sequence;
     sample.valid_mask |= (1u << 22) | (1u << 23) | (1u << 24);
     sample.milliseconds[11] = 10;
@@ -95,17 +96,17 @@ int main() {
     stats.add(sample);
     std::ostringstream lighting;
     stats.append_json(lighting);
-    contains(lighting.str(), "\"composite\":{\"samples\":3,\"median_ms\":0.5,\"p95_ms\":0.5}");
-    contains(lighting.str(), "\"rt_gi\":{\"samples\":3,\"median_ms\":12,\"p95_ms\":14}");
-    contains(lighting.str(), "\"hdr_lighting\":{\"samples\":3,\"median_ms\":6,\"p95_ms\":8}");
-    contains(lighting.str(), "\"rt_gi_diffuse\":{\"samples\":2,\"median_ms\":2,\"p95_ms\":4}");
-    contains(lighting.str(), "\"rt_gi_reflection_transmission\":{\"samples\":2,\"median_ms\":9,\"p95_ms\":10}");
-    contains(lighting.str(), "\"primary_light_cull\":{\"samples\":2,\"median_ms\":0.25,\"p95_ms\":0.375}");
+    contains(lighting.str(), "\"composite\":{\"samples\":3,\"median_ms\":0.5,\"p95_ms\":0.5,\"p99_ms\":0.5,\"max_ms\":0.5}");
+    contains(lighting.str(), "\"rt_gi\":{\"samples\":3,\"median_ms\":12,\"p95_ms\":14,\"p99_ms\":14,\"max_ms\":14}");
+    contains(lighting.str(), "\"hdr_lighting\":{\"samples\":3,\"median_ms\":6,\"p95_ms\":8,\"p99_ms\":8,\"max_ms\":8}");
+    contains(lighting.str(), "\"rt_gi_diffuse\":{\"samples\":2,\"median_ms\":2,\"p95_ms\":4,\"p99_ms\":4,\"max_ms\":4}");
+    contains(lighting.str(), "\"rt_gi_reflection_transmission\":{\"samples\":2,\"median_ms\":9,\"p95_ms\":10,\"p99_ms\":10,\"max_ms\":10}");
+    contains(lighting.str(), "\"primary_light_cull\":{\"samples\":2,\"median_ms\":0.25,\"p95_ms\":0.375,\"p99_ms\":0.375,\"max_ms\":0.375}");
     stats.reset(sample.sequence);
     stats.add(sample);
     std::ostringstream reset_lighting;
     stats.append_json(reset_lighting);
-    contains(reset_lighting.str(), "\"hdr_lighting\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null}");
-    contains(reset_lighting.str(), "\"rt_gi_diffuse\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null}");
-    std::cout << "PASS raw GPU timing percentiles, validity, duplicates, reset, lighting dispatches\n";
+    contains(reset_lighting.str(), "\"hdr_lighting\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"max_ms\":null}");
+    contains(reset_lighting.str(), "\"rt_gi_diffuse\":{\"samples\":0,\"median_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"max_ms\":null}");
+    std::cout << "PASS raw GPU timing percentiles (median/p95/p99/max), validity, duplicates, reset, lighting dispatches\n";
 }

@@ -122,6 +122,12 @@ if(BUILD_TESTING)
     )
     set_tests_properties(windows_package_stage_tests PROPERTIES LABELS "editor;package;safety")
 
+    add_test(NAME frame_attribution_tests
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/tools/tests/test_frame_attribution.py"
+    )
+    set_tests_properties(frame_attribution_tests PROPERTIES LABELS "editor;python")
+
     add_test(NAME windows_package_tests
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/tools/tests/windows_package_tests.ps1"

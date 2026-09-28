@@ -555,8 +555,13 @@ for source counts, cameras, memory boundaries and remaining work.
   steady-state GPU measurement.
   `perf.json` retains legacy `gpu_*_ms` fields as moving-average values.
   `gpu_pass_statistics.passes` separately reports raw timestamp readback
-  sample counts, median and nearest-rank p95 in milliseconds. Readbacks are
+  sample counts, median, nearest-rank p95/p99 and max in milliseconds. Readbacks are
   deduplicated; unavailable queries are omitted, and real zero durations count.
+  `gpu_pass_statistics` carries median/p95/p99/max per GPU zone;
+  `tools/frame_attribution.py a.json b.json` tabulates an A/B (one
+  median/p95/p99 column per file, zones by the first file's p95, plus a
+  `frame_interval` row from `frame_times_ms`, the raw end-to-end cadence
+  samples in capture order).
   `gpu_rt_local_direct_ms` measures local direct lighting; `gpu_rt_ms` is the
   existing sun-shadow pass, and `gpu_gi_ms` is the secondary lighting dispatch.
   `present_cadence_statistics` separately reports actual successive CPU

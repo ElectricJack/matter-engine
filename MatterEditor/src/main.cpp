@@ -1141,7 +1141,8 @@ void emit_registration_census(
 // `frame_times` is taken BY VALUE and sorted in place (milliseconds per frame,
 // end-to-end loop cadence). The median and p95 come out of that sorted vector;
 // p95 is element ceil(0.95 * n) - 1, so a one-frame run reports that frame for
-// both.
+// both. `frame_times_ms` repeats the unsorted samples in capture order, so a
+// reader (tools/frame_attribution.py) can take p99 or look for a time pattern.
 //
 // Two different time bases live in the output and mixing them up is the usual
 // mistake: the `*_delta` fields are end-minus-start over the whole sampling
@@ -1166,6 +1167,7 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
         error = "no performance frames were sampled";
         return false;
     }
+    const std::vector<double> frame_times_in_order = frame_times;
     std::sort(frame_times.begin(), frame_times.end());
     const double median_frame_ms = median_of_sorted(frame_times);
     const size_t p95_index = static_cast<size_t>(
@@ -1354,6 +1356,13 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"max_ms\":" << present_intervals.back()
            << ",\"stddev_ms\":" << std::sqrt(present_variance / present_intervals.size())
            << '}';
+    output << ",\"frame_times_ms\":[";
+    for (size_t i = 0; i < frame_times_in_order.size(); ++i) {
+        if (i) output << ',';
+        if (std::isfinite(frame_times_in_order[i])) output << frame_times_in_order[i];
+        else output << "null";
+    }
+    output << ']';
     if (!frame_trace.rows.empty()) frame_trace.append_json(output);
     output << "}\n";
     if (!output) {
