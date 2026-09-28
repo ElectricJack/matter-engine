@@ -258,6 +258,10 @@ class VtCompositor final : public VtPageFiller {
     struct GpuPreparationStats {
         uint64_t allocations = 0, uploaded_bytes = 0, completed = 0;
         uint64_t cancelled = 0, allocation_failures = 0;
+        // Streams with no rows (no finite pixels/levels/bindings, no ids) bind
+        // one shared zero buffer instead of a 0-byte VkBuffer. Counted on the
+        // bounded and the standalone fill() path alike; never an allocation.
+        uint64_t empty_streams = 0;
         uint32_t allocations_this_frame = 0, peak_allocations_per_frame = 0;
         size_t uploaded_bytes_this_frame = 0, peak_uploaded_bytes_per_frame = 0;
         size_t pending_jobs = 0;

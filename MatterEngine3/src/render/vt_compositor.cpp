@@ -151,12 +151,15 @@ constexpr uint32_t kTapeArenaSlots =
 // at creation and never explicitly unmapped (freeing the memory in
 // destroy_raw_buffer unmaps it). `size` is the size that was requested, which
 // may be smaller than the allocation vkGetBufferMemoryRequirements asked for.
+// `shared` marks a borrowed alias of the compositor's empty_stream: it owns
+// nothing, so destroy_raw_buffer only forgets the handles.
 struct RawBuffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
     VkDeviceSize size = 0;
     VkDeviceAddress address = 0;
+    bool shared = false;
 };
 
 // A device-local 2D ARRAY image, its memory, and one view covering all layers.
@@ -294,8 +297,10 @@ bool create_raw_buffer(VkDevice device, VkPhysicalDevice phys,
 }
 
 void destroy_raw_buffer(VkDevice device, RawBuffer& b) {
-    if (b.buffer) vkDestroyBuffer(device, b.buffer, nullptr);
-    if (b.memory) vkFreeMemory(device, b.memory, nullptr);
+    if (!b.shared) {
+        if (b.buffer) vkDestroyBuffer(device, b.buffer, nullptr);
+        if (b.memory) vkFreeMemory(device, b.memory, nullptr);
+    }
     b = RawBuffer{};
 }
 
@@ -425,6 +430,10 @@ struct VtCompositor::Impl {
 
     RawImage dummy_tileset;   // 1x1x1 RGBA8 array, neutral 0.5 gray
     RawBuffer dummy_finite;
+    // 16 zero bytes bound in place of every empty preparation stream (no
+    // tape rows, no finite ids/pixels). Vulkan forbids a 0-byte VkBuffer
+    // (VUID-VkBufferCreateInfo-size-00912); aliases carry RawBuffer::shared.
+    RawBuffer empty_stream;
 
     // Setters only change desired CPU inputs. Each retired batch ring captures
     // these once; later setters cannot alter already-recorded GPU work.
@@ -695,6 +704,7 @@ struct VtCompositor::Impl {
         }
         destroy_raw_buffer(device, tape_arena);
         destroy_raw_buffer(device, dummy_finite);
+        destroy_raw_buffer(device, empty_stream);
         destroy_raw_image(device, dummy_tileset);
         if (sampler) vkDestroySampler(device, sampler, nullptr);
         if (descriptor_pool)
@@ -1041,6 +1051,10 @@ bool VtCompositor::Impl::init(std::string& err) {
         write_ring_descriptors(r);
         capture_inputs(r);
     }
+    if (!create_raw_buffer(device, phys, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, empty_stream, err,
+                           /*prefer_device_local=*/false)) return false;
+    std::memset(empty_stream.mapped, 0, 16);
     return true;
 }
 
@@ -1179,6 +1193,15 @@ bool VtCompositor::Impl::advance_mesh_entry(PendingMesh& pending,
     };
     const auto allocate = [&](RawBuffer& buffer, size_t bytes, bool draw_geometry = false) {
         if (buffer.buffer) return true;
+        if (bytes == 0) {
+            // An empty stream is legal (no tape rows, no finite ids). Bind the
+            // shared zero buffer rather than asking Vulkan for a 0-byte object.
+            ++gpu_preparation.empty_streams;
+            buffer.buffer = empty_stream.buffer; buffer.memory = VK_NULL_HANDLE;
+            buffer.mapped = empty_stream.mapped; buffer.address = empty_stream.address;
+            buffer.size = 0; buffer.shared = true;
+            return true;
+        }
         if (!take_allocation()) return false;
         PROFILE_SCOPE("vt.mesh_alloc");
         std::string error;
@@ -1200,6 +1223,7 @@ bool VtCompositor::Impl::advance_mesh_entry(PendingMesh& pending,
         return false;
     };
     const auto copy = [&](void* destination, const void* source, size_t bytes, size_t& copied) {
+        if (!bytes) return true;
         constexpr size_t kCopySlice = 64u * 1024u;
         while (copied < bytes) {
             const size_t remaining = bounded

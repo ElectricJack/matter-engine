@@ -2013,6 +2013,32 @@ int main() {
                 CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&shared_request,1);
                 CHECK(tc.submit(err) && read_slot(source_slot,unchanged) && unchanged.albedo==expected.albedo &&
                       unchanged.height==expected.height,"shared GPU bank preserves rendered channels");
+                // A catalog with no payload pixels, mip levels or bindings and
+                // every selector 0 leaves the direct base on every triangle,
+                // so its three bank streams have no rows. The refill after
+                // invalidate_surface reuses geometry and must bind the shared
+                // zero buffer, never a 0-byte VkBuffer: the exit check requires
+                // zero validation errors (VUID-VkBufferCreateInfo-size-00912).
+                {
+                    auto empty=std::make_shared<vt::VtFiniteSources>();
+                    empty->content_hash=empty->payload_hash=0x454d505459ull;
+                    const std::vector<uint32_t> unassigned(4,0);
+                    receiver.ctx.finite_sources=empty;receiver.ctx.finite_source_ids=unassigned.data();
+                    finite->invalidate_surface(receiver.variant_hash);
+                    const auto reuses=finite->stats().geometry_reuses;
+                    const auto empty_before=finite->gpu_preparation_stats().empty_streams;
+                    auto bare=request;bare.physical_slot=edited_slot;
+                    vt::VtPageHeight bare_range;bare.out_height=&bare_range;
+                    bool bare_filled=false;bare.out_filled=&bare_filled;
+                    CHECK(tc.begin(err),err.c_str());finite->fill(tc.cmd,&bare,1);
+                    PageData bare_page;
+                    CHECK(tc.submit(err) && bare_filled && read_slot(edited_slot,bare_page),
+                          "empty finite catalog: the geometry-reuse refill completes");
+                    CHECK(finite->stats().geometry_reuses==reuses+1,
+                          "empty finite catalog: the refill reuses the retained geometry");
+                    CHECK(finite->gpu_preparation_stats().empty_streams==empty_before+3,
+                          "compositor: an entry with empty streams never issues a zero-size vkCreateBuffer");
+                }
                 vulkan->wait_idle();finite.reset();
             }
 
