@@ -459,6 +459,7 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
 build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
     build/shaders_vk/raster_water.vert.spv \
     build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_material_domain_probe.comp.spv \
     build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv build/shaders_vk/rt_surface_test.rgen.spv: \
@@ -532,6 +533,22 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_common.glsl
 
 build/shaders_vk/vt_material_domain_probe.comp.spv: shaders_vk/vt_material_domain.glsl shaders_vk/vt_common.glsl shaders_vk/vt_visible_input.glsl
+
+# Connected-surface POM: vt_parallax.glsl includes vt_surface_walk.glsl, which
+# includes vt_seed_walk.glsl and vt_chart_types.glsl. gbuffer.frag and the
+# material-domain probe include vt_parallax.glsl directly, and so does
+# rt_surface_common.glsl -- every RT stage that includes IT is a consumer too
+# (the culled/audit/fixed rgen wrappers already depend on every
+# shaders_vk/*.glsl through their wildcard rule further down).
+# With no rule here, an edit to the march or either walk left all nine .spv
+# files stale in the rollback build.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_material_domain_probe.comp.spv \
+    build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv: \
+    shaders_vk/vt_parallax.glsl shaders_vk/vt_surface_walk.glsl shaders_vk/vt_seed_walk.glsl \
+    shaders_vk/vt_chart_types.glsl
 
 # M2.5 impostors: impostor_common.glsl is the ONE place the view grid is
 # written down, and BOTH stages that touch a billboard read it -- raster.vert
