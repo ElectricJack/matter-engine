@@ -73,6 +73,9 @@ MatterEngine3/src/sector_grid.cpp|all
 MatterEngine3/src/lod_select.cpp|all
 MatterEngine3/src/world_lights.cpp|all
 MatterEngine3/src/world_tracer.cpp|all
+MatterEngine3/src/gi_bake.cpp|all
+MatterEngine3/src/gi_bake_image.cpp|all
+MatterEngine3/src/gi_bake_scene.cpp|all
 MatterEngine3/src/part_cluster.cpp|all
 MatterEngine3/src/tileset_layout.cpp|all
 MatterEngine3/src/tileset_collider.cpp|all
@@ -85,6 +88,17 @@ MatterEngine3/src/tileset_metrics.cpp|all
 MatterEngine3/src/tileset_gtex.cpp|all
 MatterEngine3/src/tileset_torus_bvh.cpp|all
 MatterEngine3/src/shader_source.cpp|all
+# Asset export (docs/export-obj.md): the format-agnostic extraction layer, the
+# CPU texture bake, the Wavefront writer and the `matter export obj` command.
+# export_cli.cpp is the only one that touches the script host; the rest take
+# baked artifacts, which is why MatterEngine3/tests' run-obj-export gate links
+# without QuickJS.
+MatterEngine3/src/export/mesh_export.cpp|all
+MatterEngine3/src/export/texture_bake.cpp|all
+MatterEngine3/src/export/export_image.cpp|all
+MatterEngine3/src/export/obj_writer.cpp|all
+MatterEngine3/src/export/part_export.cpp|all
+MatterEngine3/src/export/export_cli.cpp|all
 MatterEngine3/src/render/raster_mesh.cpp|all
 MatterEngine3/src/render/indexed_part_geometry.cpp|all
 MatterEngine3/src/render/matrix_math.cpp|all
@@ -164,7 +178,10 @@ MatterEngine3/src/props/props.cpp|all
 MatterEngine3/src/props/props_file.cpp|all
 MatterEngine3/src/props/draw_overrides.cpp|all
 
-# Binary geometry pages (CMake links the same source-of-truth library target).
+# AssetStoreLib: binary geometry pages and the content-addressed lightmap store
+# for gi_bake_scene. CMake links the matter_asset_store target instead; the Make
+# archive compiles these from their source-of-truth directory (compile-from-source
+# rule, CLAUDE.md).
 libs/AssetStoreLib/src/store_hash.cpp|all
 libs/AssetStoreLib/src/store_os.cpp|all
 libs/AssetStoreLib/src/blob_store.cpp|all

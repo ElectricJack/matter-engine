@@ -5,11 +5,25 @@ import fs from "node:fs";
 import vm from "node:vm";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { objectFile } from "./helpers/project_layout.mjs";
 const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../..",
 );
 const scene = path.join(root, "projects/world_demo/scenes/castles/layouts/Kreuzenstein");
+// Object lookup mirrors the engine's search path: a scene owns its own
+// objects/ over the shared project tier. KreuzensteinBrick lives in the
+// project tier because shared-lib/kreuzenstein.js places it by name, and a
+// shared-lib module is reachable from every scene (world_definition_tests
+// rejects shared-lib references to scene-local objects).
+function readObject(module) {
+  const file = objectFile(module, "Kreuzenstein");
+  if (!file)
+    throw new Error(
+      `${module}.js not found in the Kreuzenstein scene or project objects/ tier`,
+    );
+  return fs.readFileSync(file, "utf8");
+}
 const prelude = fs
   .readFileSync(path.join(root, "MatterEngine3/src/part_base.js.h"), "utf8")
   .split('R"JS(')[1]
@@ -91,9 +105,10 @@ function evaluate(module, params) {
     };
   }
   vm.runInContext(prelude, context);
-  const source = fs
-    .readFileSync(path.join(scene, "objects", module + ".js"), "utf8")
-    .replace(/^import .*;$/m, "const Geo=CastleGeometry;");
+  const source = readObject(module).replace(
+    /^import .*;$/m,
+    "const Geo=CastleGeometry;",
+  );
   vm.runInContext(
     helper + "\n" + source + "\nglobalThis.Ctor=" + module + ";",
     context,
