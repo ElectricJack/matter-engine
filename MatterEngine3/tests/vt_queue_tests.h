@@ -367,6 +367,103 @@ inline void run_page_probe(matter::VulkanDevice& vulkan) {
     }
 }
 
+// A registration whose pinned tail must recycle a live unpinned page retires
+// the evicted page's per-slot side tables exactly as record_frame's eviction
+// does. Before, the tail path only released the material pixels: the new
+// owner's slot kept the old page's geometry lifetime (and input snapshot,
+// occlusion factor and material mapping) until its own tail happened to fill.
+inline void run_tail_recycling(matter::VulkanDevice& vulkan) {
+    const uint32_t errors_before = vulkan.validation_error_count();
+    Budgets budgets;
+    matter::vt_residency_budgets().pool_pages = vt::kVtPagesPerLayer; // one layer: few free slots
+    matter::vt_residency_budgets().evict_protect_frames = 1;
+    Frames frames(vulkan);
+    vt::VtResidency residency;
+    std::string error;
+    CHECK(frames.valid() && residency.init(vulkan, error), "VT tail recycle: native resources initialized");
+    if (!frames.valid() || !residency.available()) return;
+    auto writer = vt::make_vt_stub_filler(vulkan, 64, error);
+    CHECK(writer != nullptr, "VT tail recycle: shipped writer initialized");
+    if (!writer) return;
+    auto observed = std::make_unique<PublicationWriter>(vulkan, std::move(writer));
+    auto* producer = observed.get();
+    residency.set_filler(std::move(observed));
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w = atlas.atlas_h = 128;
+    atlas.charts.resize(1);
+    atlas.charts[0].rect_w = atlas.charts[0].rect_h = 128;
+    atlas.charts[0].tri_count = 1; atlas.charts[0].texels_per_meter = 1;
+    atlas.tri_order = {0};
+    const float positions[] = {0,0,0, 1,0,0, 0,1,0};
+    const uint32_t indices[] = {0,1,2};
+    vt::VtPartContext context;
+    context.positions = positions; context.vertex_count = 3;
+    context.indices = indices; context.triangle_count = 1;
+    vt::VtVariantLayout layout;
+    CHECK(vt::vt_build_layout(atlas.atlas_w, atlas.atlas_h, layout) && layout.mip_count == 2,
+          "VT tail recycle: fixture has one detail page above its tail");
+
+    // The victim's tail fills first; its one detail page then fills under a
+    // geometry lifetime only that page's slot holds.
+    context.variant_hash = 0xA000u;
+    const uint32_t victim = residency.register_variant(context.variant_hash, 0, atlas, context);
+    CHECK(victim != vt::kVtNoSlot && frames.next(residency, 1), "VT tail recycle: victim tail filled");
+    if (victim == vt::kVtNoSlot) return;
+    std::weak_ptr<const void> detail_geometry;
+    {
+        auto lifetime = std::make_shared<int>(1);
+        detail_geometry = lifetime;
+        producer->geometry.lifetime = std::move(lifetime);
+    }
+    const vt::VtFeedbackRequest detail{victim - 1u, 0, 0, 0};
+    residency.inject_feedback_for_test(&detail, 1);
+    CHECK(frames.next(residency, 2), "VT tail recycle: victim detail filled");
+    producer->geometry.lifetime.reset();
+    const uint32_t detail_slot = residency.resident_page_slot_for_test(victim, {0, 0, 0});
+    CHECK(detail_slot != UINT32_MAX && !detail_geometry.expired() && residency.stats().material_pages == 2,
+          "VT tail recycle: victim detail is resident and its slot holds the page geometry");
+    if (detail_slot == UINT32_MAX) return;
+    // Age the detail page out of the eviction hysteresis window.
+    CHECK(frames.next(residency, 3), "VT tail recycle: idle frame");
+
+    // Pin every free slot with new owners whose tails stay unfilled, until a
+    // registration has to recycle the victim's detail page -- the pool's only
+    // live unpinned page -- for its tail.
+    residency.pause_page_fills_for_test(true);
+    uint32_t recycler = vt::kVtNoSlot;
+    for (uint64_t hash = 0xB000u; hash < 0xB000u + vt::kVtPagesPerLayer; ++hash) {
+        const uint64_t evictions = residency.stats().evictions_total;
+        context.variant_hash = hash;
+        const uint32_t owner = residency.register_variant(hash, 0, atlas, context);
+        if (owner == vt::kVtNoSlot) break;
+        if (residency.stats().evictions_total != evictions) { recycler = owner; break; }
+    }
+    CHECK(recycler != vt::kVtNoSlot, "VT tail recycle: a registration evicts the live detail page for its tail");
+    if (recycler == vt::kVtNoSlot) return;
+    CHECK(residency.resident_page_slot_for_test(recycler, {1, 0, 0}) == detail_slot &&
+              residency.resident_page_slot_for_test(victim, {0, 0, 0}) == UINT32_MAX,
+          "VT tail recycle: the new tail owns the former detail slot and the victim no longer maps it");
+    CHECK(residency.stats().material_pages == 1,
+          "VT tail recycle: the recycled slot keeps no material pixels of the evicted page");
+    CHECK(residency.occlusion_address_for_test(detail_slot) == 0 &&
+              !residency.coverage_only_page_for_test(detail_slot),
+          "VT tail recycle: the recycled slot publishes no occlusion or coverage-only state");
+
+    // With the recycler's own fill deferred, only the reader horizon may
+    // keep the evicted page's geometry alive.
+    for (uint64_t frame = 4; frame <= 4 + vt::kVtRetireHorizonFrames; ++frame)
+        CHECK(frames.next(residency, frame), "VT tail recycle: deferred-fill frame");
+    CHECK(detail_geometry.expired(),
+          "VT tail recycle: the recycled slot retires the evicted page's geometry within the reader horizon");
+
+    residency.pause_page_fills_for_test(false);
+    for (uint64_t frame = 20; frame < 60 && !residency.slot_active(recycler); ++frame)
+        CHECK(frames.next(residency, frame), "VT tail recycle: resumed fill frame");
+    CHECK(residency.slot_active(recycler) && residency.slot_active(victim),
+          "VT tail recycle: the recycler's tail fills and activates while the victim keeps its tail");
+    CHECK(vulkan.validation_error_count() == errors_before, "VT tail recycle: zero Vulkan validation errors");
+}
+
 inline void run_replacements(matter::VulkanDevice& vulkan) {
     const uint32_t errors_before = vulkan.validation_error_count();
     Budgets budgets;
@@ -537,6 +634,7 @@ inline void run_replacements(matter::VulkanDevice& vulkan) {
           residency.stats().dirty_pages == 0 && residency.stats().fills_stale_total == 4,
           "VT replacement: released owner cannot publish into retiring slots");
     CHECK(vulkan.validation_error_count() == errors_before, "VT replacement: zero Vulkan validation errors");
+    run_tail_recycling(vulkan);
 }
 
 inline void run_shared_enrichment_transition(matter::VulkanDevice& vulkan) {

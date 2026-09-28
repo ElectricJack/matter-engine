@@ -1120,6 +1120,8 @@ void VtResidency::retire_slot_geometry(uint32_t slot) {
         --stats_.coverage_only_pages;
         slot_page_metadata_[slot].geometry.page_flags&=~kVtCoverageOnly;
     }
+    input_indices_dirty_begin_ = std::min(input_indices_dirty_begin_, slot);
+    input_indices_dirty_end_ = std::max(input_indices_dirty_end_, slot + 1u);
     auto& previous = slot_geometry_lifetimes_[slot];
     if (!previous) return;
     auto& retired = retired_geometries_[previous.get()];
@@ -1154,6 +1156,8 @@ void VtResidency::retire_slot_occlusion(uint32_t slot) {
         --stats_.occlusion_pages;
     }
     slot_page_metadata_[slot].occlusion_address=0;
+    input_indices_dirty_begin_=std::min(input_indices_dirty_begin_,slot);
+    input_indices_dirty_end_=std::max(input_indices_dirty_end_,slot+1);
 }
 
 void VtResidency::retire_slot_material_mapping(uint32_t slot) {
@@ -1706,9 +1710,22 @@ uint32_t VtResidency::register_variant_impl(uint64_t variant_hash, uint32_t rung
         return kVtNoSlot;
     }
     if (evicted.live) {
-        // The pool was full of unpinned pages; unmap whatever we recycled.
-        material_pages_.release(tail_slot);
+        // The pool was full of unpinned pages; recycle exactly as record_frame
+        // does. Every side table keyed by slot must be retired here too, or
+        // the new owner inherits the old owner's input snapshot, geometry,
+        // occlusion factor and material mapping -- and their GPU metadata
+        // addresses -- until its own tail happens to fill.
         dirty_pages_.erase(tail_slot);
+        material_pages_.release(tail_slot);
+        retire_slot_input_snapshot(tail_slot);
+        retire_slot_geometry(tail_slot);
+        retire_slot_occlusion(tail_slot);
+        retire_slot_material_mapping(tail_slot);
+        if (event_log_)
+            MATTER_LOGI("vt-evict", "frame=%llu owner=%016llx mip=%u x=%u y=%u slot=%u reason=tail",
+                static_cast<unsigned long long>(frame_index_),
+                static_cast<unsigned long long>(evicted.variant_key),
+                evicted.page.mip, evicted.page.px, evicted.page.py, tail_slot);
         const auto owner_layer = layer_of_.find(evicted.variant_key);
         if (owner_layer != layer_of_.end())
             variants_[owner_layer->second].indirection.unmap(
@@ -3106,6 +3123,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                     material_pages_.release(slot);
                     retire_slot_input_snapshot(slot);
                     retire_slot_geometry(slot);
+                    retire_slot_occlusion(slot);
                     retire_slot_material_mapping(slot);
                     if (event_log_)
                         MATTER_LOGI("vt-evict", "frame=%llu owner=%016llx mip=%u x=%u y=%u slot=%u",
