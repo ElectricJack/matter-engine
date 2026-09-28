@@ -364,6 +364,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/world_state_delta_tests.cpp)
     matter_add_engine_cpu_test(sector_lod_tests
         MatterEngine3/tests/sector_lod_tests.cpp)
+    matter_add_engine_cpu_test(sector_bake_tests
+        MatterEngine3/tests/sector_bake_tests.cpp)
     matter_add_engine_cpu_test(local_light_index_tests
         MatterEngine3/tests/local_light_index_tests.cpp)
     matter_add_engine_cpu_test(primary_light_culling_tests

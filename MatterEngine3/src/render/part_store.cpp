@@ -1572,25 +1572,32 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     lod_bake::TerrainBakeTargets terrain_targets;
     terrain_targets.first_rung = first_rung;
     lod_bake::BakeTargets regular_targets;
-    if (terrain_pages || (snapshot.source_single_full_rep && !terrain_sector && !terrain_tile &&
-        !animation_asset && !snapshot.animation_link && children.empty())) {
+    const bool single_rung_source = snapshot.source_single_full_rep && !terrain_sector && !terrain_tile &&
+        !animation_asset && !snapshot.animation_link && children.empty();
+    const auto bake_ladder = [&](const lod_bake::BakeTargets& targets) {
+        lod_handles.clear();
+        rung_charts.clear();
+        return terrain_tile && !terrain_pages
+            ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius, terrain_targets,
+                                          *staged.staging, triex_ptr, observer_,
+                                          &lod_handles, &chart_opts, &rung_charts)
+            : lod_bake::bake_lods(tris, targets, *staged.staging, triex_ptr, observer_,
+                                  &lod_handles, &chart_opts, &rung_charts);
+    };
+    if (terrain_pages || single_rung_source) {
         regular_targets.keep_ratio.resize(1);
         regular_targets.threshold.resize(1);
     }
-    lod_bake::LodLevels lods = terrain_tile && !terrain_pages
-        ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius,
-                                      terrain_targets,
-                                      *staged.staging, triex_ptr, observer_,
-                                      &lod_handles, &chart_opts, &rung_charts)
-        : lod_bake::bake_lods(tris, regular_targets, *staged.staging,
-                              triex_ptr, observer_, &lod_handles,
-                              &chart_opts, &rung_charts);
+    lod_bake::LodLevels lods = bake_ladder(regular_targets);
     // The source rung remains the sector's VT receiver and initial coverage.
     // Geometry pages retain its chart UVs and exact outer boundaries. Children
     // remain independently owned by the sector expansion.
     if (terrain_pages && !lod_handles.empty()) {
         const auto* source = staged.staging->get_entry(lod_handles.front());
-        if (source && source->tri_extra.size() == source->triangles.size()) {
+        if (!source || source->tri_extra.size() != source->triangles.size()) {
+            MATTER_LOGW("geometry", "terrain %016llx: source rung lacks per-triangle attributes; no pages",
+                        static_cast<unsigned long long>(part_hash));
+        } else {
             geometry::CompileConfig config;
             config.packed_root_triangles = 512;
             // Terrain source cells are metres across. Millimetre convergence
@@ -1632,6 +1639,19 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
             if (!staged.lp.geometry_pages) MATTER_LOGW("geometry", "terrain %016llx paging failed: %s",
                 static_cast<unsigned long long>(part_hash), error.c_str());
         }
+    }
+    if (terrain_pages && !staged.lp.geometry_pages) {
+        // Pages were the only reason the ladder was collapsed. Without them
+        // the sector would draw its full rung at every distance. Re-bake the
+        // ordinary ladder; rung 0 dedups onto the handle already registered.
+        MATTER_LOGW("geometry", "terrain %016llx: page compile unavailable, restoring the %zu-rung ladder",
+                    static_cast<unsigned long long>(part_hash), lod_bake::BakeTargets{}.keep_ratio.size());
+        const auto source_handles = lod_handles;
+        lods = bake_ladder(lod_bake::BakeTargets{});
+        // The rebake retained its own references, including deduped rung 0.
+        // Drop the preliminary registrations so commit/release owns exactly
+        // the final ladder and cannot strand the source BLAS after eviction.
+        for (const auto handle : source_handles) staged.staging->release_blas(handle);
     }
     staged.ladder_ms = stage_split();
     assert(lod_handles.size() == lods.size());

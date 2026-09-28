@@ -19,6 +19,7 @@
 #include "part_asset_v2.h"
 #include "lod_select.h"
 #include "lod_bake.h"
+#include "script_host.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "animation/anim_asset.h"
@@ -29,6 +30,82 @@ static int g_failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("  FAIL: %s\n", msg); ++g_failures; } \
 } while(0)
+
+static void setenv_compat(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+static void unsetenv_compat(const char* name) {
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+struct ScopedEnvironmentOverride {
+    const char* name;
+    bool had_value;
+    std::string saved;
+    ScopedEnvironmentOverride(const char* key, const char* value)
+        : name(key), had_value(std::getenv(key) != nullptr),
+          saved(had_value ? std::getenv(key) : "") {
+        setenv_compat(name, value);
+    }
+    ~ScopedEnvironmentOverride() {
+        if (had_value) setenv_compat(name, saved.c_str());
+        else unsetenv_compat(name);
+    }
+};
+
+// An empty cache plus cache-only mode refuses terrain page compilation. The
+// sector must then keep the ordinary ladder rather than ship one full rung.
+static void test_terrain_page_failure_keeps_ladder() {
+    namespace fs = std::filesystem;
+    std::printf("[test_terrain_page_failure_keeps_ladder]\n");
+    const auto root = fs::temp_directory_path() / "me3_partstore_terrain_fallback";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); }
+    } cleanup{root};
+    fs::remove_all(root);
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    const ScopedEnvironmentOverride cache_only("MATTER_GEOMETRY_CACHE_ONLY", "1");
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+    options.retain_geometry = true;
+    fs::create_directories(root / "parts");
+    // A 64 m flat quad grid satisfies the radius >= 32 terrain guard.
+    const std::string source =
+        "class Sector extends Part{static lodBudgets=[1];static noImpostor=true;"
+        "build(){this.fill(8);this.beginShape(0);"
+        "for(let z=0;z<8;++z)for(let x=0;x<8;++x){"
+        "const a=[x*8-32,0,z*8-32],b=[x*8-24,0,z*8-32],"
+        "c=[x*8-24,0,z*8-24],d=[x*8-32,0,z*8-24];"
+        "this.vertex(...a);this.vertex(...b);this.vertex(...c);"
+        "this.vertex(...a);this.vertex(...c);this.vertex(...d);}"
+        "this.endShape();}}";
+    const auto baked = host.bake_source(source, "{}", options);
+    CHECK(baked.error.ok && baked.geometry, "terrain fallback fixture bakes");
+    if (!baked.geometry) return;
+    viewer::PartStore store(options.parts_dir);
+    store.set_geometry_pages_enabled(true);
+    auto staged = store.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                       /*first_rung=*/0, /*terrain_sector=*/true);
+    CHECK(staged.ok, "terrain fallback fixture stages");
+    CHECK(!staged.lp.geometry_pages, "cache-only compile refuses pages");
+    CHECK(staged.lp.thresholds.size() >= 2,
+          "sector keeps a multi-rung ladder when pages fail");
+    CHECK(store.commit_staged(std::move(staged)), "terrain fallback fixture commits");
+    store.release(baked.resolved_hash);
+    CHECK(store.blas().live_count() == 0,
+          "releasing a terrain fallback drops every BLAS reference");
+}
 
 // M4: the part body is the bundle's REP0 section (see anim_bundle's
 // checksum_part). Reading the raw file would fold the bundle directory and
@@ -1312,6 +1389,7 @@ static void test_authored_vt_density() {
 }
 
 int main() {
+    test_terrain_page_failure_keeps_ladder();
     test_authored_vt_density();
     test_scoped_verified_bundle_reads();
     test_singleton_flat_adopts_persisted_bvh();
