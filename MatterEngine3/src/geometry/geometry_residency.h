@@ -24,6 +24,7 @@ struct ResidencyStats {
     uint64_t gpu_budget = 0, scratch_budget = 0;
     uint32_t assets = 0, pages = 0, inflight = 0, known_nodes = 0;
     uint64_t stale_completions = 0, budget_rejections = 0;
+    uint64_t failed_retries = 0;
 };
 // The backend creates this resource only after raster upload AND triangle BLAS
 // are ready. Its deleter must honor the renderer's in-flight retirement fence.
@@ -62,7 +63,8 @@ public:
     void set_visible_assets(std::vector<uint64_t> leases);
     bool page_visible(const asset_store::BlobHash&) const;
     // One request can serve multiple world attachments. Only roots and children
-    // discovered through this asset's accepted pages can be requested.
+    // discovered through this asset's accepted pages can be requested. A failed
+    // page starts a fresh bounded retry cycle when explicitly requested again.
     bool request(AssetLease, const asset_store::BlobHash&, float priority = 0);
     std::vector<PageTicket> dispatch(uint32_t count, uint64_t epoch);
     bool complete_read(PageTicket, asset_store::PageHandle, std::string& error);

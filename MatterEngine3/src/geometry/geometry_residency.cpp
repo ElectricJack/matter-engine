@@ -195,9 +195,15 @@ bool Residency::request(AssetLease lease, const asset_store::BlobHash& hash, flo
     if (!inserted_page.second) d.unqueue(page);
     page.ref = known->second; page.owners.insert(lease.id);
     page.priority = std::max(page.priority, priority);
+    if (page.state == Impl::State::Failed) {
+        // A parked page is re-armed by an explicit request (new visibility or a
+        // refreshed location), never by the retry clock. Attempts start over.
+        page.state = Impl::State::Queued; page.attempts = 0; page.retry_epoch = 0;
+        ++d.counters.failed_retries;
+    }
     d.queue(page);
     if (page.resident) d.discover(lease.id, page.resident->node);
-    return page.state != Impl::State::Failed;
+    return true;
 }
 std::vector<PageTicket> Residency::dispatch(uint32_t count, uint64_t epoch) {
     auto& d = *d_;

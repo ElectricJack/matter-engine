@@ -192,6 +192,7 @@ struct GeometryWorldRuntime::Impl {
     uint64_t admission_revision = 0;
     uint32_t source_fallbacks = 0;
     std::map<asset_store::BlobHash, GpuPage> gpu_pages;
+    std::vector<GpuPage> retired_gpu_pages;
     bool collection_needed = false;
     std::map<asset_store::BlobHash, std::string> locations;
     std::map<asset_store::BlobHash, asset_store::PageHandle> root_bytes;
@@ -267,6 +268,11 @@ struct GeometryWorldRuntime::Impl {
     void collect(VkSceneRenderer& renderer) {
         if (!collection_needed) return;
         collection_needed = false;
+        for (auto it = retired_gpu_pages.begin(); it != retired_gpu_pages.end();) {
+            if (it->resident.expired()) {
+                invalidate_scene(); renderer.release_part(it->id); it = retired_gpu_pages.erase(it);
+            } else { collection_needed = true; ++it; }
+        }
         for (auto it = gpu_pages.begin(); it != gpu_pages.end();) {
             if (it->second.resident.expired()) {
                 invalidate_scene(); renderer.release_part(it->second.id); it = gpu_pages.erase(it);
@@ -309,6 +315,8 @@ void GeometryWorldRuntime::reset(VkSceneRenderer& renderer) {
     for (const auto& upload : d.uploads) renderer.release_part(upload.gpu_id);
     d.uploads.clear(); d.prepared.clear();
     for (const auto& item : d.gpu_pages) renderer.release_part(item.second.id);
+    for (const auto& page : d.retired_gpu_pages) renderer.release_part(page.id);
+    d.retired_gpu_pages.clear();
     d.gpu_pages.clear(); d.collection_needed=false; d.last_membership.clear(); ++d.revision;
     d.pipeline->cancel();
     d.hierarchy_pipeline->cancel();
@@ -629,6 +637,13 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         if (!d.residency.publish(it->ticket, renderer.geometry_page_resources(it->gpu_id))) { ++it; continue; }
         if(d.profiling){++d.profile.published;d.profile.ready_wait.add(elapsed_ms(it->submitted));d.profile.end_to_end.add(elapsed_ms(it->requested));}
         d.published_pages.push_back(it->ticket.page);
+        auto previous = d.gpu_pages.find(it->ticket.page);
+        if (previous != d.gpu_pages.end() && previous->second.id != it->gpu_id) {
+            // The old part may still be pinned by a submitted snapshot; hand it
+            // to collect(), which releases it once that lease retires.
+            d.retired_gpu_pages.push_back(previous->second);
+            d.collection_needed = true;
+        }
         d.gpu_pages[it->ticket.page] = {it->gpu_id, std::make_shared<uint64_t>(d.epoch), d.residency.resident(it->ticket.page)};
         it = d.uploads.erase(it);
     }
@@ -873,7 +888,6 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         uint32_t removed = 0;
         for (const auto& candidate : candidates) if (d.residency.evict(candidate.second)) {
             ++d.admission_revision;
-            d.locations.erase(candidate.second);
             if(++removed==8)break;
         }
         if(d.profiling)d.profile.evictions+=removed;

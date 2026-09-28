@@ -103,6 +103,27 @@ static void visibility_priority_checks(asset_store::PageCache& cache) {
     residency.set_visible_assets({});
     CHECK(!residency.page_visible(child),"empty visible set demotes in-flight work without cancelling it");
 }
+static void failed_page_recovery_checks(asset_store::PageCache& cache) {
+    using namespace geometry;
+    std::string error;
+    Residency residency;
+    const auto lease=residency.attach(cache.read_manifest("unique").page,error);
+    auto roots=residency.dispatch(8,0);
+    CHECK(roots.size()==1,"recovery fixture has one root");
+    if(roots.size()!=1)return;
+    auto ticket=roots.front();
+    const auto page=ticket.page;
+    for(uint32_t attempt=0;attempt<3;++attempt) {
+        residency.fail(ticket,/*retry_epoch=*/attempt+1);
+        const auto again=residency.dispatch(8,attempt+2);
+        if(attempt<2){CHECK(again.size()==1,"failed page is retried while attempts remain");if(again.empty())return;ticket=again.front();}
+        else CHECK(again.empty(),"third failure parks the page");
+    }
+    CHECK(residency.request(lease,page),"a re-request of a parked page is accepted");
+    const auto revived=residency.dispatch(8,100);
+    CHECK(revived.size()==1 && revived.front().page==page,"re-requested page dispatches again");
+    CHECK(residency.stats().failed_retries==1,"recovery is counted");
+}
 static void visibility_queue_churn_checks(asset_store::PageCache& cache) {
     using namespace geometry;
     std::string error;
@@ -528,6 +549,7 @@ int main(int argc,char** argv) {
     auto cache=asset_store::PageCache::open(cache_config,error);CHECK(cache!=nullptr,error.c_str());if(!cache)return check_summary();
     page_dependency_checks();
     visibility_priority_checks(*cache);
+    failed_page_recovery_checks(*cache);
     visibility_queue_churn_checks(*cache);
     residency_checks(*cache);
     {
