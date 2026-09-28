@@ -5,6 +5,7 @@
 #include "gi_bake_image.h"
 #include "matter/project_layout.h"      // scene_scripts: grouped scenes/ discovery
 #include "part_asset_v2.h"              // cache_path_resolved, load_v2, ChildInstance
+#include "part_surface.h"               // completes LocalProvider's SourceCache member
 #include "provider/local_provider.h"    // LocalProviderConfig::for_project, LocalProvider::connect
 #include "provider/world_source.h"      // WorldManifest
 
