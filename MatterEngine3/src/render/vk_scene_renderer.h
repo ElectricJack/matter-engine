@@ -1705,6 +1705,15 @@ public:
     VkSceneUploadCounters upload_counters() const noexcept {
         return upload_counters_;
     }
+    // Descriptors (the sum of VkWriteDescriptorSet::descriptorCount) this
+    // renderer has written since the current frame began -- prepare_frame(),
+    // or dispatch_culling() on the legacy test path. Read once the frame is
+    // recorded, it is that frame's descriptor churn. Sets owned by the VT
+    // runtime, volumetrics, atmosphere and cloud-shadow objects are written
+    // by those objects and are not counted here.
+    uint32_t frame_descriptors_written() const noexcept {
+        return frame_descriptors_written_;
+    }
     VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
 
     // Accepts one immutable provider publication. GPU resources are uploaded
@@ -2812,6 +2821,9 @@ private:
         std::array<std::shared_ptr<const vt::VtInputSnapshot>, vt::kVtMaxInputSnapshots> vt_input_snapshots{};
         std::array<VkDescriptorImageInfo, kTilesetSourceDescriptors> tileset_image_infos{};
         std::array<std::shared_ptr<void>, tileset::kMaxTilesetSlots * kTilesetChannelCount> live_tileset_lifetimes{};
+        // tileset_descriptor_revision_ when this slot's RT set last received
+        // its tileset bindings (15/16/28); 0 = never written.
+        uint64_t rt_tileset_descriptor_revision = 0;
 
         matter::VkBufferResource water_forward_constants;
         WaterForwardConstants water_forward_constants_cache{};
@@ -3084,6 +3096,12 @@ private:
     void update_descriptor(VkDescriptorSet set, uint32_t binding,
                            VkDescriptorType type,
                            const matter::VkBufferResource& buffer);
+    // vkUpdateDescriptorSets, plus the frame_descriptors_written() tally.
+    // Every descriptor write in this renderer goes through here.
+    void update_descriptor_sets(VkDevice device, uint32_t write_count,
+                                const VkWriteDescriptorSet* writes,
+                                uint32_t copy_count,
+                                const VkCopyDescriptorSet* copies);
     bool ensure_frame_resources(uint32_t frame_slot_count,
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
@@ -3666,6 +3684,11 @@ private:
 
     std::array<uint64_t, tileset::kMaxTilesetSlots> vt_tileset_revisions_{};
     std::array<uint64_t, tileset::kMaxTilesetSlots> vt_tileset_revisions_pushed_{};
+    // Bumped whenever write_tileset_descriptors_for_frame() rebuilds a frame
+    // slot's tileset_image_infos. The RT set mirrors those bindings and
+    // rewrites them only when its slot's recorded revision differs. Starts at
+    // 1 so a fresh slot (revision 0) always writes them once.
+    uint64_t tileset_descriptor_revision_ = 1;
     // Monotonic VT frame counter (LRU timestamps + resource retirement).
     // Deliberately independent of VulkanFrame::serial, which the legacy
     // immediate render path does not have.
@@ -4079,6 +4102,7 @@ private:
             static_upload_dirty_ = StaticUpload::kAppend;
     }
     VkSceneUploadCounters upload_counters_{};
+    uint32_t frame_descriptors_written_ = 0;
     VkCullStats cached_stats_{};
     // Identity-buffer visibility (M4). `visibility_reduce_` is the caller's
     // switch; `visibility_descriptors_valid_` says the per-slot sets have been

@@ -383,6 +383,10 @@ struct FrameStats {
     uint32_t occlusion_culled  = 0;   // clusters the occlusion ID mask rejected
     uint32_t triangles         = 0;   // rasterized triangle count
     uint32_t draw_batches      = 0;   // indirect draw buckets with >=1 instance
+    // Descriptors the scene renderer wrote this frame (sum of descriptorCount
+    // over its vkUpdateDescriptorSets calls). A steady scene stays small; a
+    // frame that rewrites the 432-sampler tileset bank shows it here.
+    uint32_t descriptors_written = 0;
     // M2.5: terminal impostors holding an atlas slot right now. On the stats
     // overlay because "are any drawing?" is the question the abandoned
     // impostor tier could not answer -- it was absent for a whole generation

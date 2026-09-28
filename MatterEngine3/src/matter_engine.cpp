@@ -14183,6 +14183,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.clusters_culled = cull_stats.frustum_culled;
     impl_->stats.occlusion_culled = cull_stats.occlusion_culled;
     impl_->stats.draw_batches = cull_stats.batches;
+    impl_->stats.descriptors_written =
+        impl_->vk_scene->frame_descriptors_written();
     impl_->stats.resident_impostors =
         impl_->vk_scene->resident_impostor_count();
     const viewer::VkSceneUploadCounters upload_counters =

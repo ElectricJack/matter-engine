@@ -5250,7 +5250,15 @@ void VkSceneRenderer::update_descriptor(
     write.descriptorCount = 1;
     write.descriptorType = type;
     write.pBufferInfo = &info;
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 1, &write, 0, nullptr);
+}
+
+void VkSceneRenderer::update_descriptor_sets(
+    VkDevice device, uint32_t write_count, const VkWriteDescriptorSet* writes,
+    uint32_t copy_count, const VkCopyDescriptorSet* copies) {
+    for (uint32_t i = 0; i < write_count; ++i)
+        frame_descriptors_written_ += writes[i].descriptorCount;
+    vkUpdateDescriptorSets(device, write_count, writes, copy_count, copies);
 }
 
 // ---------------------------------------------------------------------------
@@ -5902,7 +5910,7 @@ void VkSceneRenderer::update_water_forward_descriptor(FrameResources& frame) {
     writes[1].pImageInfo = &opaque_depth_info;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[2].pBufferInfo = &constants_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 3, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 3, writes, 0, nullptr);
 }
 
 bool VkSceneRenderer::upload_water_forward_constants(
@@ -5975,7 +5983,7 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
     writes[4].descriptorCount = 1u;
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[4].pBufferInfo = &buffer_info;
-    vkUpdateDescriptorSets(vulkan_->device(),
+    update_descriptor_sets(vulkan_->device(),
                            static_cast<std::uint32_t>(writes.size()),
                            writes.data(), 0u, nullptr);
     frame.water_field_raster_descriptors_valid = true;
@@ -5987,7 +5995,7 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
         }
         writes[4].dstSet = rt_set;
         writes[4].dstBinding = 25u;
-        vkUpdateDescriptorSets(vulkan_->device(),
+        update_descriptor_sets(vulkan_->device(),
                                static_cast<std::uint32_t>(writes.size()),
                                writes.data(), 0u, nullptr);
         frame.water_field_rt_descriptors_valid = true;
@@ -6518,6 +6526,9 @@ void VkSceneRenderer::write_tileset_descriptors_for_frame(FrameResources& frame)
     TilesetParamsGpu params = tileset_params_staging_;
     std::string flush_error;
     if (bindings_changed) {
+        // tileset_image_infos changes below; the RT set that mirrors it must
+        // rewrite binding 15 on its next dispatch.
+        ++tileset_descriptor_revision_;
         for (uint32_t key = 0; key < kTilesetSourceSlots; ++key) {
             const uint32_t logical = key % tileset::kMaxTilesetSlots;
             for (uint32_t channel = 0; channel < kTilesetChannelCount; ++channel) {
@@ -6578,7 +6589,7 @@ void VkSceneRenderer::write_tileset_descriptors_for_frame(FrameResources& frame)
         writes[2].dstBinding = 26;
         writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[2].pBufferInfo = &materials_info;
-        vkUpdateDescriptorSets(vulkan_->device(), 3, writes, 0, nullptr);
+        update_descriptor_sets(vulkan_->device(), 3, writes, 0, nullptr);
         frame.tileset_bindings_valid = true;
     }
     frame.vt_input_snapshots = snapshots;
@@ -8042,7 +8053,7 @@ void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
     writes[4].dstBinding = 25;
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[4].pBufferInfo = &input_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 5, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 5, writes, 0, nullptr);
 }
 
 // The three per-frame VT hooks, in the order they must run:
@@ -8413,7 +8424,7 @@ void VkSceneRenderer::write_impostor_descriptor_for_frame(VkDescriptorSet set) {
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &info;
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 1, &write, 0, nullptr);
 }
 
 // ---- identity-buffer visibility (M4) ---------------------------------------
@@ -8597,7 +8608,7 @@ bool VkSceneRenderer::ensure_visibility_pipelines(std::string& error) {
         id_write.descriptorCount = 1;
         id_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         id_write.pImageInfo = &id_image;
-        vkUpdateDescriptorSets(vulkan_->device(), 1, &id_write, 0, nullptr);
+        update_descriptor_sets(vulkan_->device(), 1, &id_write, 0, nullptr);
         // Writes THE shared mask, not a per-slot copy: this is the buffer pass
         // 1 of the cull reads at binding 18, a few commands after this reduce
         // runs. One buffer because the hand-off is now inside a single frame.
@@ -9511,7 +9522,7 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     writes[11].descriptorCount = 1;
     writes[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[11].pBufferInfo = &material_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 12, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 12, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::update_local_light_descriptor(FrameResources& frame) {
@@ -9533,7 +9544,7 @@ void VkSceneRenderer::update_local_light_descriptor(FrameResources& frame) {
         writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[binding].pBufferInfo = &infos[binding];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 5, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 5, writes, 0, nullptr);
 }
 
 bool VkSceneRenderer::upload_local_lights(FrameResources& frame,
@@ -9772,7 +9783,7 @@ bool VkSceneRenderer::record_primary_light_cull(
         if (i == 0) writes[i].pImageInfo = &depth_info;
         else writes[i].pBufferInfo = &buffer_infos[i - 1];
     }
-    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    update_descriptor_sets(device, 4, writes, 0, nullptr);
     // The slot owns this persistent descriptor pool until frame-resource
     // replacement/renderer teardown, both of which wait for device idle. Do
     // not also place its raw-device deleter in VulkanFrame::retained: those
@@ -10432,7 +10443,7 @@ bool VkSceneRenderer::update_environment_descriptor(
     writes[6].descriptorCount = 1;
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[6].pBufferInfo = &buffer;
-    vkUpdateDescriptorSets(vulkan_->device(), 7, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 7, writes, 0, nullptr);
     if (cloud_shadows_) cloud_shadows_->commit_generation();
     return true;
 }
@@ -10449,7 +10460,7 @@ void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &image_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 1, &write, 0, nullptr);
 }
 
 void VkSceneRenderer::note_command_layout_rebuild() {
@@ -12753,7 +12764,7 @@ bool VkSceneRenderer::test_dispatch_animation_skin_fixture(
         writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[index].pBufferInfo = &infos[index];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), static_cast<uint32_t>(writes.size()),
+    update_descriptor_sets(vulkan_->device(), static_cast<uint32_t>(writes.size()),
                            writes.data(), 0, nullptr);
 
     struct Record {
@@ -12985,7 +12996,7 @@ bool VkSceneRenderer::record_gi_temporal_signal(
                 : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[binding].pImageInfo = &infos[binding];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 22, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 22, writes, 0, nullptr);
     VulkanGiTemporalConstants constants{};
     constants.temporal_extent[0] = signal_extent.width;
     constants.temporal_extent[1] = signal_extent.height;
@@ -13201,7 +13212,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
         writes[9].descriptorCount = 1;
         writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[9].pImageInfo = &reactivity_info;
-        vkUpdateDescriptorSets(vulkan_->device(), 10, writes, 0, nullptr);
+        update_descriptor_sets(vulkan_->device(), 10, writes, 0, nullptr);
     }
 
     constexpr uint32_t steps[5] = {1, 2, 4, 8, 16};
@@ -15709,6 +15720,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                                     matter::Float3 camera_eye,
                                     float pixel_budget, std::string& error) {
     error.clear();
+    frame_descriptors_written_ = 0;
     if (fail_if_poisoned(error)) return false;
     if (!initialized_ && !init(error)) return false;
     if (frame.frame_slot >= frame.frame_slot_count) {
@@ -16132,7 +16144,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         write.pImageInfo = &neutral_volume;
-        vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
+        update_descriptor_sets(vulkan_->device(), 1, &write, 0, nullptr);
     };
     const bool native_trace_enabled =
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available()
@@ -17125,12 +17137,15 @@ bool VkSceneRenderer::emit_ray_instances(
 // then GI lighting at its diffuse and reflection/transmission extents, followed
 // by record_gi_temporal + record_gi_atrous.
 //
-// The whole 22-write descriptor array is rebuilt every frame rather than
-// patched, so a tileset slot load or a VT state change needs no separate "on
-// change" write for the RT set -- and bindings 15-19 are built from exactly
-// the same live/dummy state write_vt_descriptors_for_frame() uses, so a ray
-// and a fragment always resolve against the identical pool, indirection and
-// variant table.
+// The descriptor array is rebuilt every frame rather than patched, so a VT
+// state change needs no separate "on change" write for the RT set -- and
+// bindings 17-19 are built from exactly the same live/dummy state
+// write_vt_descriptors_for_frame() uses, so a ray and a fragment always
+// resolve against the identical pool, indirection and variant table. The one
+// exception is the tileset group (15/16/28): it names only this slot's own
+// tileset_image_infos and buffers, so it is written only when
+// tileset_descriptor_revision_ says write_tileset_descriptors_for_frame()
+// changed them since this slot's RT set last received them.
 bool VkSceneRenderer::record_ray_trace_dispatch(
     const matter::VulkanFrame& frame,
     const FrameMatrices& matrices,
@@ -17280,10 +17295,10 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                       selected.rt_error_counter.size};
     VkDescriptorBufferInfo test_output_info{selected.rt_test_output.buffer, 0,
                                             selected.rt_test_output.size};
-    // Phase 1 tileset Vulkan port (Task 6): bindings 15/16 mirror raster set
-    // 1's bindings 6/7. Rebuilt from current renderer state (loaded slots or
-    // dummies) every frame here, the same way the rest of this array already
-    // is — no separate "on slot load" write is needed for the RT set.
+    // Phase 1 tileset Vulkan port (Task 6): bindings 15/16 (and 28 below)
+    // mirror raster set 1's bindings 6/7/26, from the infos
+    // write_tileset_descriptors_for_frame() captured for this slot. Skipped
+    // below while tileset_descriptor_revision_ is unchanged.
     const auto& tileset_image_infos = selected.tileset_image_infos;
     VkDescriptorBufferInfo tileset_params_info{selected.tileset_params.buffer, 0,
                                                sizeof(TilesetParamsGpu)};
@@ -17423,7 +17438,21 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[24].descriptorCount = 1;
     writes[24].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[24].pImageInfo = &primary_input_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 25, writes, 0, nullptr);
+    // This slot's RT set already holds the current tileset group unless
+    // write_tileset_descriptors_for_frame() rebuilt some slot's infos since:
+    // drop those three writes (432 samplers + 2 buffers) from the update.
+    uint32_t write_count = 25;
+    if (selected.rt_tileset_descriptor_revision == tileset_descriptor_revision_) {
+        write_count = static_cast<uint32_t>(
+            std::remove_if(std::begin(writes), std::end(writes),
+                           [](const VkWriteDescriptorSet& write) {
+                               return write.dstBinding == 15 ||
+                                      write.dstBinding == 16 ||
+                                      write.dstBinding == 28;
+                           }) - std::begin(writes));
+    }
+    update_descriptor_sets(vulkan_->device(), write_count, writes, 0, nullptr);
+    selected.rt_tileset_descriptor_revision = tileset_descriptor_revision_;
     if (rt_primary_adaptive_) {
         VkWriteDescriptorSet history_writes[8]{};
         for (uint32_t i = 0; i < 8; ++i) {
@@ -17435,7 +17464,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             write.pImageInfo = &primary_history_infos[i];
         }
-        vkUpdateDescriptorSets(vulkan_->device(), 8, history_writes, 0, nullptr);
+        update_descriptor_sets(vulkan_->device(), 8, history_writes, 0, nullptr);
     }
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
@@ -18408,6 +18437,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
                                        float pixel_budget,
                                        std::string& error) {
     error.clear();
+    frame_descriptors_written_ = 0;
     if (fail_if_poisoned(error)) return false;
     if (!initialized_ && !init(error)) return false;
     if (limits_.max_draw_indirect_count < 1) {
@@ -19210,7 +19240,7 @@ bool VkSceneRenderer::test_dispatch_environment_sampling_fixture(
     image_write.descriptorCount = 1;
     image_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     image_write.pImageInfo = &image_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &image_write, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 1, &image_write, 0, nullptr);
     matter::write_storage_buffer_descriptor(pipeline, 1, uv_buffer, 0,
                                             uv_bytes);
     matter::write_storage_buffer_descriptor(pipeline, 2, output_buffer, 0,
@@ -19310,7 +19340,7 @@ bool VkSceneRenderer::test_dispatch_display_transform_fixture(
     input_write.descriptorCount = 1;
     input_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     input_write.pImageInfo = &input_info;
-    vkUpdateDescriptorSets(graphics.device, 1, &input_write, 0, nullptr);
+    update_descriptor_sets(graphics.device, 1, &input_write, 0, nullptr);
 
     VkShaderModule vertex = VK_NULL_HANDLE;
     VkShaderModule fragment = VK_NULL_HANDLE;

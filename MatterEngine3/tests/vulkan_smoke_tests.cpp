@@ -7703,6 +7703,24 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
             }
         };
         auto before = settle();
+        // The tileset bank is 8 slots x (1 live + 8 VT input snapshots) x 6
+        // channels = 432 combined-image-samplers, mirrored by raster set-1
+        // binding 6 and RT set binding 15. A settled frame with no tileset
+        // change must rewrite neither, so its whole descriptor count stays
+        // below one bank. (The rest is ~330 descriptors of other per-frame
+        // rewrites -- water fields, the non-tileset RT bindings, GI, composite
+        // -- so the bound is the bank size, not "a few".)
+        constexpr uint32_t kTilesetBankDescriptors =
+            tileset::kMaxTilesetSlots * (1u + vt::kVtMaxInputSnapshots) * 6u;
+        {
+            draw_pixel();
+            const uint32_t a = renderer.frame_descriptors_written();
+            draw_pixel();
+            const uint32_t b = renderer.frame_descriptors_written();
+            std::printf("input snapshot settled descriptor writes: %u, %u\n", a, b);
+            CHECK(a < kTilesetBankDescriptors && b < kTilesetBankDescriptors,
+                  "rt tileset samplers are not rewritten on a frame with no tileset change");
+        }
         const auto idle_control = device_idle_count();
         vulkan.wait_idle();
         CHECK(device_idle_count() == idle_control + 1,
@@ -7751,6 +7769,15 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
                   "input snapshot: source load uses no device idle");
         }
         std::remove(path.c_str());
+        {
+            // The load changed the bank: the next frame must rewrite it in
+            // both the raster set and the RT set.
+            draw_pixel();
+            const uint32_t written = renderer.frame_descriptors_written();
+            std::printf("input snapshot source-load descriptor writes: %u\n", written);
+            CHECK(written >= 2u * kTilesetBankDescriptors,
+                  "input snapshot: a tileset source load rewrites the raster and RT banks");
+        }
         compare_held(before, fills, "source replacement");
         const auto replaced = settle();
         CHECK(!close4(before.normal, replaced.normal, .02f) &&
