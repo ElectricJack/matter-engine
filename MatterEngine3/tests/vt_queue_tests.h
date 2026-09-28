@@ -15,6 +15,7 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -318,6 +319,52 @@ inline void run_page_probe(matter::VulkanDevice& vulkan) {
     CHECK(frames.next(residency, 6), "VT page probe: remaining uncached tail frame");
     CHECK(producer->written(first + 3, 1) + producer->written(first + 4, 1) == 2,
           "remaining uncached tail retains demand for next frame");
+
+    // A forced re-queue that queue_page declines (the page is outside its
+    // owner's indirection range) must be dropped, not looked up with
+    // std::map::at, which threw std::out_of_range out of record_frame. No
+    // shipped path narrows a live owner's range today, so the seam stands in.
+    producer->page_probe = {};
+    {
+        // Durable dirty path: queue_dirty_pages re-feeds the dirty tail.
+        context.variant_hash = 0x9010u;
+        const uint32_t owner = residency.register_variant(0x9010u, /*rung=*/0, atlas, context);
+        CHECK(owner != vt::kVtNoSlot, "queue probe: dirty-path owner registers");
+        CHECK(frames.next(residency, 7) && producer->written(0x9010u, 1) == 1,
+              "queue probe: dirty-path owner tail filled");
+        residency.narrow_indirection_for_test(owner, /*mip_count=*/1);
+        residency.invalidate_owners({owner}, vt::VtInvalidationReason::SourceInputs);
+        bool survived = true;
+        try { survived = frames.next(residency, 8); } catch (const std::exception&) { survived = false; }
+        CHECK(survived, "queue probe: dirty page outside the owner's range is dropped without throwing");
+        CHECK(residency.stats().dirty_pages == 0 && residency.queued_requests_consistent_for_test(),
+              "queue probe: the unqueueable dirty page is retired, not retried forever");
+        residency.release_variant(0x9010u);
+    }
+    {
+        // Stale-fill retry: the owner is invalidated while its tail fill is
+        // being recorded, so record_frame re-queues the tail it just dropped.
+        context.variant_hash = 0x9011u;
+        const uint32_t owner = residency.register_variant(0x9011u, /*rung=*/0, atlas, context);
+        CHECK(owner != vt::kVtNoSlot, "queue probe: stale-retry owner registers");
+        bool armed = true;
+        producer->on_request = [&](const vt::VtFillRequest& request) {
+            if (!armed || request.variant_hash != 0x9011u || request.mip != 1) return;
+            armed = false;
+            residency.narrow_indirection_for_test(owner, /*mip_count=*/1);
+            residency.invalidate_owners({owner}, vt::VtInvalidationReason::SourceInputs);
+        };
+        bool survived = true;
+        try { survived = frames.next(residency, 9); } catch (const std::exception&) { survived = false; }
+        producer->on_request = {};
+        CHECK(!armed, "queue probe: stale-retry tail fill was recorded");
+        CHECK(survived, "queue probe: stale tail retry outside the owner's range is dropped without throwing");
+        bool drained = true;
+        try { drained = frames.next(residency, 10); } catch (const std::exception&) { drained = false; }
+        CHECK(drained && residency.stats().dirty_pages == 0 && residency.queued_requests_consistent_for_test(),
+              "queue probe: the stale tail's durable dirty entry is retired on the next frame");
+        residency.release_variant(0x9011u);
+    }
 }
 
 inline void run_replacements(matter::VulkanDevice& vulkan) {

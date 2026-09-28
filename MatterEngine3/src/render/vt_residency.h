@@ -1218,6 +1218,18 @@ class VtResidency {
     // Validate indices before a forced refresh can dereference a stale queue
     // lookup. Used by the production-queue lifetime regression fixture.
     bool queued_requests_consistent_for_test() const;
+    // TEST SEAM: shrink one live owner's indirection RANGE to its finest
+    // mip_count mips, keeping its table size and generation, so pages it
+    // already owns (dirty, or in flight) fall outside it and a forced
+    // queue_page declines them. No shipped path narrows a live owner.
+    void narrow_indirection_for_test(uint32_t transport_slot, uint32_t mip_count) {
+        if (!transport_slot || transport_slot > variants_.size()) return;
+        VariantRung& v = variants_[transport_slot - 1u];
+        if (!v.live || mip_count == 0 || mip_count >= v.layout.mip_count) return;
+        VtVariantLayout narrow = v.layout;
+        narrow.mip_count = mip_count;
+        v.indirection.reset(narrow, v.tail_slot);
+    }
     // Keep production feedback, dirtiness and rendering active while a test
     // delays replacement work. Existing mappings must remain usable.
     void pause_page_fills_for_test(bool paused) { page_fills_paused_for_test_ = paused; }

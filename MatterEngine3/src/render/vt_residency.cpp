@@ -2311,8 +2311,12 @@ void VtResidency::queue_dirty_pages() {
         if (pending.preassigned_slot != UINT32_MAX || detail_queued < limit) {
             auto& v = variants_[pending.layer];
             queue_page(v, pending.page, true, pending.preassigned_slot);
-            auto& queued = queue_[queued_keys_.at(page_key(v.layer, pending.page))];
-            queued.requested_frame = std::min(queued.requested_frame, pending.requested_frame);
+            // queue_page declines a page outside the owner's indirection
+            // range; such a page can never be re-queued, so retire it.
+            const auto queued = queued_keys_.find(page_key(v.layer, pending.page));
+            if (queued == queued_keys_.end()) { it = dirty_pages_.erase(it); continue; }
+            queue_[queued->second].requested_frame =
+                std::min(queue_[queued->second].requested_frame, pending.requested_frame);
             if (pending.preassigned_slot == UINT32_MAX) ++detail_queued;
         }
         ++it;
@@ -3238,8 +3242,10 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                 // state (or initial tail request) targets their newest revision.
                 if (owner_current && m.preassigned) {
                     queue_page(variants_[m.layer], m.page, true, m.slot);
-                    auto& retry = queue_[queued_keys_.at(page_key(m.layer, m.page))];
-                    retry.requested_frame = std::min(retry.requested_frame, m.requested_frame);
+                    const auto retry = queued_keys_.find(page_key(m.layer, m.page));
+                    if (retry != queued_keys_.end())
+                        queue_[retry->second].requested_frame =
+                            std::min(queue_[retry->second].requested_frame, m.requested_frame);
                 }
                 if (event_log_)
                     MATTER_LOGI("vt-stale", "frame=%llu owner=%016llx generation=%llu revision=%llu slot=%u",
