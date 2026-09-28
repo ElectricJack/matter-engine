@@ -448,6 +448,11 @@ build/shaders_vk/water_forward.frag.spv: \
     shaders_vk/water_screen_space.glsl shaders_vk/environment_common.glsl \
     shaders_vk/cloud_shadow_common.glsl
 
+# water_surface.glsl (the water field sampling) is also included by the
+# G-buffer pass and by rt_lighting_impl.glsl, not only the forward water pass.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv: \
+    shaders_vk/water_surface.glsl
+
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
@@ -519,7 +524,7 @@ build/shaders_vk/vt_composite.comp.spv \
     shaders_vk/vt_chart_types.glsl shaders_vk/vt_chart_resolve.glsl
 
 # P2 (texel-rate tape): the GLSL noise twin + tape interpreter include.
-build/shaders_vk/vt_composite.comp.spv: shaders_vk/vt_surface_tape.glsl
+build/shaders_vk/vt_composite.comp.spv: shaders_vk/vt_surface_tape.glsl shaders_vk/vt_noise.glsl
 
 # WP-E (chart VT): vt_common.glsl is the shared VT sampling helper. It is an
 # include, not a stage, so it has no .spv of its own -- but every consumer must
