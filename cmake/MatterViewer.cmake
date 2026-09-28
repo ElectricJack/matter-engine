@@ -51,9 +51,10 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 208)
+    # 168 core + 21 surface + 27 viewer + retopology.
+    set(matter_expected_viewer_product_count 217)
 else()
-    set(matter_expected_viewer_product_count 207)
+    set(matter_expected_viewer_product_count 216)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)

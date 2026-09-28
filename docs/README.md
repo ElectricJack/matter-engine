@@ -120,6 +120,9 @@ requirements.
   volumetric streaming architecture.
 - **[Engine-internal architecture index](../MatterEngine3/docs/README.md)** —
   bake pipeline, rendering, authoring, events, tools, and active engine notes.
+- **[Baked GI lightmaps](bake-gi.md)** — `matter bake gi`: offline per-instance
+  lightmap bake (sun, sky, bounce), outputs, UV sidecar contract for the OBJ
+  exporter, three.js usage, validation and limits.
 
 Remaining dated files under `superpowers/plans/` and `superpowers/specs/` are
 unfinished or explicitly deferred. They do not outrank the roadmap.
@@ -137,6 +140,8 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 - **[Debugging feedback loop](debugging-feedback-loop.md)** — visual GPU bug
   diagnosis workflow.
 - **[Baselines](baselines/README.md)** — screenshot baseline policy and tools.
+- **[OBJ export](export-obj.md)** — `matter export obj`: taking a baked Part out
+  of the engine as OBJ + MTL + PBR maps, and what that format cannot carry.
 
 ## Findings and measurements
 

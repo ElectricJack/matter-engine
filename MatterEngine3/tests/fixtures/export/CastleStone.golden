@@ -1,0 +1,17 @@
+module CastleStone
+resolved_hash 8e3a0967ba2d2dc4
+lod 0
+lod_count 1
+texture_size 256
+vertices 2977
+triangles 3382
+charts 24
+atlas 256
+inlined_subtree_refs 0
+skipped_subtree_refs 0
+material mat_8 8 3382
+map albedo a75ebc4d79f7c7c2
+map normal 2ada090620e8762a
+map roughness 9ce14626a3a068e4
+map metallic e1f3cdd36ed438d4
+map ao 872cc60622a338d4
