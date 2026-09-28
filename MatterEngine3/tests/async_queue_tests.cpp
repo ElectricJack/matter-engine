@@ -426,6 +426,23 @@ static void test_event_struct_shape() {
     printf("ok event_struct_shape\n");
 }
 
+// A burst of superseded commands is skipped inside the caller's budget: the
+// deadline is re-checked after every cancelled skip, so the loop cannot spin
+// past `ms` even when the channel keeps handing back cancelled entries.
+static void test_pop_wait_cancelled_burst_honours_budget() {
+    std::printf("[test_pop_wait_cancelled_burst_honours_budget]\n");
+    CommandQueue cq;
+    for (int i = 0; i < 64; ++i) cq.push({CommandKind::BakeAll, {}, nullptr}); // each supersedes the last
+    Command out; bool idle = false;
+    const auto start = std::chrono::steady_clock::now();
+    const bool got = cq.pop_wait(out, /*ms=*/0, idle);
+    const auto took = std::chrono::steady_clock::now() - start;
+    CHECK(got && !idle && out.kind == CommandKind::BakeAll, "the surviving BakeAll is delivered");
+    CHECK(took < std::chrono::milliseconds(200), "cancelled burst is skipped promptly");
+    cq.shut_down();
+    printf("ok pop_wait_cancelled_burst_honours_budget\n");
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -448,6 +465,7 @@ int main() {
     test_pop_wait_wakes_on_shutdown();
     test_idle_wake_priority_and_coalescing();
     test_idle_wake_releases_parked_consumer();
+    test_pop_wait_cancelled_burst_honours_budget();
     test_event_struct_shape();
     if (g_failures) {
         std::printf("\n%d FAILURES\n", g_failures);
