@@ -63,10 +63,10 @@ struct ScopedEnvironmentOverride {
 };
 
 // An empty cache plus cache-only mode refuses terrain page compilation. The
-// sector must then keep the ordinary ladder rather than ship one full rung.
-static void test_terrain_page_failure_keeps_ladder() {
+// retained static fallback must have a hard cap even for a dense source.
+static void test_terrain_page_failure_bounds_static_fallback() {
     namespace fs = std::filesystem;
-    std::printf("[test_terrain_page_failure_keeps_ladder]\n");
+    std::printf("[test_terrain_page_failure_bounds_static_fallback]\n");
     const auto root = fs::temp_directory_path() / "me3_partstore_terrain_fallback";
     struct Cleanup {
         fs::path path;
@@ -80,13 +80,13 @@ static void test_terrain_page_failure_keeps_ladder() {
     options.parts_dir = root.string();
     options.retain_geometry = true;
     fs::create_directories(root / "parts");
-    // A 64 m flat quad grid satisfies the radius >= 32 terrain guard.
+    // 8,192 triangles over a 64 m tile exceed the 4,096-triangle fallback cap.
     const std::string source =
         "class Sector extends Part{static lodBudgets=[1];static noImpostor=true;"
         "build(){this.fill(8);this.beginShape(0);"
-        "for(let z=0;z<8;++z)for(let x=0;x<8;++x){"
-        "const a=[x*8-32,0,z*8-32],b=[x*8-24,0,z*8-32],"
-        "c=[x*8-24,0,z*8-24],d=[x*8-32,0,z*8-24];"
+        "for(let z=0;z<64;++z)for(let x=0;x<64;++x){"
+        "const a=[x-32,0,z-32],b=[x-31,0,z-32],"
+        "c=[x-31,0,z-31],d=[x-32,0,z-31];"
         "this.vertex(...a);this.vertex(...b);this.vertex(...c);"
         "this.vertex(...a);this.vertex(...c);this.vertex(...d);}"
         "this.endShape();}}";
@@ -99,12 +99,64 @@ static void test_terrain_page_failure_keeps_ladder() {
                                        /*first_rung=*/0, /*terrain_sector=*/true);
     CHECK(staged.ok, "terrain fallback fixture stages");
     CHECK(!staged.lp.geometry_pages, "cache-only compile refuses pages");
-    CHECK(staged.lp.thresholds.size() >= 2,
-          "sector keeps a multi-rung ladder when pages fail");
+    CHECK(staged.lp.thresholds.size() == 1,
+          "sector retains only one static fallback rung when pages fail");
+    CHECK(!staged.lp.lod_mesh_data.empty() &&
+          staged.lp.lod_mesh_data.front().indices.size() <= 4096 * 3,
+          "terrain static fallback is bounded to 4,096 triangles");
+    if (!staged.lp.lod_charts.empty() && !staged.lp.lod_charts.front().charts.empty())
+        CHECK(staged.lp.lod_charts.front().tri_order.size() ==
+              staged.lp.lod_mesh_data.front().indices.size() / 3,
+              "bounded fallback chart order matches its triangles");
     CHECK(store.commit_staged(std::move(staged)), "terrain fallback fixture commits");
     store.release(baked.resolved_hash);
     CHECK(store.blas().live_count() == 0,
           "releasing a terrain fallback drops every BLAS reference");
+}
+
+static void test_terrain_page_success_keeps_static_fallback() {
+    namespace fs = std::filesystem;
+    std::printf("[test_terrain_page_success_keeps_static_fallback]\n");
+    const auto root = fs::temp_directory_path() / "me3_partstore_terrain_paged";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); }
+    } cleanup{root};
+    fs::remove_all(root);
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+    options.retain_geometry = true;
+    fs::create_directories(root / "parts");
+    const std::string source =
+        "class Sector extends Part{static lodBudgets=[1];static noImpostor=true;"
+        "build(){this.fill(8);this.beginShape(0);"
+        "for(let z=0;z<8;++z)for(let x=0;x<8;++x){"
+        "const a=[x*8-32,0,z*8-32],b=[x*8-24,0,z*8-32],"
+        "c=[x*8-24,0,z*8-24],d=[x*8-32,0,z*8-24];"
+        "this.vertex(...a);this.vertex(...b);this.vertex(...c);"
+        "this.vertex(...a);this.vertex(...c);this.vertex(...d);}"
+        "this.endShape();}}";
+    const auto baked = host.bake_source(source, "{}", options);
+    CHECK(baked.error.ok && baked.geometry, "paged terrain fixture bakes");
+    if (!baked.geometry) return;
+    viewer::PartStore store(options.parts_dir);
+    store.set_geometry_pages_enabled(true);
+    auto staged = store.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                       /*first_rung=*/0, /*terrain_sector=*/true);
+    CHECK(staged.ok && staged.lp.geometry_pages, "terrain pages compile and load");
+    CHECK(staged.lp.geometry_source_vt, "paged terrain retains source VT mapping");
+    CHECK(staged.lp.thresholds.size() == 1 && staged.lp.lod_mesh_data.size() == 1,
+          "paged terrain retains one static fallback rung");
+    if (!staged.lp.lod_charts.empty() && !staged.lp.lod_charts.front().charts.empty())
+        CHECK(staged.lp.lod_charts.front().tri_order.size() ==
+              staged.lp.lod_mesh_data.front().indices.size() / 3,
+              "paged fallback chart order matches its triangles");
+    CHECK(store.commit_staged(std::move(staged)), "paged terrain fixture commits");
+    store.release(baked.resolved_hash);
+    CHECK(store.blas().live_count() == 0,
+          "releasing paged terrain drops every BLAS reference");
 }
 
 // M4: the part body is the bundle's REP0 section (see anim_bundle's
@@ -1389,7 +1441,8 @@ static void test_authored_vt_density() {
 }
 
 int main() {
-    test_terrain_page_failure_keeps_ladder();
+    test_terrain_page_failure_bounds_static_fallback();
+    test_terrain_page_success_keeps_static_fallback();
     test_authored_vt_density();
     test_scoped_verified_bundle_reads();
     test_singleton_flat_adopts_persisted_bvh();

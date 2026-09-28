@@ -50,6 +50,7 @@
 #include "tlas_manager.hpp"    // TLASManager (load_v2 signature needs one)
 #include "part_flatten.h"      // part_flatten::transform_uniform_scale
 #include "matter/log.h"
+#include "../../../libs/MatterSurfaceLib/include/mesh_transform.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -1315,6 +1316,10 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
 
 namespace {
 constexpr uint32_t geometry_policy_section = 0x80000001u;
+// The source mesh is used to compile pages, but retaining it as the static
+// fallback defeats paging on dense terrain. At the observed 1,500 resident
+// StreamMountain sectors this bounds fallback uploads to a few million tris.
+constexpr size_t terrain_static_fallback_triangles = 4096;
 uint64_t geometry_min_triangles() {
     const char* value = std::getenv("MATTER_GEOMETRY_MIN_TRIANGLES");
     if (!value || !*value) return 256;
@@ -1640,18 +1645,71 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
                 static_cast<unsigned long long>(part_hash), error.c_str());
         }
     }
-    if (terrain_pages && !staged.lp.geometry_pages) {
-        // Pages were the only reason the ladder was collapsed. Without them
-        // the sector would draw its full rung at every distance. Re-bake the
-        // ordinary ladder; rung 0 dedups onto the handle already registered.
-        MATTER_LOGW("geometry", "terrain %016llx: page compile unavailable, restoring the %zu-rung ladder",
-                    static_cast<unsigned long long>(part_hash), lod_bake::BakeTargets{}.keep_ratio.size());
+    if (terrain_pages && !lod_handles.empty()) {
+        // Page compilation needs the charted full source. The static renderer
+        // does not: it is only first coverage while pages become resident, or
+        // the fallback when their root bank is full. Keep one bounded rung in
+        // both cases, so a failed page admission cannot turn into an unbounded
+        // collection of full source meshes in Vulkan static buffers.
         const auto source_handles = lod_handles;
-        lods = bake_ladder(lod_bake::BakeTargets{});
-        // The rebake retained its own references, including deduped rung 0.
-        // Drop the preliminary registrations so commit/release owns exactly
-        // the final ladder and cannot strand the source BLAS after eviction.
-        for (const auto handle : source_handles) staged.staging->release_blas(handle);
+        const auto* source = staged.staging->get_entry(source_handles.front());
+        const std::vector<Tri>& source_tris = source ? source->triangles : tris;
+        const size_t source_triangle_count = source_tris.size();
+        const std::vector<TriEx>& source_ex = source && source->tri_extra.size() == source_tris.size()
+            ? source->tri_extra : triex;
+        const auto source_chart = rung_charts.empty() ? chart_atlas::ChartAtlasRung{} : rung_charts.front();
+        const float ratio = std::min(1.0f, float(terrain_static_fallback_triangles) / source_triangle_count);
+        std::vector<Tri> fallback_tris = ratio < 1.0f
+            ? lod_bake::decimate_tris(source_tris, ratio) : source_tris;
+        // A boundary-locked QEM pass may stop above its requested ratio. The
+        // hard cap still applies; clipping is the last-resort visible degrade.
+        if (fallback_tris.size() > terrain_static_fallback_triangles) {
+            MATTER_LOGW("geometry", "terrain %016llx: bounded fallback clipped %zu to %zu triangles",
+                static_cast<unsigned long long>(part_hash), fallback_tris.size(),
+                terrain_static_fallback_triangles);
+            fallback_tris.resize(terrain_static_fallback_triangles);
+        }
+        std::vector<TriEx> fallback_ex;
+        chart_atlas::ChartAtlasRung fallback_chart;
+        if (source_ex.size() == source_tris.size() && !fallback_tris.empty()) {
+            if (ratio >= 1.0f) {
+                fallback_ex = source_ex;
+                fallback_chart = source_chart;
+            } else {
+                MeshIndexed source_mesh = from_tri(source_tris, &source_ex);
+                ReprojectSource projection(source_mesh, ReprojectNormals::SampleSource);
+                MeshIndexed fallback_mesh = from_tri(fallback_tris, nullptr);
+                reproject_triex(projection, fallback_mesh);
+                std::vector<Tri> unused;
+                to_tri(fallback_mesh, unused, fallback_ex);
+                if (!source_chart.charts.empty() && fallback_ex.size() == fallback_tris.size()) {
+                    // Preserve the page source's VT parameterisation.
+                    lod_bake::apply_chart_rung(fallback_tris, fallback_ex,
+                                               source_tris, source_chart, fallback_chart);
+                }
+            }
+        }
+        rung_charts.clear();
+        rung_charts.push_back(std::move(fallback_chart));
+        lod_handles.clear();
+        lods.clear();
+        const TriEx* attrs = fallback_ex.size() == fallback_tris.size() ? fallback_ex.data() : nullptr;
+        const auto handle = staged.staging->register_triangles(fallback_tris.data(),
+            static_cast<int>(fallback_tris.size()), attrs);
+        if (handle != INVALID_BLAS_HANDLE) {
+            lod_handles.push_back(handle);
+            part_asset::LodLevel level;
+            level.screen_size_threshold = 0.0f;
+            const auto& entries = staged.staging->get_entries();
+            for (size_t i = 0; i < entries.size(); ++i)
+                if (entries[i]->handle == handle) { level.blas_indices.push_back(static_cast<uint32_t>(i)); break; }
+            lods.push_back(std::move(level));
+        }
+        for (const auto source_handle : source_handles) staged.staging->release_blas(source_handle);
+        if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+            MATTER_LOGI("geometry", "terrain %016llx static fallback: %zu -> %zu triangles, pages=%u",
+                static_cast<unsigned long long>(part_hash), source_triangle_count, fallback_tris.size(),
+                staged.lp.geometry_pages ? 1u : 0u);
     }
     staged.ladder_ms = stage_split();
     assert(lod_handles.size() == lods.size());
