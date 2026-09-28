@@ -7423,7 +7423,9 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
         ++vt_demand_builds_;
         // Same CPU mirror of cull.comp's selection, over the static instance
         // cluster ranges. Cache all selected rungs, including registered ones.
+        size_t vt_scanned = 0;
         for (const GpuInstance& instance : instance_staging_) {
+            ++vt_scanned;
             if (instance.part_slot >= parts_.size()) continue;
             PartRecord& record = parts_[instance.part_slot];
             if (record.vt_rung_mask == 0u || !record.live) continue;
@@ -7485,6 +7487,7 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
                 }
             }
         }
+        PROFILE_COUNT("instances.vt_scanned", vt_scanned);
         // Parked terrain has no drawn instance yet. Demand its source tail
         // explicitly so a visibility gate cannot wait on invisible feedback.
         for (uint32_t slot : vt_prewarm_parts_) {
@@ -16253,8 +16256,13 @@ bool VkSceneRenderer::build_ray_geometry(
     // counter so the win is measurable and a regression (it silently stopping
     // firing) is visible rather than merely slow.
     uint64_t rt_instances_skipped = 0;
+    // Times the per-instance rung pick only; stopped before the BLAS lookups
+    // and builds that consume its selection.
+    PROFILE_SCOPE_NAMED(rung_select_scope, "rt.rung_select");
+    size_t rt_scanned = 0;
     for (const RtInstance& source : rt_instances_) {
         if (warmup_only) break;
+        ++rt_scanned;
         // Same flat mirror update_instances() uses -- this WAS a per-instance
         // std::map descent (slot_of_.find()); part_slot_lookup answers the
         // identical question in one open-addressed probe. The per-frame cost of
@@ -16528,6 +16536,8 @@ bool VkSceneRenderer::build_ray_geometry(
             }
         }
     }
+    rung_select_scope.stop();
+    PROFILE_COUNT("instances.rt_scanned", rt_scanned);
     // Warm pages build through the same triangle BLAS path, but never enter
     // the TLAS until the owner publishes a complete replacement cut.
     const size_t visible_selection_count = selected_geometry.size();
@@ -17166,6 +17176,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     // Primary motion vectors cannot reveal an off-screen shadow/reflection
     // change. Both diffuse GI and rough reflection therefore compare actual
     // emitted TLAS records against their last successfully submitted scene.
+    PROFILE_SCOPE_NAMED(tlas_hash_scope, "rt.tlas_hash");
     uint64_t key = 14695981039346656037ull;
     const auto hash_bytes = [&key](const void* data, size_t size) {
         const auto* bytes = static_cast<const unsigned char*>(data);
@@ -17185,6 +17196,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     hash_bytes(&ray_tracing_settings_.max_normal_bias, sizeof(ray_tracing_settings_.max_normal_bias));
     hash_bytes(&gi_settings_.enabled, sizeof(gi_settings_.enabled));
     gi_candidate_scene_key_ = key;
+    tlas_hash_scope.stop();
     // Validate history against this frame's emitted scene BEFORE selecting ray
     // counts. A changed off-screen blocker is invisible to primary velocity.
     const bool primary_history_valid = !temporal_frame_.reset &&
