@@ -1358,7 +1358,8 @@ bool VkSparseVoxelScene::readback_timings(matter::VulkanDevice& vk,uint32_t slot
     SparseVoxelTimings& out,std::string& error) const {
     out={}; error.clear();
     if(slot>=kSparseVoxelFrameSlots) { error="invalid sparse voxel timestamp slot"; return false; }
-    if(!allocation_ || !allocation_->frames[slot].timestamps) return true;
+    // Shadow-only pools hold 2 queries; readback_shadow_ms reads those.
+    if(!allocation_ || allocation_->shadow_only || !allocation_->frames[slot].timestamps) return true;
     const auto& a=*allocation_;
     uint64_t times[4]{};
     if(!checked(vkGetQueryPoolResults(vk.device(),a.frames[slot].timestamps,0,4,sizeof(times),times,sizeof(uint64_t),

@@ -58,6 +58,13 @@ inline void shadow_coverage(matter::VulkanDevice& vk) {
     Capture first,repeat;
     publish(half,{placement(1)});double one=draw(first);
     CHECK(std::abs(one-.5)<.025,"fractional planar shadow preserves expected transmission");
+    {
+        // Shadow-only snapshots own a 2-query pool; primary timings read 4.
+        const auto shadows=renderer.test_sparse_shadow_snapshot();
+        SparseVoxelTimings timings;std::string timing_error;
+        const bool ok=shadows && shadows->readback_timings(vk,0,timings,timing_error);
+        CHECK(ok && !timings.valid,"shadow-only snapshot reports no selection/visibility timings instead of reading past its 2-query pool");
+    }
     const double again=draw(repeat);CHECK(first.hdr==repeat.hdr && one==again,"native sparse shadows are repeatable");
     CHECK(!renderer.set_sparse_shadow_casters({receiver_batch},error),"textured/solid surfaces cannot silently become opaque shadow boxes");
     draw(repeat);CHECK(first.hdr==repeat.hdr,"failed shadow publication retains the previous snapshot");

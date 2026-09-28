@@ -1861,6 +1861,8 @@ public:
         return sparse_voxels_->readback_counts(*vulkan_,active_frame_index_,visible,error);
     }
     uint64_t test_sparse_voxel_gpu_bytes() const { return sparse_voxels_?sparse_voxels_->gpu_bytes():0; }
+    // The published sun-caster snapshot, for readbacks the renderer never makes on it.
+    std::shared_ptr<const VkSparseVoxelScene> test_sparse_shadow_snapshot() const { return sparse_shadows_; }
     // Exercise stochastic sequence / motion contracts without pretending a
     // mock or unavailable DLSS implementation has resolved the image.
     void test_set_sparse_accumulation(bool enabled) { sparse_voxel_test_accumulation_=enabled; }
