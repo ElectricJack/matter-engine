@@ -1,0 +1,15 @@
+{
+  "terrain-connected-pom-v7": {
+    "hit_green": 776314,
+    "path_red": 0,
+    "initial_orange": 0,
+    "limit_blue": 7265
+  },
+  "terrain-shared-pixels-v2": {
+    "hit_green": 776314,
+    "path_red": 0,
+    "initial_orange": 0,
+    "limit_blue": 7265
+  },
+  "scope": "Matched terrain camera, lighting, density and wait count; diagnostic comparison only, not performance acceptance."
+}

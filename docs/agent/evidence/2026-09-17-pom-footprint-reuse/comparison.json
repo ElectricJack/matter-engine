@@ -1,0 +1,338 @@
+{
+  "views": {
+    "overview": {
+      "timings": {
+        "v1": {
+          "on-a": {
+            "median_ms": 33.088,
+            "p95_ms": 33.786500000000004
+          },
+          "off": {
+            "median_ms": 23.921,
+            "p95_ms": 24.5725
+          },
+          "on-b": {
+            "median_ms": 33.5515,
+            "p95_ms": 34.22115
+          },
+          "combined_on_median_ms": 33.275000000000006,
+          "pom_increment_ms": 9.354000000000006
+        },
+        "v2": {
+          "on-a": {
+            "median_ms": 33.3405,
+            "p95_ms": 33.82905
+          },
+          "off": {
+            "median_ms": 24.167,
+            "p95_ms": 25.04935
+          },
+          "on-b": {
+            "median_ms": 33.804,
+            "p95_ms": 34.1877
+          },
+          "combined_on_median_ms": 33.5945,
+          "pom_increment_ms": 9.427499999999995
+        }
+      },
+      "residency": {
+        "v1": [
+          "789",
+          "1196",
+          "10.04"
+        ],
+        "v2": [
+          "789",
+          "1196",
+          "10.04"
+        ]
+      },
+      "images": {
+        "lit": {
+          "full": {
+            "mean_abs_8bit": 4.783691080729167,
+            "max_abs_8bit": 136,
+            "pixels_above_1": 257386
+          },
+          "terrain": {
+            "mean_abs_8bit": 3.9028785342261907,
+            "max_abs_8bit": 90,
+            "pixels_above_1": 61898
+          }
+        },
+        "on-again": {
+          "full": {
+            "mean_abs_8bit": 5.050783854166666,
+            "max_abs_8bit": 135,
+            "pixels_above_1": 262971
+          },
+          "terrain": {
+            "mean_abs_8bit": 4.543297758556547,
+            "max_abs_8bit": 92,
+            "pixels_above_1": 62991
+          }
+        },
+        "flat": {
+          "full": {
+            "mean_abs_8bit": 4.91265234375,
+            "max_abs_8bit": 142,
+            "pixels_above_1": 260110
+          },
+          "terrain": {
+            "mean_abs_8bit": 4.2095831008184526,
+            "max_abs_8bit": 90,
+            "pixels_above_1": 62315
+          }
+        },
+        "albedo": {
+          "full": {
+            "mean_abs_8bit": 5.859375e-06,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          },
+          "terrain": {
+            "mean_abs_8bit": 0.0,
+            "max_abs_8bit": 0,
+            "pixels_above_1": 0
+          }
+        },
+        "normal": {
+          "full": {
+            "mean_abs_8bit": 1.953125e-06,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          },
+          "terrain": {
+            "mean_abs_8bit": 2.3251488095238097e-06,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          }
+        }
+      },
+      "combined_on_reduction_percent": -0.9601803155521837
+    },
+    "grazing": {
+      "timings": {
+        "v1": {
+          "on-a": {
+            "median_ms": 18.3005,
+            "p95_ms": 18.6648
+          },
+          "off": {
+            "median_ms": 11.971,
+            "p95_ms": 12.572199999999999
+          },
+          "on-b": {
+            "median_ms": 18.4155,
+            "p95_ms": 19.22305
+          },
+          "combined_on_median_ms": 18.326,
+          "pom_increment_ms": 6.355
+        },
+        "v2": {
+          "on-a": {
+            "median_ms": 18.176000000000002,
+            "p95_ms": 18.4412
+          },
+          "off": {
+            "median_ms": 11.5815,
+            "p95_ms": 11.854750000000001
+          },
+          "on-b": {
+            "median_ms": 17.883499999999998,
+            "p95_ms": 18.30395
+          },
+          "combined_on_median_ms": 18.079,
+          "pom_increment_ms": 6.4975000000000005
+        }
+      },
+      "residency": {
+        "v1": [
+          "789",
+          "1310",
+          "10.03"
+        ],
+        "v2": [
+          "789",
+          "1310",
+          "10.03"
+        ]
+      },
+      "images": {
+        "lit": {
+          "full": {
+            "mean_abs_8bit": 4.439941731770833,
+            "max_abs_8bit": 132,
+            "pixels_above_1": 535634
+          },
+          "terrain": {
+            "mean_abs_8bit": 6.878149509803921,
+            "max_abs_8bit": 49,
+            "pixels_above_1": 411756
+          }
+        },
+        "on-again": {
+          "full": {
+            "mean_abs_8bit": 4.0810625,
+            "max_abs_8bit": 206,
+            "pixels_above_1": 502699
+          },
+          "terrain": {
+            "mean_abs_8bit": 5.944157475490196,
+            "max_abs_8bit": 50,
+            "pixels_above_1": 375012
+          }
+        },
+        "flat": {
+          "full": {
+            "mean_abs_8bit": 4.2154677734375,
+            "max_abs_8bit": 129,
+            "pixels_above_1": 522987
+          },
+          "terrain": {
+            "mean_abs_8bit": 6.3124992340686275,
+            "max_abs_8bit": 50,
+            "pixels_above_1": 397116
+          }
+        },
+        "albedo": {
+          "full": {
+            "mean_abs_8bit": 0.0015657552083333333,
+            "max_abs_8bit": 61,
+            "pixels_above_1": 107
+          },
+          "terrain": {
+            "mean_abs_8bit": 4.5189950980392155e-05,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          }
+        },
+        "normal": {
+          "full": {
+            "mean_abs_8bit": 0.0114130859375,
+            "max_abs_8bit": 229,
+            "pixels_above_1": 496
+          },
+          "terrain": {
+            "mean_abs_8bit": 0.00014246323529411764,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          }
+        }
+      },
+      "combined_on_reduction_percent": 1.3478118520135363
+    },
+    "close": {
+      "timings": {
+        "v1": {
+          "on-a": {
+            "median_ms": 6.085,
+            "p95_ms": 6.334849999999999
+          },
+          "off": {
+            "median_ms": 0.268,
+            "p95_ms": 0.272
+          },
+          "on-b": {
+            "median_ms": 5.9855,
+            "p95_ms": 6.1864
+          },
+          "combined_on_median_ms": 6.01,
+          "pom_increment_ms": 5.742
+        },
+        "v2": {
+          "on-a": {
+            "median_ms": 6.0760000000000005,
+            "p95_ms": 6.50265
+          },
+          "off": {
+            "median_ms": 0.271,
+            "p95_ms": 0.27655
+          },
+          "on-b": {
+            "median_ms": 6.0915,
+            "p95_ms": 6.2992
+          },
+          "combined_on_median_ms": 6.087,
+          "pom_increment_ms": 5.816
+        }
+      },
+      "residency": {
+        "v1": [
+          "789",
+          "1329",
+          "10.03"
+        ],
+        "v2": [
+          "789",
+          "1329",
+          "10.03"
+        ]
+      },
+      "images": {
+        "lit": {
+          "full": {
+            "mean_abs_8bit": 24.786910481770832,
+            "max_abs_8bit": 58,
+            "pixels_above_1": 1024000
+          },
+          "terrain": {
+            "mean_abs_8bit": 24.786910481770832,
+            "max_abs_8bit": 58,
+            "pixels_above_1": 1024000
+          }
+        },
+        "on-again": {
+          "full": {
+            "mean_abs_8bit": 27.475546549479166,
+            "max_abs_8bit": 57,
+            "pixels_above_1": 1024000
+          },
+          "terrain": {
+            "mean_abs_8bit": 27.475546549479166,
+            "max_abs_8bit": 57,
+            "pixels_above_1": 1024000
+          }
+        },
+        "flat": {
+          "full": {
+            "mean_abs_8bit": 26.2895751953125,
+            "max_abs_8bit": 58,
+            "pixels_above_1": 1024000
+          },
+          "terrain": {
+            "mean_abs_8bit": 26.2895751953125,
+            "max_abs_8bit": 58,
+            "pixels_above_1": 1024000
+          }
+        },
+        "albedo": {
+          "full": {
+            "mean_abs_8bit": 2.2786458333333334e-05,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          },
+          "terrain": {
+            "mean_abs_8bit": 2.2786458333333334e-05,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          }
+        },
+        "normal": {
+          "full": {
+            "mean_abs_8bit": 4.9153645833333334e-05,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          },
+          "terrain": {
+            "mean_abs_8bit": 4.9153645833333334e-05,
+            "max_abs_8bit": 1,
+            "pixels_above_1": 0
+          }
+        }
+      },
+      "combined_on_reduction_percent": -1.281198003327777
+    }
+  },
+  "isolation": "Frozen r2 editor PID 9056 independently open; development measurements, not isolated acceptance."
+}

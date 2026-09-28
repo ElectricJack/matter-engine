@@ -1,0 +1,41 @@
+[
+  {
+    "name": "vulkan_smoke_tests",
+    "kind": "build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 20.101947264993214,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-setup-fixed-build-vulkan_smoke_tests.log",
+    "source_changes": [],
+    "failures": [],
+    "validation_errors": []
+  },
+  {
+    "name": "vt-queue",
+    "kind": "test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "elapsed_seconds": 1.3981087709980784,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/input-identity-setup-fixed-test-vt-queue.log",
+    "source_changes": [],
+    "failures": [
+      "FAIL: VT input identity: superseded bindings are reclaimed after retirement",
+      "FAIL: VT input identity: retired index can be reused",
+      "FAIL: VT input identity: compatible retag needs metadata only, no texture regeneration",
+      "FAIL: VT input identity: released pages keep compatible metadata and bindings for earlier draws",
+      "FAIL: VT input identity: released pages keep compatible metadata and bindings for earlier draws",
+      "FAIL: VT input identity: released pages keep compatible metadata and bindings for earlier draws"
+    ],
+    "validation_errors": []
+  }
+]

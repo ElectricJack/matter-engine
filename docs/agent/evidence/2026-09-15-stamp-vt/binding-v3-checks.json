@@ -1,0 +1,46 @@
+[
+  {
+    "kind": "build",
+    "name": "vt_residency_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_residency_tests"
+    ],
+    "exit": 0,
+    "seconds": 7.311172969988547,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v3-build-vt_residency_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "vt_residency_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.5092668359866366,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v3-rootcpu-vt_residency_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 1,
+    "seconds": 8.662363163006376,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v3-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

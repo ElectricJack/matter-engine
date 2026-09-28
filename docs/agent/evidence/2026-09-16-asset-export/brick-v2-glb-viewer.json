@@ -1,0 +1,31 @@
+{
+  "bounds": {
+    "min": [
+      0,
+      0,
+      0
+    ],
+    "max": [
+      4.07000017,
+      0.741999984,
+      0.245000005
+    ]
+  },
+  "meshes": [
+    {
+      "name": "mesh_0",
+      "triangles": 12,
+      "material": "material_0",
+      "normal": true,
+      "uv": true,
+      "tangent": true,
+      "map": [
+        2176,
+        2688
+      ]
+    }
+  ],
+  "renderer": "WebKit WebGL",
+  "errors": [],
+  "viewer": "Three.js 0.180.0 GLTFLoader / Chromium software WebGL"
+}

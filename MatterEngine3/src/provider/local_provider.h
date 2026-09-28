@@ -53,6 +53,7 @@
 #include "part_graph.h"           // PartGraph, InstallResult, ChildRequest
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
 #include "matter/world_definition.h"
+#include "matter/project_layout.h"
 #include "matter/gpu_visual_meshing.h"
 #include "matter/solid_sdf_meshing.h"
 #include "matter/solid_face_projection.h"
@@ -92,6 +93,8 @@ struct BakeInputs;
 
 namespace hydrology { struct RiverGeometry; }
 namespace terrain_field { class RiverHeightOverlay; }
+namespace part_surface { struct Prepared; struct SourceCache; }
+namespace gpu_meshing { struct FaceMaterialJob; struct FaceMaterialPatch; }
 
 namespace viewer {
 
@@ -134,12 +137,12 @@ struct LocalProviderConfig {
     std::string scene_objects_dir;
     std::string worlds_dir;   // legacy flat layout: <project>/worlds
     std::string scenes_dir;   // scene layout: <project>/scenes
-    std::string scene_dir;    // <project>/scenes/<name>, empty on the flat layout
+    std::string scene_dir;    // <project>/scenes/[group/]<name>, empty on the flat layout
     std::string world_path;
     std::string project_shared_lib_dir;
     std::string engine_shared_lib_dir;
 
-    // Build a config for <project_dir>/scenes/<world_name>/<world_name>.js when
+    // Build a config for <project_dir>/scenes/[group/]<world_name>/<world_name>.js when
     // that scene script exists, else for the legacy
     // <project_dir>/worlds/<world_name>.js layout. The scene SCRIPT existing is
     // what selects the layout, not the scenes/ directory. Probes the filesystem
@@ -155,12 +158,7 @@ struct LocalProviderConfig {
     // every entry. Deliberately shaped like shared_lib_roots() below, which
     // has stacked project-over-engine the same way since it was written.
     std::vector<std::string> object_roots() const {
-        std::vector<std::string> roots;
-        if (!scene_objects_dir.empty())
-            roots.push_back(scene_objects_dir);
-        if (!objects_dir.empty())
-            roots.push_back(objects_dir);
-        return roots;
+        return matter::project_layout::object_roots({scene_objects_dir, objects_dir});
     }
     // The project tier alone. For callers that mean "where this project keeps
     // its shared objects" rather than "where do I find module X" -- resolving
@@ -174,14 +172,8 @@ struct LocalProviderConfig {
     // needs a module's path on disk must come through here rather than
     // concatenating against a single root.
     std::string resolve_object_path(const std::string& module) const {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        for (const std::string& root : object_roots()) {
-            const std::string path = (fs::path(root) / (module + ".js")).string();
-            ec.clear();
-            if (fs::is_regular_file(path, ec)) return path;
-        }
-        return {};
+        return matter::project_layout::object_source(
+            {scene_objects_dir, objects_dir}, module).string();
     }
     std::vector<std::string> shared_lib_roots() const {
         std::vector<std::string> roots;
@@ -274,6 +266,15 @@ struct LocalProviderConfig {
     std::function<bool(const gpu_meshing::FaceJob&, gpu_meshing::FacePatch&,
                        gpu_meshing::FaceStats&, gpu_meshing::Error&,
                        const gpu_meshing::BuildControl&)> vk_solid_face_project;
+
+    std::function<bool(const gpu_meshing::FaceMaterialJob&, gpu_meshing::FaceMaterialPatch&,
+                       gpu_meshing::FaceStats&, gpu_meshing::Error&,
+                       const gpu_meshing::BuildControl&)> vk_face_material_bake;
+    // Complete immutable catalog, published on the renderer thread before the
+    // receiver geometry can become visible. The provider keeps its owner alive.
+    std::function<bool(std::shared_ptr<const part_surface::Prepared>, std::string&)>
+        publish_part_surface;
+    gpu_meshing::BuildControl surface_control;
 
 
     // Task 7 authored-fluid dependencies. The factory remains dormant until
@@ -379,15 +380,14 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     cfg.scenes_dir = (project / "scenes").string();
     cfg.world_name = world_name_value;
 
-    // Scene layout (preferred): scenes/<name>/<name>.js, with the scene's own
+    // Scene layout (preferred): scenes/[group/]<name>/<name>.js, with the scene's own
     // objects beside it. Flat layout (legacy): worlds/<name>.js against the
     // project object tier alone. The scene script existing is what selects the
     // layout -- not the scenes/ directory existing -- so a project part-way
     // through migration resolves each scene by where its script actually is.
-    const fs::path scene_dir = project / "scenes" / world_name_value;
-    const fs::path scene_script = scene_dir / (world_name_value + ".js");
-    ec.clear();
-    if (fs::is_regular_file(scene_script, ec)) {
+    const fs::path scene_script = matter::project_layout::scene_script(project, world_name_value);
+    if (!scene_script.empty()) {
+        const fs::path scene_dir = scene_script.parent_path();
         cfg.scene_dir = scene_dir.string();
         cfg.world_path = scene_script.string();
         const fs::path scene_objects = scene_dir / "objects";
@@ -609,6 +609,7 @@ inline ProviderWorldDefinition adapt_world_definition(
 class LocalProvider : public WorldProvider {
 public:
     explicit LocalProvider(LocalProviderConfig cfg);
+    ~LocalProvider() override;
 
     // Product assembly seam for a completed PhysX bake.  The existing
     // renderer callback is marshalled via cfg_.gpu_run here; worker lifecycle
@@ -670,6 +671,13 @@ public:
     // from the worker thread after install_graph (host_ is idle post-install).
     // Returns false (with err set) on bake failure; true on success or already cached.
     bool ensure_part_baked(uint64_t part_hash, std::string& err);
+
+    // Prepare/publish the material for a resolved asset, including assets
+    // installed directly by a streaming world's separate dependency walk.
+    // Geometry may already be cached. Call on the install worker after
+    // install_graph(); the owned recipe survives renderer/store resets.
+    bool ensure_part_surface(uint64_t part_hash, const part_graph::BakeInputs& inputs,
+                              std::string& err);
 
     // Flatten one baked part to .flat.part (moved from compose_world's flatten_one
     // lambda into a member; identical logic incl. version sniff).
@@ -857,19 +865,25 @@ public:
     }
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Bind the same owned, queued GPU source bake to installation/cache hosts
+    // and request-local streaming hosts. Configuration is immutable while
+    // those workers run; the callback captures no ScriptHost/provider pointer.
+    void bind_solid_source_baker(script_host::ScriptHost& host) const;
     // Phase C Task 9: expose the shared HostBaker so install_world can set the
     // world binding and bake sector child assets through the same baker instance.
     part_graph::HostBaker& host_baker() { return *host_baker_; }
 #endif
 
 private:
-    void bind_solid_source_baker();
     LocalProviderConfig  cfg_;
     int                  baked_count_ = 0;
     int                  hit_count_   = 0;
     int                  baked_tileset_count_ = 0;
     int                  install_bake_count_ = 0; // counter for install-phase on_part callbacks
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
+    std::map<uint64_t,std::shared_ptr<const part_surface::Prepared>> part_surfaces_;
+    std::unique_ptr<part_surface::SourceCache> part_surface_cache_;
+    std::set<std::string> sources_without_surface_;
     std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
     std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
     std::optional<matter::HydrologyWorldSettings> hydrology_settings_;

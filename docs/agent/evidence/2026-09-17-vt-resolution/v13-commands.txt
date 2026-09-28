@@ -1,0 +1,557 @@
+stats ready-1
+stats ready-2
+stats ready-3
+stats ready-4
+stats ready-5
+stats ready-6
+stats ready-7
+stats ready-8
+stats ready-9
+stats ready-10
+stats ready-11
+stats ready-12
+stats ready-13
+stats ready-14
+stats ready-15
+render_path raster
+set render.lighting.sun_elevation_deg 70
+set render.lighting.sun_azimuth_deg 0
+set render.lighting.sun_tint [1,1,1]
+set render.lighting.sky_tint [1,1,1]
+set render.lighting.sun_multiplier 1
+set render.lighting.exposure_ev 0
+set render.lighting.day_ambient_multiplier 0.5
+set render.lighting.sky_irradiance_multiplier 0.7
+set render.pom.enabled true
+cam 380 90 1600 420 55 1420
+wait_frames 90
+stats ready-16
+stats ready-17
+stats ready-18
+stats ready-19
+stats ready-20
+stats ready-21
+stats ready-22
+stats ready-23
+stats ready-24
+stats ready-25
+stats ready-26
+stats ready-27
+stats ready-28
+stats ready-29
+stats ready-30
+stats ready-31
+stats ready-32
+stats ready-33
+stats ready-34
+stats ready-35
+stats ready-36
+stats ready-37
+stats ready-38
+stats ready-39
+stats ready-40
+stats ready-41
+stats ready-42
+stats ready-43
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+wait_frames 90
+wait_frames 5
+stats overview-sample-00
+wait_frames 5
+stats overview-sample-01
+wait_frames 5
+stats overview-sample-02
+wait_frames 5
+stats overview-sample-03
+wait_frames 5
+stats overview-sample-04
+wait_frames 5
+stats overview-sample-05
+wait_frames 5
+stats overview-sample-06
+wait_frames 5
+stats overview-sample-07
+wait_frames 5
+stats overview-sample-08
+wait_frames 5
+stats overview-sample-09
+wait_frames 5
+stats overview-sample-10
+wait_frames 5
+stats overview-sample-11
+wait_frames 5
+stats overview-sample-12
+wait_frames 5
+stats overview-sample-13
+wait_frames 5
+stats overview-sample-14
+wait_frames 5
+stats overview-sample-15
+wait_frames 5
+stats overview-sample-16
+wait_frames 5
+stats overview-sample-17
+wait_frames 5
+stats overview-sample-18
+wait_frames 5
+stats overview-sample-19
+wait_frames 5
+stats overview-sample-20
+wait_frames 5
+stats overview-sample-21
+wait_frames 5
+stats overview-sample-22
+wait_frames 5
+stats overview-sample-23
+wait_frames 5
+stats overview-sample-24
+wait_frames 5
+stats overview-sample-25
+wait_frames 5
+stats overview-sample-26
+wait_frames 5
+stats overview-sample-27
+wait_frames 5
+stats overview-sample-28
+wait_frames 5
+stats overview-sample-29
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/overview-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/overview-albedo.png
+set viewer.debug.debug_view_mode 1
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/overview-normal.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 10
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/overview-mip.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 11
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/overview-density.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+cam 380 20.25 1600 400 20.25 1550
+wait_frames 90
+stats ready-44
+stats ready-45
+stats ready-46
+stats ready-47
+stats ready-48
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+wait_frames 90
+wait_frames 5
+stats grazing-sample-00
+wait_frames 5
+stats grazing-sample-01
+wait_frames 5
+stats grazing-sample-02
+wait_frames 5
+stats grazing-sample-03
+wait_frames 5
+stats grazing-sample-04
+wait_frames 5
+stats grazing-sample-05
+wait_frames 5
+stats grazing-sample-06
+wait_frames 5
+stats grazing-sample-07
+wait_frames 5
+stats grazing-sample-08
+wait_frames 5
+stats grazing-sample-09
+wait_frames 5
+stats grazing-sample-10
+wait_frames 5
+stats grazing-sample-11
+wait_frames 5
+stats grazing-sample-12
+wait_frames 5
+stats grazing-sample-13
+wait_frames 5
+stats grazing-sample-14
+wait_frames 5
+stats grazing-sample-15
+wait_frames 5
+stats grazing-sample-16
+wait_frames 5
+stats grazing-sample-17
+wait_frames 5
+stats grazing-sample-18
+wait_frames 5
+stats grazing-sample-19
+wait_frames 5
+stats grazing-sample-20
+wait_frames 5
+stats grazing-sample-21
+wait_frames 5
+stats grazing-sample-22
+wait_frames 5
+stats grazing-sample-23
+wait_frames 5
+stats grazing-sample-24
+wait_frames 5
+stats grazing-sample-25
+wait_frames 5
+stats grazing-sample-26
+wait_frames 5
+stats grazing-sample-27
+wait_frames 5
+stats grazing-sample-28
+wait_frames 5
+stats grazing-sample-29
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/grazing-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/grazing-albedo.png
+set viewer.debug.debug_view_mode 1
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/grazing-normal.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 10
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/grazing-mip.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 11
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/grazing-density.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 90
+shot C:/tmp/matter-vt-resolution-v13/grazing-flat.png
+set render.pom.enabled true
+cam 827.960 105.624 1659.563 832.000 104.624 1664.000
+wait_frames 90
+stats ready-49
+stats ready-50
+stats ready-51
+stats ready-52
+stats ready-53
+stats ready-54
+stats ready-55
+stats ready-56
+stats ready-57
+stats ready-58
+stats ready-59
+stats ready-60
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+wait_frames 90
+wait_frames 5
+stats cliff-sample-00
+wait_frames 5
+stats cliff-sample-01
+wait_frames 5
+stats cliff-sample-02
+wait_frames 5
+stats cliff-sample-03
+wait_frames 5
+stats cliff-sample-04
+wait_frames 5
+stats cliff-sample-05
+wait_frames 5
+stats cliff-sample-06
+wait_frames 5
+stats cliff-sample-07
+wait_frames 5
+stats cliff-sample-08
+wait_frames 5
+stats cliff-sample-09
+wait_frames 5
+stats cliff-sample-10
+wait_frames 5
+stats cliff-sample-11
+wait_frames 5
+stats cliff-sample-12
+wait_frames 5
+stats cliff-sample-13
+wait_frames 5
+stats cliff-sample-14
+wait_frames 5
+stats cliff-sample-15
+wait_frames 5
+stats cliff-sample-16
+wait_frames 5
+stats cliff-sample-17
+wait_frames 5
+stats cliff-sample-18
+wait_frames 5
+stats cliff-sample-19
+wait_frames 5
+stats cliff-sample-20
+wait_frames 5
+stats cliff-sample-21
+wait_frames 5
+stats cliff-sample-22
+wait_frames 5
+stats cliff-sample-23
+wait_frames 5
+stats cliff-sample-24
+wait_frames 5
+stats cliff-sample-25
+wait_frames 5
+stats cliff-sample-26
+wait_frames 5
+stats cliff-sample-27
+wait_frames 5
+stats cliff-sample-28
+wait_frames 5
+stats cliff-sample-29
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-albedo.png
+set viewer.debug.debug_view_mode 1
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-normal.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 10
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-mip.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 11
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-density.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 90
+shot C:/tmp/matter-vt-resolution-v13/cliff-flat.png
+set render.pom.enabled true
+cam 832.397 105.624 1655.523 832.000 104.624 1664.000
+wait_frames 90
+stats ready-61
+stats ready-62
+stats ready-63
+stats ready-64
+stats ready-65
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+wait_frames 90
+wait_frames 5
+stats cliff-grazing-sample-00
+wait_frames 5
+stats cliff-grazing-sample-01
+wait_frames 5
+stats cliff-grazing-sample-02
+wait_frames 5
+stats cliff-grazing-sample-03
+wait_frames 5
+stats cliff-grazing-sample-04
+wait_frames 5
+stats cliff-grazing-sample-05
+wait_frames 5
+stats cliff-grazing-sample-06
+wait_frames 5
+stats cliff-grazing-sample-07
+wait_frames 5
+stats cliff-grazing-sample-08
+wait_frames 5
+stats cliff-grazing-sample-09
+wait_frames 5
+stats cliff-grazing-sample-10
+wait_frames 5
+stats cliff-grazing-sample-11
+wait_frames 5
+stats cliff-grazing-sample-12
+wait_frames 5
+stats cliff-grazing-sample-13
+wait_frames 5
+stats cliff-grazing-sample-14
+wait_frames 5
+stats cliff-grazing-sample-15
+wait_frames 5
+stats cliff-grazing-sample-16
+wait_frames 5
+stats cliff-grazing-sample-17
+wait_frames 5
+stats cliff-grazing-sample-18
+wait_frames 5
+stats cliff-grazing-sample-19
+wait_frames 5
+stats cliff-grazing-sample-20
+wait_frames 5
+stats cliff-grazing-sample-21
+wait_frames 5
+stats cliff-grazing-sample-22
+wait_frames 5
+stats cliff-grazing-sample-23
+wait_frames 5
+stats cliff-grazing-sample-24
+wait_frames 5
+stats cliff-grazing-sample-25
+wait_frames 5
+stats cliff-grazing-sample-26
+wait_frames 5
+stats cliff-grazing-sample-27
+wait_frames 5
+stats cliff-grazing-sample-28
+wait_frames 5
+stats cliff-grazing-sample-29
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-grazing-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-grazing-albedo.png
+set viewer.debug.debug_view_mode 1
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-grazing-normal.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 10
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-grazing-mip.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 11
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/cliff-grazing-density.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 90
+shot C:/tmp/matter-vt-resolution-v13/cliff-grazing-flat.png
+set render.pom.enabled true
+cam 380 20.3 1600 380 18.24 1596
+wait_frames 90
+stats ready-66
+stats ready-67
+stats ready-68
+stats ready-69
+stats ready-70
+stats ready-71
+stats ready-72
+stats ready-73
+stats ready-74
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+wait_frames 90
+wait_frames 5
+stats close-sample-00
+wait_frames 5
+stats close-sample-01
+wait_frames 5
+stats close-sample-02
+wait_frames 5
+stats close-sample-03
+wait_frames 5
+stats close-sample-04
+wait_frames 5
+stats close-sample-05
+wait_frames 5
+stats close-sample-06
+wait_frames 5
+stats close-sample-07
+wait_frames 5
+stats close-sample-08
+wait_frames 5
+stats close-sample-09
+wait_frames 5
+stats close-sample-10
+wait_frames 5
+stats close-sample-11
+wait_frames 5
+stats close-sample-12
+wait_frames 5
+stats close-sample-13
+wait_frames 5
+stats close-sample-14
+wait_frames 5
+stats close-sample-15
+wait_frames 5
+stats close-sample-16
+wait_frames 5
+stats close-sample-17
+wait_frames 5
+stats close-sample-18
+wait_frames 5
+stats close-sample-19
+wait_frames 5
+stats close-sample-20
+wait_frames 5
+stats close-sample-21
+wait_frames 5
+stats close-sample-22
+wait_frames 5
+stats close-sample-23
+wait_frames 5
+stats close-sample-24
+wait_frames 5
+stats close-sample-25
+wait_frames 5
+stats close-sample-26
+wait_frames 5
+stats close-sample-27
+wait_frames 5
+stats close-sample-28
+wait_frames 5
+stats close-sample-29
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/close-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/close-albedo.png
+set viewer.debug.debug_view_mode 1
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/close-normal.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 10
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/close-mip.png
+set viewer.debug.debug_view_mode 4
+set render.pom.horizon_debug 11
+wait_frames 30
+shot C:/tmp/matter-vt-resolution-v13/close-density.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 90
+shot C:/tmp/matter-vt-resolution-v13/close-flat.png
+set render.pom.enabled true
+set render.clouds.layer0_max_density 0
+set render.cloud_shadows.enabled false
+set render.fog.density 0
+set render.lighting.sky_irradiance_multiplier 0.15
+set render.lighting.day_ambient_multiplier 0.15
+set render.lighting.sun_multiplier 2
+cam 827.960 105.624 1659.563 832.000 104.624 1664.000
+wait_frames 180
+shot C:/tmp/matter-vt-resolution-v13/cliff-clear-lit.png
+set render.pom.enabled false
+wait_frames 90
+shot C:/tmp/matter-vt-resolution-v13/cliff-clear-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+shot C:/tmp/matter-vt-resolution-v13/cliff-clear-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-vt-resolution-v13/cliff-clear-rt-flat.png
+set render.pom.enabled true
+render_path raster
+cam 380 20.3 1600 380 18.24 1596
+wait_frames 180
+shot C:/tmp/matter-vt-resolution-v13/close-clear-lit.png
+set render.pom.enabled false
+wait_frames 90
+shot C:/tmp/matter-vt-resolution-v13/close-clear-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+shot C:/tmp/matter-vt-resolution-v13/close-clear-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-vt-resolution-v13/close-clear-rt-flat.png
+set render.pom.enabled true
+render_path raster
+quit

@@ -1,0 +1,24 @@
+{
+  "sources": {
+    "MatterEngine3/include/matter/project_layout.h": "fbdf5fb456b2938515e435f284b7bffc517a4464b7fd87fbd59735806af1d851",
+    "MatterEngine3/src/provider/local_provider.h": "bd15241ae7535fe7050cfed392c5db19bcc951f8470f33dceac52724c59565b3",
+    "MatterEngine3/src/part_graph.cpp": "46a8605c460aaaf3dc4cfbf093e5a44553437d15e2cdfd12458679bbd8a8bc79",
+    "MatterEngine3/src/tileset_phase.cpp": "ada066ff82481315f67905963780fd10a913056b6eecf1408111e0d94205b64d",
+    "MatterEditor/src/ui.cpp": "8f7d01f43cf5315a9e4deb40b6a50dd7616713f7031a251ae3878b9ae21b4ca4",
+    "MatterEditor/src/ui.h": "be6800425535153eddea10401d20c35e428e9ee70bed7a3e264f2bd683b26aff",
+    "MatterEditor/src/asset_browser.cpp": "406a6963ab2492b12fc827ed1541906afa9d41582ebd9c47388daac00addbc03",
+    "MatterEditor/src/asset_browser.h": "c29e83e875374e790732823637c147487049f77e08df6f7ef94be249a2b8df8e",
+    "MatterEditor/src/editor_props.cpp": "3e3d607509ea29d78b0d6afddb72aa8c5b8b6254535a861b4a2d988df3d2ca76",
+    "MatterEditor/src/main.cpp": "0561a30a524a680be507b61cca0ba5d9d7972463d1e1b4f2230d22e51bac4bcc",
+    "MatterEditor/src/part_workbench.cpp": "19a585cf97c32e41946778d4fa2177691cce1c8c7a198ffdc74bbae2e38fc9fd",
+    "MatterEngine3/tests/world_definition_tests.cpp": "e4348447213e09eb8e4d0776930d24918c1b8e36ee82949fc35e225a50832ea9",
+    "MatterEngine3/tests/eval_world_tests.cpp": "66a133891e7050d24ad51ff96a0fd1f0220ce1c95c60d2d06c7d6fd05f3bed11",
+    "tools/project_layout.mjs": "e7c6b51ffe4a448d5eb9d061cdf426abff49294b33b9204a0acaa5d695398e50",
+    "projects/world_demo/README.md": "95a71b1ffa453353ee6d325ec78686481837427cfa83c6aded93d3f32ef992a9"
+  },
+  "binaries": {
+    "MatterEditor/build/windows-msvc/editor.exe": "c2da7e88d4391b4c461769198b41c7eb51b81951c6bd1d4f00f48d029166ca25",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe": "8a918dc05b548658a746861e72512623aaa771a7d13f28563d2adb0b68e6a41f",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/eval_world_tests.exe": "01e9fc11ad48797b2870a014594c0405b03140371e0eb70876609d3910666c7f"
+  }
+}

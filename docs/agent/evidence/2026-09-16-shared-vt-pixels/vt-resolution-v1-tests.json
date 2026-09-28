@@ -1,0 +1,46 @@
+{
+  "runs": [
+    {
+      "mode": "mountain",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"mountain\"; & \"./../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe\" --mountain-material; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.5772959569949307,
+      "binary_sha256": "6c03df0ed933ecd7da1e071bbef743afc5b87e2084da8a32a69f08081c70c469",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "833ca67f8ed7a67405cbfc708db53131f8f7505d2dbfb56c293dbe6618d9b144",
+      "passed": true
+    },
+    {
+      "mode": "vt-composed-parallax",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-parallax\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 39.46625552800106,
+      "binary_sha256": "0e57f6bd6412018f38cd8cf0dd9154863e94e31ad937e3e4a5b30a4552cc0782",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "98a38f10a8af48189917c3a15be138f00a9b8605cacdf2cb0f331d85621ff78e",
+      "passed": true
+    },
+    {
+      "mode": "vt-composed-seam",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-seam\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 11.979149940998468,
+      "binary_sha256": "0e57f6bd6412018f38cd8cf0dd9154863e94e31ad937e3e4a5b30a4552cc0782",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "14d6396e3eee0c843c0e0cd1cd09125e2b1ed566a3369721ab0ec0f2e513697f",
+      "passed": true
+    }
+  ]
+}

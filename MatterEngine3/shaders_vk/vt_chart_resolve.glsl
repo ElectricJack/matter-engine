@@ -1,6 +1,12 @@
 #ifndef VT_CHART_RESOLVE_GLSL
 #define VT_CHART_RESOLVE_GLSL
 
+// Both stream layouts carry the same geometry prefix. Material evaluation
+// may use separate surface rows without changing how a page texel resolves.
+#ifndef VT_RESOLVE_TRIANGLE_TYPE
+#define VT_RESOLVE_TRIANGLE_TYPE GpuTri
+#endif
+
 // Chart-space virtual texturing — "which surface point owns this page texel?".
 //
 // The tier-1 compositor (vt_composite.comp) and the tier-2 hemisphere
@@ -69,6 +75,7 @@ float closest_tri_2d(vec2 q, vec2 a, vec2 b, vec2 c, out vec3 bary) {
 // The resolved surface point behind one physical page texel.
 struct VtSurfacePoint {
     bool  found;
+    bool  inside;        // original triangle coverage, excluding dilation
     uint  chart;         // index into charts[]
     uint  tri;           // index into tris[]
     vec3  bary;
@@ -89,6 +96,7 @@ VtSurfacePoint vt_resolve_page_texel(uvec2 store_texel, uvec2 page, uint mip,
                                      uint cand_offset, uint cand_count) {
     VtSurfacePoint sp;
     sp.found = false;
+    sp.inside = false;
     sp.chart = 0u;
     sp.tri = 0u;
     sp.bary = vec3(1.0, 0.0, 0.0);
@@ -119,7 +127,7 @@ VtSurfacePoint vt_resolve_page_texel(uvec2 store_texel, uvec2 page, uint mip,
                + vec2(c.tangent_ou.w, c.bitangent_ov.w);
         uint first = c.tri_range.x, count = c.tri_range.y;
         for (uint ti = 0u; ti < count; ++ti) {
-            GpuTri tr = tris[first + ti];
+            VT_RESOLVE_TRIANGLE_TYPE tr = tris[first + ti];
             vec2 a = vec2(tr.p0.w, tr.n0.w);
             vec2 b = vec2(tr.p1.w, tr.n1.w);
             vec2 cc = vec2(tr.p2.w, tr.n2.w);
@@ -141,7 +149,7 @@ VtSurfacePoint vt_resolve_page_texel(uvec2 store_texel, uvec2 page, uint mip,
     if (best_chart == 0xFFFFFFFFu) return sp;
 
     GpuChart chart = charts[best_chart];
-    GpuTri tri = tris[best_tri];
+    VT_RESOLVE_TRIANGLE_TYPE tri = tris[best_tri];
     vec3 pos = best_bary.x * tri.p0.xyz + best_bary.y * tri.p1.xyz
              + best_bary.z * tri.p2.xyz;
     vec3 nrm = best_bary.x * tri.n0.xyz + best_bary.y * tri.n1.xyz
@@ -150,6 +158,12 @@ VtSurfacePoint vt_resolve_page_texel(uvec2 store_texel, uvec2 page, uint mip,
     nrm = (nlen > 1e-6) ? nrm / nlen : vec3(0.0, 1.0, 0.0);
 
     sp.found = true;
+    // Closest-point arithmetic may leave tiny nonzero distances on a shared
+    // triangle edge (notably with non-power-of-two chart density). Treat a
+    // sub-1/1024-texel distance as coverage; do not manufacture padded seams.
+    // This only classifies coverage and never changes the chosen point/chart.
+    float coverage_epsilon = (scale / chart.origin_tpm.w) / 1024.0;
+    sp.inside = inside || best_d2 <= coverage_epsilon * coverage_epsilon;
     sp.chart = best_chart;
     sp.tri = best_tri;
     sp.bary = best_bary;

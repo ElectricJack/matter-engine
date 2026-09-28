@@ -1,0 +1,29 @@
+{
+  "mode": "load",
+  "exit_code": 0,
+  "completed": true,
+  "elapsed_seconds": 54.158942300011404,
+  "streamer_idle_seconds": 35.80182630001218,
+  "first_cache_seconds": 1.7746484000090277,
+  "last_cache_seconds": 14.289733700003126,
+  "outcomes": {
+    "hit": 815
+  },
+  "compilations": 0,
+  "expected_keys_missing": [],
+  "unexpected_keys": [],
+  "prepared_hashes_missing": [],
+  "prepared_hashes_unexpected": [],
+  "geometry_coverage": [
+    0,
+    0,
+    0
+  ],
+  "failures": [],
+  "valid": true,
+  "prepared_hits": 2441,
+  "post_ready_stats_samples": 15,
+  "post_ready_cpu_median_ms": 8.58,
+  "post_ready_gpu_median_ms": 7.374,
+  "post_ready_cpu_sample_max_ms": 9.09
+}

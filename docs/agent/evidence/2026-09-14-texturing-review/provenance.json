@@ -1,0 +1,24 @@
+{
+  "date": "2026-09-14",
+  "head": "d753087d88417ab5b77cf77369c1e38e22cee6b9",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "note": "Dirty working-tree source; diagnostic Linux CPU benchmark, no native GPU acceptance or cache-freshness proof. Three sequential runs per asset; ordinary OS file cache, no cache flush. Encoder uses its production automatic worker cap.",
+  "sha256": {
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "b7ceacffe1dfb26fdc57861c78ebaaf459b5d45decbd1147f3469a20c0eea6aa",
+    "MatterEngine3/src/render/tileset_bake_vk.cpp": "ccebfc442c44c0d54c703ad193415cba27a05490efe32ca5b5bba912048c175e",
+    "MatterEngine3/src/render/tileset_bake_vk.h": "ef0cdf1b9e27779fda771fc71aee8639b4e0d5664714be9a889b7f94defe4b1d",
+    "MatterEngine3/src/render/tileset_slicer.cpp": "391ed7afbb0e8b39bc778ced2624a7d5ff040130b35a9d733888e7d50be047ea",
+    "MatterEngine3/src/render/bc_encode.cpp": "796f785b4ee408dd6bea6788680cae0d730bb71141d532c3cf037e917d95d809",
+    "MatterEngine3/src/tileset_gtex.cpp": "c69f3b2ebfd6fd22b7f4e539ec54a0bd3531f1fb2a288bdb9f9a55b8f741ec51",
+    "MatterEngine3/src/tileset_spec.h": "b35534f17076cb54b0d0c95d03dfd122f40500cb8de2892448dceaced588c9fd",
+    "MatterEngine3/src/lod_bake.cpp": "f65a06ced7cbda4ccaf87cb08b8ffe9ebc75f44f687eea2b00f7601f442f92e5",
+    "MatterEngine3/shaders_vk/gbuffer.frag": "9c100bb876b5c07c9db795b0dcbc779a6f2410a363b487b5733ceb99fb4648f1",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "2f68aba2fce56875179cb74d0b97868f1e8ed63d78271b80f4805cd5fba1dfcf",
+    "MatterEngine3/shaders_vk/vt_common.glsl": "062d64845b50307dd44c1d60275bf294dc115e298adfde487050e34139eaaa3a",
+    "MatterEngine3/shaders_vk/surface_detail.glsl": "39780a62354b63afaa4091fad5d909ab2e57e2f360048dd447797384fc687170",
+    "MatterEngine3/shaders_vk/vt_surface_tape.glsl": "ba1c3af887b28c3e69ddd68e7eb831967fd7c37c62d9aa23f8dd7cc5489b5ca1",
+    "projects/world_demo/objects/AlpineRockDetail.js": "e4f5ec67052faeea8ea6a1379e791cfba4f9ffb2c0ee49f4ecf4e107768c0b5f",
+    "projects/world_demo/scenes/StreamMountain/StreamMountain.js": "5390c267c61e14473f538f741b7d79eb711dfc46d6a1aaa235e2304e081a84f3"
+  }
+}

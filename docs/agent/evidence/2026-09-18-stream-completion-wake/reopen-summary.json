@@ -1,0 +1,11 @@
+{
+  "mode": "reopen",
+  "exit_code": 0,
+  "completed": true,
+  "elapsed_seconds": 26.383428100001765,
+  "streamer_idle_seconds": 8.854912399998284,
+  "first_cache_seconds": 1.4131660999992164,
+  "last_cache_seconds": 6.804724000001443,
+  "compilations": 0,
+  "valid": true
+}

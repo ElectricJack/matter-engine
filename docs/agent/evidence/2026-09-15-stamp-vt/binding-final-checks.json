@@ -1,0 +1,50 @@
+[
+  {
+    "kind": "gpu",
+    "name": "vt-queue",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.2705313309998019,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-final-gpu-vt-queue.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "gpu",
+    "name": "vt-direct-source",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-direct-source\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 2.4293791500094812,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-final-gpu-vt-direct-source.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "gpu",
+    "name": "vt-composed-pom",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-composed-pom\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 23.652654199991957,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-final-gpu-vt-composed-pom.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

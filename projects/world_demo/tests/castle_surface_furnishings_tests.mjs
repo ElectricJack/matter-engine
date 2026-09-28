@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 await import('./castle_shared_lib_hooks.mjs');
@@ -26,7 +27,7 @@ for(const kind of F.FURNISHING_KINDS){
  assert.equal(b.log.children,0);assert.equal(a.log.voxels,b.log.voxels,'soft-detail sculpting retained');
  for(const mat of a.log.materials)assert.ok(b.log.materials.has(mat),`${kind} retains material ${mat}`);
  if(a.log.children){assert.ok(b.log.triangles>a.log.triangles);replaced+=a.log.children;}
- const wrapper=fs.readFileSync(new URL(`../objects/${F.FURNISHING_MODULES[kind]}.js`,import.meta.url),'utf8');
+ const wrapper=fs.readFileSync(objectFile(F.FURNISHING_MODULES[kind]),'utf8');
  assert.match(wrapper,/surfaceMembers:\s*0/);assert.match(wrapper,/lodBudgets\s*=\s*\[1\]/);
 }
 assert.ok(replaced>50);

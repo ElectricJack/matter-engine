@@ -1,0 +1,109 @@
+{
+  "moving-publication-batch-v1": {
+    "movement": {
+      "count": 959,
+      "median_ms": 46.94060000000172,
+      "p95_ms": 60.73210000000108,
+      "max_ms": 183.02279999999882
+    },
+    "stages": {
+      "update_cpu": {
+        "count": 2806,
+        "total_ms": 31560.037,
+        "max_ms": 158.78,
+        "mean_ms": 11.24734034212402
+      },
+      "publish_cpu": {
+        "count": 2806,
+        "total_ms": 4970.965999999999,
+        "max_ms": 16.989,
+        "mean_ms": 1.7715488239486812
+      },
+      "hierarchy_pack": {
+        "count": 731428,
+        "total_ms": 8218.769,
+        "max_ms": 1.806,
+        "mean_ms": 0.011236607020786736
+      },
+      "cut_upload_cpu": {
+        "count": 1014,
+        "total_ms": 5838.348000000001,
+        "max_ms": 17.455,
+        "mean_ms": 5.757739644970415
+      }
+    },
+    "scopes": {
+      "pf.flushtmpl": {
+        "count": 511,
+        "total_ms": 2226.2952999999998,
+        "max_ms": 16.4902
+      },
+      "pf.vtslots": {
+        "count": 512,
+        "total_ms": 2349.43,
+        "max_ms": 14.4224
+      },
+      "pf.commands": {
+        "count": 512,
+        "total_ms": 599.7901,
+        "max_ms": 5.124899999999999
+      }
+    }
+  },
+  "moving-packing-reuse-v1": {
+    "movement": {
+      "count": 959,
+      "median_ms": 40.03230000000622,
+      "p95_ms": 51.953300000001036,
+      "max_ms": 147.86439999999857
+    },
+    "stages": {
+      "update_cpu": {
+        "count": 2978,
+        "total_ms": 29094.411,
+        "max_ms": 129.337,
+        "mean_ms": 9.76978206850235
+      },
+      "publish_cpu": {
+        "count": 2978,
+        "total_ms": 5019.914,
+        "max_ms": 8.556,
+        "mean_ms": 1.6856662189388851
+      },
+      "hierarchy_pack": {
+        "count": 798260,
+        "total_ms": 6354.496,
+        "max_ms": 0.767,
+        "mean_ms": 0.007960433943827826
+      },
+      "cut_upload_cpu": {
+        "count": 1097,
+        "total_ms": 5715.389,
+        "max_ms": 14.024,
+        "mean_ms": 5.210017319963537
+      }
+    },
+    "scopes": {
+      "pf.flushtmpl": {
+        "count": 512,
+        "total_ms": 2065.1922,
+        "max_ms": 9.404399999999999
+      },
+      "pf.vtslots": {
+        "count": 512,
+        "total_ms": 2085.7931,
+        "max_ms": 10.9484
+      },
+      "pf.commands": {
+        "count": 512,
+        "total_ms": 533.3514,
+        "max_ms": 3.6050999999999997
+      },
+      "geometry.update": {
+        "count": 512,
+        "total_ms": 15460.0388,
+        "max_ms": 129.3472
+      }
+    }
+  }
+}

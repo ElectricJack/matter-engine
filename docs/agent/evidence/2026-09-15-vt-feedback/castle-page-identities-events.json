@@ -1,0 +1,40 @@
+{
+  "event_count": 4855,
+  "recorded_count": 4855,
+  "settled_window_events": [],
+  "repeated_recorded_identities_whole_capture": 0,
+  "late_events_at_or_after_vt_frame_2000": [
+    {
+      "frame": "2185",
+      "owner": "3a7cc88afc76f232",
+      "generation": "26",
+      "revision": "1",
+      "mip": "0",
+      "x": "25",
+      "y": "6",
+      "slot": "3390",
+      "mandatory": "0",
+      "first_frame": "2185",
+      "result": "recorded",
+      "in_settled_window": false
+    },
+    {
+      "frame": "2592",
+      "owner": "3a7cc88afc76f232",
+      "generation": "26",
+      "revision": "1",
+      "mip": "0",
+      "x": "11",
+      "y": "0",
+      "slot": "3391",
+      "mandatory": "0",
+      "first_frame": "2592",
+      "result": "recorded",
+      "in_settled_window": false
+    }
+  ],
+  "limits": [
+    "No late fills occurred in the settled window. This does not identify the late fills in other runs.",
+    "Recorded page commands are not GPU completion or presentation receipts."
+  ]
+}

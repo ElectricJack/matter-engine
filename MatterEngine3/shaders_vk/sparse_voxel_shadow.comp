@@ -1,0 +1,115 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "sparse_voxel_optics.glsl"
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=0,binding=0) uniform accelerationStructureEXT scene;
+layout(set=0,binding=1) uniform sampler2D depth_texture;
+layout(set=0,binding=2,rgba16f) uniform image2D visibility_image;
+layout(std430,set=0,binding=3) readonly buffer Bricks { SparseBrick bricks[]; };
+layout(std430,set=0,binding=4) readonly buffer Cells { SparseCell cells[]; };
+struct ShadowLevel { uvec4 indices; vec4 grid; uvec4 flags; };
+layout(std430,set=0,binding=5) readonly buffer Levels { ShadowLevel levels[]; };
+layout(std430,set=0,binding=6) readonly buffer ObjectAddresses { uvec4 objects[]; };
+layout(push_constant) uniform ShadowConstants {
+    mat4 clip_to_world;
+    vec4 sun_distance;
+    vec4 bias_extent;
+} constants;
+
+float brick_hit(SparseBrick brick,vec3 ro,vec3 rd,float max_t,float remaining) {
+    vec3 lo=vec3(brick.coord.xyz)*4;
+    uint b=uint(brick.coord.w);
+    vec3 occupied_lo=lo+vec3(b&3u,(b>>2)&3u,(b>>4)&3u);
+    vec3 occupied_hi=lo+vec3((b>>6)&3u,(b>>8)&3u,(b>>10)&3u)+1;
+    float enter,leave;
+    if(!sparse_slab(ro,rd,occupied_lo,occupied_hi,enter,leave)) return -1;
+    leave=min(leave,max_t);
+    float t=enter;
+    ivec3 q=clamp(ivec3(floor(ro+rd*t-lo)),ivec3(0),ivec3(3));
+    ivec3 direction=ivec3(sign(rd));
+    for(int step=0;step<16 && t<leave;++step) {
+        vec3 boundary=lo+vec3(q)+vec3(greaterThan(rd,vec3(0)));
+        vec3 crossing=vec3(1e30);float next=leave;
+        for(int a=0;a<3;++a) if(abs(rd[a])>=1e-10) {
+            crossing[a]=(boundary[a]-ro[a])/rd[a];next=min(next,crossing[a]);
+        }
+        next=max(next,t);
+        uint bit=uint(q.x+4*q.y+16*q.z),shift=bit&31u;
+        uint word=bit<32u?brick.cells.x:brick.cells.y;
+        if((word&(1u<<shift))!=0u) {
+            uint rank=uint(bitCount(word&((1u<<shift)-1u)));
+            if(bit>=32u) rank+=uint(bitCount(brick.cells.x));
+            float hit;
+            float optical=sparse_cell_optical(cells[brick.cells.z+rank],ro-lo-vec3(q),rd,t,next,remaining,hit);
+            if(optical>remaining) return clamp(hit,0,max_t);
+            remaining-=optical;
+        }
+        for(int a=0;a<3;++a) if(crossing[a]<=next) q[a]+=direction[a];
+        if(any(lessThan(q,ivec3(0))) || any(greaterThanEqual(q,ivec3(4)))) break;
+        t=next;
+    }
+    return -1;
+}
+uint hash(uint x) {x^=x>>16;x*=0x7feb352du;x^=x>>15;x*=0x846ca68bu;return x^(x>>16);}
+float trace_bricks(rayQueryEXT query,float max_t,uint seed,uint instance_offset) {
+    while(rayQueryProceedEXT(query)) {
+        if(rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionAABBEXT) continue;
+        uint level=rayQueryGetIntersectionInstanceCustomIndexEXT(query,false);
+        uint brick=levels[level].indices.x+rayQueryGetIntersectionPrimitiveIndexEXT(query,false);
+        vec3 ro=rayQueryGetIntersectionObjectRayOriginEXT(query,false);
+        vec3 rd=rayQueryGetIntersectionObjectRayDirectionEXT(query,false);
+        float scale=length(rd);
+        // The API may return the same AABB candidate repeatedly. A stable
+        // per-brick/placement optical-depth draw gives the same decision each
+        // time; summing transmittance here would count duplicate candidates.
+        uint draw=hash(seed^hash(brick)^hash((rayQueryGetIntersectionInstanceIdEXT(query,false)+instance_offset)));
+        float remaining=-log((float(draw>>8)+.5)/16777216.0);
+        float hit=brick_hit(bricks[brick],ro,rd/scale,max_t*scale,remaining);
+        if(hit>=0) rayQueryGenerateIntersectionEXT(query,hit/scale);
+    }
+    return rayQueryGetIntersectionTypeEXT(query,true)==gl_RayQueryCommittedIntersectionNoneEXT?-1:rayQueryGetIntersectionTEXT(query,true);
+}
+void main() {
+    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy),extent=imageSize(visibility_image);
+    if(any(greaterThanEqual(pixel,extent))) return;
+    float depth=texelFetch(depth_texture,pixel,0).r;
+    if(depth<=0) return;
+    vec2 uv=(vec2(pixel)+.5)/vec2(extent);
+    vec4 world=constants.clip_to_world*vec4(uv.x*2-1,1-uv.y*2,depth,1);
+    vec3 sun=constants.sun_distance.xyz;
+    // Lift along the light ray only. Never offset along the stochastic shading
+    // normal or skip an entire source object to hide self-intersections.
+    vec3 origin=world.xyz/world.w+sun*constants.bias_extent.x;
+    uint seed=hash(uint(pixel.x)^hash(uint(pixel.y))^floatBitsToUint(constants.bias_extent.y));
+    float transmission=1;
+    if(constants.bias_extent.z==0) {
+        rayQueryEXT flat_query;
+        rayQueryInitializeEXT(flat_query,scene,gl_RayFlagsTerminateOnFirstHitEXT,0xff,origin,0,sun,constants.sun_distance.w);
+        transmission=trace_bricks(flat_query,constants.sun_distance.w,seed,0)>=0?0:1;
+    } else {
+        rayQueryEXT outer;
+        rayQueryInitializeEXT(outer,scene,gl_RayFlagsTerminateOnFirstHitEXT,0xff,origin,0,sun,constants.sun_distance.w);
+        while(rayQueryProceedEXT(outer)) {
+            if(rayQueryGetIntersectionTypeEXT(outer,false)!=gl_RayQueryCandidateIntersectionAABBEXT) continue;
+            uint index=rayQueryGetIntersectionInstanceCustomIndexEXT(outer,false);
+            uint root=rayQueryGetIntersectionInstanceIdEXT(outer,false);
+            uvec4 object=objects[index];
+            // Keep the original ray parameter through both affine transforms.
+            // No normalization or extra bias at the assembly boundary: inner
+            // hit distances remain measured in the outer ray's world units.
+            vec3 local_origin=rayQueryGetIntersectionObjectRayOriginEXT(outer,false);
+            vec3 local_direction=rayQueryGetIntersectionObjectRayDirectionEXT(outer,false);
+            uint local_seed=root==0u?seed:hash(seed^hash(root)^0x9e3779b9u);
+            rayQueryEXT inner;
+            rayQueryInitializeEXT(inner,accelerationStructureEXT(object.xy),gl_RayFlagsTerminateOnFirstHitEXT,0xff,
+                local_origin,0,local_direction,constants.sun_distance.w);
+            float hit=trace_bricks(inner,constants.sun_distance.w,local_seed,object.z);
+            if(hit>=0) rayQueryGenerateIntersectionEXT(outer,hit);
+        }
+        transmission=rayQueryGetIntersectionTypeEXT(outer,true)==gl_RayQueryCommittedIntersectionNoneEXT?1:0;
+    }
+    vec4 visibility=imageLoad(visibility_image,pixel);
+    imageStore(visibility_image,pixel,vec4(visibility.rgb*transmission,visibility.a));
+}

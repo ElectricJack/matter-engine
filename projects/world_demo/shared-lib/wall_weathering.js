@@ -1,0 +1,96 @@
+// Thin, part-scale appearance layers baked after the structural VT material.
+// Seeds vary per authored wall; source bricks remain shared and unchanged.
+const PAINT=[[.48,.46,.37],[.055,.18,.14],[.36,.23,.065],[.065,.145,.21],[.30,.085,.055]];
+const INK=[[.025,.40,.30],[.61,.30,.025],[.53,.045,.09],[.40,.39,.55]];
+const WORDS={
+ VOID:[[[0,1],[.25,0],[.5,1]],[[.67,0],[.67,1],[1.17,1],[1.17,0],[.67,0]],[[1.4,0],[1.4,1]],[[1.65,0],[1.65,1],[2.05,.85],[2.05,.15],[1.65,0]]],
+ ASH:[[[0,0],[.26,1],[.52,0]],[[.13,.43],[.4,.43]],[[1.16,.95],[.68,1],[.66,.55],[1.14,.44],[1.12,0],[.64,.05]],[[1.36,0],[1.36,1]],[[1.89,0],[1.89,1]],[[1.36,.48],[1.89,.48]]],
+ XO:[[[0,0],[.65,1]],[[0,1],[.65,0]],[[.89,0],[.82,.82],[1.2,1],[1.53,.8],[1.5,.13],[.89,0]]],
+};
+function hash(text){let h=2166136261;for(let i=0;i<text.length;++i)h=Math.imul(h^text.charCodeAt(i),16777619);return h>>>0;}
+export function wallWeatherSeed(id){return hash(id);}
+const dot=(a,b)=>a.reduce((s,v,i)=>s+v*b[i],0);
+function tagFrame(w,seed){
+ if(w.curve){
+  const a=w.curve.sweepRadians*.5,n=[Math.sin(a),0,Math.cos(a)],r=w.curve.radiusM+.1225;
+  return {origin:[n[0]*r,0,n[2]*r],u:[n[2],0,-n[0]],n,width:1.12,depth:.13};
+ }
+ const candidates=w.faces.filter(f=>Math.abs(f.normal[1])<.01).map(f=>{
+  const n=f.normal,u=[n[2],0,-n[0]],range=f.positions.map(p=>dot(p,u));
+  return {origin:[f.frame.origin[0],0,f.frame.origin[2]],u,n,width:Math.max(...range)-Math.min(...range),depth:.035};
+ }).filter(f=>f.width>1.1).sort((a,b)=>b.width-a.width);
+ if(!candidates.length)return null;
+ return candidates[(seed>>>6)%Math.min(2,candidates.length)];
+}
+export function wallWeathering(s,p,w){
+ if(!p.weathering)return;
+ const seed=(p.weatherSeed??0)>>>0,H=w.heightM??w.bounds.max[1];
+ const broad=s.noise3(seed^321, .34, 3,.5,2,{seed:seed^718,freq:1.1,amp:.38});
+ const medium=s.noise3(seed^976,2.8,3);
+ const fine=s.noise3(seed^513,14,2).mul(s.footprint.smoothstep(.012,.075).oneMinus());
+ const vertical=s.normalY.abs().oneMinus();
+ const damp=s.y.add(broad.mul(.33)).smoothstep(.04,.62).oneMinus();
+ const aged=broad.mul(.20).add(medium.mul(.06)).add(1).mul(damp.mul(-.38).add(1));
+ s.tint(aged,aged.mul(1.015),aged.mul(.91));
+ s.wetness(damp.mul(.12));
+ // Flatten ordered over-composition into one premultiplied coating. This
+ // reuses the scalar tape; no additional per-layer draws or texture samples.
+ let rgb=[s.value(0),s.value(0),s.value(0)],alpha=s.value(0),rough2=s.value(0);
+ const coat=(color,coverage,rough)=>{
+  const c=coverage.clamp(0,1),inv=c.oneMinus();
+  rgb=rgb.map((v,i)=>v.mul(inv).add(c.mul(color[i])));
+  rough2=rough2.mul(inv).add(c.mul(rough*rough));alpha=alpha.mul(inv).add(c);
+ };
+ const pollution=s.noise3(seed^743,.8,2).smoothstep(-.24,.34).mul(.32).mul(vertical);
+ coat([.055,.050,.034],pollution,.96);
+ const paintColor=PAINT[(seed>>>3)%PAINT.length];
+ // Several metres of paint survive together, with smaller missing flakes.
+ const paintArea=broad.add(medium.mul(.19)).smoothstep(-.19,.10);
+ const chips=fine.add(medium.mul(.35)).smoothstep(-.30,-.035);
+ const paintBand=s.y.add(broad.mul(.2)).smoothstep(.04,.22)
+   .mul(s.y.smoothstep(H*.63,H*.85).oneMinus());
+ const paint=paintArea.mul(chips).mul(paintBand).mul(.91);
+ coat(paintColor,paint,.83);
+ // Broad runoff with irregular gaps/ends along its height. A periodic comb
+ // near brick spacing reads as a second, misaligned set of mortar joints;
+ // continuous noise keeps stains independent of that structural pattern.
+ const runoffColumns=s.noise2(seed^541,1.2,3).smoothstep(.02,.38);
+ const runoffBreakup=s.noise3(seed^381,2.3,2).smoothstep(-.34,.26);
+ const runoff=runoffColumns.mul(runoffBreakup)
+   .mul(s.y.add(broad.mul(.28)).smoothstep(H*.18,H*.92)).mul(vertical).mul(.22);
+ coat([.045,.041,.026],runoff,.74);
+ const algae=damp.mul(medium.add(fine.mul(.12)).smoothstep(-.30,.20)).mul(.66);
+ coat([.048,.068,.021],algae,.91);
+ if(p.graffiti){
+  const f=tagFrame(w,seed);
+  if(f){
+   const text=['VOID','ASH','XO'][(seed>>>10)%3],paths=WORDS[text],ink=INK[(seed>>>13)%INK.length];
+   const maxX=Math.max(...paths.flat().map(v=>v[0])),height=Math.min(.64,H*.56),scale=Math.min(height,(f.width*.82)/maxX);
+   const cy=Math.min(H*.48,.95),left=-maxX*scale*.5;
+   const px=s.x.sub(f.origin[0]),pz=s.z.sub(f.origin[2]);
+   const y=s.y.sub(cy-scale*.5);
+   const x=px.mul(f.u[0]).add(pz.mul(f.u[2])).sub(left).sub(y.mul(.16));
+   const depth=px.mul(f.n[0]).add(pz.mul(f.n[2])).abs();
+   const gate=depth.smoothstep(f.depth*.6,f.depth).oneMinus().mul(vertical);
+   let distance=null;
+   for(const path of paths)for(let i=1;i<path.length;++i){
+    const a=path[i-1].map(v=>v*scale),b=path[i].map(v=>v*scale),dx=b[0]-a[0],dy=b[1]-a[1];
+    const ax=x.sub(a[0]),ay=y.sub(a[1]);
+    let d;
+    if(Math.abs(dx)<1e-8)d=ax.abs().pow(2).add(ay.sub(ay.clamp(Math.min(0,dy),Math.max(0,dy))).abs().pow(2)).pow(.5);
+    else if(Math.abs(dy)<1e-8)d=ay.abs().pow(2).add(ax.sub(ax.clamp(Math.min(0,dx),Math.max(0,dx))).abs().pow(2)).pow(.5);
+    else {
+     const t=ax.mul(dx).add(ay.mul(dy)).mul(1/(dx*dx+dy*dy)).clamp(0,1);
+     d=ax.sub(t.mul(dx)).abs().pow(2).add(ay.sub(t.mul(dy)).abs().pow(2)).pow(.5);
+    }
+    distance=distance?distance.min(d):d;
+   }
+   const aa=s.footprint.max(.004),wear=fine.smoothstep(-.55,-.18).mul(.86);
+   const stroke=radius=>distance.sub(radius).mul(aa.pow(-1)).add(.5).smoothstep(0,1).oneMinus().mul(gate).mul(wear);
+   coat([.017,.024,.018],stroke(scale*.087+.010),.67);
+   coat(ink,stroke(scale*.045+.006),.53);
+  }
+ }
+ const inverse=alpha.max(.00001).pow(-1);
+ s.coat({baseColor:rgb.map(v=>v.mul(inverse)),roughness:rough2.mul(inverse).pow(.5)},alpha);
+}

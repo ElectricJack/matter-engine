@@ -1,0 +1,471 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 394.3655713890039,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/native-environment.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "1200",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/profile.json",
+    "--env",
+    "MATTER_PIPELINE_PROFILE=1"
+  ],
+  "changed_inputs_during_run": [],
+  "validation_enabled": false,
+  "page_event_logging": false,
+  "pipeline_creation_logging": true,
+  "full_vt_acceptance": false,
+  "analysis_command": [
+    "python3",
+    "tools/vt_acceptance.py",
+    "--trace",
+    "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/vt.jsonl",
+    "--output",
+    "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-feedback-cost-performance-summary.json",
+    "--begin-marker",
+    "settle_begin",
+    "--end-marker",
+    "settle_end",
+    "--required-frames",
+    "600",
+    "--require-settled"
+  ],
+  "analysis_exit": 0,
+  "analysis_file": "terrain-feedback-cost-performance-summary.json",
+  "gpu_total_ms": {
+    "samples": 601,
+    "p50_ms": 75.29344177246094,
+    "p95_ms": 85.98409271240234,
+    "p99_ms": 91.81072235107422,
+    "max_ms": 93.96691131591797
+  },
+  "gpu_distinct_sequences": 601,
+  "end_counters": {
+    "active": 1,
+    "variants": 789,
+    "pool_used": 1513,
+    "pool_capacity": 33024,
+    "replacement_reserve_pages": 64,
+    "dirty_pages": 0,
+    "fills_stale_total": 0,
+    "pinned": 789,
+    "queue": 0,
+    "mandatory_queue": 0,
+    "detail_queue": 0,
+    "oldest_mandatory_age_frames": 0,
+    "oldest_detail_age_frames": 0,
+    "fills_total": 1513,
+    "evictions_total": 0,
+    "invalidations_total": 0,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "requests_dropped_total": 0,
+    "enrich_total": 0,
+    "enrich_queue": 0,
+    "shared_refs_total": 0,
+    "finer_rebuilds_total": 0,
+    "mesh_bytes": 288107279,
+    "pool_bytes": 4275683328,
+    "resident_sectors": 2586,
+    "vertex_uploads": 605,
+    "cluster_uploads": 605,
+    "dlss_resets": 0,
+    "output_width": 1920,
+    "output_height": 1080,
+    "internal_width": 1920,
+    "internal_height": 1080,
+    "cpu_demand_ms": 0.235,
+    "cpu_begin_ms": 0.1376,
+    "cpu_pre_pass_ms": 0.0213,
+    "cpu_post_pass_ms": 0.0036,
+    "cpu_registration_ms": 0,
+    "gpu_readback_sequence": 4110,
+    "gpu_total_ms": 68.87321472167969,
+    "gpu_vt_page_ms": 0.0010239999974146485,
+    "gpu_vt_feedback_ms": 0.02409599907696247,
+    "gpu_vt_ms": 0.025119999423623085,
+    "fills_per_frame": 8,
+    "tail_fills_per_frame": 8,
+    "enrich_per_frame": 0,
+    "queue_cap": 256,
+    "request_budget_ms": 5.090000152587891,
+    "linger_frames": 4,
+    "evict_protect_frames": 16
+  },
+  "stats_lines": [
+    "STATS,startup_ready,2695.42,0.00,0.00,0.00,0,0,0,0,0,0,0,0,0.0,0.0,0,0,0,0.00,0,0.000,0.000,0.000,0.000,0.000,0.00,0.000,0.000,0.000",
+    "STATS,settle_begin,74.65,1.92,0.16,1.84,789,63,151991,687,39,789,0,32768,274.8,3512.0,320,180,256,478.12,2,0.000,0.273,0.207,4.001,0.193,84.00,74.501,0.034,34.093",
+    "STATS,settle_end,76.51,2.80,0.17,1.59,789,63,151991,687,39,789,0,32768,274.8,3512.0,320,180,256,478.12,2,0.000,0.267,0.213,4.171,0.175,84.00,75.770,0.031,36.181"
+  ],
+  "profile_registry": {
+    "zones": 102,
+    "zone_capacity": 128,
+    "counters": 40,
+    "counter_capacity": 64,
+    "rejected_zone_registrations": 0,
+    "rejected_counter_registrations": 0
+  },
+  "vt_cpu_scopes": {
+    "cull.vt_demand": {
+      "samples": 512,
+      "p50_ms": 0.32315,
+      "p95_ms": 0.5668449999999998,
+      "p99_ms": 0.7463989999999998,
+      "max_ms": 0.9244
+    },
+    "vt.demand_stamp": {
+      "samples": 512,
+      "p50_ms": 0.24035,
+      "p95_ms": 0.41326999999999997,
+      "p99_ms": 0.5325309999999998,
+      "max_ms": 0.6705
+    },
+    "vt.demand_sort": {
+      "samples": 511,
+      "p50_ms": 0.0003,
+      "p95_ms": 0.0007,
+      "p99_ms": 0.0010899999999999979,
+      "max_ms": 0.0023
+    },
+    "cull.vt_begin": {
+      "samples": 512,
+      "p50_ms": 0.14545000000000002,
+      "p95_ms": 0.24605999999999992,
+      "p99_ms": 0.31259099999999973,
+      "max_ms": 0.443
+    },
+    "vt.demand_linger": {
+      "samples": 512,
+      "p50_ms": 0.07145,
+      "p95_ms": 0.156125,
+      "p99_ms": 0.22219199999999997,
+      "max_ms": 0.2829
+    },
+    "vt.push_inputs": {
+      "samples": 512,
+      "p50_ms": 0.0005,
+      "p95_ms": 0.0013,
+      "p99_ms": 0.0017,
+      "max_ms": 0.0029
+    },
+    "vt.residency_begin": {
+      "samples": 512,
+      "p50_ms": 0.1332,
+      "p95_ms": 0.22494999999999998,
+      "p99_ms": 0.2873429999999999,
+      "max_ms": 0.3821
+    },
+    "vt.collect": {
+      "samples": 512,
+      "p50_ms": 0.0014,
+      "p95_ms": 0.0033,
+      "p99_ms": 0.0045889999999999985,
+      "max_ms": 0.0108
+    },
+    "vt.drain_feedback": {
+      "samples": 512,
+      "p50_ms": 0.13,
+      "p95_ms": 0.22025999999999998,
+      "p99_ms": 0.28386799999999984,
+      "max_ms": 0.375
+    },
+    "vt.fb_dedup": {
+      "samples": 512,
+      "p50_ms": 0.02,
+      "p95_ms": 0.0264,
+      "p99_ms": 0.03347899999999999,
+      "max_ms": 0.0599
+    },
+    "vt.fb_queue": {
+      "samples": 512,
+      "p50_ms": 0.0334,
+      "p95_ms": 0.06885999999999999,
+      "p99_ms": 0.09554899999999995,
+      "max_ms": 0.1416
+    },
+    "vt.feedback_target": {
+      "samples": 512,
+      "p50_ms": 0.0004,
+      "p95_ms": 0.0009,
+      "p99_ms": 0.0012,
+      "max_ms": 0.0019
+    },
+    "vt.descriptors": {
+      "samples": 512,
+      "p50_ms": 0.0060999999999999995,
+      "p95_ms": 0.0126,
+      "p99_ms": 0.01723599999999997,
+      "max_ms": 0.0343
+    },
+    "vt.enrich": {
+      "samples": 512,
+      "p50_ms": 0.0003,
+      "p95_ms": 0.0007,
+      "p99_ms": 0.0009,
+      "max_ms": 0.0015
+    },
+    "vt.table_upload": {
+      "samples": 512,
+      "p50_ms": 0.0158,
+      "p95_ms": 0.034824999999999995,
+      "p99_ms": 0.05267199999999994,
+      "max_ms": 0.10740000000000001
+    },
+    "vt.fb_scan": {
+      "samples": 512,
+      "p50_ms": 0.07005,
+      "p95_ms": 0.122045,
+      "p99_ms": 0.17284299999999989,
+      "max_ms": 0.26580000000000004
+    }
+  },
+  "pipeline_creation": [
+    {
+      "kind": "compute",
+      "ms": 0.1637,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3417 ms=0.163700 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.2871,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3467 ms=0.287100 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.2659,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3467 ms=0.265900 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 1.4538,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4279 ms=1.453800 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1421,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4357 ms=0.142100 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1457,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4398 ms=0.145700 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1288,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4431 ms=0.128800 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0143,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4473 ms=0.014300 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0084,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4491 ms=0.008400 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.6503,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4644 ms=0.650300 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.6079,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:4895 ms=0.607900 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1247,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:4910 ms=0.124700 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1356,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_display_pipeline:5023 ms=0.135600 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1172,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_overlay_line_pipeline:5141 ms=0.117200 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 2.4998,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_gi_temporal_pipeline:3554 ms=2.499800 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.1277,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_gi_atrous_pipeline:3614 ms=0.127700 result=0"
+    },
+    {
+      "kind": "ray_tracing",
+      "ms": 39.4622,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=ray_tracing caller=create_ray_tracing_pipeline:4035 ms=39.462200 result=0"
+    }
+  ],
+  "validation_error_lines": [],
+  "source_manifest": "feedback-cost-integration-source.json",
+  "comparison_limits": [
+    "One current-revision sample; compare repetitions separately.",
+    "Dedicated VT GPU time excludes draw sampling.",
+    "Compare geometry/page/input identities before attributing timing differences.",
+    "Known broad RT/primary-light-cull assertions reproduce on the archived evaluation build."
+  ],
+  "settled_cpu_target_pass": false,
+  "cpu_vt_render_thread": {
+    "samples": 601,
+    "p50_ms": 0.5054,
+    "p95_ms": 0.8118000000474975,
+    "p99_ms": 1.0232,
+    "max_ms": 1.435200000094995
+  },
+  "cpu_vt_demand": {
+    "samples": 601,
+    "p50_ms": 0.3235,
+    "p95_ms": 0.5722,
+    "p99_ms": 0.7484,
+    "max_ms": 0.9958
+  },
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/analysis.log",
+      "bytes": 2326,
+      "sha256": "26654c8a073d4d70e43e692b7efb88c53b1227b2035b66309979f194d16bd55c"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/command.json",
+      "bytes": 1676,
+      "sha256": "c7db72a010c715df393285c1c5b3d2c9bd6f8b7796cb151a1ec0e97f732dfc26"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/driver.log",
+      "bytes": 518198,
+      "sha256": "f2f1377018be1a5c69423924a0b2ff4ea292a262328cbef720a550de51e372f7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/launch-source.json",
+      "bytes": 58145,
+      "sha256": "55c86a3378b4262f55e1d3d724e113aae53e5437a920bf809c403a1f36640434"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/native-environment.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/profile.json",
+      "bytes": 4044414,
+      "sha256": "1ccf4ab22d08752d4b6cf6317e56252cf74c232fc3bc4587a4b84216ea9db290"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/result.json",
+      "bytes": 2024,
+      "sha256": "0a00f1b70c4f81009f5ce07235dcd757ca8ae0a95c43e0cdee282fa8a6d8093d"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/run/cmd.txt",
+      "bytes": 244,
+      "sha256": "b7b8fae4c420678172da91cf2ed503f94adab06544ee155e5321f78a46b7d07b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/run/log.txt",
+      "bytes": 517705,
+      "sha256": "c0ef1f583c404be4bf552e7dd23168be278060f2ce17a4ad441d80748d9e60e4"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/settled.png",
+      "bytes": 5885581,
+      "sha256": "c0f88a30a1896dca6e3ed8c0ba5417a621d0428c67219e27346631a48ee22abe"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/timeline.txt",
+      "bytes": 244,
+      "sha256": "b7b8fae4c420678172da91cf2ed503f94adab06544ee155e5321f78a46b7d07b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-feedback-cost-performance/vt.jsonl",
+      "bytes": 1877264,
+      "sha256": "d3fe1d144113650a19a5ba9b1255e07a39d5d06cb237c3ed35e0a0400d50102b"
+    }
+  ],
+  "analysis_script": {
+    "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/summarize_performance.py",
+    "sha256": "fb175e722f234148edb8507cdb443811a22199be615a84c17ac41a70a5794797"
+  },
+  "visual_review": "Forest/valley composition retained; granular ground and noisy foliage remain. Final screenshot inspected; no material-authoring improvement or intermediate continuity proof claimed."
+}

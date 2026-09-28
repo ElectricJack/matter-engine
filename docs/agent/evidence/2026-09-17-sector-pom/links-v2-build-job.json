@@ -1,0 +1,12 @@
+{
+  "pid": 915997,
+  "result": "docs/agent/evidence/2026-09-17-sector-pom/links-v2-build-result.json",
+  "log": "docs/agent/evidence/2026-09-17-sector-pom/links-v2-build.log",
+  "args": [
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py",
+    "sector-links-v2",
+    "vulkan_smoke_tests",
+    "vt_compositor_tests"
+  ],
+  "gpu_tests": "not started; interactive editor review remains active"
+}

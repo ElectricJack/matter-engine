@@ -1,0 +1,189 @@
+[
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v1-0",
+      "command": "viewport.capture",
+      "args": {
+        "path": "D:/tmp/matter-vt/20260915-pom-boundaries/terrain-identity-v1.png"
+      },
+      "timeout_ms": 30000
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v1-0",
+      "command": "viewport.capture",
+      "ticket_id": "11",
+      "ok": true,
+      "code": "ok",
+      "message": "",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "266"
+        },
+        "view": {
+          "id": "266"
+        }
+      },
+      "result": {
+        "path": "D:/tmp/matter-vt/20260915-pom-boundaries/terrain-identity-v1.png",
+        "completion_marker": "D:/tmp/matter-vt/20260915-pom-boundaries/terrain-identity-v1.png.done",
+        "image": {
+          "format": "png",
+          "width": 1280,
+          "height": 800,
+          "framebuffer_origin": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        "viewport": {
+          "logical": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "image": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer_scale": {
+            "x": 1,
+            "y": 1
+          },
+          "production_view": true
+        },
+        "pick_mapping": {
+          "target_space": "viewport_local_logical_pixels",
+          "image_offset": {
+            "x": 0,
+            "y": 0
+          },
+          "divide_by": {
+            "x": 1,
+            "y": 1
+          },
+          "formula": "viewport_x = (image_x - image_offset.x) / divide_by.x; same for y"
+        },
+        "camera": {
+          "position": [
+            11,
+            4,
+            16
+          ],
+          "target": [
+            8,
+            2.5,
+            10
+          ],
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "vertical_fov_radians": 0.7853981852531433,
+          "near_plane": 0.10000000149011612,
+          "far_plane": 3871
+        },
+        "captured": {
+          "session": {
+            "id": "1",
+            "generation": "1"
+          },
+          "scene": {
+            "generation": "1",
+            "revision": "1",
+            "ready": true
+          },
+          "selection": {
+            "revision": "0"
+          },
+          "frame": {
+            "id": "266"
+          },
+          "view": {
+            "id": "266"
+          }
+        },
+        "presented": {
+          "id": "266",
+          "view_id": "266"
+        },
+        "annotations": {
+          "available": false,
+          "reason": "annotate_selection was not requested"
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v1-1",
+      "command": "viewport.pick",
+      "args": {
+        "x": 1040.0,
+        "y": 430.0
+      },
+      "timeout_ms": 30000,
+      "expect": {
+        "view_id": "266"
+      }
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v1-1",
+      "command": "viewport.pick",
+      "ticket_id": null,
+      "ok": false,
+      "code": "stale_revision",
+      "message": "one or more expected revisions do not match current context",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "273"
+        },
+        "view": {
+          "id": "273"
+        }
+      },
+      "result": null
+    }
+  }
+]

@@ -1,0 +1,53 @@
+{
+  "sources": {
+    "projects/world_demo/shared-lib/brick_wall_layout.js": "a213a09d995ff60328831ee705141e5adac518aec26d98172064f367df47dd5f",
+    "projects/world_demo/shared-lib/brick_wall_geometry.js": "34ca330bcb2c578d5cc9254df873847685aa6e93eb1d5dbbb3839bbd23b6f0f9",
+    "projects/world_demo/shared-lib/clay_brick_wall_surface.js": "5055fa3d55588351495c0abc7d900c20ed3d571c345d0b5282c2e32a8bc9bf56",
+    "projects/world_demo/shared-lib/clay_brick_wall_path.js": "915f5fa772fd72873c98f2069447f6c294c0548e24082f9ebf64ce9437d6eb48",
+    "projects/world_demo/shared-lib/wall_weathering.js": "9c67f48c4e6a33688f2e32d15bfa426cfea63857389be63295f4b80d82c5d75e",
+    "projects/world_demo/scenes/texturing/bricks/PeriodicBrickWallProof/PeriodicBrickWallProof.js": "f33e7471ce83af655ef9547c801f3dd973add5a3601fe061c1c0cbc3e6fb3b78",
+    "projects/world_demo/tests/brick_surface_module_tests.mjs": "49620cb2d0e2b9f55c7bb84edd905a7873570aab24456df5ca91f8df6e26950c",
+    "projects/world_demo/tests/brick_wall_layout_tests.mjs": "eeff7eb30a7cb3acf2b2bec4cf0cfb8ffb11337da7ab1ff9bb5cc445d698095c",
+    "projects/world_demo/tests/clay_brick_wall_path_tests.mjs": "c79a34ccb04c9431b0defecbd544237ea1aa153a7e129dc1b69f488d80126b17",
+    "projects/world_demo/tests/wall_weathering_tests.mjs": "575156e28675dbddd41f1c0ec95a3e7bdce99dc7b248286033d0771c7166bea4"
+  },
+  "runs": [
+    {
+      "command": [
+        "node",
+        "projects/world_demo/tests/brick_surface_module_tests.mjs"
+      ],
+      "exit": 0,
+      "seconds": 0.2131387879999238,
+      "log_sha256": "a6fad2646da76c1f14ee78dfca67be6470e83eacc22a036598783126c7e95e90"
+    },
+    {
+      "command": [
+        "node",
+        "projects/world_demo/tests/brick_wall_layout_tests.mjs"
+      ],
+      "exit": 0,
+      "seconds": 0.15631020399996487,
+      "log_sha256": "f9d76c0e553b4d7df6a06d12bd7b084300b290ffd014f9e0ecb39dd7f3f1bb96"
+    },
+    {
+      "command": [
+        "node",
+        "projects/world_demo/tests/clay_brick_wall_path_tests.mjs"
+      ],
+      "exit": 0,
+      "seconds": 0.24464526400061004,
+      "log_sha256": "27eb85d3e2b2bd1cbff589d1a144f1a74c58da3d90ac6fa7bd38dc1f112b8d61"
+    },
+    {
+      "command": [
+        "node",
+        "projects/world_demo/tests/wall_weathering_tests.mjs"
+      ],
+      "exit": 0,
+      "seconds": 0.40158706800048094,
+      "log_sha256": "450d930a770848ef96437d3b9155ef257d1e23b54e9c6d1df9e5e121094ede05"
+    }
+  ],
+  "source_changes": []
+}

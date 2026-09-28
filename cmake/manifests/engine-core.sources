@@ -57,6 +57,16 @@ MatterEngine3/src/world_flatten.cpp|all
 MatterEngine3/src/part_flatten.cpp|all
 MatterEngine3/src/warp_field.cpp|all
 MatterEngine3/src/impostor_bake.cpp|all
+MatterEngine3/src/sparse_voxel_bake.cpp|all
+MatterEngine3/src/surface_proxy.cpp|all
+MatterEngine3/src/surface_proxy_lod.cpp|all
+MatterEngine3/src/mesh_error.cpp|all
+MatterEngine3/src/geometry/geometry_compiler.cpp|all
+MatterEngine3/src/geometry/geometry_pages.cpp|all
+MatterEngine3/src/geometry/geometry_cut.cpp|all
+MatterEngine3/src/geometry/geometry_residency.cpp|all
+MatterEngine3/src/geometry/geometry_asset.cpp|all
+MatterEngine3/src/sparse_voxel_hierarchy.cpp|all
 MatterEngine3/src/retopo_blacklist.cpp|all
 MatterEngine3/src/modifier_apply.cpp|all
 MatterEngine3/src/sector_grid.cpp|all
@@ -111,6 +121,11 @@ MatterEngine3/src/render/lod_trace.cpp|all
 MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp|all
 MatterEngine3/src/render/gpu_meshing/gpu_solid_mesher_common.cpp|all
 MatterEngine3/src/render/gpu_meshing/solid_face_projection_common.cpp|all
+MatterEngine3/src/projected_face_cache.cpp|all
+MatterEngine3/src/face_material_bake.cpp|all
+MatterEngine3/src/finite_surface_stamp.cpp|all
+MatterEngine3/src/part_surface.cpp|all
+MatterEngine3/src/asset_export.cpp|all
 MatterEngine3/src/brick_bond_atlas.cpp|all
 MatterEngine3/src/brick_bond_detail.cpp|all
 MatterEngine3/src/render/tileset_slicer.cpp|all
@@ -169,3 +184,10 @@ MatterEngine3/src/util/json_doc.cpp|all
 MatterEngine3/src/props/props.cpp|all
 MatterEngine3/src/props/props_file.cpp|all
 MatterEngine3/src/props/draw_overrides.cpp|all
+
+# Binary geometry pages (CMake links the same source-of-truth library target).
+libs/AssetStoreLib/src/store_hash.cpp|all
+libs/AssetStoreLib/src/store_os.cpp|all
+libs/AssetStoreLib/src/blob_store.cpp|all
+libs/AssetStoreLib/src/ref_table.cpp|all
+libs/AssetStoreLib/src/asset_pages.cpp|all

@@ -1,0 +1,26 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 64.95205624200753,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,whole-bricks-v4-group,active=1,variants=83/32768,rejected=0,mesh=34.3/3512.0 MiB,pool=185/25600,pinned=83,queue=8,fills=179,evictions=0,ind=0.13/64 MiB",
+    "STATSVT,whole-bricks-v4-close,active=1,variants=83/32768,rejected=0,mesh=34.3/3512.0 MiB,pool=271/25600,pinned=83,queue=0,fills=273,evictions=0,ind=0.13/64 MiB",
+    "STATSVT,whole-bricks-v4-grazing,active=1,variants=83/32768,rejected=0,mesh=34.3/3512.0 MiB,pool=292/25600,pinned=83,queue=0,fills=294,evictions=0,ind=0.13/64 MiB",
+    "STATSVT,whole-bricks-v4-rt,active=1,variants=83/32768,rejected=0,mesh=34.3/3512.0 MiB,pool=292/25600,pinned=83,queue=0,fills=294,evictions=0,ind=0.13/64 MiB",
+    "STATSVT,whole-bricks-v4-albedo,active=1,variants=83/32768,rejected=0,mesh=34.3/3512.0 MiB,pool=292/25600,pinned=83,queue=0,fills=294,evictions=0,ind=0.13/64 MiB",
+    "STATSVT,whole-bricks-v4-normals,active=1,variants=83/32768,rejected=0,mesh=34.3/3512.0 MiB,pool=292/25600,pinned=83,queue=0,fills=294,evictions=0,ind=0.13/64 MiB",
+    "STATSVT,whole-bricks-v4-wireframe,active=1,variants=83/32768,rejected=0,mesh=34.3/3512.0 MiB,pool=380/25600,pinned=83,queue=0,fills=382,evictions=0,ind=0.13/64 MiB"
+  ],
+  "images": {
+    "whole-bricks-v4-group.png": "2c2ece290ec26a37d338d15bda3c45ed8e0cbf203e21abbfda0a54712dffb649",
+    "whole-bricks-v4-close.png": "233bff7568df5a1e9cf4aed9572a3c4f3b6e9f6f21229f1f7381962e034a6d8b",
+    "whole-bricks-v4-grazing.png": "12658000ae2d778a004b4e6aa2754e38f64c0315601ad1a25cbe147fff349b5a",
+    "whole-bricks-v4-rt.png": "3b1eac056c2fa9d58c68b8cce297fcd4beabff2bfae8d973a7121e9506ecab50",
+    "whole-bricks-v4-albedo.png": "42a1433176d9ec6661071e81a9932928e3da0e1e3fc1cf363b0ec47c9c0b00db",
+    "whole-bricks-v4-normals.png": "6146e5e3828616ed7011517b7772021d7870e6a61f970f6d1ac3bb0a7b1841ad",
+    "whole-bricks-v4-wireframe.png": "c413be68fa7f90f9815f08618dd8133d6a2a68374d9c6a3bef15a7b8791bd6ce"
+  },
+  "passed": true
+}

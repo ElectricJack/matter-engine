@@ -1,0 +1,196 @@
+{
+  "exit": 0,
+  "seconds": 412.9797605719941,
+  "summary": {
+    "valley-flat": {
+      "samples": 20,
+      "frame_ms": {
+        "median": 9.125,
+        "p95": 10.55
+      },
+      "resolve_ms": {
+        "median": 2.6500000000000004,
+        "p95": 3.38
+      },
+      "build_ms": {
+        "median": 0.44,
+        "p95": 0.73
+      },
+      "draw_ms": {
+        "median": 4.48,
+        "p95": 5.5
+      },
+      "gpu_total_ms": {
+        "median": 5.7105,
+        "p95": 6.32
+      },
+      "gpu_cull_ms": {
+        "median": 0.035500000000000004,
+        "p95": 0.043
+      },
+      "gpu_gbuffer_ms": {
+        "median": 3.238,
+        "p95": 3.597
+      }
+    },
+    "valley-pom": {
+      "samples": 20,
+      "frame_ms": {
+        "median": 19.009999999999998,
+        "p95": 19.42
+      },
+      "resolve_ms": {
+        "median": 2.255,
+        "p95": 3.04
+      },
+      "build_ms": {
+        "median": 0.395,
+        "p95": 0.72
+      },
+      "draw_ms": {
+        "median": 3.415,
+        "p95": 5.16
+      },
+      "gpu_total_ms": {
+        "median": 18.4555,
+        "p95": 18.666
+      },
+      "gpu_cull_ms": {
+        "median": 0.0535,
+        "p95": 0.069
+      },
+      "gpu_gbuffer_ms": {
+        "median": 15.7585,
+        "p95": 15.924
+      }
+    },
+    "cliff-flat": {
+      "samples": 20,
+      "frame_ms": {
+        "median": 17.16,
+        "p95": 19.0
+      },
+      "resolve_ms": {
+        "median": 4.16,
+        "p95": 4.86
+      },
+      "build_ms": {
+        "median": 0.645,
+        "p95": 1.29
+      },
+      "draw_ms": {
+        "median": 9.08,
+        "p95": 10.63
+      },
+      "gpu_total_ms": {
+        "median": 11.815000000000001,
+        "p95": 12.763
+      },
+      "gpu_cull_ms": {
+        "median": 0.059,
+        "p95": 0.064
+      },
+      "gpu_gbuffer_ms": {
+        "median": 7.439,
+        "p95": 8.208
+      }
+    },
+    "cliff-pom": {
+      "samples": 20,
+      "frame_ms": {
+        "median": 111.86500000000001,
+        "p95": 113.21
+      },
+      "resolve_ms": {
+        "median": 3.3899999999999997,
+        "p95": 4.14
+      },
+      "build_ms": {
+        "median": 0.68,
+        "p95": 0.83
+      },
+      "draw_ms": {
+        "median": 8.934999999999999,
+        "p95": 10.12
+      },
+      "gpu_total_ms": {
+        "median": 111.306,
+        "p95": 112.35
+      },
+      "gpu_cull_ms": {
+        "median": 0.066,
+        "p95": 0.071
+      },
+      "gpu_gbuffer_ms": {
+        "median": 106.88,
+        "p95": 107.994
+      }
+    }
+  },
+  "settles": [
+    {
+      "phase": "valley-flat",
+      "seconds": 209.36743156400917,
+      "state": [
+        "791",
+        "791",
+        "0",
+        "1603"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "valley-pom",
+      "seconds": 14.280228456002078,
+      "state": [
+        "791",
+        "791",
+        "0",
+        "1603"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "cliff-flat",
+      "seconds": 53.735306672999286,
+      "state": [
+        "1054",
+        "794",
+        "0",
+        "3900"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "cliff-pom",
+      "seconds": 14.286444792000111,
+      "state": [
+        "1054",
+        "794",
+        "0",
+        "3921"
+      ],
+      "settled": true
+    }
+  ],
+  "input_lock": {
+    "enabled": false,
+    "editor_pid": 54140,
+    "driver_pid": 58304,
+    "window": 11864648
+  },
+  "presentation": [
+    "[vk] present requested=immediate effective=immediate(0) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=2796x1044"
+  ],
+  "diagnostic_path": [
+    "[terrain-profile] G-buffer POM path=work (diagnostic; raw albedo encodes log2(count+1)/24; horizon 9 selects walk work)"
+  ],
+  "sample_counts_complete": true,
+  "binary_unchanged": true,
+  "shader_changes": [],
+  "missing_shots": [],
+  "wrong_dimensions": [],
+  "errors": [],
+  "connection_warning_count": 1056,
+  "acceptance_passed": false
+}

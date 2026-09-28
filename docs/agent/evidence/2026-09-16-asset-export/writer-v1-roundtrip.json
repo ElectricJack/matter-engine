@@ -1,0 +1,13 @@
+{
+  "png_crc": true,
+  "height_exact_16bit": [
+    0,
+    1,
+    255,
+    256,
+    32768,
+    65535
+  ],
+  "normal_handedness": true,
+  "obj_geometry_uv_indices": true
+}

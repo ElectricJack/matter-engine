@@ -341,6 +341,64 @@ static void test_helper_pure_outputs() {
 #ifdef SP2_SCRIPT_HOST
 #include "script_host.h"   // SP-2
 
+static void test_module_bytecode_isolation_and_dependency_change() {
+    const fs::path root = fs::temp_directory_path() / "me3_bytecode_modules";
+    std::error_code ec; fs::remove_all(root, ec); fs::create_directories(root);
+    std::ofstream(root / "leaf.js") << "export const value=1;";
+    std::ofstream(root / "parent.js") <<
+        "import {value} from 'shared-lib/leaf'; let calls=0; export function next(){return value+(calls++);}";
+    const std::string source = "import {next} from 'shared-lib/parent'; class Cached extends Part { static params={n:next()}; build(){} }";
+    script_host::ScriptHost identity; identity.set_shared_lib_root(root.string());
+    const auto request=identity.resolve_request_hash(source,"{}");
+    CHECK(request && request==identity.resolve_request_hash(source,"{}"), "prepared request identity is stable");
+    // Match the original unsplit v1 request byte stream exactly, including
+    // embedded nulls in length framing, rather than only checking stability.
+    module_resolver::FoldResult request_fold; std::string request_error;
+    CHECK(identity.fold_sources_cached(source, request_fold, request_error), request_error.c_str());
+    std::string framed = "prepared-resolve-request-v1";
+    const auto append_length = [&](size_t value) {
+        for (unsigned shift=0; shift<64; shift+=8)
+            framed.push_back(static_cast<char>((uint64_t(value) >> shift) & 255));
+    };
+    append_length(request_fold.folded.size());
+    framed.append(request_fold.folded.data(), request_fold.folded.size());
+    append_length(2); framed.append("{}");
+    CHECK(request == part_asset::compute_resolved_hash(framed.data(), framed.size(), "", 0, nullptr, 0),
+          "memoized request prefix preserves existing manifest keys");
+
+    CHECK(request!=identity.resolve_request_hash(source,"{\"n\":2}"), "raw parameter changes invalidate prepared request");
+    CHECK(request!=identity.resolve_request_hash(source+"\n// edited", "{}"), "authored source changes invalidate prepared request");
+    const uint64_t children[]={8,3}, reordered[]={3,8}, changed_children[]={3,9};
+    CHECK(identity.resolve_request_hash(source,"{}",children,2)==identity.resolve_request_hash(source,"{}",reordered,2),
+          "prepared request children are order independent");
+    CHECK(identity.resolve_request_hash(source,"{}",children,2)!=identity.resolve_request_hash(source,"{}",changed_children,2),
+          "prepared request child changes invalidate identity");
+    CHECK(identity.resolve_request_hash(source,"{}",nullptr,1)==0,"prepared request rejects invalid child range");
+    CHECK(identity.resolve_request_hash("throw new Error('must not execute'); class Probe extends Part {}", "{}")!=0,
+          "request fingerprint does not evaluate JavaScript");
+    uint64_t original=0;
+    for(int i=0;i<4;++i) {
+        script_host::ScriptHost host; host.set_shared_lib_root(root.string());
+        const auto hash=host.resolve_hash(source,"{}");
+        CHECK(hash && host.last_merged_params()=="{\"n\":1}", "module bytecode has fresh closure state in each context");
+        if(!i)original=hash; else CHECK(hash==original,"bytecode reuse preserves resolved hash");
+    }
+    std::ofstream(root / "leaf.js") << "export const value=2;";
+    identity.clear_fold_cache();
+    CHECK(identity.resolve_request_hash(source,"{}")!=request,
+          "clearing folds also invalidates memoized request source prefix");
+    script_host::ScriptHost changed; changed.set_shared_lib_root(root.string());
+    CHECK(changed.resolve_request_hash(source,"{}")!=request,"transitive dependency changes invalidate prepared request");
+    const auto updated=changed.resolve_hash(source,"{}");
+    CHECK(updated && updated!=original && changed.last_merged_params()=="{\"n\":2}",
+        "unchanged parent bytecode links updated dependency in fresh context");
+    fs::remove(root / "leaf.js");
+    changed.clear_fold_cache();
+    CHECK(changed.resolve_hash(source,"{}")==0,"missing dependency cannot be served by bytecode cache");
+    CHECK(changed.resolve_request_hash(source,"{}")==0,"prepared request fails closed on missing dependency");
+    fs::remove_all(root,ec);
+}
+
 static void test_script_host_ordered_roots_affect_hash_identity() {
     const fs::path root = fs::temp_directory_path() / "me3_script_host_roots";
     const fs::path project = root / "project";
@@ -500,6 +558,9 @@ int main() {
     test_scatter_grid();
     test_import_resolves_end_to_end();
     test_script_host_ordered_roots_affect_hash_identity();
+#ifdef SP2_SCRIPT_HOST
+    test_module_bytecode_isolation_and_dependency_change();
+#endif
     if (g_failures == 0) printf("All shared_lib tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }

@@ -1,0 +1,13 @@
+{
+  "mode": "load",
+  "exit_code": 0,
+  "completed": true,
+  "elapsed_seconds": 48.84002459999465,
+  "streamer_idle_seconds": 30.91217549999419,
+  "first_cache_seconds": 1.0634205999958795,
+  "last_cache_seconds": 7.124843899990083,
+  "compilations": 0,
+  "valid": true,
+  "first_vt_ready_seconds": 29.918852099988726,
+  "geometry_idle_seconds_approx": 13.82
+}

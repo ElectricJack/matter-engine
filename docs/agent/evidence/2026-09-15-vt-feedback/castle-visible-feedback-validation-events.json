@@ -1,0 +1,22 @@
+{
+  "event_count": 2461,
+  "recorded_count": 2461,
+  "duplicate_recorded_identities": 0,
+  "identity_fields": [
+    "owner",
+    "generation",
+    "revision",
+    "mip",
+    "x",
+    "y"
+  ],
+  "marker_vt_serials": [
+    2601,
+    3201
+  ],
+  "events_in_marked_interval": [],
+  "limitations": [
+    "Events establish recorded identity, not presentation or GPU completion.",
+    "Validation and event logging exclude this run from production-performance acceptance."
+  ]
+}

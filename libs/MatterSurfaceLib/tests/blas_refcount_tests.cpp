@@ -270,7 +270,46 @@ static void test_adopt_from_dedups_and_remaps() {
     printf("PASSED\n");
 }
 
+static void test_consume_transfers_allocations_and_refs() {
+    BLASManager shared, staged;
+    const auto resident = shared.register_triangles(makeTriSet(0));
+    shared.register_triangles(makeTriSet(20));
+    const auto duplicate = staged.register_triangles(makeTriSet(0));
+    assert(staged.register_triangles(makeTriSet(0)) == duplicate);
+    const auto newcomer = staged.register_triangles(makeTriSet(10));
+    assert(staged.register_triangles(makeTriSet(10)) == newcomer);
+    const auto* original = staged.get_entry(newcomer);
+    const auto* triangles = original->triangles.data();
+    const auto* mesh = original->mesh.get();
+    const auto* bvh = original->bvh.get();
+    const auto* nodes = bvh->bvhNode;
+    const auto* order = bvh->triIdx;
+    std::unordered_map<BLASHandle, BLASHandle> remap;
+    shared.consume_from(staged, remap);
+    assert(staged.get_unique_blas_count() == 0);
+    assert(remap.size() == 2 && remap.at(duplicate) == resident);
+    const auto moved = remap.at(newcomer);
+    const auto* entry = shared.get_entry(moved);
+    assert(entry == original && entry->triangles.data() == triangles);
+    assert(entry->mesh.get() == mesh && entry->bvh.get() == bvh);
+    assert(entry->bvh->bvhNode == nodes && entry->bvh->triIdx == order);
+    assert(entry->handle == moved && moved != newcomer && entry->ref_count == 2);
+    assert(shared.get_entry(resident)->ref_count == 3);
+    shared.release_blas(resident); shared.release_blas(resident);
+    assert(shared.has_blas(resident));
+    shared.release_blas(resident); assert(!shared.has_blas(resident));
+    shared.release_blas(moved); assert(shared.has_blas(moved));
+    shared.release_blas(moved); assert(!shared.has_blas(moved));
+    const auto reused = staged.register_triangles(makeTriSet(30));
+    assert(staged.has_blas(reused) && staged.get_unique_blas_count() == 1);
+    // Self-consumption must not destroy the source manager.
+    staged.consume_from(staged, remap);
+    assert(remap.empty() && staged.has_blas(reused));
+    printf("consume allocation ownership and multiplicity PASSED\n");
+}
+
 int main() {
+    test_consume_transfers_allocations_and_refs();
     test_adopt_from_dedups_and_remaps();
     test_dedup_and_release();
     test_content_revision_tracks_content_not_refcount();

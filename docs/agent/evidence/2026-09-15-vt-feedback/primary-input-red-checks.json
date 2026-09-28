@@ -1,0 +1,39 @@
+[
+  {
+    "name": "vulkan_smoke_tests",
+    "kind": "build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 26.678547637995507,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/primary-input-red-build-vulkan_smoke_tests.log",
+    "source_changes": [],
+    "failures": [],
+    "validation_errors": []
+  },
+  {
+    "name": "vt-input-snapshot",
+    "kind": "test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-input-snapshot\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "elapsed_seconds": 17.493368187999295,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/primary-input-red-test-vt-input-snapshot.log",
+    "source_changes": [],
+    "failures": [
+      "FAIL: input snapshot: primary RT keeps displayed material F0",
+      "FAIL: input snapshot: primary RT keeps displayed material F0",
+      "FAIL: input snapshot: primary RT keeps displayed material F0",
+      "FAIL: input snapshot: primary RT keeps displayed material F0"
+    ],
+    "validation_errors": []
+  }
+]

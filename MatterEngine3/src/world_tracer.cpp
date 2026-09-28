@@ -159,12 +159,10 @@ struct BLASSlice {
 // traced rather than what the file contains. A part that loads with no triangles
 // is a valid degenerate: inverted (empty) bounds, ok=true.
 struct LoadedTracePart {
-    // Owning managers — kept alive for the tracer's lifetime. BOTH NULL when
-    // the part came from the resident source: the slices then point into the
-    // caller's manager and this side owns nothing (which is the whole point —
-    // no second copy of the geometry, and no TLASManager(65536) per part).
+    // Own only geometry used by the tracer. Null for resident-source and
+    // failed parts. The loader's temporary TLAS is discarded after decoding;
+    // tracing uses the instance BVH below, not that TLAS or its draw records.
     std::unique_ptr<BLASManager> blas_mgr;
-    std::unique_ptr<TLASManager> tlas_mgr;
     // Entries to trace (into blas_mgr, or into the caller's manager).
     std::vector<BLASSlice> slices;
     // Children from the compositional file (empty if loaded from flat artifact).
@@ -307,9 +305,9 @@ struct WorldTracer::Impl {
     //
     // Source order: the resident callback first (counts into resident_hits_,
     // borrows the caller's entries, allocates nothing); otherwise disk
-    // (disk_loads_), which decodes the artifact into a private BLASManager plus
-    // a TLASManager(65536) owned by the record — genuinely expensive, and the
-    // reason ResidentSource exists. On the disk path the scratch dir is checked
+    // (disk_loads_), which decodes the artifact into a private BLASManager.
+    // The TLAS required by the loader is temporary and sized to the artifact's
+    // actual draw count. On the disk path the scratch dir is checked
     // before cache_root, and the flat artifact before the compositional .part.
     //
     // LOD choice: it traces the COARSEST level's entries (lods.back()) and falls
@@ -348,14 +346,11 @@ struct WorldTracer::Impl {
         ++disk_loads_;
 
         auto ltp = std::make_unique<LoadedTracePart>();
-        ltp->blas_mgr = std::make_unique<BLASManager>();
-        ltp->tlas_mgr = std::make_unique<TLASManager>(65536);
 
         std::vector<part_asset::ChildInstance> children;
         part_asset::LodLevels lods;
 
         // Try flat artifact first; fall back to compositional.
-        bool loaded = false;
         auto file_exists = [](const std::string& p) {
             struct stat st; return ::stat(p.c_str(), &st) == 0;
         };
@@ -368,18 +363,18 @@ struct WorldTracer::Impl {
             if (file_exists(sc)) comp_path = sc;
         }
 
-        if (part_asset::load_v2(flat_path, hash,
-                                *ltp->blas_mgr, *ltp->tlas_mgr,
-                                children, lods)) {
-            loaded = true;
-            ltp->loaded_flat = true;
-        } else if (part_asset::load_v2(comp_path, hash,
-                                       *ltp->blas_mgr, *ltp->tlas_mgr,
-                                       children, lods)) {
-            loaded = true;
-            ltp->loaded_flat = false;
-        }
-        if (!loaded) {
+        const auto try_load = [&](const std::string& path, bool flat) {
+            auto blas = std::make_unique<BLASManager>();
+            TLASManager scratch_tlas(0);
+            if (!part_asset::load_v2(path, hash, *blas, scratch_tlas, children, lods))
+                return false;
+            ltp->blas_mgr = std::move(blas);
+            ltp->loaded_flat = flat;
+            return true;
+        };
+        // Each attempt owns its scratch state. A failed flat cannot contaminate
+        // the compositional retry, and a negative cache entry retains no manager.
+        if (!try_load(flat_path, true) && !try_load(comp_path, false)) {
             err = "world_tracer: load_v2 failed for hash "
                   + std::to_string(hash) + " (tried flat + compositional)";
             ltp->ok = false;

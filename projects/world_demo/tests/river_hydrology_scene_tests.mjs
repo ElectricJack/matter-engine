@@ -25,7 +25,7 @@ const sharedUrl = `data:text/javascript;base64,${
 const shared = await import(sharedUrl);
 
 const sceneSource = (await requiredText(new URL(
-  '../scenes/RiverHydrology/RiverHydrology.js', import.meta.url),
+  '../scenes/water/RiverHydrology/RiverHydrology.js', import.meta.url),
   'RiverHydrology scene')).replace(
   "'shared-lib/river_hydrology_definition'", JSON.stringify(sharedUrl));
 const sceneUrl = `data:text/javascript;base64,${

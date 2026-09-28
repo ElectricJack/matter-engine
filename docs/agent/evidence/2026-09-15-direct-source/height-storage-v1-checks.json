@@ -1,0 +1,108 @@
+[
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "seconds": 75.93581249999988,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/height-storage-v1-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "compositor",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 5.264440150000155,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/height-storage-v1-test-compositor.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vulkan_smoke_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "seconds": 43.88698324600409,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/height-storage-v1-build-vulkan_smoke_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "vt-queue",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.9617821350111626,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/height-storage-v1-test-vt-queue.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "vt-direct-source",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-direct-source\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 71.86371682099707,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/height-storage-v1-test-vt-direct-source.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "surface-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 20.68960433000757,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/height-storage-v1-test-surface-parallax.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 6.853075457998784,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/height-storage-v1-build-matter_editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "terrain": {
+    "reference_files": 255,
+    "changed_reference_files": []
+  },
+  "castle": {
+    "reference_files": 255,
+    "changed_reference_files": []
+  }
+}

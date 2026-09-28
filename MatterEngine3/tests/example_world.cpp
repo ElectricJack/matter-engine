@@ -1,7 +1,7 @@
 // End-to-end MatterEngine3 example world over the committed Demo scene.
 //
 // Drives the WHOLE pipeline on committed assets under
-// ../../projects/world_demo (objects + scenes/Demo/Demo.js) and the shared script
+// ../../projects/world_demo (objects + scenes/examples/Demo/Demo.js) and the shared script
 // library under ../shared-lib:
 //
 //   SP-3  load_world_definition -> PartGraph::install (walk + dedup + cache)
@@ -84,8 +84,8 @@ int main() {
     // --- SP-2/SP-3/SP-7 wiring. set_shared_lib_root enables `import` resolution. ---
     // Object lookup is a SEARCH PATH, not a single directory: a scene's own
     // objects/ shadows the shared tier (Demo's roots live in
-    // scenes/Demo/objects/). The hash pass below walks the same list.
-    const std::vector<std::string> object_dirs{project + "/scenes/Demo/objects", objects};
+    // scenes/examples/Demo/objects/). The hash pass below walks the same list.
+    const std::vector<std::string> object_dirs{project + "/scenes/examples/Demo/objects", objects};
     script_host::ScriptHost host;
     host.set_shared_lib_root(shared_lib);
     FileModuleResolver resolver(host, object_dirs);
@@ -94,7 +94,7 @@ int main() {
 
     // --- SP-3: load world definition into root parts, then install (bake) them. ---
     matter::WorldLoadDesc load_desc;
-    load_desc.world_path = project + "/scenes/Demo/Demo.js";
+    load_desc.world_path = project + "/scenes/examples/Demo/Demo.js";
     load_desc.objects_dir = objects;
     load_desc.engine_shared_lib_dir = shared_lib;
     matter::WorldDefinition definition;

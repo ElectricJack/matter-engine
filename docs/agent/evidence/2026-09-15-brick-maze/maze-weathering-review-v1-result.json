@@ -1,0 +1,34 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 42.465033097993,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,maze-weathering-review-v1-overview,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=609/25600,pinned=21,queue=0,fills=609,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-corner,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=673/25600,pinned=21,queue=0,fills=673,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-curve,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=803/25600,pinned=21,queue=0,fills=803,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-tight-curve,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=962/25600,pinned=21,queue=0,fills=962,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-walkthrough,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=1086/25600,pinned=21,queue=0,fills=1086,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-close,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=1086/25600,pinned=21,queue=0,fills=1086,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-painted-court,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=1106/25600,pinned=21,queue=0,fills=1106,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-tag-divider,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=1224/25600,pinned=21,queue=0,fills=1224,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-albedo,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=1224/25600,pinned=21,queue=0,fills=1224,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-normals,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=1224/25600,pinned=21,queue=0,fills=1224,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,maze-weathering-review-v1-wireframe,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=1250/25600,pinned=21,queue=0,fills=1250,evictions=0,ind=0.16/64 MiB"
+  ],
+  "images": {
+    "maze-weathering-review-v1-overview.png": "23766520615e01bea92ed675eb44da9dbbe561caab25cf20505fef3a914a8132",
+    "maze-weathering-review-v1-corner.png": "6ac4239c42653ada830a324e77501fa02a9ab10684a0e44884a9cd955d24e040",
+    "maze-weathering-review-v1-curve.png": "060876ee74956d2cd7d2a0f6623c9604d897fcb96c23c205c4a66c4cb317cf1a",
+    "maze-weathering-review-v1-tight-curve.png": "4ad0aad97c1689dfbc751baa7652540536436bd829f0506c9c529843acc54f33",
+    "maze-weathering-review-v1-walkthrough.png": "a2155d1983198b39d0b3024df4a586b18282a26f288ed7b4a812f4ab3ee6c49f",
+    "maze-weathering-review-v1-close.png": "f0af02a8be3002161156fe7e54e65cfdc261d36ba6ae21bddcf6b499649b284f",
+    "maze-weathering-review-v1-painted-court.png": "980f96468ed600ec5eec5f13ad26232390478b6273f4df24239d5f8f44f94fd5",
+    "maze-weathering-review-v1-tag-divider.png": "27a4e29a2aecf016d35f7e25537322e2f04c3f23aa2f6cc58f14e7a1422d44ba",
+    "maze-weathering-review-v1-albedo.png": "859592a842e8df821268ace308cba3842b8a6ec9934d0a6e4a8c50102234106f",
+    "maze-weathering-review-v1-normals.png": "c2c80d59147295c9ad6e4c57bcf79be83d48d010a2833f6406388075856235bd",
+    "maze-weathering-review-v1-wireframe.png": "86449bc09c21b7e62e92d0100dec3f39e1f08fc3a17ebe78fc80975aaaeb3575"
+  },
+  "passed": true
+}

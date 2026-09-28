@@ -1,0 +1,176 @@
+{
+  "log_sha256": "68a7ac4bf36be13b99203b4cafc7b4e14846d4a004c0085e3dbaf1b0f4c3ec14",
+  "shots": [
+    {
+      "name": "overview-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-wireframe.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "overview-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "block-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "block-wireframe.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "block-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "block-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "block-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "block-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "block-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "slab-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "slab-wireframe.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "slab-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "slab-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "slab-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "slab-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "slab-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "weathered-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "weathered-wireframe.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "weathered-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "weathered-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "weathered-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "weathered-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "weathered-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    }
+  ],
+  "missing_receipts": [],
+  "command_errors": [],
+  "passed": true
+}

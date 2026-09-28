@@ -1,9 +1,12 @@
+#include "matter/project_layout.h"
 // MatterEngine3/tests/eval_world_tests.cpp — Task 4: eval_world + world manifest kind
 #include "check.h"
 #include "../src/script_host.h"
 #include "../src/terrain_field.h"
+#include "../src/render/vt_surface_tape.h"
 #include "material_registry.h"
 #include <cmath>
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -32,6 +35,263 @@ class TestWorld extends World {
 
 int main() {
     ScriptHost host;
+    {
+        const char* source_world = R"JS(
+class DirectMaterial extends World {
+  field() { return { density: heightToDensity(0), moisture: 0.5, relief: 0 }; }
+  surfaces(s) {
+    s.source(30, { baseColor: [s.x.mul(0.1), s.cellNoise2(4294967295, s.x.sub(2.1), s.z), s.footprint], roughness: 0.7,
+                   height: s.x.mul(0.01), heightRange: [-1, 1] });
+  }
+}
+)JS";
+        auto generated = host.eval_world(source_world, "{}");
+        CHECK(generated.ok, generated.message.c_str());
+        terrain_field::SurfaceProgram direct;
+        std::string source_error;
+        CHECK(terrain_field::SurfaceProgram::parse(generated.surface_program, direct, source_error),
+              source_error.c_str());
+        CHECK(direct.source.version == 1, "source authoring: the complete material output is retained");
+        if (direct.source.version == 1) {
+            terrain_field::SurfaceRuntime runtime(direct);
+            terrain_field::SurfaceSourceSample sample;
+            const float p[3] = {2, 0, 0}, n[3] = {0, 1, 0};
+            CHECK(runtime.source_at(p, n, nullptr, .025f, sample),
+                  "source authoring: native evaluation accepts the JS recipe");
+            CHECK(std::fabs(sample.albedo[0] - .2f) < 1e-6f &&
+                      sample.albedo[1] == 7621890.f / 16777216.f &&
+                      sample.albedo[2] == .025f && std::fabs(sample.height_m - .02f) < 1e-6f &&
+                      sample.orm[0] == 1 && sample.orm[1] == .7f && sample.orm[2] == 0,
+                  "source authoring: channels, defaults and physical coordinates agree");
+        }
+        CHECK(host.eval_world(source_world, "{}").surface_program == generated.surface_program,
+              "source authoring: fresh-context generation is deterministic");
+    }
+    {
+        const std::string world=R"JS(
+class ReceiverHeight extends World {
+  field() { return { density: heightToDensity(0), moisture: 0.5, relief: 0, seaLevel: 0 }; }
+  surfaces(s) { s.source(30,{baseColor:[0.2,0.3,0.4],roughness:0.8,
+    height:s.slope.mul(-0.02),heightRange:[-0.02,0],heightContext:'receiver'}); }
+})JS";
+        auto generated=host.eval_world(world,"{}");
+        terrain_field::SurfaceProgram program;std::string error;
+        CHECK(generated.ok,generated.message.c_str());
+        CHECK(terrain_field::SurfaceProgram::parse(generated.surface_program,program,error),error.c_str());
+        CHECK(program.source.version==2,"receiver height: explicit JS option reaches the native contract");
+        auto invalid=world;invalid.replace(invalid.find("'receiver'"),10,"'unknown'");
+        CHECK(!host.eval_world(invalid,"{}").ok,"receiver height: unknown context mode is rejected");
+    }
+    // Native JS authoring -> canonical scalar program -> CPU semantic oracle.
+    // The reference is evaluated from the published physical blend formula.
+    for (const char* operation : {"replace", "deposit", "appearance"}) {
+        const std::string world = std::string("const LAYER_OP = '") + operation + "';\n" + R"JS(
+class LayerMaterial extends World {
+  field() { return { density: heightToDensity(0), moisture: 0.5, relief: 0 }; }
+  surfaces(s) {
+    const base = { baseColor: [0.2, 0.4, 0.6], roughness: 0.8,
+                   height: 0.002, heightRange: [0.002, 0.002] };
+    const layer = { baseColor: [0.8, 0.2, 0.1], roughness: 0.2,
+                    height: 0.004, heightRange: [0.004, 0.004] };
+    s.source(30, s.layer(base, layer, { coverage: s.x, operation: LAYER_OP, width: 0.008 }));
+  }
+}
+)JS";
+        auto generated = host.eval_world(world, "{}");
+        CHECK(generated.ok, generated.message.c_str());
+        terrain_field::SurfaceProgram program;
+        std::string error;
+        const bool parsed = terrain_field::SurfaceProgram::parse(generated.surface_program, program, error);
+        CHECK(parsed, "layer authoring: native recipe parses");
+        if (!parsed) continue;
+        terrain_field::SurfaceRuntime runtime(program);
+        for (float x : {-1.f, 0.f, .5f, 1.f, 2.f}) {
+            const bool appearance = std::string(operation) == "appearance";
+            const bool deposit = std::string(operation) == "deposit";
+            const float c = std::max(0.f, std::min(1.f, x));
+            float t = c + c * (1.f - c) * (deposit ? .004f : .002f) / .008f;
+            t = std::max(0.f, std::min(1.f, t));
+            const float weight = appearance ? c : t * t * (3.f - 2.f * t);
+            const float pos[3] = {x, 0, 0};
+            terrain_field::SurfaceSourceSample sample;
+            runtime.source_at(pos, nullptr, nullptr, .001f, sample);
+            CHECK(std::fabs(sample.albedo[0] - (.2f + .6f * weight)) < 1e-6f,
+                  "layer authoring: coverage endpoints and height bias follow reference");
+            CHECK(std::fabs(sample.orm[1] - std::sqrt(.64f - .60f * weight)) < 1e-6f,
+                  "layer authoring: roughness blends in squared convention");
+            const float height = appearance ? .002f : .002f + (deposit ? .004f : .002f) * weight;
+            CHECK(std::fabs(sample.height_m - height) < 1e-6f,
+                  "layer authoring: replacement, thickness and appearance-only heights agree");
+        }
+    }
+    {
+        const char* layered_world = R"JS(
+class OrderedLayers extends World {
+  field() { return { density: heightToDensity(0), moisture: 0.5, relief: 0 }; }
+  surfaces(s) {
+    let material = { baseColor: [0.2, 0.4, 0.6], roughness: 0.8,
+                     height: 0.002, heightRange: [0.002, 0.002] };
+    for (let i = 0; i < 10; ++i) {
+      const h = 0.0001 * (i + 1);
+      material = s.layer(material,
+        { baseColor: [(i + 1) / 20, 0.2, 0.1], roughness: 0.2 + i * 0.03,
+          height: h, heightRange: [h, h] },
+        { coverage: s.x.mul((i + 1) / 10), operation: 'deposit', width: 0.008 });
+    }
+    s.source(30, material);
+  }
+}
+)JS";
+        const auto generated = host.eval_world(layered_world, "{}");
+        CHECK(generated.ok, generated.message.c_str());
+        terrain_field::SurfaceProgram program;
+        vt::VtSurfaceTapePack packed;
+        std::string error;
+        const bool parsed = terrain_field::SurfaceProgram::parse(generated.surface_program, program, error);
+        CHECK(parsed, error.c_str());
+        if (parsed) {
+            std::printf("ordered layer fixture: %zu operations\n", program.ops.size());
+            CHECK(program.ops.size() > 96 && vt::vt_pack_surface_tape(program, false, packed),
+                  "layer authoring: ten complete ordered layers compile beyond the legacy cap");
+            terrain_field::SurfaceRuntime runtime(program);
+            for (float x : {0.f, .25f, .75f, 1.5f}) {
+                float red = .2f, rough_squared = .64f, height = .002f;
+                for (int i = 0; i < 10; ++i) {
+                    const float h = .0001f * (i + 1);
+                    const float c = std::max(0.f, std::min(1.f, x * (i + 1) / 10.f));
+                    const float t = std::max(0.f, std::min(1.f, c + c * (1.f - c) * h / .008f));
+                    const float w = t * t * (3.f - 2.f * t);
+                    red += ((i + 1) / 20.f - red) * w;
+                    const float roughness = .2f + i * .03f;
+                    rough_squared += (roughness * roughness - rough_squared) * w;
+                    height += h * w;
+                }
+                const float p[3] = {x, 0, 0};
+                terrain_field::SurfaceSourceSample sample;
+                CHECK(runtime.source_at(p, nullptr, nullptr, .001f, sample) &&
+                          std::fabs(sample.albedo[0] - red) < 2e-6f &&
+                          std::fabs(sample.orm[1] - std::sqrt(rough_squared)) < 2e-6f &&
+                          std::fabs(sample.height_m - height) < 2e-6f,
+                      "layer authoring: no tail layers disappear from color, roughness or height");
+            }
+        }
+    }
+    // Independent shape/placement + blend oracle, including signed coordinates,
+    // rotated axes, world translation, mip footprints and all height operations.
+    for (const std::string shape : {"box", "ellipsoid"})
+    for (const std::string anchor : {"local", "world"})
+    for (const std::string operation : {"appearance", "deposit", "replace"}) {
+        const std::string code = "const SHAPE='" + shape + "', ANCHOR='" + anchor +
+            "', OP='" + operation + "';\n" + R"JS(
+class BoundedPatch extends World {
+  field() { return { density: heightToDensity(0), moisture: 0.5, relief: 0 }; }
+  surfaces(s) {
+    const base = { baseColor: [0.2, 0.4, 0.6], roughness: 0.8,
+      height: 0.002, heightRange: [0.002, 0.002], occlusion: 0.6, metallic: 0 };
+    const layer = { baseColor: [0.8, 0.2, 0.1], roughness: 0.2,
+      height: 0.004, heightRange: [0.004, 0.004], occlusion: 0.9, metallic: 0.25 };
+    s.source(30, s.splat(base, layer,
+      { shape: SHAPE, anchor: ANCHOR, center: [0.2, -0.3, 0.1], halfSize: [1, 2, 0.5],
+        axes: [[0,0,1], [0,1,0], [-1,0,0]], feather: 0.2, footprintScale: 1.5 },
+      { operation: OP, coverage: 0.75, width: 0.008 }));
+  }
+}
+)JS";
+        const auto generated = host.eval_world(code, "{}");
+        CHECK(generated.ok, generated.message.c_str());
+        terrain_field::SurfaceProgram program;
+        vt::VtSurfaceTapePack packed;
+        std::string error;
+        const bool parsed = terrain_field::SurfaceProgram::parse(generated.surface_program, program, error);
+        CHECK(parsed, error.c_str());
+        if (!parsed) continue;
+        CHECK(vt::vt_pack_surface_tape(program, true, packed), packed.err.c_str());
+        CHECK(host.eval_world(code, "{}").surface_program == generated.surface_program,
+              "bounded splat: fresh authoring contexts produce identical programs");
+        terrain_field::SurfaceRuntime runtime(program);
+        const float matrix[16] = {1,0,0,-1, 0,1,0,.5f, 0,0,1,.25f, 0,0,0,1};
+        terrain_field::SurfaceWorldContext world{nullptr, matrix};
+        for (float x : {-1.3f, -.3f, .2f, .7f, 1.7f})
+        for (float y : {-.3f, 1.7f})
+        for (float z : {-.9f, .1f, 1.1f})
+        for (float footprint : {.02f, .6f}) {
+            const bool anchored = anchor == "world";
+            const float dx = x + (anchored ? -1.f : 0.f) - .2f;
+            const float dy = y + (anchored ? .5f : 0.f) + .3f;
+            const float dz = z + (anchored ? .25f : 0.f) - .1f;
+            const float q[3] = {dz, dy, -dx}, half[3] = {1,2,.5f};
+            float distance;
+            if (shape == "box") {
+                float outside = 0, inside = -100;
+                for (int i = 0; i < 3; ++i) {
+                    const float d = std::fabs(q[i]) - half[i];
+                    outside += std::max(d, 0.f) * std::max(d, 0.f);
+                    inside = std::max(inside, d);
+                }
+                distance = std::sqrt(outside) + std::min(inside, 0.f);
+            } else {
+                distance = (std::sqrt(q[0]*q[0] + q[1]*q[1]/4 + q[2]*q[2]*4) - 1) * .5f;
+            }
+            const auto smooth = [](float t) {
+                t = std::max(0.f, std::min(1.f, t));
+                return t*t*(3-2*t);
+            };
+            const float coverage = .75f * smooth(.5f - distance / std::max(.2f, footprint*1.5f));
+            const float w = operation == "appearance" ? coverage : smooth(coverage +
+                coverage*(1-coverage)*(operation == "deposit" ? .004f : .002f)/.008f);
+            const float height = .002f + (operation == "appearance" ? 0 :
+                w*(operation == "deposit" ? .004f : .002f));
+            const float pos[3] = {x,y,z};
+            terrain_field::SurfaceSourceSample sample;
+            CHECK(runtime.source_at(pos, nullptr, &world, footprint, sample) &&
+                      std::fabs(sample.albedo[0] - (.2f + .6f*w)) < 3e-6f &&
+                      std::fabs(sample.orm[0] - (.6f + .3f*w)) < 3e-6f &&
+                      std::fabs(sample.orm[1] - std::sqrt(.64f - .6f*w)) < 3e-6f &&
+                      std::fabs(sample.orm[2] - .25f*w) < 3e-6f &&
+                      std::fabs(sample.height_m - height) < 3e-6f,
+                  "bounded splat: anchored shape and complete material follow independent oracle");
+        }
+    }
+    for (const char* invalid : {
+        "p.halfSize[0]=0", "p.center[1]=NaN", "p.anchor='camera'", "p.shape='unknown'",
+        "p.feather=0", "p.footprintScale=-1", "p.axes=[[1,0,0],[1,0,0],[0,0,1]]"}) {
+        const std::string code = std::string(R"JS(
+class InvalidPatch extends World {
+  field() { return { density: heightToDensity(0), moisture: 0.5, relief: 0 }; }
+  surfaces(s) {
+    const p = {shape:'box', anchor:'local', center:[0,0,0], halfSize:[1,1,1], feather:0.1};
+)JS") + invalid + "; s.coverageShape(p); } }";
+        const auto generated = host.eval_world(code, "{}");
+        CHECK(!generated.ok && generated.message.find("coverageShape()") != std::string::npos,
+              "bounded splat: malformed placement fails at authoring with a useful error");
+    }
+    for (const char* scene : {"ProceduralBrickProof", "ProceduralTerrainProof"}) {
+        // Match world-definition loading: field evaluation resolves handles
+        // already assigned at module scope; it does not register materials.
+        MaterialRegistryResetDynamic();
+        MaterialDef def{};
+        MaterialRegistryDefaultDynamicDef(&def);
+        const char* material_name = std::string(scene) == "ProceduralBrickProof"
+            ? "ProceduralProof.BrickPaint" : "ProceduralProof.RockSoilMoss";
+        CHECK(MaterialRegistryDefineDynamic(&def, material_name) >= 30,
+              "material proof: loader material handle registered");
+        const std::string path = matter::project_layout::scene_script("../../projects/world_demo", scene).string();
+        std::ifstream file(path);
+        CHECK(file.good(), "material proof: scene source exists");
+        if (!file.good()) continue;
+        std::stringstream text; text << file.rdbuf();
+        const auto generated = host.eval_world(text.str(), "{}");
+        CHECK(generated.ok, generated.message.c_str());
+        terrain_field::SurfaceProgram program;
+        vt::VtSurfaceTapePack packed;
+        std::string error;
+        const bool parsed = terrain_field::SurfaceProgram::parse(generated.surface_program, program, error);
+        CHECK(parsed, error.c_str());
+        if (parsed) {
+            CHECK(vt::vt_pack_surface_tape(program, true, packed), packed.err.c_str());
+            std::printf("%s: %zu material operations\n", scene, program.ops.size());
+        }
+    }
     WorldEvalResult r = host.eval_world(kWorld, "{}");
     CHECK(r.ok, r.message.c_str());
     CHECK(!r.field_program.empty(), "program emitted");
@@ -403,7 +663,7 @@ class TapePlain extends World {
     // loader assigned; mirror the loader by registering the three materials
     // dynamically first, then evaluate the real world source.
     {
-        std::ifstream in("../../projects/world_demo/scenes/ChartVtProof/ChartVtProof.js",
+        std::ifstream in("../../projects/world_demo/scenes/texturing/virtual_texture/ChartVtProof/ChartVtProof.js",
                          std::ios::binary);
         CHECK(bool(in), "ChartVtProof.js readable from the tests directory");
         std::ostringstream ss;
@@ -458,7 +718,7 @@ class TapePlain extends World {
     // relief/moisture channels come from — that all four classes actually occur
     // across the range and land where alpine photographs put them.
     {
-        std::ifstream in("../../projects/world_demo/scenes/StreamMountain/StreamMountain.js",
+        std::ifstream in("../../projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js",
                          std::ios::binary);
         CHECK(bool(in), "StreamMountain.js readable from the tests directory");
         std::ostringstream ss;
@@ -482,93 +742,72 @@ class TapePlain extends World {
         const int scree = MaterialRegistryDefineDynamic(&def, "Scree");
         const int snow = MaterialRegistryDefineDynamic(&def, "AlpineSnow");
         const int meadow = MaterialRegistryDefineDynamic(&def, "AlpineMeadow");
+        CHECK(MaterialRegistryDefineDynamic(&def, "Mountain.GeometryRock") >= 30,
+              "dynamic geometry rock material registered for StreamMountain evaluation");
+        // The shipped world also declares the forest's materials while
+        // loading its module; mirror those loader assignments for eval_world.
+        for (const char* name : {"mountain.forest.bark", "mountain.forest.branch",
+                                 "mountain.forest.needles", "mountain.forest.cone",
+                                 "mountain.forest.redwood"})
+            CHECK(MaterialRegistryDefineDynamic(&def, name) >= 30,
+                  "dynamic forest material registered for StreamMountain evaluation");
         CHECK(ground >= 30 && rock > ground && scree > rock && snow > scree &&
                   meadow > snow,
               "dynamic alpine materials registered");
 
         WorldEvalResult mtn = host.eval_world(mountain_source, "{}");
         CHECK(mtn.ok, mtn.message.c_str());
+        // Report the world-load failure instead of dereferencing an empty
+        // material vector and losing the diagnostic to an access violation.
+        if (!mtn.ok) return check_summary();
         CHECK(!mtn.surface_program.empty(), "StreamMountain records a tape");
         terrain_field::SurfaceProgram sp;
         std::string serr;
         CHECK(terrain_field::SurfaceProgram::parse(mtn.surface_program, sp, serr),
               serr.c_str());
-        CHECK(sp.materials.size() == 5 && sp.uses_world_inputs(),
-              "StreamMountain declares 5 materials and reads world inputs");
-        CHECK(sp.materials[0].handle == ground &&
-                  sp.materials[1].handle == rock &&
-                  sp.materials[2].handle == scree &&
-                  sp.materials[3].handle == snow &&
-                  sp.materials[4].handle == meadow,
-              "StreamMountain weights resolve in declaration order");
-        // The tape shares the register budget with every literal it names;
-        // leave the headroom visible so an edit that blows it fails here.
-        CHECK((int)sp.ops.size() <= terrain_field::kMaxSurfaceOps,
-              "StreamMountain tape fits the op budget");
-
-        terrain_field::FieldProgram fp;
-        std::string ferr;
-        CHECK(terrain_field::FieldProgram::parse(mtn.field_program, fp, ferr),
-              ferr.c_str());
+        CHECK(sp.source.version==2 && sp.materials.size()==1 && sp.uses_world_inputs(),
+              "StreamMountain exposes one coherent receiver-context source");
+        if(sp.materials.empty())return check_summary();
+        CHECK(sp.materials[0].handle==ground,"StreamMountain retains its ground fallback carrier");
+        vt::VtSurfaceTapePack packed;
+        CHECK(vt::vt_pack_surface_tape(sp,true,packed),"StreamMountain fits actual GPU op/register budgets");
+        terrain_field::FieldProgram fp;std::string ferr;
+        CHECK(terrain_field::FieldProgram::parse(mtn.field_program,fp,ferr),ferr.c_str());
         terrain_field::FieldRuntime mf(std::move(fp));
         terrain_field::SurfaceRuntime rt{std::move(sp)};
-        // No local_to_world: world x/z are the sample's x/z, so the field's
-        // relief/moisture channels are read at the point being classified.
-        terrain_field::SurfaceWorldContext wctx{&mf, nullptr};
-        float w[terrain_field::kMaxSurfaceMaterials];
-        const float up[3] = {0, 1, 0}, wall[3] = {1, 0.05f, 0};
-
-        // Corners that hold for EVERY (x, z) — the noise channels are bounded,
-        // so these four are properties of the tape, not of a lucky sample.
-        const float valley[3] = {130, 20, -70};
-        rt.weights_at(valley, up, &wctx, w);
-        CHECK(w[0] > 0.99f && w[1] < 1e-6f && w[2] < 1e-6f && w[3] < 1e-6f,
-              "StreamMountain: flat valley floor is alpine ground");
-        const float face[3] = {130, 260, -70};
-        rt.weights_at(face, wall, &wctx, w);
-        CHECK(w[1] > 0.99f, "StreamMountain: steep faces are rock");
-        const float summit[3] = {130, 700, -70};
-        rt.weights_at(summit, up, &wctx, w);
-        CHECK(w[3] > 0.99f, "StreamMountain: flat summit ground is snow");
-        rt.weights_at(summit, wall, &wctx, w);
-        CHECK(w[1] > 0.99f && w[3] < 1e-6f,
-              "StreamMountain: snow sheds off summit walls (they stay rock)");
-
-        // Sweep the real terrain: altitude from the field, normal tilt from the
-        // field gradient. Every class must occur, and snow/ground must not
-        // occur where the alps would not put them.
-        int wins[4] = {0, 0, 0, 0};
-        int total = 0;
-        float lowest_snow = 1e9f, highest_ground = -1e9f;
-        for (int ix = -24; ix <= 24; ++ix) {
-            for (int iz = -24; iz <= 24; ++iz) {
-                const float x = (float)ix * 50.0f, z = (float)iz * 50.0f;
-                const float h = mf.height_at(x, z);
-                const float g = mf.slope_at(x, z);          // |grad h|
-                const float inv_len = 1.0f / std::sqrt(1.0f + g * g);
-                const float pos[3] = {x, h, z};
-                const float nrm[3] = {g * inv_len, inv_len, 0.0f};
-                rt.weights_at(pos, nrm, &wctx, w);
-                int best = 0;
-                for (int k = 1; k < 4; ++k)
-                    if (w[k] > w[best]) best = k;
-                ++wins[best];
-                ++total;
-                if (best == 3 && h < lowest_snow) lowest_snow = h;
-                if (best == 0 && h > highest_ground) highest_ground = h;
-            }
+        terrain_field::SurfaceWorldContext wctx{&mf,nullptr};
+        const float up[]={0.f,1.f,0.f},wall[]={1.f,0.f,0.f};
+        const float valley[]={130.f,20.f,-70.f},face[]={130.f,260.f,-70.f},summit[]={130.f,700.f,-70.f};
+        terrain_field::SurfaceSourceSample ground_sample,rock_sample,snow_sample,wall_sample;
+        CHECK(rt.source_at(valley,up,&wctx,1.f/128,ground_sample) &&
+              rt.source_at(face,wall,&wctx,1.f/128,rock_sample) &&
+              rt.source_at(summit,up,&wctx,1.f/128,snow_sample) &&
+              rt.source_at(summit,wall,&wctx,1.f/128,wall_sample),
+              "StreamMountain evaluates the authored physical materials");
+        CHECK(ground_sample.albedo[0]<.3f && ground_sample.orm[1]>.65f,
+              "StreamMountain valley remains rough earth/mineral");
+        CHECK(rock_sample.orm[1]>.85f && rock_sample.orm[1]<.91f,
+              "StreamMountain steep faces select bedrock roughness");
+        CHECK(*std::min_element(snow_sample.albedo,snow_sample.albedo+3)>.65f,
+              "StreamMountain flat summit carries bright snow");
+        CHECK(*std::max_element(wall_sample.albedo,wall_sample.albedo+3)<.3f,
+              "StreamMountain snow sheds from summit walls");
+        int total=0;float min_red=1,max_red=0;bool bounded=true,carrier=true,snow_altitude=true;
+        for(int ix=-24;ix<=24;++ix)for(int iz=-24;iz<=24;++iz) {
+            const float x=float(ix)*50,z=float(iz)*50,alt=mf.height_at(x,z),g=mf.slope_at(x,z);
+            const float inv=1/std::sqrt(1+g*g),pos[]={x,alt,z},normal[]={g*inv,inv,0};
+            terrain_field::SurfaceSourceSample value;float weight=0;
+            bounded &= rt.source_at(pos,normal,&wctx,1.f/128,value);
+            rt.weights_at(pos,normal,&wctx,&weight);carrier &= weight==1;
+            for(float c:value.albedo)bounded &= std::isfinite(c)&&c>=0&&c<=1;
+            bounded &= value.height_m>=-.09f && value.height_m<=0 && value.orm[1]>=.65f;
+            min_red=std::min(min_red,value.albedo[0]);max_red=std::max(max_red,value.albedo[0]);
+            if(value.albedo[0]>.6f)snow_altitude &= alt>300;
+            ++total;
         }
-        CHECK(total == 49 * 49, "swept the whole grid");
-        CHECK(wins[0] > 0 && wins[1] > 0 && wins[2] > 0 && wins[3] > 0,
-              "all four alpine classes occur across the range");
-        // Valleys are the biggest single class (the range is mostly below the
-        // tree line at this seed) and snow the smallest — the shape the alpine
-        // reference photos have.
-        CHECK(wins[0] > wins[3], "ground covers more ground than snow");
-        CHECK(lowest_snow > 300.0f,
-              "no snow-dominant sample below 300 m (noise-broken, not random)");
-        CHECK(highest_ground < 560.0f,
-              "no turf-dominant sample above 560 m (stony belt takes over)");
+        CHECK(total==49*49 && bounded && carrier,"StreamMountain grid retains finite channels, relief bounds and one carrier");
+        CHECK(max_red-min_red>.01f,"StreamMountain material varies across the range");
+        CHECK(snow_altitude,"StreamMountain snow-dominant samples stay above the lowlands");
         MaterialRegistryResetDynamic();
     }
 

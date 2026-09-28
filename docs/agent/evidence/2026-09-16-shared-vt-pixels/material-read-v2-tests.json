@@ -1,0 +1,102 @@
+{
+  "runs": [
+    {
+      "mode": "cpu",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"cpu\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.8641755520002334,
+      "binary_sha256": "f8d9481666bad0e98bf1e755c133d4de1605e9a1d97f4986fcfa8eb0b8838412",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "9e23733e86ca4ca41fe830668a5be05615274b5d747466d07e45445284439296",
+      "passed": true
+    },
+    {
+      "mode": "vt-module-residency",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-module-residency\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 2.339239834000182,
+      "binary_sha256": "f456e8196e14a9310649f6fc3752f130a8f29111f2037dd00a9eefa6874c71fe",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "243126950494e1fdd0eacccaa56df33783a8b0bb6a05fabe17f4e84ffd299f90",
+      "passed": true
+    },
+    {
+      "mode": "vt-receiver-material",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-receiver-material\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.8634753439982887,
+      "binary_sha256": "f456e8196e14a9310649f6fc3752f130a8f29111f2037dd00a9eefa6874c71fe",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "96a9cd986765e476fa1616a5dc0054b2f6d9799493b9d0986e10a3afd746294c",
+      "passed": true
+    },
+    {
+      "mode": "vt-queue",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.6390257370003383,
+      "binary_sha256": "f456e8196e14a9310649f6fc3752f130a8f29111f2037dd00a9eefa6874c71fe",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "2b6a142b04db38b70f9f78b545a670bea6333509f0d97e6f67357ae242c45a93",
+      "passed": true
+    },
+    {
+      "mode": "vt-input-snapshot",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-input-snapshot\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 20.327768461000232,
+      "binary_sha256": "f456e8196e14a9310649f6fc3752f130a8f29111f2037dd00a9eefa6874c71fe",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "dbba9a60eb135de56149b1b7801cffa4196b48c27d7b2bef53e3b4465a83fdfe",
+      "passed": true
+    },
+    {
+      "mode": "compositor",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 4.963896619003208,
+      "binary_sha256": "f1dd623cd7a72f9265cebeadc0f3c1965e10a4ed360290602511b14ce3791efc",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "6566d8eee771c08be7568bb76dcd352ba8360ea679190317f5a5e8a0a3c5a1af",
+      "passed": true
+    },
+    {
+      "mode": "vt-export",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-export\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 2.29994404399622,
+      "binary_sha256": "f456e8196e14a9310649f6fc3752f130a8f29111f2037dd00a9eefa6874c71fe",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "2f90eb219ec75d9922084761cc9d7feaa6ae976e3f9d7218684b18459a8891fc",
+      "passed": true
+    }
+  ]
+}

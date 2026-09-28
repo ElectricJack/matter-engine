@@ -1,0 +1,45 @@
+{
+  "limits": "Whole-frame image differences; not a displaced-depth oracle. Includes lighting and temporal effects.",
+  "views": {
+    "overview": {
+      "raster": {
+        "mean_absolute_byte_error": 0.004292643229166667,
+        "fraction_pixels_over_one_byte": 0.0011357421875
+      },
+      "rt": {
+        "mean_absolute_byte_error": 0.034732096354166665,
+        "fraction_pixels_over_one_byte": 0.0039912109375
+      }
+    },
+    "block": {
+      "raster": {
+        "mean_absolute_byte_error": 0.05373177083333333,
+        "fraction_pixels_over_one_byte": 0.0119716796875
+      },
+      "rt": {
+        "mean_absolute_byte_error": 0.11193229166666667,
+        "fraction_pixels_over_one_byte": 0.0146669921875
+      }
+    },
+    "slab": {
+      "raster": {
+        "mean_absolute_byte_error": 0.0646298828125,
+        "fraction_pixels_over_one_byte": 0.0149794921875
+      },
+      "rt": {
+        "mean_absolute_byte_error": 0.1437373046875,
+        "fraction_pixels_over_one_byte": 0.01898828125
+      }
+    },
+    "weathered": {
+      "raster": {
+        "mean_absolute_byte_error": 0.0373837890625,
+        "fraction_pixels_over_one_byte": 0.008248046875
+      },
+      "rt": {
+        "mean_absolute_byte_error": 0.10365983072916667,
+        "fraction_pixels_over_one_byte": 0.01216796875
+      }
+    }
+  }
+}

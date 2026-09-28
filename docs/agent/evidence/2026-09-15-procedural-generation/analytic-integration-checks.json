@@ -1,0 +1,71 @@
+[
+  {
+    "kind": "build",
+    "name": "tileset_bake_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "tileset_bake_tests"
+    ],
+    "exit": 0,
+    "seconds": 5.327019468997605,
+    "log": "docs/agent/evidence/2026-09-15-procedural-generation/analytic-integration-build-tileset_bake_tests.log",
+    "source_changes": []
+  },
+  {
+    "kind": "build",
+    "name": "tileset_physics_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "tileset_physics_tests"
+    ],
+    "exit": 0,
+    "seconds": 6.7757332820037846,
+    "log": "docs/agent/evidence/2026-09-15-procedural-generation/analytic-integration-build-tileset_physics_tests.log",
+    "source_changes": []
+  },
+  {
+    "kind": "test",
+    "name": "tileset_bake_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/tileset_bake_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.8965497830067761,
+    "log": "docs/agent/evidence/2026-09-15-procedural-generation/analytic-integration-test-tileset_bake_tests.log",
+    "source_changes": []
+  },
+  {
+    "kind": "test",
+    "name": "tileset_physics_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/tileset_physics_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.45339391799643636,
+    "log": "docs/agent/evidence/2026-09-15-procedural-generation/analytic-integration-test-tileset_physics_tests.log",
+    "source_changes": []
+  },
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 8.764120837004157,
+    "log": "docs/agent/evidence/2026-09-15-procedural-generation/analytic-integration-build-matter_editor.log",
+    "source_changes": []
+  }
+]

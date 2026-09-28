@@ -1,0 +1,120 @@
+[
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "export",
+        "command":  "asset.export",
+        "ticket_id":  "2",
+        "ok":  true,
+        "code":  "ok",
+        "message":  "",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "194"
+                                  },
+                        "view":  {
+                                     "id":  "194"
+                                 }
+                    },
+        "result":  {
+                       "directory":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-export-validation\\pilot-v2\\validation\\column-v2\\asset",
+                       "source_hash":  "9654828149174052927",
+                       "lod":  0,
+                       "triangles":  8680,
+                       "vertices":  26040,
+                       "materials":  1,
+                       "files":  [
+                                     "material_0-basecolor.png",
+                                     "material_0-normal.png",
+                                     "material_0-orm.png",
+                                     "material_0-clearcoat.png",
+                                     "material_0-normal-obj.png",
+                                     "material_0-occlusion.png",
+                                     "material_0-roughness.png",
+                                     "material_0-metallic.png",
+                                     "material_0-height.png",
+                                     "asset.obj",
+                                     "asset.mtl",
+                                     "asset.glb",
+                                     "manifest.json"
+                                 ]
+                   }
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "existing",
+        "command":  "asset.export",
+        "ticket_id":  "4",
+        "ok":  false,
+        "code":  "execution_failure",
+        "message":  "choose a new export directory; existing destinations are never overwritten",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "196"
+                                  },
+                        "view":  {
+                                     "id":  "196"
+                                 }
+                    },
+        "result":  null
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "bad-lod",
+        "command":  "asset.export",
+        "ticket_id":  "6",
+        "ok":  false,
+        "code":  "invalid_input",
+        "message":  "lod must be an integer between 0 and 15",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "197"
+                                  },
+                        "view":  {
+                                     "id":  "197"
+                                 }
+                    },
+        "result":  null
+    }
+]

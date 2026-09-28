@@ -1,0 +1,22 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 23.587934618000872,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,brick-weathering-v3-middle,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/33024,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-weathering-v3-close,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/33024,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-weathering-v3-far,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/33024,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-weathering-v3-grazing,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/33024,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-weathering-v3-rt,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/33024,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "brick-weathering-v3-middle.png": "a016dd979dabdbf52d18471a33afe20ee08623155d1b34b1ee71b6bd3e3f395d",
+    "brick-weathering-v3-close.png": "10023d12bc1234b360cfe1ce9782ee79b22e367307aebd7c14051168f08f53a1",
+    "brick-weathering-v3-far.png": "34d1a6053d62033d82f89d79225ffc279592b30011cc5a61e784ffe48bced741",
+    "brick-weathering-v3-grazing.png": "faeee40459fe508e47331a08105bcd55f34ec1b4eeffc1bd49f0d0c708aa19b2",
+    "brick-weathering-v3-rt.png": "63d0b61d55872d4ad3986aa5acd612f164cbb3f86f0514ef62e86bfdeba3ff6d"
+  },
+  "passed": true
+}

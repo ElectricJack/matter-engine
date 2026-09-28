@@ -30,6 +30,7 @@
 // No global or static mutable state anywhere, so independent calls on
 // independent data may run concurrently — bake workers rely on this.
 #include "../include/mesh_charting.h"
+#include <type_traits>
 #include <map>
 #include <array>
 #include <vector>
@@ -97,9 +98,16 @@ struct PosKeyEq {
 //
 // The 16- and 32-bit public overloads both instantiate this template, so the
 // two index widths are guaranteed to behave identically.
-template <typename IndexT>
+struct SurfaceEdgeUse {
+    int tri, edge;
+    int other = -1, other_edge = -1;
+    bool forward, blocked = false;
+};
+
+template <typename IndexT, bool SurfaceTraversal = false>
 std::vector<TriAdj> build_adjacency_impl(const float* positions, const IndexT* indices,
                                          int triCount) {
+    if (triCount <= 0) return {};
     // Weld corners by exact position -> welded vertex id.
     std::unordered_map<PosKey,int,PosKeyHash,PosKeyEq> weld;
     weld.reserve((size_t)triCount * 2);
@@ -117,22 +125,62 @@ std::vector<TriAdj> build_adjacency_impl(const float* positions, const IndexT* i
 
     // edge (sorted welded id pair) -> the (tri, edgeSlot) waiting for a
     // partner, or tri == -1 once the edge has been paired and retired.
-    std::unordered_map<uint64_t, std::pair<int,int>> seen;
+    using EdgeUse = std::conditional_t<SurfaceTraversal, SurfaceEdgeUse, std::pair<int,int>>;
+    std::unordered_map<uint64_t, EdgeUse> seen;
     seen.reserve((size_t)triCount * 3);
     for (int t=0;t<triCount;++t) {
+        if constexpr (SurfaceTraversal) {
+            const float* p[3] = {positions + size_t(indices[size_t(t)*3])*3,
+                positions + size_t(indices[size_t(t)*3+1])*3,
+                positions + size_t(indices[size_t(t)*3+2])*3};
+            bool finite = true;
+            double a[3], b[3];
+            for (int k=0; k<3; ++k) {
+                finite &= std::isfinite(p[0][k]) && std::isfinite(p[1][k]) && std::isfinite(p[2][k]);
+                a[k] = double(p[1][k]) - p[0][k];
+                b[k] = double(p[2][k]) - p[0][k];
+            }
+            const double x=a[1]*b[2]-a[2]*b[1], y=a[2]*b[0]-a[0]*b[2], z=a[0]*b[1]-a[1]*b[0];
+            if (!finite || x*x+y*y+z*z == 0.0) continue;
+        }
         int w[3] = { wid((size_t)t*3+0), wid((size_t)t*3+1), wid((size_t)t*3+2) };
         for (int e=0;e<3;++e) {
             int a=w[e], b=w[(e+1)%3];
             const uint64_t key = (a<b) ? ((uint64_t)(uint32_t)a<<32 | (uint32_t)b)
                                        : ((uint64_t)(uint32_t)b<<32 | (uint32_t)a);
             auto it = seen.find(key);
-            if (it == seen.end()) {
-                seen.emplace(key, std::make_pair(t,e));
-            } else if (it->second.first >= 0) {
-                int ot = it->second.first, oe = it->second.second;
-                adj[t].nbr[e]  = ot;
-                adj[ot].nbr[oe] = t;
-                it->second.first = -1;   // edge consumed; later claimants get -1
+            if constexpr (SurfaceTraversal) {
+                if (it == seen.end()) {
+                    seen.emplace(key, SurfaceEdgeUse{t,e,-1,-1,a<b,false});
+                    continue;
+                }
+                auto& use = it->second;
+                if (use.blocked) continue;
+                // A third claimant invalidates both earlier links; there is
+                // no arbitrary first pair in a graph used for ray traversal.
+                if (use.other >= 0) {
+                    adj[use.tri].nbr[use.edge] = -1;
+                    adj[use.other].nbr[use.other_edge] = -1;
+                    use.blocked = true;
+                    continue;
+                }
+                const int third = wid(size_t(use.tri)*3 + (use.edge+2)%3);
+                if (use.forward == (a<b) || third == w[(e+2)%3]) {
+                    use.blocked = true;
+                    continue;
+                }
+                adj[t].nbr[e] = use.tri;
+                adj[use.tri].nbr[use.edge] = t;
+                use.other = t; use.other_edge = e;
+            } else {
+                if (it == seen.end()) {
+                    seen.emplace(key, std::make_pair(t,e));
+                } else if (it->second.first >= 0) {
+                    int ot = it->second.first, oe = it->second.second;
+                    adj[t].nbr[e]  = ot;
+                    adj[ot].nbr[oe] = t;
+                    it->second.first = -1;   // edge consumed; later claimants get -1
+                }
             }
             // else: a third-or-later triangle on a non-manifold edge. Leaving
             // its slot at -1 keeps the graph symmetric instead of clobbering
@@ -223,6 +271,11 @@ std::vector<TriAdj> build_adjacency(const float* positions, const unsigned short
 std::vector<TriAdj> build_adjacency(const float* positions, const unsigned int* indices,
                                     int triCount) {
     return build_adjacency_impl(positions, indices, triCount);
+}
+std::vector<TriAdj> build_surface_adjacency(const float* positions,
+                                           const unsigned int* indices,
+                                           int triCount) {
+    return build_adjacency_impl<unsigned int, true>(positions, indices, triCount);
 }
 
 std::vector<int> segment_charts(const float* positions, const unsigned short* indices,

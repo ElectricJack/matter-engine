@@ -1,0 +1,11 @@
+{
+  "rt_dispatch_observed": true,
+  "fifo_raster_updates_property": true,
+  "property_reenables_rt_after_fifo": true,
+  "gi_enabled_acknowledged": true,
+  "captures_complete": true,
+  "bake_zero_errors": true,
+  "isolated_gpu_suite_run": false,
+  "user_moved_camera_during_review": true,
+  "images_are_not_fixed_camera_pixel_diff": true
+}

@@ -381,7 +381,7 @@ git commit -m "feat: persist PhysX river bake products"
 - Modify: `MatterEngine3/src/script/world_definition_loader.cpp`
 - Modify: `MatterEngine3/src/provider/local_provider.*`
 - Modify: `MatterEngine3/src/matter_engine.cpp`
-- Modify: `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js`
+- Modify: `projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js`
 - Modify: `MatterEngine3/tests/river_network_tests.cpp`
 - Modify: `MatterEngine3/tests/dsl_determinism_tests.cpp`
 - Modify: `MatterEngine3/tests/async_bake_tests.cpp`
@@ -409,7 +409,7 @@ Lazy-create `PhysxRuntime` only for requested PhysX bakes. Compare CUDA/Vulkan L
 - [x] **Step 5: Pass CPU/default-off/editor opt-in tests and commit**
 
 ```powershell
-git add MatterEngine3/include/matter/hydrology.h MatterEngine3/include/matter/river_network.h MatterEngine3/src/dsl_bindings.cpp MatterEngine3/src/script/world_definition_loader.cpp MatterEngine3/src/provider/local_provider.cpp MatterEngine3/src/provider/local_provider.h MatterEngine3/src/matter_engine.cpp projects/world_demo/scenes/RiverHydrology/RiverHydrology.js MatterEngine3/tests/river_network_tests.cpp MatterEngine3/tests/dsl_determinism_tests.cpp MatterEngine3/tests/async_bake_tests.cpp
+git add MatterEngine3/include/matter/hydrology.h MatterEngine3/include/matter/river_network.h MatterEngine3/src/dsl_bindings.cpp MatterEngine3/src/script/world_definition_loader.cpp MatterEngine3/src/provider/local_provider.cpp MatterEngine3/src/provider/local_provider.h MatterEngine3/src/matter_engine.cpp projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js MatterEngine3/tests/river_network_tests.cpp MatterEngine3/tests/dsl_determinism_tests.cpp MatterEngine3/tests/async_bake_tests.cpp
 git commit -m "feat: orchestrate PhysX river bakes in the editor"
 ```
 

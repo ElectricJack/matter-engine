@@ -1,0 +1,32 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 36.8449591039971,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,terrain-pom-v1-middle-off,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=163/25600,pinned=11,queue=0,fills=163,evictions=0,ind=0.12/64 MiB",
+    "STATSVT,terrain-pom-v1-middle,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=163/25600,pinned=11,queue=0,fills=163,evictions=0,ind=0.12/64 MiB",
+    "STATSVT,terrain-pom-v1-close-off,active=1,variants=12/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=202/25600,pinned=12,queue=0,fills=203,evictions=0,ind=0.12/64 MiB",
+    "STATSVT,terrain-pom-v1-close,active=1,variants=12/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=203/25600,pinned=12,queue=0,fills=204,evictions=0,ind=0.12/64 MiB",
+    "STATSVT,terrain-pom-v1-far-off,active=1,variants=9/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=294/25600,pinned=9,queue=0,fills=304,evictions=0,ind=0.11/64 MiB",
+    "STATSVT,terrain-pom-v1-far,active=1,variants=9/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=294/25600,pinned=9,queue=0,fills=304,evictions=0,ind=0.11/64 MiB",
+    "STATSVT,terrain-pom-v1-grazing-off,active=1,variants=8/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=339/25600,pinned=8,queue=0,fills=352,evictions=0,ind=0.08/64 MiB",
+    "STATSVT,terrain-pom-v1-grazing,active=1,variants=8/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=341/25600,pinned=8,queue=0,fills=354,evictions=0,ind=0.08/64 MiB",
+    "STATSVT,terrain-pom-v1-rt-off,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=347/25600,pinned=11,queue=0,fills=360,evictions=0,ind=0.12/64 MiB",
+    "STATSVT,terrain-pom-v1-rt,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=347/25600,pinned=11,queue=0,fills=360,evictions=0,ind=0.12/64 MiB"
+  ],
+  "images": {
+    "terrain-pom-v1-middle-off.png": "79c525b0240451d012433745c0f47c10301d466dd4f600487f1c627110d4f3ec",
+    "terrain-pom-v1-middle.png": "b8b719e2ff16d4c389f5e416f192a600ac90bdc97db368870a312c4cf8c3cc4f",
+    "terrain-pom-v1-close-off.png": "8ba0dde3e7dbd725221a065c04a859d254aaebc52dfb2cd73a410c6d023a4678",
+    "terrain-pom-v1-close.png": "c8acd1e6da1fcb4508734e9bac71c6ec994344944bffb9e59b5be50fa6a4d8ea",
+    "terrain-pom-v1-far-off.png": "61fbdf048638bd9427ddb8a927428ce44db4781ffb83f67856bf50f6600a87fc",
+    "terrain-pom-v1-far.png": "e82ef4ac517e3ba748bbb76d93889f00a376f54fd3181bf5353b79fe107c2105",
+    "terrain-pom-v1-grazing-off.png": "a4f09edf3f868168a150d085517d6746422dd46ba5fb2da6d34b0c88fba5e601",
+    "terrain-pom-v1-grazing.png": "41fecf1e8af4babc9ddac6aefe7ef54fbe5f482589bda8b6b89e4af75db0f6cc",
+    "terrain-pom-v1-rt-off.png": "aff50393610b44b0369f16a1ebe673c8395873f1753c5055aecd4ab21f48e940",
+    "terrain-pom-v1-rt.png": "40b3c8629568613804c5e24d7e9842847c606e6ee48181322bbb2176a2651e13"
+  },
+  "passed": true
+}

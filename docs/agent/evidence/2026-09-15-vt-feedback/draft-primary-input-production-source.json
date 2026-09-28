@@ -1,0 +1,23 @@
+{
+  "status": "draft; not applied or compiled",
+  "base": {
+    "MatterEngine3/shaders_vk/vt_visible_input.glsl": null,
+    "MatterEngine3/shaders_vk/rt_primary_inputs.glsl": null,
+    "MatterEngine3/shaders_vk/gbuffer.frag": "15f179907cdda2f0a922d8a42ece50ce251566f302ce8a79833af10da4148d3d",
+    "MatterEngine3/shaders_vk/vt_feedback.comp": "d38fe1983e8e38a384ffda83936a4f15ab64cc6dce8eacdc61917a34a92f637e",
+    "MatterEngine3/shaders_vk/rt_lighting_impl.glsl": "30d8262664314ee31e5a2f9478fd678bb44406b9ab1fa0c22b19ca3498f25d7c",
+    "MatterEngine3/shaders_vk/rt_shadow.rgen": "7a6ce3bf021de5ff678da531ecb35d867fba534e83a06937063315d9a7870577",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "f8d6b0e7a4790e0e1d722b4c41a1f7f802c6f4c730ee42ff5da377a713b3f674",
+    "MatterEngine3/Makefile": "de0a13a5836bede50f08d5d3da5d51839528891a16fa1c27cb26191eea441d07"
+  },
+  "draft": {
+    "MatterEngine3/shaders_vk/vt_visible_input.glsl": "a6e7fc1bec144c17cf712ffdaac6ab9b7ab7cad0ec254676b32937df761e5c64",
+    "MatterEngine3/shaders_vk/rt_primary_inputs.glsl": "f2141947f4b3fbf521004241eb12b8c9928c1e363c005ea3b6cea7274fbd1043",
+    "MatterEngine3/shaders_vk/gbuffer.frag": "5d4795d6f24ffab254a61050aa0c5768f4e11cfb9e5843c79bd47932bdf8c4db",
+    "MatterEngine3/shaders_vk/vt_feedback.comp": "60f68add7f93413b4c238b51bbbc3ef884facf5594c5b1680268a669e0f37a3f",
+    "MatterEngine3/shaders_vk/rt_lighting_impl.glsl": "c277ff13a42e0d1a6ae375542bc3a0b27a9ccea57bad6e36bacae3aa06148c93",
+    "MatterEngine3/shaders_vk/rt_shadow.rgen": "ab049d31a063c3063bfbfee11ed778400307848c8cc49700220a9f91c8f25c51",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "5561a7b01f8a06f8fcedb435e16983eac60c844b3c4e004fd9dc39206441b9bd",
+    "MatterEngine3/Makefile": "d2f0e957a7bdaa21abbcc2a92b4148217171a374a0b8625d55e5ce98be66677b"
+  }
+}

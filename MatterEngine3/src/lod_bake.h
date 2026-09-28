@@ -109,17 +109,25 @@ struct ChartBakeOptions {
     // Off by default so every existing caller keeps the per-rung behaviour
     // byte-for-byte until it opts in.
     bool  unify_parameterisation = false;
+
+    // Give large two-triangle charts a physical page grid independent of
+    // their bounds. Small/complex charts keep the compact packing policy.
+    // This changes UV parameterisation only, never geometry or material scale.
+    bool  align_material_grid = false;
 };
 
 // Build the chart atlas for ONE rung mesh and write chart UVs into `triex`
-// (parallel to `tris`). The requested density is halved until the page-aligned
-// pack fits within kVtMaxAtlasDim^2 (the clamp policy); below a floor of
+// (parallel to `tris`). Keep the requested density if its page-aligned pack
+// fits within kVtMaxAtlasDim^2. Otherwise halve to a verified fit and use six
+// bounded intermediate probes to recover resolution within that bracket.
+// The result is deterministic, not a globally optimal packing. Below a floor of
 // 1/64 t/m the build fails. On failure returns false, `out` is empty and
 // `triex` is untouched (fail-closed: the rung ships charts = 0, legacy path).
 // Deterministic: identical input produces a byte-identical chart table + UVs.
 bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       float texels_per_meter, float cone_deg,
-                      chart_atlas::ChartAtlasRung& out);
+                      chart_atlas::ChartAtlasRung& out,
+                      bool align_material_grid = false);
 
 // M6 (texture unification): give a COARSER rung the parameterisation rep 0
 // already has, instead of charting it independently.
@@ -176,7 +184,8 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                         float texels_per_meter, float cone_deg, bool unify,
                         chart_atlas::ChartAtlasRung& base,
                         std::vector<Tri>& base_tris,
-                        chart_atlas::ChartAtlasRung& out);
+                        chart_atlas::ChartAtlasRung& out,
+                        bool align_material_grid = false);
 
 // Whether the engine bakes ONE parameterisation per part (M6). Read once from
 // MATTER_VT_UNIFY; default OFF while the runtime half is unproven, so the

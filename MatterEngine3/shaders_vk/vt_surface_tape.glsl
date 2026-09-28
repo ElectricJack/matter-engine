@@ -26,7 +26,7 @@
 
 // ---- struct + kind numbering (mirror vt_surface_tape.h exactly) -----------
 struct GpuSurfOp {
-    uint kind_oct;        // kind | (oct << 16) | (warp ? 1u<<31 : 0)
+    uint kind_oct;        // kind | (destination << 8) | (oct << 16) | (warp ? 1u<<31 : 0)
     int  a, b, c;         // register operands; LaneRead: a = lane index
     float f0, f1, f2, f3; // value/freq/gain/lac/edges
     float wf0, wf1;       // warp freq / warp amp
@@ -57,6 +57,10 @@ struct GpuSurfOp {
 #define VT_SOP_POW          20u
 #define VT_SOP_FRACT        21u
 #define VT_SOP_LANE_READ    22u
+#define VT_SOP_FOOTPRINT    23u
+#define VT_SOP_CELL_NOISE2  24u
+#define VT_SOP_CELLULAR3    25u
+#define VT_SOP_CELLULAR3_REUSE 26u
 
 // SurfaceInput codes an Input op can still carry on the GPU (field-derived
 // codes were rewritten to LaneRead by the CPU packer). Mirror terrain_field.h.
@@ -68,15 +72,17 @@ struct GpuSurfOp {
 #define VT_SIN_WX    5
 #define VT_SIN_WY    6
 #define VT_SIN_WZ    7
+#define VT_SIN_RECEIVER_MATERIAL 13
 
-#define VT_TAPE_MAX_OPS 96
+#define VT_TAPE_MAX_REGS 96
+#define VT_TAPE_MAX_SOURCE_OPS 512
 
 // ---- P3 appearance lanes (texel-tape spec section 5) ----------------------
 // The clamp ranges and the wetness response mirror terrain_field.h's
 // kSurfaceTintMax / kSurfaceRoughBiasLimit / kSurfaceWetAlbedoScale /
 // kSurfaceWetRoughness (SurfaceRuntime::appearance_at is the CPU twin).
 // VT_APP_NO_REG mirrors vt_surface_tape.h's kVtNoAppearanceReg: registers are
-// 0..63, so 0xFF is an unambiguous "directive absent".
+// 0..95, so 0xFF is an unambiguous "directive absent".
 #define VT_APP_NO_REG      0xFFu
 #define VT_APP_TINT_MAX    2.0
 #define VT_APP_ROUGH_LIMIT 0.5
@@ -99,6 +105,36 @@ layout(std430, set = VT_TAPE_OPS_SET, binding = VT_TAPE_OPS_BINDING)
 // copy of the engine's value noise. The move is text-identical and the SPIR-V
 // this file compiles to is byte-for-byte unchanged by it.
 #include "vt_noise.glsl"
+
+// CPU twin: surface_cellular3. Relative coordinates and ordered arithmetic
+// preserve site identity at page/mip boundaries, including negative positions.
+void vt_cellular3_visit(ivec3 cell, vec3 f, ivec3 offset, uint seed,
+                       inout float first, inout float second, inout float value) {
+    ivec3 c=cell+offset;
+    precise float px=float(offset.x)+vt_rand01_3(c.x,c.y,c.z,seed)-f.x;
+    precise float py=float(offset.y)+vt_rand01_3(c.x,c.y,c.z,seed^0x9e37u)-f.y;
+    precise float pz=float(offset.z)+vt_rand01_3(c.x,c.y,c.z,seed^0x7f4au)-f.z;
+    precise float d=(px*px+py*py)+pz*pz;
+    if(d<first) {second=first;first=d;value=vt_rand01_3(c.x,c.y,c.z,seed^0xa511e9b3u);}
+    else if(d<second)second=d;
+}
+vec3 vt_cellular3_values(vec3 p, uint seed) {
+    if (!all(greaterThanEqual(p,vec3(-16777216.0))) ||
+        !all(lessThan(p,vec3(16777216.0)))) return vec3(0.0);
+    ivec3 cell=ivec3(floor(p));vec3 f=p-vec3(cell);
+    precise float first=100.0,second=100.0;
+    float value=0.0;
+    for(int z=-1;z<=1;++z)for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x)
+        vt_cellular3_visit(cell,f,ivec3(x,y,z),seed,first,second,value);
+    vec3 edge=min(f,1.0-f);
+    precise float outside=1.0+min(edge.x,min(edge.y,edge.z));
+    if(second>outside*outside) {
+        for(int z=-2;z<=2;++z)for(int y=-2;y<=2;++y)for(int x=-2;x<=2;++x)
+            if(abs(x)==2 || abs(y)==2 || abs(z)==2)
+                vt_cellular3_visit(cell,f,ivec3(x,y,z),seed,first,second,value);
+    }
+    return vec3(sqrt(first),max(0.0,second-first),value);
+}
 
 // fbm3 with the op's optional domain-warp tail (terrain_field fbm3_op): the
 // sample point is displaced per axis before the fbm, three axis seeds derived
@@ -134,22 +170,29 @@ float vt_tape_lane(GpuTri tri, vec3 bary, uint lane) {
 //             packer pre-resolved world ops for non-anchored parts, so wpos
 //             is never read there)
 //   tri/bary  for the barycentric field-lane reads.
-// Bounded loop, switch on kind — zero divergence (all threads of a fill run
-// the same tape).
+// Bounded loop, shared opcode dispatch (all threads of a fill run the same
+// tape). An operator may still have internally divergent work.
 void vt_tape_eval(uint ops_offset, uint ops_count,
                   vec3 lpos, float ny, float slope, vec3 wpos,
-                  GpuTri tri, vec3 bary,
-                  out float regs[VT_TAPE_MAX_OPS]) {
-    for (int i = 0; i < VT_TAPE_MAX_OPS; ++i) regs[i] = 0.0;
-    uint count = min(ops_count, uint(VT_TAPE_MAX_OPS));
+                  GpuTri tri, vec3 bary, float footprint_m,
+                  out float regs[VT_TAPE_MAX_REGS]) {
+    for (int i = 0; i < VT_TAPE_MAX_REGS; ++i) regs[i] = 0.0;
+    // One result tuple serves the distance/gap/value ops at identical inputs.
+    // Keep this local to one invocation: normal derivatives, other layers and
+    // neighboring texels must evaluate their own positions.
+    vec3 cellular_values=vec3(0.0);
+    uint count = min(ops_count, uint(VT_TAPE_MAX_SOURCE_OPS));
     for (uint i = 0u; i < count; ++i) {
         GpuSurfOp op = tape_ops[ops_offset + i];
-        uint kind = op.kind_oct & 0xFFFFu;
+        uint kind = op.kind_oct & 0xFFu;
         int oct = int((op.kind_oct >> 16) & 0x7FFFu);
         float r = 0.0;
         switch (kind) {
         case VT_SOP_CONST:
             r = op.f0;
+            break;
+        case VT_SOP_FOOTPRINT:
+            r = max(footprint_m, 0.0);
             break;
         case VT_SOP_INPUT: {
             // Only local + world POSITION codes reach the GPU (field codes
@@ -163,6 +206,7 @@ void vt_tape_eval(uint ops_offset, uint ops_count,
             case VT_SIN_WX:    r = wpos.x; break;
             case VT_SIN_WY:    r = wpos.y; break;
             case VT_SIN_WZ:    r = wpos.z; break;
+            case VT_SIN_RECEIVER_MATERIAL: r = float(tri.mat.x & 255u); break;
             default:           r = 0.0; break;
             }
             break;
@@ -190,6 +234,24 @@ void vt_tape_eval(uint ops_offset, uint ops_count,
             break;
         case VT_SOP_RIDGE3_WORLD:
             r = vt_fbm3_op(op, wpos.x, wpos.y, wpos.z, true);
+            break;
+        case VT_SOP_CELL_NOISE2: {
+            float x = regs[op.a], y = regs[op.b];
+            r = 0.0;
+            if (x >= -16777216.0 && x < 16777216.0 &&
+                y >= -16777216.0 && y < 16777216.0)
+                r = vt_rand01(int(floor(x)), int(floor(y)), op.seed);
+            break;
+        }
+        case VT_SOP_CELLULAR3:
+            cellular_values=vt_cellular3_values(vec3(regs[op.a],regs[op.b],regs[op.c]),op.seed);
+            r=oct>=0 && oct<=2?cellular_values[oct]:0.0;
+            break;
+        case VT_SOP_CELLULAR3_REUSE:
+            // The packer proves identical source operands and seed, with no
+            // intervening different cellular query. Other ops cannot mutate
+            // those SSA values, even when GPU register slots are recycled.
+            r=oct>=0 && oct<=2?cellular_values[oct]:0.0;
             break;
         case VT_SOP_ADD:
             r = regs[op.a] + regs[op.b];
@@ -242,7 +304,7 @@ void vt_tape_eval(uint ops_offset, uint ops_count,
             r = 0.0;
             break;
         }
-        regs[i] = r;
+        regs[(op.kind_oct >> 8) & 0xFFu] = r;
     }
 }
 
@@ -255,7 +317,7 @@ void vt_tape_eval(uint ops_offset, uint ops_count,
 // which case that lane is a no-op and the texel is bit-identical to a tape
 // without the directive at all. `regs` is the post-vt_tape_eval register
 // file, so this is mode-3 only by construction.
-void vt_apply_appearance(uvec4 app, float regs[VT_TAPE_MAX_OPS],
+void vt_apply_appearance(uvec4 app, float regs[VT_TAPE_MAX_REGS],
                          inout vec3 albedo, inout vec3 orm) {
     uint tint_regs = app.x;
     if ((tint_regs & 0xFFu) != VT_APP_NO_REG) {
@@ -279,6 +341,44 @@ void vt_apply_appearance(uvec4 app, float regs[VT_TAPE_MAX_OPS],
     if (app.w != VT_APP_NO_REG) {
         orm.b = clamp(regs[app.w], 0.0, 1.0);
     }
+}
+
+// Direct source v1. This output conversion is shared by page composition and
+// future layer/splat consumers; normal generation belongs to the receiver.
+struct VtSourceSample {
+    vec3 albedo;
+    vec3 orm;
+    float height_m;
+    float coverage;
+};
+float vt_source_value(float value, float lo, float hi, float fallback) {
+    return isnan(value) || isinf(value) ? fallback : clamp(value, lo, hi);
+}
+// Thin coating: preserve substrate relief, AO and normals. Interpolate
+// squared perceptual roughness like the structural finite-source compositor.
+void vt_apply_coating(uvec4 coat,float regs[VT_TAPE_MAX_REGS],inout vec3 albedo,inout vec3 orm) {
+    if(coat.y==VT_APP_NO_REG) return;
+    float a=vt_source_value(regs[coat.y],0.,1.,0.);
+    if(a<=0.) return;
+    vec3 color=vec3(vt_source_value(regs[coat.x&255u],0.,1.,0.),
+        vt_source_value(regs[(coat.x>>8)&255u],0.,1.,0.),vt_source_value(regs[(coat.x>>16)&255u],0.,1.,0.));
+    float rough=vt_source_value(regs[coat.z],0.,1.,1.);
+    albedo=mix(albedo,color,a);
+    orm.g=sqrt(mix(orm.g*orm.g,rough*rough,a));
+    orm.b*=1.-a; // Paint and ink are dielectric.
+}
+VtSourceSample vt_source_sample(uvec4 a, uvec4 b, vec2 height_range,
+                                float regs[VT_TAPE_MAX_REGS]) {
+    VtSourceSample s;
+    s.albedo = vec3(vt_source_value(regs[a.x], 0.0, 1.0, 0.0),
+                    vt_source_value(regs[a.y], 0.0, 1.0, 0.0),
+                    vt_source_value(regs[a.z], 0.0, 1.0, 0.0));
+    s.orm = vec3(vt_source_value(regs[b.y], 0.0, 1.0, 1.0),
+                 vt_source_value(regs[a.w], 0.0, 1.0, 0.8),
+                 vt_source_value(regs[b.x], 0.0, 1.0, 0.0));
+    s.height_m = vt_source_value(regs[b.z], height_range.x, height_range.y, height_range.x);
+    s.coverage = 1.0;
+    return s;
 }
 
 #endif  // VT_SURFACE_TAPE_GLSL

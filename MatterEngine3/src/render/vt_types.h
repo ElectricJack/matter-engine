@@ -14,9 +14,12 @@
 // this header is the binding form).
 
 #include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -24,6 +27,9 @@
 #include "chart_atlas.h"
 
 namespace vt {
+
+struct VtPartSnapshot;
+struct VtFiniteSources;
 
 // ---------------------------------------------------------------------------
 // Physical page pool geometry (contract C2). The residency layer owns the
@@ -45,9 +51,11 @@ enum VtChannel : uint32_t {
     kVtChannelAlbedo = 0,   // BC7_UNORM_BLOCK
     kVtChannelNormal = 1,   // BC5_UNORM_BLOCK  (tangent-space XY)
     kVtChannelOrm    = 2,   // BC7_UNORM_BLOCK  (occlusion/roughness/metal)
-    kVtChannelAux    = 3,   // R8G8B8A8_UNORM   (dominant/secondary mat + blend)
-    kVtChannelCount  = 4,
+    kVtChannelAux    = 3,   // R8G8B8A8_UNORM   (tagged material IDs or direct chart coverage)
+    kVtChannelHeight = 4,   // R16_UNORM, decoded with the published page metadata
+    kVtChannelCount  = 5,
 };
+constexpr uint64_t kVtPoolBytesPerTexel = 1u + 1u + 1u + 4u + 2u;
 
 // Top-left texel of a page slot inside its array layer, border included.
 inline void vt_slot_origin(uint32_t slot, uint32_t& layer, uint32_t& x,
@@ -79,6 +87,9 @@ struct VtPoolBinding {
     // residency layer records the transitions around fill(); the filler never
     // transitions the pool itself.
     bool transfer_dst_layout = true;
+    // Authoring/export only: copy the original RGBA8 intermediate channels
+    // instead of BC blocks. All color/normal/ORM destinations must be RGBA8.
+    bool uncompressed = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -91,10 +102,10 @@ struct VtPoolBinding {
 // "null/zero means unavailable" fallback so an older filler keeps compiling
 // and an older producer keeps working.
 //
-// Everything here is BORROWED and owned by the residency layer's per-variant
-// record. The residency layer guarantees the pointed-to storage outlives every
-// fill request it has queued for that variant (a variant is not released while
-// fills referencing it are in flight).
+// Pointer fields are borrowed views. Residency requests retain a VtPartSnapshot
+// that owns them, so edits, LOD promotion and owner release cannot mutate a
+// captured context. CPU jobs must retain that snapshot for their whole use;
+// standalone callers must keep their own borrowed arrays alive.
 //
 // The mesh is the rung's INDEXED CPU geometry (viewer::IndexedPartGeometry /
 // RasterMeshData), i.e. exactly the stream that produced the render vertices:
@@ -106,6 +117,18 @@ struct VtPoolBinding {
 //   tint      = tint_rgba[4c+0..3]     (sRGB-ish bytes, a = tint strength)
 // `atlas->tri_order` indexes TRIANGLES of this same mesh, so a chart's
 // triangle range is atlas->tri_order[first_tri .. first_tri+tri_count).
+// An independently generated periodic material, in physical local metres.
+// Version 0 is an ordinary finite receiver. Version 1 owns a complete logical
+// rectangle, including wrapped filter borders at every mip. It has no instance
+// transform or receiver/weathering identity. The module's canonical support
+// quad is preparation metadata, never a substitute for a drawn receiver mesh.
+struct VtPeriodicDomain {
+    uint32_t version = 0, width = 0, height = 0;
+    float origin[3]{};
+    float u[3] = {1,0,0}, v[3] = {0,1,0}, n[3] = {0,0,1};
+    float period[2]{};
+};
+
 struct VtPartContext {
     uint64_t variant_hash = 0;   // resolved_hash of the part variant
     uint32_t rung = 0;           // LOD rung this mesh/chart table belongs to
@@ -190,6 +213,17 @@ struct VtPartContext {
     const uint16_t* surface_lanes = nullptr;
     uint32_t        surface_lane_count = 0;
 
+    // Optional immutable finite-source catalog. One 1-based source selector
+    // per vertex; all three corners of a receiver triangle must agree. Zero
+    // keeps the base source. IDs are categorical and never interpolated.
+    std::shared_ptr<const VtFiniteSources> finite_sources;
+    const uint32_t* finite_source_ids = nullptr;
+
+    // Value-owned by every captured context; zero version preserves finite
+    // chart composition. vt_make_periodic_material builds the complete source
+    // identity, wrapped source catalog and canonical preparation geometry.
+    VtPeriodicDomain periodic;
+
 };
 
 // ---------------------------------------------------------------------------
@@ -234,6 +268,91 @@ inline uint64_t vt_page_content_salt(uint64_t tape_hash,
     return h;
 }
 
+// Preparation belongs to the canonical parameterization owner, which may
+// serve several geometry-rung aliases. Generation distinguishes successive
+// lifetimes of the same owner; a delayed release must never erase a new one.
+// Standalone producers may leave owner fields zero and use (variant, rung).
+// Material edits keep this key and refresh only the surface preparation.
+struct VtPreparationKey {
+    uint64_t variant_hash = 0;
+    uint32_t rung = 0;
+    uint64_t owner_key = 0;
+    uint64_t owner_generation = 0;
+    bool operator<(const VtPreparationKey& other) const {
+        return std::tie(variant_hash, rung, owner_key, owner_generation) <
+               std::tie(other.variant_hash, other.rung, other.owner_key, other.owner_generation);
+    }
+    bool operator==(const VtPreparationKey& other) const {
+        return std::tie(variant_hash, rung, owner_key, owner_generation) ==
+               std::tie(other.variant_hash, other.rung, other.owner_key, other.owner_generation);
+    }
+};
+
+// Bounded draw-input table identity. The renderer's immutable binding bundle
+// owns source images/material bytes through lifetime; residency keeps it alive
+// for displayed pages and their retiring readers. UINT32_MAX is the existing
+// unversioned producer path. These ids do not change texture formats.
+constexpr uint32_t kVtMaxInputSnapshots = 8;
+constexpr uint32_t kVtNoInputSnapshot = UINT32_MAX;
+struct VtInputSnapshot {
+    const uint32_t index;
+    const std::shared_ptr<void> lifetime;
+    // Bank indices are recycled; pixel-cache identities must not be. This
+    // token needs no GPU storage and retains no otherwise unused input bank.
+    const uint64_t identity;
+    VtInputSnapshot(uint32_t table_index, std::shared_ptr<void> bindings)
+        : index(table_index), lifetime(std::move(bindings)), identity(next_identity()) {}
+private:
+    static uint64_t next_identity() {
+        static std::atomic<uint64_t> next{1};
+        return next.fetch_add(1, std::memory_order_relaxed);
+    }
+};
+
+// Height is normalized over one immutable source's metre range. Every page
+// retains its own decode through edits, including pages from older snapshots.
+// Version 0 is the legacy/neutral route; version 1 stores composed source height.
+struct VtPageHeight {
+    float min_m = 0;
+    float range_m = 0;
+    uint32_t version = 0;
+};
+// Immutable chart/triangle buffers used to reconstruct a connected surface.
+// Addresses alone never confer ownership: publication must retain lifetime
+// until every resident page and every earlier GPU reader has retired.
+struct VtDrawGeometryGpu {
+    uint64_t charts = 0, triangles = 0;
+    uint32_t chart_count = 0, triangle_count = 0;
+    uint32_t page_flags = 0, seed_node_count = 0;
+};
+constexpr uint32_t kVtCoverageOnly = 1u;
+struct VtSurfaceBoundary;
+struct VtDrawGeometry {
+    VtDrawGeometryGpu gpu;
+    std::shared_ptr<const void> lifetime;
+    std::shared_ptr<const VtSurfaceBoundary> boundary;
+};
+// Optional producer identity for identical encoded albedo/normal/ORM/height
+// pages, INCLUDING all filter gutters. Zero means private. Geometry, chart IDs
+// and coverage are deliberately excluded: AUX and traversal belong to each
+// receiver. Producers must include mapping, phase, mip and material dependencies
+// in this identity; sharing a source image alone does not establish equality.
+struct VtMaterialPixelKey { uint64_t low = 0, high = 0; };
+struct VtPageMetadata {
+    uint32_t input_snapshot = kVtNoInputSnapshot;
+    VtPageHeight height;
+    VtDrawGeometryGpu geometry;
+    uint32_t material_slot = 0;
+    uint32_t mapping_address[2]{}; // immutable receiver material table BDA
+    uint32_t mapping_count = 0;
+    uint64_t occlusion_address = 0; // immutable packed R16 receiver factor, zero means identity
+    uint64_t surface_revision = 0; // immutable owner content revision of this page
+};
+static_assert(sizeof(VtPageHeight) == 12 && sizeof(VtDrawGeometryGpu) == 32 &&
+              sizeof(VtPageMetadata) == 80 && offsetof(VtPageMetadata, geometry) == 16 &&
+              offsetof(VtPageMetadata, material_slot) == 48 && offsetof(VtPageMetadata, occlusion_address)==64,
+              "vt_common.glsl page metadata is five uvec4s per receiver page");
+
 // One page fill, fully resolved by the residency layer.
 struct VtFillRequest {
     uint64_t variant_hash = 0;    // resolved_hash of the part variant
@@ -263,9 +382,10 @@ struct VtFillRequest {
     //
     // CONTRACT. The residency layer points this at one bool per request,
     // pre-set to false, and after fill() returns maps ONLY the requests whose
-    // flag is true; a false flag rolls the slot back (freshly acquired slots go
-    // straight back to the free list, a pinned tail keeps its slot but stays
-    // unfilled and is re-queued). A filler MUST therefore set *out_filled =
+    // flag is true AND whose identity still matches. Fillers target isolated
+    // scratch slots, so even partial writes followed by refusal cannot corrupt
+    // resident pixels. A false flag rolls back a fresh final-slot acquisition;
+    // an existing page retains its bytes and durable retry state. A filler MUST set *out_filled =
     // true for every request whose page it actually wrote, and leave it alone
     // otherwise. Deterministic: it is a pure function of what the filler did.
     //
@@ -274,13 +394,55 @@ struct VtFillRequest {
     // working, at the cost of the old hazard.
     bool* out_filled = nullptr;
 
+    // Residency publication identity. A producer records into isolated scratch
+    // storage; residency checks these generations before copying to a resident
+    // slot. These identify publication; part_snapshot below owns CPU inputs.
+    // Neither grants a worker access to the borrowed pool or output flag.
+    uint64_t owner_generation = 0;
+    uint64_t content_revision = 0;
+    uint64_t owner_key = 0;
+
+    // Captured draw bindings for the page candidate. Successful publication
+    // commits this identity with the page; failure retains its predecessor.
+    std::shared_ptr<const VtInputSnapshot> input_snapshot;
+
+    VtPreparationKey preparation_key() const {
+        return {variant_hash, rung, owner_key, owner_generation};
+    }
+
+    // Retain these immutable inputs when dispatching asynchronous CPU work.
+    // Null for standalone/legacy producers that only supply borrowed context.
+    std::shared_ptr<const VtPartSnapshot> part_snapshot;
+
+    // Recorder-only output, initialized by residency. Publish with the page's
+    // pixels only after success and generation checks; never retain on a worker.
+    VtPageHeight* out_height = nullptr;
+    VtDrawGeometry* out_geometry = nullptr;
+    VtMaterialPixelKey* out_material_key = nullptr;
+
+    // Optional authoring readback: one uvec4 per 136x136 page texel, containing
+    // chart-grouped triangle index and float-bit barycentrics. UINT_MAX marks
+    // empty atlas space. Caller owns this writable storage/BDA allocation and
+    // retains it until submission completes. Zero has no shader side effects.
+    VkDeviceAddress export_points = 0;
+
+    // The recorder has proved this page is wholly inside a published material
+    // mapping. A supporting filler may produce only AUX/geometry and report
+    // kVtCoverageOnly in out_geometry. Other fillers may still produce a full
+    // page. Tails and finite/mixed boundary pages always keep full materials.
+    bool coverage_only = false;
+
     // Convenience accessor; never null for a request the residency layer
     // produced.
     const VtPartContext* part() const {
         return static_cast<const VtPartContext*>(part_context);
     }
     // Fillers call this on the path that actually wrote the page.
-    void mark_filled() const {
+    void mark_filled(VtPageHeight height = {}, VtDrawGeometry geometry = {},
+                     VtMaterialPixelKey material_key = {}) const {
+        if (out_height != nullptr) *out_height = height;
+        if (out_geometry != nullptr) *out_geometry = std::move(geometry);
+        if (out_material_key != nullptr) *out_material_key = material_key;
         if (out_filled != nullptr) *out_filled = true;
     }
 };
@@ -301,11 +463,39 @@ struct VtFillRequest {
 class VtPageFiller {
   public:
     virtual ~VtPageFiller() = default;
+    // Called only after the caller's fence retired this frame slot's previous
+    // submission. Cache producers may now consume readbacks and recycle staging.
+    virtual void begin_residency_frame(uint64_t, uint32_t) {}
+    virtual void begin_preparation_frame() {}
+    enum class PageReadiness { NeedsPreparation, Pending, Ready };
+    // Optional finished-page lookup BEFORE owner preparation or slot admission.
+    // The request has immutable owner/input identity and page coordinates, but
+    // no pool, destination slot, or output pointers. Ready bypasses prepare();
+    // Pending preserves demand without evicting another page. A cache miss (or
+    // unsupported producer) returns NeedsPreparation and uses the original path.
+    // Never retain the request itself: asynchronous work owns only snapshots,
+    // content keys and its own completion data. fill() still reports success.
+    virtual PageReadiness probe_page(const VtFillRequest&) {
+        return PageReadiness::NeedsPreparation;
+    }
+    // Recorder-thread admission before a refinement slot is acquired. False
+    // means preparation is deferred; residency retains the request and its
+    // original age. Implementations must not wait, submit, or touch mappings.
+    // CPU jobs retain only these immutable inputs, never a fill request's
+    // borrowed pool pointer or output flag. Stateless fillers are ready now.
+    virtual bool prepare(const VtPreparationKey&,
+                         const std::shared_ptr<const VtPartSnapshot>&) { return true; }
     // Record fills for `count` requests into `cmd`. Deterministic given
     // identical inputs (no time/random); must not submit or wait. Every
     // request whose page is actually written must be reported through
     // VtFillRequest::mark_filled() (see the contract above).
     virtual void fill(VkCommandBuffer cmd, const VtFillRequest* batch, size_t count) = 0;
+    // Render-thread owner lifecycle notifications, outside ordinary recording.
+    // Cached producers must override these and defer resource destruction
+    // through their existing in-flight retirement mechanism. Stateless fillers
+    // need no action. Releasing one of several aliases sends no notification.
+    virtual void release_preparation(const VtPreparationKey&) {}
+    virtual void invalidate_surface(const VtPreparationKey&) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -330,9 +520,8 @@ struct VtEnrichRequest {
     uint16_t page_y = 0;
     uint32_t physical_slot = 0;   // the page slot to refine, in place
     const chart_atlas::ChartAtlasRung* atlas = nullptr;  // borrowed, non-null
-    // `const VtPartContext*`, exactly as VtFillRequest::part_context (same
-    // lifetime guarantee: the residency layer's owned copies outlive every
-    // queued enrichment for that variant).
+    // `const VtPartContext*`, exactly as VtFillRequest::part_context. Retain
+    // part_snapshot for CPU work that outlives this recording call.
     const void* part_context = nullptr;
     // Destination/source pool images (borrowed, same for every request in one
     // enrich() call). `sampled_view[kVtChannelOrm]` must be non-null.
@@ -341,6 +530,23 @@ struct VtEnrichRequest {
     // and deferred destruction. Never feeds the bake itself — enrichment must
     // stay a pure function of geometry.
     uint64_t frame_index = 0;
+    uint64_t owner_key = 0;
+    uint64_t owner_generation = 0;
+
+    // Optional immutable factor output, instead of modifying ORM. The caller
+    // owns/retains this aligned 136x136 R16 subrange through GPU completion,
+    // including when a producer records work but declines publication.
+    VkBuffer occlusion_buffer = VK_NULL_HANDLE;
+    VkDeviceSize occlusion_offset = 0;
+    VkDeviceAddress occlusion_address = 0;
+    bool* out_enriched = nullptr;
+    void mark_enriched() const {if(out_enriched)*out_enriched=true;}
+
+    VtPreparationKey preparation_key() const {
+        return {variant_hash, rung, owner_key, owner_generation};
+    }
+
+    std::shared_ptr<const VtPartSnapshot> part_snapshot;
 
     const VtPartContext* part() const {
         return static_cast<const VtPartContext*>(part_context);
@@ -363,6 +569,9 @@ struct VtEnrichRequest {
 class VtPageEnricher {
   public:
     virtual ~VtPageEnricher() = default;
+    // Legacy producers still refine private ORM. A separate-factor producer
+    // must call mark_enriched only after recording a complete factor page.
+    virtual bool supports_separate_occlusion() const {return false;}
     // Record enrichment for `count` requests into `cmd`. Deterministic given
     // identical inputs (no time, no random, no frame index in the bake); must
     // not submit or wait. See vt_enrich.h for the pool-layout contract.
@@ -371,6 +580,9 @@ class VtPageEnricher {
     // Drop cached per-variant state (geometry streams, acceleration
     // structures). Device must be idle with respect to prior enrichments.
     virtual void invalidate_part(uint64_t variant_hash) = 0;
+    // Last alias released or incompatible owner replaced. Cached producers
+    // retire exactly this lifetime, retaining resources until prior GPU use ends.
+    virtual void release_preparation(const VtPreparationKey&) {}
     // Rays per texel this enricher traces; reported in the residency stats.
     virtual uint32_t sample_count() const = 0;
     // Largest page-texel size (metres) at which enrichment still contributes

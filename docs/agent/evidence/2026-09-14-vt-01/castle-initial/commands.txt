@@ -1,0 +1,11 @@
+dlss native
+set render.pom.enabled true
+set render.lighting.exposure_ev -1.5
+set render.lighting.sun_multiplier 1
+set render.lighting.sky_multiplier 1
+set render.lighting.sky_irradiance_multiplier 1
+set render.gi.enabled true
+set render.gi.diffuse_multiplier 1.0
+render_path native_rt
+wait_frames 8
+shot D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-14-vt-01/castle-initial/view.png

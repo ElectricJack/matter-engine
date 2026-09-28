@@ -1,0 +1,124 @@
+[
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "seconds": 136.92732088899356,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v2-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "compositor",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 5.051100841010339,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v2-test-compositor.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vulkan_smoke_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "seconds": 62.367737396998564,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v2-build-vulkan_smoke_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "vt-composed-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-composed-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "seconds": 65.48259833799966,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v2-test-vt-composed-parallax.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "vt-direct-source",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-direct-source\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 2.9568504829949234,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v2-test-vt-direct-source.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "surface-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 18.481328064008267,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v2-test-surface-parallax.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "vt-feedback",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-feedback\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 24.805878676008433,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v2-test-vt-feedback.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 12.610008900010143,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v2-build-matter_editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

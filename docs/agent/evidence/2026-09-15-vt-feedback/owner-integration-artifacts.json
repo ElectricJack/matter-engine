@@ -1,0 +1,118 @@
+{
+  "files": {
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-alias-red-checks.json": {
+      "bytes": 318,
+      "sha256": "6445bf6b47dcaee125d339ca91f9aaf5c1d7e654865dd75eca580eb10e51fcb4"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-alias-red-retry-checks.json": {
+      "bytes": 929,
+      "sha256": "ef0dbddfe0f04429fa5375e03e2670b474203990f8f5647724f26ce84629ec93"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-alias-red-retry-smoke-build.log": {
+      "bytes": 857,
+      "sha256": "0b7a5fa885abf2fd204880b193e0327d8fa5b17db5e0350a600c29ff951c8522"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-alias-red-retry-source.json": {
+      "bytes": 958,
+      "sha256": "0113a882e8cb7fdc293d75c1d863911a20a97fa6eb9ec2209af0ac1d969a23a9"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-alias-red-retry-vt-enrich.log": {
+      "bytes": 5464,
+      "sha256": "fbcaffcddda42f652fca12f4ea701f6b9f4faabdcf61f171339a1232fe6b58ce"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-alias-red-smoke-build.log": {
+      "bytes": 73709,
+      "sha256": "492da4bf0710d48f0a7627365cf87f44608245e12521b5c68a4b4c6786682df0"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-checks.json": {
+      "bytes": 5209,
+      "sha256": "93c8255f93008d2950796a15da82b2644af49ce3ab91d4b98ac3272b6ea631a6"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-editor-build.log": {
+      "bytes": 1146,
+      "sha256": "3aafd9c63789e66e70cb8107e332adb2e65366a4abc567703142194960e2a388"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-residency-build.log": {
+      "bytes": 2396,
+      "sha256": "cbeab6df54635d2cc89123201064337fd9ce0b922a2f70ab0bb9dc5f21ec155a"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-residency-test.log": {
+      "bytes": 39,
+      "sha256": "9e23733e86ca4ca41fe830668a5be05615274b5d747466d07e45445284439296"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-source.json": {
+      "bytes": 2123,
+      "sha256": "ab86796849f947e971701e5e95a5a32ba488623e019860816b153739c6d6729d"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-surface-parallax.log": {
+      "bytes": 5939,
+      "sha256": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-vt-enrich-nort.log": {
+      "bytes": 4805,
+      "sha256": "b1ce7efb2a7e71910b4f0d2620b44009276ec085dd03df87a555f05b8fa5c66d"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-vt-normal-frame.log": {
+      "bytes": 5963,
+      "sha256": "5bea7d198ea21ae6bd9e7f966bf3613c722687bfb9e48591d756acaff756e7c2"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-vt-rt.log": {
+      "bytes": 5186,
+      "sha256": "fde0901c31070b8244b98a143bb5a325ea7358a8a53966e766c23cd8671cde45"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-vt-surfaces.log": {
+      "bytes": 4821,
+      "sha256": "000f8b10797692de99de1dc7d0fd3654873766eae29b4241c257db1dbdb6dff1"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-integration-vt.log": {
+      "bytes": 5041,
+      "sha256": "1253636c2a64f7edeeeb81c682a5074f824a38ddf1e4d87576b39f5027db0677"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-checks.json": {
+      "bytes": 923,
+      "sha256": "2b841e63cfb7d06e384fa367cfa45ea6830915aa8ccebe3acc9abf39ceee600f"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-compositor-build.log": {
+      "bytes": 2943,
+      "sha256": "5a4f5716012d5f125b66ff28d7ab25238218fd2c436f328eaa687eda9b525244"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-compositor-test.log": {
+      "bytes": 3124,
+      "sha256": "9c756e70f4f9127818aa0358dde3470f30e1bf87377d9ac2e258bf54f7f5c31f"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-checks.json": {
+      "bytes": 2600,
+      "sha256": "2afd987105cf4646cc53d171c5b0fcef5a4f04326bd416bd17668d5ba3b12dc4"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-compositor-build.log": {
+      "bytes": 1824,
+      "sha256": "a41ce09186e1aab11163c2960578e3b5b6b85836938b858ca0cc98df2b8f2bdd"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-compositor-test.log": {
+      "bytes": 3031,
+      "sha256": "51e59d111f986ca60dd5ad27e7f1d3aece6cf8c4fa1344c609ae8f5badca159b"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-smoke-build.log": {
+      "bytes": 66516,
+      "sha256": "9f07311c71e742af4471c767e30130d5dc16750daba28b0bb5dda63c7a81c9f9"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-source.json": {
+      "bytes": 1854,
+      "sha256": "d598c1620d2e9cfb4645af994a21dc15464b58df68b7507fd3c354299fc3d888"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-vt-enrich.log": {
+      "bytes": 5064,
+      "sha256": "a2c65a61b654aa6eadf18841bd92d31e85f47b52cf61473cd7ba2a7d1717b529"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-green-vt-queue.log": {
+      "bytes": 1554,
+      "sha256": "b4fdf059792cce105ec86ed3f1650ea495982c0e3e6cecf423d8d1a2eb8c3459"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/owner-preparation-source.json": {
+      "bytes": 1854,
+      "sha256": "4c07a71727f2aa31bc5b1d545d0e4e6a45e908532321fc554208b9b0746f2211"
+    }
+  },
+  "native_process_census": "editor, Vulkan tests, CPU residency tests, cl, link and ninja absent after all commands completed",
+  "scope": "native owner/preparation correctness; no full-scene timing capture for this source revision"
+}

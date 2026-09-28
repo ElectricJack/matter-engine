@@ -14,7 +14,7 @@ on it has to argue about which — and the previous two rounds of this
 investigation (issues `ec2829d6`, `81dd722b`) each spent most of their length on
 that argument.
 
-`projects/world_demo/scenes/SeamLab` removes the ambiguity by removing the
+`projects/world_demo/scenes/texturing/virtual_texture/SeamLab` removes the ambiguity by removing the
 caves:
 
 * **Cave-free heightfield.** Density is `h(x, z) - y`. Every solid point below

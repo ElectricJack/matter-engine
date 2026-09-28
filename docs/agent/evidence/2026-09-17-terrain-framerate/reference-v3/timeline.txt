@@ -1,0 +1,5 @@
+render_path raster
+set render.gi.enabled false
+set render.pom.enabled false
+dlss native
+wait_event bake.finished 300

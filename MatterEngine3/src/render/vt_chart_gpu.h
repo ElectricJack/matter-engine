@@ -5,9 +5,10 @@
 // WP-D's tier-1 compositor (vt_compositor.cpp / vt_composite.comp) and WP-H's
 // tier-2 hemisphere enrichment (vt_enrich.cpp / vt_enrich_ao.comp) both have to
 // answer the same question per page texel: "which surface point does this texel
-// own?". Both therefore consume the same two SSBOs — the chart table with its
-// plane basis precomputed, and the rung's triangles reordered chart-grouped
-// with per-vertex plane coordinates baked in.
+// own?". Both consume the same prepared chart/triangle geometry — the chart
+// table with its plane basis precomputed, and chart-grouped triangles with
+// per-vertex plane coordinates. The compositor stores mutable surface rows
+// separately; the enricher retains the combined triangle stream format.
 //
 // This header is the ONE place that packing lives, so the two passes can never
 // drift apart. The GLSL mirrors are shaders_vk/vt_chart_types.glsl (structs)
@@ -34,10 +35,14 @@
 //     subtracts the chart origin's projection carried in tangent_ou.w /
 //     bitangent_ov.w.
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <vector>
 
+#include "../../../libs/MeshChartingLib/include/mesh_charting.h"
 #include "chart_atlas.h"
 #include "terrain_field.h"   // kMaxSurfaceMaterials (the source of truth)
 #include "vt_types.h"
@@ -54,7 +59,8 @@ struct GpuChart {
     // tri_range.y is the count actually EMITTED into tris[], which can be
     // lower than the source ChartEntry::tri_count — the builder below drops
     // triangles whose index or corner index is out of range for the mesh.
-    // tri_range.z/.w are std430 padding; the builder always writes 0.
+    // tri_range.z/.w hold the optional seed hierarchy's first node/count.
+    // The stream builder initializes them to zero; CPU preparation fills them.
 };
 static_assert(sizeof(GpuChart) == 80, "GpuChart must match std430 layout");
 
@@ -64,6 +70,10 @@ struct GpuTri {
     float p0[4], p1[4], p2[4];   // xyz part-local position, w = plane U
     float n0[4], n1[4], n2[4];   // xyz part-local normal,   w = plane V
     uint32_t mat[4];             // x = TriEx materialId
+    // Optional surface traversal: y/z/w = emitted neighbor triangle + 1
+    // across (0,1)/(1,2)/(2,0); 0 = closed or connectivity not prepared.
+    // vt_build_chart_gpu_streams leaves these zero. The explicit neighbor
+    // builder below uses the retained corners; page composition ignores them.
     // Per-vertex tape payload. TWO packings share these rows; which one a
     // part carries is decided at stream-build time and travels with the
     // request's weight mode (the struct is internal to the page passes and
@@ -86,6 +96,25 @@ struct GpuTri {
     uint32_t wC[4];
 };
 static_assert(sizeof(GpuTri) == 160, "GpuTri must match std430 layout");
+
+// The compositor retains the immutable prefix and replaces only the surface
+// rows. The combined GpuTri remains the shared CPU packing/reference format
+// and the enricher's stream format. No page encoding changes with this split.
+struct GpuTriGeometry {
+    float p0[4], p1[4], p2[4];
+    float n0[4], n1[4], n2[4];
+    uint32_t mat[4];
+};
+struct GpuTriSurface {
+    uint32_t wA[4], wB[4], wC[4];
+};
+using VtTriangleCorners = std::array<uint32_t, 3>;
+static_assert(sizeof(GpuTriGeometry) == 112 &&
+              sizeof(GpuTriGeometry) == offsetof(GpuTri, wA),
+              "geometry must be the exact combined triangle prefix");
+static_assert(sizeof(GpuTriSurface) == 48 &&
+              sizeof(GpuTriGeometry) + sizeof(GpuTriSurface) == sizeof(GpuTri),
+              "surface rows must preserve the combined triangle layout");
 
 // Per-vertex tape weight columns packed into the triangle stream. DERIVED
 // from terrain_field::kMaxSurfaceMaterials rather than restated, because the
@@ -112,6 +141,30 @@ inline bool vt_context_has_tape(const VtPartContext& ctx) {
            ctx.surface_weights != nullptr;
 }
 
+// Pack only the mutable rows, using the original vertex indices retained by
+// geometry preparation. Callers establish valid corners and packing bounds.
+inline GpuTriSurface vt_pack_triangle_surface(
+    const VtPartContext& ctx, const uint32_t* corners, uint32_t tape_cols,
+    const uint16_t* lanes, uint32_t lane_count) {
+    GpuTriSurface result{};
+    if (lanes && lane_count) {
+        uint32_t* rows[3] = {result.wA, result.wB, result.wC};
+        for (uint32_t v = 0; v < 3; ++v) {
+            const uint16_t* source = lanes + size_t(corners[v]) * lane_count;
+            for (uint32_t l = 0; l < lane_count; ++l)
+                rows[v][l >> 1] |= uint32_t(source[l]) << ((l & 1u) * 16u);
+        }
+    } else if (tape_cols) {
+        uint32_t* rows[3] = {result.wA, result.wA + 2, result.wB};
+        for (uint32_t v = 0; v < 3; ++v) {
+            const uint8_t* source = ctx.surface_weights + size_t(corners[v]) * tape_cols;
+            for (uint32_t k = 0; k < tape_cols; ++k)
+                rows[v][k >> 2] |= uint32_t(source[k]) << ((k & 3u) * 8u);
+        }
+    }
+    return result;
+}
+
 // Builds the two streams for one (variant, rung). Returns false when the
 // result would be unusable (no charts, or every triangle rejected), leaving
 // `out_charts` / `out_tris` in an unspecified but valid state.
@@ -122,6 +175,8 @@ inline bool vt_context_has_tape(const VtPartContext& ctx) {
 // compositor) passes the part's precomputed lane stream only for parts it
 // promoted to mode 3; every other caller (the enricher included) leaves the
 // defaults and gets the historical packing byte-for-byte.
+// `out_corners`, when supplied, retains the original three vertex indices for
+// every emitted triangle, in the same order. Rejected triangles append nothing.
 //
 // DETERMINISM: fixed iteration order (charts ascending, then the chart's
 // tri_order range ascending). Same atlas + mesh => byte-identical streams.
@@ -141,9 +196,11 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
                                        std::vector<GpuChart>& out_charts,
                                        std::vector<GpuTri>& out_tris,
                                        const uint16_t* lanes = nullptr,
-                                       uint32_t lane_count = 0) {
+                                       uint32_t lane_count = 0,
+                                       std::vector<VtTriangleCorners>* out_corners = nullptr) {
     out_charts.clear();
     out_tris.clear();
+    if (out_corners) out_corners->clear();
     if (atlas.charts.empty()) return false;
     if (!ctx.positions || !ctx.indices || ctx.triangle_count == 0) return false;
 
@@ -154,6 +211,7 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
 
     out_charts.resize(atlas.charts.size());
     out_tris.reserve(atlas.tri_order.size());
+    if (out_corners) out_corners->reserve(atlas.tri_order.size());
     for (size_t ci = 0; ci < atlas.charts.size(); ++ci) {
         const chart_atlas::ChartEntry& c = atlas.charts[ci];
         GpuChart& g = out_charts[ci];
@@ -241,43 +299,14 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
                           : 0u;
             }
             g_tri.mat[0] = mat & 0xFFu;
-            if (pack_lanes) {
-                // P2 mode-3 packing: per-vertex f16 field lanes, one 16 B row
-                // per vertex slot (lane l -> word l>>1, half (l&1)*16).
-                const auto pack_vertex_lanes = [&](uint32_t corner,
-                                                   uint32_t out[4]) {
-                    out[0] = out[1] = out[2] = out[3] = 0;
-                    const uint16_t* v =
-                        lanes + size_t(corner) * lane_count;
-                    for (uint32_t l = 0; l < lane_count; ++l)
-                        out[l >> 1] |= uint32_t(v[l]) << ((l & 1u) * 16u);
-                };
-                pack_vertex_lanes(corners[0], g_tri.wA);
-                pack_vertex_lanes(corners[1], g_tri.wB);
-                pack_vertex_lanes(corners[2], g_tri.wC);
-            } else if (has_tape) {
-                // Pack each corner's u8 weight columns: 2 u32 per vertex,
-                // little-endian within the u32 (column k at bit 8*(k&3)).
-                const auto pack_pair = [&](uint32_t corner, uint32_t out[2]) {
-                    out[0] = 0;
-                    out[1] = 0;
-                    const uint8_t* w =
-                        ctx.surface_weights + size_t(corner) * tape_cols;
-                    for (uint32_t k = 0; k < tape_cols; ++k)
-                        out[k >> 2] |= uint32_t(w[k]) << ((k & 3u) * 8u);
-                };
-                uint32_t pair[2];
-                pack_pair(corners[0], pair);
-                g_tri.wA[0] = pair[0];
-                g_tri.wA[1] = pair[1];
-                pack_pair(corners[1], pair);
-                g_tri.wA[2] = pair[0];
-                g_tri.wA[3] = pair[1];
-                pack_pair(corners[2], pair);
-                g_tri.wB[0] = pair[0];
-                g_tri.wB[1] = pair[1];
-            }
+            const auto surface = vt_pack_triangle_surface(
+                ctx, corners, tape_cols, pack_lanes ? lanes : nullptr,
+                pack_lanes ? lane_count : 0u);
+            std::memcpy(g_tri.wA, surface.wA, sizeof(surface.wA));
+            std::memcpy(g_tri.wB, surface.wB, sizeof(surface.wB));
+            std::memcpy(g_tri.wC, surface.wC, sizeof(surface.wC));
             out_tris.push_back(g_tri);
+            if (out_corners) out_corners->push_back({corners[0], corners[1], corners[2]});
             ++emitted;
         }
         g.tri_range[1] = emitted;
@@ -285,6 +314,31 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
         g.tri_range[3] = 0;
     }
     return !out_tris.empty();
+}
+
+// Populate the immutable geometry prefix's reserved words for connected POM
+// traversal. Call once for new geometry, after chart grouping/rejection, never
+// for a surface-only edit. Page compositing itself ignores the neighbor words.
+// No persistent structure grows (112-byte geometry / 160-byte combined rows).
+// Neighbor indices address EMITTED triangles, including chart reordering and
+// UV vertex splits. Actual boundaries and ambiguous edges encode zero.
+inline bool vt_build_chart_surface_neighbors(const VtPartContext& ctx,
+    const std::vector<VtTriangleCorners>& corners, std::vector<GpuTri>& triangles) {
+    for (auto& tri : triangles) tri.mat[1] = tri.mat[2] = tri.mat[3] = 0;
+    if (!ctx.positions || corners.size() != triangles.size() ||
+        corners.size() > size_t(std::numeric_limits<int>::max())) return false;
+    std::vector<uint32_t> indices;
+    indices.reserve(corners.size() * 3u);
+    for (const auto& tri : corners) for (uint32_t vertex : tri) {
+        if (vertex >= ctx.vertex_count) return false;
+        indices.push_back(vertex);
+    }
+    const auto adjacency = mesh_charting::build_surface_adjacency(
+        ctx.positions, indices.data(), int(corners.size()));
+    for (size_t i=0; i<triangles.size(); ++i)
+        for (int edge=0; edge<3; ++edge)
+            triangles[i].mat[edge+1] = uint32_t(adjacency[i].nbr[edge] + 1);
+    return true;
 }
 
 // Candidate charts for one page: every chart rect whose finest-mip footprint

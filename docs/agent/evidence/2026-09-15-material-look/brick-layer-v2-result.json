@@ -1,0 +1,22 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 35.50132672100153,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,brick-layer-v2-middle,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/33024,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-layer-v2-close,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/33024,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-layer-v2-far,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/33024,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-layer-v2-grazing,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/33024,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-layer-v2-rt,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=76/33024,pinned=1,queue=0,fills=76,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "brick-layer-v2-middle.png": "da68b51f1b0e914ce985de6cba854fc1231eb2f1ababcf1f546c9d34de3a78af",
+    "brick-layer-v2-close.png": "ab541ed9026c507c4495249ec997d19f0ac741ef9a57f0c4a162cfae7b02f445",
+    "brick-layer-v2-far.png": "3d948ae205591a8b2fb7d494956f387506750dfbb9fdcbb8ef24c64a2a070ac9",
+    "brick-layer-v2-grazing.png": "2e21c2bfd8f68ce48f500807b202a5d10251adaa1bba7964720eb1753fdd6d94",
+    "brick-layer-v2-rt.png": "cf8fdba16cc5c48b19ba1df0eb50f629f2998ce9ddbb4af208b8b3435e89b396"
+  },
+  "passed": true
+}

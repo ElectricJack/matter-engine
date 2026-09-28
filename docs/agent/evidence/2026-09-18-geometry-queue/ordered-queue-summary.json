@@ -1,0 +1,20 @@
+{
+  "mode": "load",
+  "exit_code": 0,
+  "completed": false,
+  "elapsed_seconds": 94.20316180000373,
+  "streamer_idle_seconds": null,
+  "first_cache_seconds": 1.56411250000383,
+  "last_cache_seconds": 14.538512800005265,
+  "outcomes": {
+    "hit": 815
+  },
+  "compilations": 0,
+  "expected_keys_missing": [],
+  "unexpected_keys": [],
+  "prepared_hashes_missing": [],
+  "prepared_hashes_unexpected": [],
+  "failures": [],
+  "valid": false,
+  "prepared_hits": 2441
+}

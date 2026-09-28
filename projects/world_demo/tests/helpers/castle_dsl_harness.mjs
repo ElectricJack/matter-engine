@@ -1,3 +1,4 @@
+import { layout } from './project_layout.mjs';
 // Exercise authored JS with the real Part prelude and recorded native calls.
 // Run Node with --experimental-vm-modules. This validates the authoring contract;
 // actual meshing, material transport and rendered output still require the editor.
@@ -15,7 +16,7 @@ const canonical = value => JSON.stringify(Object.fromEntries(Object.entries(valu
 
 export async function createCastleHarness(sceneName, options = {}) {
   const project = path.join(repository, 'projects/world_demo');
-  const scene = path.join(project, 'scenes', sceneName);
+  const scene = layout.scene(sceneName);
   const materials = [];
   const materialByName = new Map();
   let active = null;
@@ -95,8 +96,7 @@ export async function createCastleHarness(sceneName, options = {}) {
   const world = await entry(path.join(scene, sceneName + '.js'));
   async function build(module, params = {}) {
     assert.equal(active, null, 'harness builds sequentially');
-    const choices = [path.join(scene, 'objects', module + '.js'), path.join(project, 'objects', module + '.js')];
-    const file = choices.find(p => fs.existsSync(p));
+    const file = layout.object(module, sceneName);
     assert.ok(file, `missing part module ${module}`);
     const ctor = await entry(file);
     const merged = { ...ctor.params, ...params };

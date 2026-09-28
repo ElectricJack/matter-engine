@@ -1,0 +1,18 @@
+{
+  "interactive_pid": 15632,
+  "world": "ClayBrickWallSurfaceProof",
+  "ready": true,
+  "session": "left running for user review; freeze native rebuilds and GPU validation",
+  "binary_sha256": "3cf4ecd6d3988bbc42783114c1cf46079156ee81835ca0ba3407077e23b8f494",
+  "build_manifest": "composite-v4-source.json",
+  "source_count": 144,
+  "source_changes": [],
+  "commands": "D:/tmp/matter-vt/20260915-wall-surface/user-preview-composite-commands.txt",
+  "stdout": "D:/tmp/matter-vt/20260915-wall-surface/user-preview-composite-stdout.log",
+  "stderr": "D:/tmp/matter-vt/20260915-wall-surface/user-preview-composite-stderr.log",
+  "pom": true,
+  "receiver_triangles": 36,
+  "vt_texels_per_metre": 1024,
+  "ui_visible": true,
+  "ui_capture": "D:/tmp/matter-vt/20260915-wall-surface/user-preview-composite-ui.png"
+}

@@ -1,0 +1,1339 @@
+{
+  "v1": {
+    "editor_sha256": "068789f737f3fa8338087d892b8659c9dd96dc25c6edb76fe868c5ca4f6ced24",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 18,
+      "world": 11371,
+      "publish": 64811,
+      "total": 76213
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 186.58 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1386.0,
+      "pinned": 998.0,
+      "queue": 277.0,
+      "fills": 2247.0,
+      "evictions": 0.0,
+      "ind": 11.36,
+      "variants": 998.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 34.286500000000004
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 18.403
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 28.085
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 35.620999999999995
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 6.8965
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 3.935291727416975,
+          "p25": 31.740111565946734,
+          "p50": 62.9646676386716,
+          "p75": 62.9646676386716,
+          "p95": 62.9646676386716
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.0026468256388363725
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 3.935291727416975,
+          "p25": 62.9646676386716,
+          "p50": 62.9646676386716,
+          "p75": 62.9646676386716,
+          "p95": 62.9646676386716
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.0020771203453357626
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 58.988137020215405,
+          "p25": 58.988137020215405,
+          "p50": 58.988137020215405,
+          "p75": 60.94397789857734,
+          "p95": 62.9646676386716
+        },
+        "resident_tpm": {
+          "p05": 58.988137020215405,
+          "p25": 58.988137020215405,
+          "p50": 58.988137020215405,
+          "p75": 60.94397789857734,
+          "p95": 62.9646676386716
+        },
+        "fallback_fraction": 0.0
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 58.988137020215405,
+          "p25": 58.988137020215405,
+          "p50": 58.988137020215405,
+          "p75": 60.94397789857734,
+          "p95": 62.9646676386716
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 58.988137020215405,
+          "p50": 58.988137020215405,
+          "p75": 60.94397789857734,
+          "p95": 62.9646676386716
+        },
+        "fallback_fraction": 0.0
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 62.9646676386716,
+          "p25": 62.9646676386716,
+          "p50": 62.9646676386716,
+          "p75": 62.9646676386716,
+          "p95": 65.05235640256633
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 62.9646676386716,
+          "p75": 62.9646676386716,
+          "p95": 65.05235640256633
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v2": {
+    "editor_sha256": "068789f737f3fa8338087d892b8659c9dd96dc25c6edb76fe868c5ca4f6ced24",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 29,
+      "world": 12763,
+      "publish": 47276,
+      "total": 60088
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 195.24 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1383.0,
+      "pinned": 998.0,
+      "queue": 282.0,
+      "fills": 2245.0,
+      "evictions": 0.0,
+      "ind": 15.54,
+      "variants": 998.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 35.1385
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 19.3155
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 28.672
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 43.0235
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 7.014
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 3.935291727416975,
+          "p25": 31.740111565946734,
+          "p50": 62.9646676386716,
+          "p75": 62.9646676386716,
+          "p95": 62.9646676386716
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.0027687991705799843
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 3.935291727416975,
+          "p25": 62.9646676386716,
+          "p50": 62.9646676386716,
+          "p75": 62.9646676386716,
+          "p95": 62.9646676386716
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.002071318333197953
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 58.988137020215405,
+          "p25": 58.988137020215405,
+          "p50": 58.988137020215405,
+          "p75": 60.94397789857734,
+          "p95": 62.9646676386716
+        },
+        "resident_tpm": {
+          "p05": 58.988137020215405,
+          "p25": 58.988137020215405,
+          "p50": 58.988137020215405,
+          "p75": 60.94397789857734,
+          "p95": 62.9646676386716
+        },
+        "fallback_fraction": 0.0
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 58.988137020215405,
+          "p25": 58.988137020215405,
+          "p50": 58.988137020215405,
+          "p75": 60.94397789857734,
+          "p95": 62.9646676386716
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 58.988137020215405,
+          "p50": 58.988137020215405,
+          "p75": 60.94397789857734,
+          "p95": 62.9646676386716
+        },
+        "fallback_fraction": 0.0
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 62.9646676386716,
+          "p25": 62.9646676386716,
+          "p50": 62.9646676386716,
+          "p75": 62.9646676386716,
+          "p95": 65.05235640256633
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 62.9646676386716,
+          "p75": 62.9646676386716,
+          "p95": 65.05235640256633
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v3": {
+    "editor_sha256": "192d79c5c8469db71c3d62f08c4b0de28bc167f0572dbdfac13f747f3633b1c3",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 18,
+      "world": 11559,
+      "publish": 114825,
+      "total": 126417
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 241.21 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1437.0,
+      "pinned": 998.0,
+      "queue": 277.0,
+      "fills": 2330.0,
+      "evictions": 0.0,
+      "ind": 36.96,
+      "variants": 998.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 34.5105
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 18.9535
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 28.1475
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 35.799
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 7.0024999999999995
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 8.065504100957753,
+          "p25": 62.9646676386716,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.002494358724156858
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 7.806662404547627,
+          "p25": 129.04806561532405,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.0008703018206714088
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 60.94397789857734,
+          "p50": 117.01812813056178,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 2.347996571925005e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v4": {
+    "editor_sha256": "192d79c5c8469db71c3d62f08c4b0de28bc167f0572dbdfac13f747f3633b1c3",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 19,
+      "world": 11595,
+      "publish": 42256,
+      "total": 53883
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 168.84 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1437.0,
+      "pinned": 998.0,
+      "queue": 277.0,
+      "fills": 2330.0,
+      "evictions": 0.0,
+      "ind": 36.96,
+      "variants": 998.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 32.275999999999996
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 17.502
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 28.6465
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 34.064
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 6.568
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 8.065504100957753,
+          "p25": 62.9646676386716,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.002494358724156858
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 7.806662404547627,
+          "p25": 129.04806561532405,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.0008703018206714088
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 60.94397789857734,
+          "p50": 117.01812813056178,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 2.347996571925005e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v5": {
+    "editor_sha256": "192d79c5c8469db71c3d62f08c4b0de28bc167f0572dbdfac13f747f3633b1c3",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 17,
+      "world": 11419,
+      "publish": 42950,
+      "total": 54401
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 169.59 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1437.0,
+      "pinned": 998.0,
+      "queue": 277.0,
+      "fills": 2330.0,
+      "evictions": 0.0,
+      "ind": 36.96,
+      "variants": 998.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 33.436
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 18.613
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 25.3945
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 35.0775
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 6.683
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 8.065504100957753,
+          "p25": 62.9646676386716,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.002494358724156858
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 7.806662404547627,
+          "p25": 129.04806561532405,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.0008703018206714088
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 60.94397789857734,
+          "p50": 117.01812813056178,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 2.347996571925005e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v6": {
+    "editor_sha256": "ced060ff290c6859b749863240d6f12434b71ea75c6440711ca1bba0b388fea6",
+    "audit_pass": false,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 19,
+      "world": 12044,
+      "publish": 42314,
+      "total": 54391
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 173.17 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1437.0,
+      "pinned": 998.0,
+      "queue": 278.0,
+      "fills": 2330.0,
+      "evictions": 0.0,
+      "ind": 36.96,
+      "variants": 998.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 33.209999999999994
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 18.061
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 27.3125
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 37.6775
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 6.7
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 8.065504100957753,
+          "p25": 62.9646676386716,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.002494358724156858
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 7.806662404547627,
+          "p25": 129.04806561532405,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.0008703018206714088
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 60.94397789857734,
+          "p50": 117.01812813056178,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 2.347996571925005e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v7": {
+    "editor_sha256": "ced060ff290c6859b749863240d6f12434b71ea75c6440711ca1bba0b388fea6",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 19,
+      "world": 11806,
+      "publish": 43537,
+      "total": 55377
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2951 sectors resident in 173.38 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1068.0,
+      "pinned": 991.0,
+      "queue": 253.0,
+      "fills": 1477.0,
+      "evictions": 0.0,
+      "ind": 36.2,
+      "variants": 991.0
+    },
+    "timings": {
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 24.7055
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 6.510999999999999
+      }
+    },
+    "center_resolution": {
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v8": {
+    "editor_sha256": "ced060ff290c6859b749863240d6f12434b71ea75c6440711ca1bba0b388fea6",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 18,
+      "world": 11531,
+      "publish": 41819,
+      "total": 53382
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 3174 sectors resident in 164.95 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1068.0,
+      "pinned": 991.0,
+      "queue": 293.0,
+      "fills": 1586.0,
+      "evictions": 0.0,
+      "ind": 36.47,
+      "variants": 991.0
+    },
+    "timings": {
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 23.024
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 6.5735
+      }
+    },
+    "center_resolution": {
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v9": {
+    "editor_sha256": "ced060ff290c6859b749863240d6f12434b71ea75c6440711ca1bba0b388fea6",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 18,
+      "world": 17393,
+      "publish": 46084,
+      "total": 63508
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 183.31 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1516.0,
+      "pinned": 1010.0,
+      "queue": 307.0,
+      "fills": 2373.0,
+      "evictions": 0.0,
+      "ind": 36.96,
+      "variants": 1010.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 31.9055
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 19.447
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 27.679499999999997
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 41.002
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 8.939
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 7.806662404547627,
+          "p25": 62.9646676386716,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.0038653270042822343
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 7.556127569427485,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.0019379074009877077
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 60.94397789857734,
+          "p50": 117.01812813056178,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 2.347996571925005e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v10": {
+    "editor_sha256": "426380f4111c7d7e0b50275dd1866e3fd3046d0dee251419893224040b87d1d1",
+    "audit_pass": true,
+    "material_acceptance": false,
+    "review_reason": "Overview raw albedo shows uniformly pale rocks instead of the authored mineral source. The streaming asset installer bypasses LocalProvider.ensure_part_baked/ensure_part_surface. No part-surface direct-recipe publication receipts exist in the log. Retain as fallback-material performance evidence, not approval of rock texturing.",
+    "setup_ms": {
+      "install": 19,
+      "world": 16469,
+      "publish": 40491,
+      "total": 56992
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 172.32 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1486.0,
+      "pinned": 1010.0,
+      "queue": 313.0,
+      "fills": 2350.0,
+      "evictions": 0.0,
+      "ind": 36.96,
+      "variants": 1010.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 32.876
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 18.591
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 24.443
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 38.403
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 8.3735
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 8.065504100957753,
+          "p25": 62.9646676386716,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.002502979737783075
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 7.806662404547627,
+          "p25": 129.04806561532405,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.000966831975977069
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 60.94397789857734,
+          "p50": 117.01812813056178,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 2.347996571925005e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  },
+  "v11": {
+    "editor_sha256": "25eaaa335e10dad55568aabf3964228604e76963e61c192d5467fca77e1a5eb6",
+    "audit_pass": true,
+    "material_acceptance": "not separately audited",
+    "review_reason": "",
+    "setup_ms": {
+      "install": 31,
+      "world": 12699,
+      "publish": 40888,
+      "total": 53635
+    },
+    "stream_fill_lines": [
+      "[stream.fill] COMPLETE: 2586 sectors resident in 171.87 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+    ],
+    "counter_high_water": {
+      "pool": 1486.0,
+      "pinned": 1010.0,
+      "queue": 283.0,
+      "fills": 2351.0,
+      "evictions": 0.0,
+      "ind": 36.96,
+      "variants": 1010.0
+    },
+    "timings": {
+      "overview": {
+        "samples": 30,
+        "gbuffer_median_ms": 32.348
+      },
+      "grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 21.4165
+      },
+      "cliff": {
+        "samples": 30,
+        "gbuffer_median_ms": 28.182000000000002
+      },
+      "cliff-grazing": {
+        "samples": 30,
+        "gbuffer_median_ms": 40.326
+      },
+      "close": {
+        "samples": 30,
+        "gbuffer_median_ms": 8.731
+      }
+    },
+    "center_resolution": {
+      "overview": {
+        "finest_tpm": {
+          "p05": 8.065504100957753,
+          "p25": 62.9646676386716,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.0,
+          "p75": 1.9837569728716709,
+          "p95": 3.935291727416975
+        },
+        "fallback_fraction": 0.002502979737783075
+      },
+      "grazing": {
+        "finest_tpm": {
+          "p05": 7.806662404547627,
+          "p25": 129.04806561532405,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 1.9837569728716709,
+          "p75": 8.065504100957753,
+          "p95": 16.0
+        },
+        "fallback_fraction": 0.000966831975977069
+      },
+      "cliff": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 3.90625e-05
+      },
+      "cliff-grazing": {
+        "finest_tpm": {
+          "p05": 117.01812813056178,
+          "p25": 117.01812813056178,
+          "p50": 120.8980411108398,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "resident_tpm": {
+          "p05": 30.721493979353387,
+          "p25": 60.94397789857734,
+          "p50": 117.01812813056178,
+          "p75": 120.8980411108398,
+          "p95": 124.90659847276203
+        },
+        "fallback_fraction": 2.347996571925005e-05
+      },
+      "close": {
+        "finest_tpm": {
+          "p05": 124.90659847276203,
+          "p25": 124.90659847276203,
+          "p50": 129.04806561532405,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "resident_tpm": {
+          "p05": 31.740111565946734,
+          "p25": 62.9646676386716,
+          "p50": 124.90659847276203,
+          "p75": 129.04806561532405,
+          "p95": 129.04806561532405
+        },
+        "fallback_fraction": 0.0
+      }
+    }
+  }
+}

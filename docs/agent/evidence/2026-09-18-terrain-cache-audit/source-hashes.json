@@ -1,0 +1,9 @@
+{
+  "MatterEditor/build/windows-msvc/editor.exe": "2aac359e90a39f7250864c20977660a77328d36263a4c93e8660c9b5044c6e0f",
+  "MatterEditor/src/main.cpp": "17748e786afe2200cc09cef0fedd96d5ba07afcfaf71c0db575066dc264f9a73",
+  "MatterEngine3/src/geometry/geometry_asset.cpp": "5168b3924a83791837b934fc029bcf5c41cdc132988c980bd7b90aded1ec6214",
+  "MatterEngine3/src/geometry/geometry_asset.h": "c677f5e9196a3e8c8b532eac72348014b0ebe3733025929437358e10bf6c4dd1",
+  "MatterEngine3/src/render/part_store.cpp": "25d8dfef921df04863b3479ce0a693e6de6d2942b6ef7bc15c755570edcfcb7a",
+  "MatterEngine3/src/render/geometry_world_runtime.cpp": "50bd06c0cc2a8b12bc0418f52b5f8cd1cadecc8b6c8b57f980bfc0b75b076691",
+  "tools/terrain_cache_audit.py": "fc7d7784726f6fd9b6d79b20f4722c7b44acf63e9c438536221ba9f1f6deed3d"
+}

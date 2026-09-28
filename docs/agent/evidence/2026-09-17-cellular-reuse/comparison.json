@@ -1,0 +1,56 @@
+{
+  "before": {
+    "samples_ms": [
+      1.960608,
+      2.25024,
+      1.977632,
+      1.9664,
+      1.983104,
+      1.98464,
+      1.995328,
+      1.99136,
+      1.98112
+    ],
+    "median_page_ms": 0.123944,
+    "hashes": [
+      "feature=0 mip=0 hash=d919053680b58e53",
+      "feature=0 mip=1 hash=c90b02becd1c3e2e",
+      "feature=1 mip=0 hash=02ddf02249b8eef6",
+      "feature=1 mip=1 hash=015077224a1d63c3",
+      "feature=2 mip=0 hash=01d7a1406532f9e1",
+      "feature=2 mip=1 hash=bcbab0cc20021cf8"
+    ],
+    "other_timings": [
+      "fill time: 0.196 ms for 16 pages = 0.0123 ms/page (tier-1 budget 0.5 ms/page)",
+      "mode-3 fill time: 0.591 ms for 16 pages = 0.0370 ms/page (62-op tape)"
+    ]
+  },
+  "after": {
+    "samples_ms": [
+      55.551328,
+      43.88016,
+      1.970624,
+      2.203008,
+      1.977408,
+      1.960736,
+      1.981632,
+      1.969664,
+      1.972288
+    ],
+    "median_page_ms": 0.123588,
+    "hashes": [
+      "feature=0 mip=0 hash=d919053680b58e53",
+      "feature=0 mip=1 hash=c90b02becd1c3e2e",
+      "feature=1 mip=0 hash=02ddf02249b8eef6",
+      "feature=1 mip=1 hash=015077224a1d63c3",
+      "feature=2 mip=0 hash=01d7a1406532f9e1",
+      "feature=2 mip=1 hash=bcbab0cc20021cf8"
+    ],
+    "other_timings": [
+      "fill time: 0.495 ms for 16 pages = 0.0310 ms/page (tier-1 budget 0.5 ms/page)",
+      "mode-3 fill time: 11.128 ms for 16 pages = 0.6955 ms/page (62-op tape)"
+    ]
+  },
+  "all_page_hashes_equal": true,
+  "page_time_reduction_percent": 0.28722648938229733
+}

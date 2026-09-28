@@ -1,0 +1,46 @@
+{
+  "runs": [
+    {
+      "mode": "provider",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"provider\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.9014851359970635,
+      "binary_sha256": "0d39f39fdad37452dfd25728ea919ed3b707544d75937027d6d7111235bcb12d",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "91c394a8e64b726acce472bafcd0671a1c827712538ae0620cf1b78d7a6ad775",
+      "passed": true
+    },
+    {
+      "mode": "partstore",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"partstore\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/partstore_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.3161027820024174,
+      "binary_sha256": "f05cc4c0a1ee240005b7c4ac609ff6ac3a8f17a0bbd3bcb4f271a144a78e822a",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "9449aa14963796dfb8a5cd79ce6d328f50ca63c3964e74d56124966b786979a8",
+      "passed": true
+    },
+    {
+      "mode": "mountain",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"mountain\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe\" --mountain-material; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.9975444260053337,
+      "binary_sha256": "59a35f8a9a1683e74bc6708a81ad9f7efcf7c818acbdb353861399d0f4d9839d",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "a6d4baccf8fc2b3971e1e54a65b21a9e6aebc0efa5194e921314f884ba958f57",
+      "passed": true
+    }
+  ]
+}

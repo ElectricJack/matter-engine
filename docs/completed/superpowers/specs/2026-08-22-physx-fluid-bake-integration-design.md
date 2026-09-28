@@ -551,7 +551,7 @@ Implementation planning may refine filenames, but responsibilities remain:
   chute, and ravine gates;
 - the Windows CMake targets and staging script — opt-in PhysX build followed by
   complete runtime and notice staging into `build/windows` and `dist`; and
-- `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js` — the authored
+- `projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js` — the authored
   acceptance world, with solver-quality parameters added through the imperative
   build DSL rather than hidden environment values.
 
@@ -583,4 +583,4 @@ Implementation planning may refine filenames, but responsibilities remain:
 - River authoring contracts:
   `MatterEngine3/include/matter/river_network.h`
 - Current acceptance world:
-  `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js`
+  `projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js`

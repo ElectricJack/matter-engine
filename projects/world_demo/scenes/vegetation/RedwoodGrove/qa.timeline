@@ -1,0 +1,20 @@
+wait_idle 2 600
+wireframe off
+set viewer.debug.debug_view_mode None
+cam 60 29 86 0 28 0
+wait_frames 30
+shot C:/tmp/conifer-qa/redwoods.png
+stats redwoods
+cam -1 4 12 -8 1.5 0
+wait_frames 30
+shot C:/tmp/conifer-qa/redwood-base.png
+cam 13.4 2 -5.5 12 1.8 -8
+wait_frames 30
+shot C:/tmp/conifer-qa/redwood-bark.png
+cam 0.16 1.61 12.30 0.07 1.5 12
+wait_frames 30
+shot C:/tmp/conifer-qa/redwood-needles.png
+cam 0.4 1.55 12.18 0.3 1.512 12
+wait_frames 30
+shot C:/tmp/conifer-qa/redwood-cone.png
+cam 60 29 86 0 28 0

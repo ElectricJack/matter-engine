@@ -1,0 +1,15 @@
+{
+  "native_source_changes_since_build": [],
+  "evidence": {
+    "traversal-v5-build-manifest.json": "511024561326a1cf28cb14d1f3708cbf1d88a412e557526dac8318fec29cde83",
+    "traversal-v5-tests.json": "a0570a1ef8e45364b76595d8b6ac5540258bedb066fe519ffedcc8a41e169708",
+    "traversal-v4-tests.json": "bca2e07134284f7c774b033cbc74aca726035dd249f91f5fd234250ee1c618a1",
+    "traversal-v5-build-smoke.log": "b2a078032b1a7c420a07e15d3f254e5ea69c9ca61e9713ee371deda501b68d4c",
+    "traversal-v5-build-smoke-retry.log": "6db500b36b7f76d0f66484172d2bba818ae796babab5dac5b209660587f28a36",
+    "traversal-v5-build-smoke-recovery.log": "c1b43b5bc756d3ac4a6881c00f9520166d3dadce67f3f347487d96f47d005f19",
+    "traversal-v5-build-editor.log": "346b310e2234755f0822f0b3a80accc7556f5afaf6506dc28575c4271b8a236b",
+    "terrain-v7-status-comparison.json": "7da6fc14566601ca6af7114daebf1524648de11120b481b5b6480f050b56a0e5",
+    "../2026-09-15-material-look/terrain-connected-pom-v7-result.json": "0f321154b5605bb28a4968d499c2f233fdc508cfbe7ad122cddf6435d561d0fe",
+    "../2026-09-15-material-look/terrain-connected-pom-v7-source.json": "26de8406f697a450526636156c5f20b2782db866bda5d3835d4f42fdaa0e3040"
+  }
+}

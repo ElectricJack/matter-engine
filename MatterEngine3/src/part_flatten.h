@@ -467,6 +467,12 @@ struct FlattenResult {
     size_t      impostors = 0;
 };
 
+// Integrity check for a sole, bake-only-source impostor. Reads the canonical
+// leaf source into temporary CPU storage using the same extraction as baking.
+// No source mesh is registered with the runtime PartStore.
+bool impostor_only_source_digest(const std::string& cache_root, uint64_t root_hash,
+                                uint64_t& digest, std::string& error);
+
 // Flatten the subtree rooted at root_hash. Reads parts from
 // the REP0 sections under <cache_root>/parts/, writes the root bundle's FLAT section
 // (atomic). Idempotent and content-addressed: callers should skip the call when

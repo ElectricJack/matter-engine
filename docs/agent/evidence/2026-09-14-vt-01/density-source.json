@@ -1,0 +1,69 @@
+{
+  "stage": "CPU density diagnostic; native CPU gate and both native editor captures passed",
+  "sha256": {
+    "MatterEditor/src/vt_trace.h": "622d1cbbb421cba0d65c31cc59759b8f46815d22b886c844b5e078c86fea02cd",
+    "MatterEngine3/include/matter/world_session.h": "14943afd48d6644ce43b228b23a96debafc00f7209c0e6d0eebd5a51939e126f",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "2f68aba2fce56875179cb74d0b97868f1e8ed63d78271b80f4805cd5fba1dfcf",
+    "MatterEngine3/src/matter_engine.cpp": "b55e8fec626ab700723be59a53b64def8042e6c52cdcd71c0901c23744bd1293",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "a93f85e48355969a9e59f56973ebf81ec16dbf96800006000c777f28c6dd63f9",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "d052479458531ec704afefecadf84b728f109aec7d9d5ae046a0d5eee505938b",
+    "MatterEngine3/src/render/vt_chart_gpu.h": "c1ec0b8d5ec3a33db17f77446a6960af94d8078b84199fa5e6328d78ff4897a0",
+    "MatterEngine3/src/render/vt_compositor.cpp": "9c222595364432105a164d5ad97cba69ac8242a51e53105aaa94fb0c85565050",
+    "MatterEngine3/src/render/vt_density.h": "fcd9275f66858f033d4c0777a4e937aba74b5e8f5edad6eb63a5946ae79ee4e9",
+    "MatterEngine3/src/render/vt_residency.cpp": "3a002cf1245f2ef53938d443c44b1488d320ff9696369041d57d95982b2c7db7",
+    "MatterEngine3/src/render/vt_residency.h": "a38851ec7e846c76fdaf0bfa56d9c4dad7025f45e5bf3d0ba56b6b4b1e37851f",
+    "MatterEngine3/tests/vt_queue_tests.h": "91fb59915cb88a402da400498a8facb646184b4995bf90827d3e470b8edafbfb",
+    "MatterEngine3/tests/vt_residency_tests.cpp": "20869ff5197eb5d60a32cff768ccee8c55797443b311e3766a0e966e2a2d1adb",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "7c6fb67b5f8d79831334363de7b9c4168a3c252750a75d04895234779cb1695e",
+    "tools/tests/test_vt_acceptance.py": "ee6892977450a8715515cf8a85d2926336de3ac7e53418695356d6aeebe61064",
+    "tools/tests/test_vt_density.py": "985e61b9297e941efbd177236350786be6b703991c5b5159aaa0d085d9021fa2",
+    "tools/vt_acceptance.py": "a5b3397f98d22c8a0190cc1a0cb09c018e1301ac0d0647feb41f382a9ad84128",
+    "tools/vt_density.py": "f68d10e459affc9f179ceaa9d3d2a97ace1ffa7e869b0c922e403a48b1bf2c53"
+  },
+  "executables": {
+    "MatterEditor/build/windows-msvc/editor.exe": "0315dc2f1c3ba46cc91fff714982f2da40b527c800f9019c6c0a01d2ae81e25b",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe": "309423030df2c665392e8e055d27bcb441fb038f3b28f6c6a28ba5d8ce49f2c9"
+  },
+  "build_commands": [
+    {
+      "command": "./tools/build-windows-from-wsl.sh RelWithDebInfo vt_residency_tests",
+      "exit": 0,
+      "log": "build-vt-density-cpu.log"
+    },
+    {
+      "command": "./tools/build-windows-from-wsl.sh RelWithDebInfo editor",
+      "exit": 0,
+      "log": "build-vt-density-editor.log"
+    }
+  ],
+  "test_commands": [
+    {
+      "command": "native CTest -R ^vt_residency_tests$ --output-on-failure --no-tests=error",
+      "exit": 0,
+      "log": "vt-density-native-ctest.log"
+    },
+    {
+      "command": "python3 -m unittest discover -s tools/tests -p test_vt_density.py -v",
+      "exit": 0,
+      "log": "vt-density-parser-tests.log"
+    }
+  ],
+  "scene_properties_match_initial_dirty_snapshot": {
+    "projects/world_demo/scenes/CastleUpgraded/props.json": true,
+    "projects/world_demo/scenes/StreamMountain/props.json": true
+  },
+  "captures": [
+    {
+      "scene": "castle",
+      "driver_exit": 0,
+      "verified_screenshots": 1,
+      "manifest": "castle-density-artifacts.json"
+    },
+    {
+      "scene": "stream",
+      "driver_exit": 0,
+      "verified_screenshots": 1,
+      "manifest": "stream-density-artifacts.json"
+    }
+  ]
+}

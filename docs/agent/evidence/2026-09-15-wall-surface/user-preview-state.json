@@ -1,0 +1,10 @@
+{
+  "source_count": 145,
+  "source_changes": [],
+  "editor_unchanged": true,
+  "interactive_pid": 47552,
+  "world": "ClayBrickWallSurfaceProof",
+  "ready": true,
+  "visual_acceptance": "failed: captured brick color and normal remain flat; diagnosis pending",
+  "session": "left running for user review"
+}

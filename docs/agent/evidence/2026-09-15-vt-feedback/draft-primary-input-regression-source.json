@@ -1,0 +1,6 @@
+{
+  "status": "draft; not applied, compiled or executed",
+  "path": "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+  "base_sha256": "b92872001ab2a56a911e58a52eb8165f893a17e040e9d6517868d84f9689c345",
+  "draft_sha256": "1b00b5ef8fe7983bc407328443043f79774cbbd84f8914d4fde98953b41d72a7"
+}

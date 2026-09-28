@@ -260,11 +260,14 @@ int MaterialMeshingAlgorithm(int materialId);
 // cross-group carve decision in Phase 3.
 int MaterialIsTransparent(int materialId);
 
-// Fills out[MaterialRegistryCount() * MATERIAL_FLOATS_PER_DEF] with the table
+// Copies at most capacity material records under the registry lock; returns
+// the number written. Capacity is in records, not floats. A stale count is
+// safe: newly appended records are deferred to the next snapshot.
+// Fills out[written * MATERIAL_FLOATS_PER_DEF] with the table
 // packed for GPU upload (see MATERIAL_FLOATS_PER_DEF). Used by the renderer.
 // Dynamic entries are packed after the builtins with identical semantics.
 #define MATERIAL_FLOATS_PER_DEF 12
-void MaterialRegistryPackForGPU(float* out);
+int MaterialRegistryPackForGPU(float* out, int capacity);
 
 // Pure packing helper for MaterialGpuRecord.flags_misc[1] (schema v4, spec
 // "Material schema" / Vulkan tileset). detailSlot/macroSlot are the already-
@@ -280,12 +283,13 @@ static inline uint32_t MaterialPackDetailMacroSlots(int detailSlot, int macroSlo
 }
 
 // Packs the registry into the Vulkan ray-tracing material layout.
-// `out` must have room for MaterialRegistryCount() records -- the live total,
-// not MATERIAL_MAX_TOTAL and not the static count. Reads the runtime
+// `out` has capacity records; returns min(capacity, live count) written under
+// the registry lock. Use MATERIAL_MAX_TOTAL capacity for a complete snapshot.
+// Reads the runtime
 // detail/macro slot overrides as well as the static table, so the packed
 // result changes after MaterialRegistrySetGroundTilesetSlot() and must be
 // re-packed and re-uploaded whenever an override moves.
-void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out);
+int MaterialRegistryPackRtForGPU(MaterialGpuRecord* out, int capacity);
 
 // Runtime override: bind material `materialId` to viewer tileset slot `slot`.
 // Pass slot < 0 to clear. Values persist for the life of the process and are

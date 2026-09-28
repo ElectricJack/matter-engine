@@ -265,7 +265,7 @@ root, so `procedural.update` has no working fixture.** Filed as AQ
 
 `procedural.parameters` answers `ok` with `available:true` and `parameters: []`
 for every root in all four worlds. The decisive case is `Meadow`:
-`projects/world_demo/scenes/Meadow/objects/Meadow.js:37` declares
+`projects/world_demo/scenes/vegetation/Meadow/objects/Meadow.js:37` declares
 `static params = { worldSeed: 20260721 }`, that module *is* the published root,
 and `procedural.parameters` resolves its `source` to exactly that file — yet
 reports no parameters, and `procedural.update{worldSeed:…}` is refused with

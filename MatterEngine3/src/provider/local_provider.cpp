@@ -41,6 +41,7 @@
 #include "world_tracer.h"
 #include "part_asset.h"   // fnv1a64
 #include "brick_bond_detail.h"
+#include "projected_face_cache.h"
 #include "tileset_gtex.h" // gtex_content_hash, gtex_cache_hit (headless cache-hit load)
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
@@ -79,6 +80,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include "part_surface.h"
 #include <filesystem>
 #include <iomanip>
 #include <iterator>
@@ -1503,13 +1505,14 @@ LocalProviderConfig make_engine_local_provider_config(
 }
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
+LocalProvider::~LocalProvider() = default;
 
-void LocalProvider::bind_solid_source_baker() {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
-    if (!host_ || !cfg_.vk_solid_source_bake) return;
+void LocalProvider::bind_solid_source_baker(script_host::ScriptHost& host) const {
+    if (!cfg_.vk_solid_source_bake) return;
     const auto bake = cfg_.vk_solid_source_bake;
     const auto run = cfg_.gpu_run;
-    host_->set_solid_source_baker([bake,run](
+    host.set_solid_source_baker([bake,run](
         const gpu_meshing::SolidJob& job, gpu_meshing::MeshResult& result,
         gpu_meshing::SolidStats& stats, gpu_meshing::Error& error,
         const gpu_meshing::BuildControl& control) {
@@ -1546,6 +1549,97 @@ void LocalProvider::bind_solid_source_baker() {
         result=std::move(request->mesh); stats=request->stats; error={};
         return true;
     });
+}
+#endif
+
+bool LocalProvider::ensure_part_surface(uint64_t hash, const part_graph::BakeInputs& bi,
+                                        std::string& message) {
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    if (!host_) { message="part surface requires an initialized provider";return false; }
+    if (part_surfaces_.count(hash) || sources_without_surface_.count(bi.source)) return true;
+    script_host::EvaluatedFiniteSurface recipe; script_host::EvaluatedDirectSurface direct;
+    script_host::BakeError script_error;
+    script_host::SolidSourceEvaluationOptions options; options.control=cfg_.surface_control;
+    if (!host_->evaluate_part_surface(bi.source,part_graph::params_to_json(bi.params),direct,recipe,script_error,options)) {
+        message=script_error.message; return false;
+    }
+    // Presence is class metadata evaluated before parameter overrides. Within
+    // one immutable installed graph, absent source classes need only one read.
+    if (!recipe.present && !direct.present) { sources_without_surface_.insert(bi.source);return true; }
+    if (direct.present) {
+        if (direct.part_hash!=hash || !cfg_.publish_part_surface) {
+            message="direct part source identity mismatch or renderer service unavailable";return false;
+        }
+        std::shared_ptr<const part_surface::Prepared> prepared;gpu_meshing::Error error;
+        if (!part_surface::prepare_direct(direct,prepared,error,cfg_.surface_control)) {
+            message=error.message;return false;
+        }
+        const auto publish=cfg_.publish_part_surface;
+        auto invoke=[prepared,publish](std::string& text){return publish(prepared,text);};
+        if (!(cfg_.gpu_run?cfg_.gpu_run("surface_publish",invoke,message):invoke(message))) return false;
+        part_surfaces_[hash]=std::move(prepared);
+        MATTER_LOGI("part-surface","part=%016llx direct recipe_bytes=%zu source_images=0",
+            static_cast<unsigned long long>(hash),direct.program.size());
+        return true;
+    }
+    if (recipe.geometry.resolved_hash!=hash || !cfg_.publish_part_surface || !cfg_.vk_face_material_bake) {
+        message="finite part source identity mismatch or renderer service unavailable";return false;
+    }
+    const auto run=cfg_.gpu_run;
+    const auto project=cfg_.vk_solid_face_project;
+    const auto shade=cfg_.vk_face_material_bake;
+    gpu_meshing::SolidFaceProjector queued_project=[run,project](const auto& job,auto& output,
+        auto& stats,auto& error,const auto& control) {
+        if (!project) {error={gpu_meshing::ErrorCode::Unavailable,"finite face projector unavailable"};return false;}
+        struct Request {
+            std::vector<gpu_meshing::SolidOp> ops;
+            gpu_meshing::FaceJob job; gpu_meshing::FacePatch output;
+            gpu_meshing::FaceStats stats; gpu_meshing::Error error;
+        };
+        auto r=std::make_shared<Request>(); r->job=job;
+        r->ops.assign(job.source.ops,job.source.ops+job.source.op_count); r->job.source.ops=r->ops.data();
+        auto invoke=[r,project,control](std::string& text) {
+            const bool ok=project(r->job,r->output,r->stats,r->error,control);
+            if (!ok) text=r->error.message;return ok;
+        };
+        std::string text;const bool ok=run?run("finite_geometry",invoke,text):invoke(text);
+        if (!ok) {error=r->error;if(error.code==gpu_meshing::ErrorCode::None)
+            error={gpu_meshing::ErrorCode::Cancelled,text};return false;}
+        output=std::move(r->output);stats=r->stats;error={};return true;
+    };
+    part_surface::MaterialBaker queued_shade=[run,shade](const auto& job,auto& output,
+        auto& stats,auto& error,const auto& control) {
+        struct Request {
+            std::vector<gpu_meshing::SolidOp> ops; gpu_meshing::FacePatch geometry;
+            gpu_meshing::FaceMaterialJob job; gpu_meshing::FaceMaterialPatch output;
+            gpu_meshing::FaceStats stats; gpu_meshing::Error error;
+        };
+        auto r=std::make_shared<Request>();r->job=job;r->geometry=*job.geometry;r->job.geometry=&r->geometry;
+        r->ops.assign(job.geometry_job.source.ops,job.geometry_job.source.ops+job.geometry_job.source.op_count);
+        r->job.geometry_job.source.ops=r->ops.data();
+        auto invoke=[r,shade,control](std::string& text) {
+            const bool ok=shade(r->job,r->output,r->stats,r->error,control);
+            if (!ok) text=r->error.message;return ok;
+        };
+        std::string text;const bool ok=run?run("finite_material",invoke,text):invoke(text);
+        if (!ok) {error=r->error;if(error.code==gpu_meshing::ErrorCode::None)
+            error={gpu_meshing::ErrorCode::Cancelled,text};return false;}
+        output=std::move(r->output);stats=r->stats;error={};return true;
+    };
+    std::shared_ptr<const part_surface::Prepared> prepared;
+    part_surface::Stats stats;gpu_meshing::Error error;
+    if (!part_surface_cache_) part_surface_cache_=std::make_unique<part_surface::SourceCache>();
+    if (!part_surface::prepare(recipe,abs_cache_root_,queued_project,queued_shade,
+                               prepared,stats,error,cfg_.surface_control,part_surface_cache_.get())) {message=error.message;return false;}
+    const auto publish=cfg_.publish_part_surface;
+    auto invoke=[prepared,publish](std::string& text){return publish(prepared,text);};
+    if (!(run?run("finite_publish",invoke,message):invoke(message))) return false;
+    part_surfaces_[hash]=std::move(prepared);
+    MATTER_LOGI("finite-surface","part=%016llx faces=%u geometry_hits=%u material_hits=%u bytes=%zu\n",
+        static_cast<unsigned long long>(hash),stats.faces,stats.geometry_hits,stats.material_hits,stats.bytes);
+    return true;
+#else
+    (void)hash;(void)bi;message="finite source needs script host";return false;
 #endif
 }
 
@@ -3552,6 +3646,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     hit_count_   = 0;
     install_bake_count_ = 0;
     baked_hashes_.clear();
+    part_surfaces_.clear(); part_surface_cache_.reset(); sources_without_surface_.clear();
 
     // Clear cross-phase state
     roots_.clear();
@@ -3592,7 +3687,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // paths (Task 3 Phase B: no chdir required).
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
-    bind_solid_source_baker();
+    bind_solid_source_baker(*host_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_);
     // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
@@ -3651,6 +3746,14 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
                                const std::vector<uint64_t>& child_hashes,
                                uint64_t resolved_hash) override {
             return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
+        }
+        bool bake_static_lods(const std::string& source, const Params& params,
+                              const std::vector<uint64_t>& child_hashes,
+                              const std::vector<std::string>& child_modules,
+                              const std::vector<std::string>& child_params,
+                              uint64_t resolved_hash) override {
+            return inner.bake_static_lods(source, params, child_hashes,
+                                         child_modules, child_params, resolved_hash);
         }
         // Task 2: forward module notification to HostBaker for transient routing.
         void set_baking_module(const std::string& module) override {
@@ -3758,7 +3861,8 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
     }
 
     // Post-order DFS over bake_plan children so children are baked before parents.
-    // Each node: cached() short-circuits; otherwise bake + bake_lod_variants.
+    // Cached geometry still needs its authored representation metadata. Older
+    // deferred bakes could publish a body without its static LOD plan.
     // Visited set prevents double-visiting in a DAG (shared children).
     std::set<uint64_t> visited;
     std::string bake_err;
@@ -3780,38 +3884,43 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             if (!bake_subtree(child_hash)) return false;
         }
 
-        // cached() short-circuits — counts as a demand-phase cache hit.
-        if (host_baker_->cached(hash)) {
-            ++hit_count_;
-            return true;
-        }
-
-        // Fire on_part callback (demand phase, total==0 signals indeterminate count).
-        if (cfg_.on_part) {
-            const char* mod = bi.module.empty() ? nullptr : bi.module.c_str();
-            cfg_.on_part(mod, ++install_bake_count_, 0);
-        }
-
-        // Set the baking module for transient routing (must precede bake call)
+        const bool cached = host_baker_->cached(hash);
         host_baker_->set_baking_module(bi.module);
+        if (cached) {
+            ++hit_count_;
+        } else {
+            // Fire on_part callback (demand phase, total==0 signals indeterminate count).
+            if (cfg_.on_part) {
+                const char* mod = bi.module.empty() ? nullptr : bi.module.c_str();
+                cfg_.on_part(mod, ++install_bake_count_, 0);
+            }
 
-        // Bake
-        bool bake_ok = false;
-        try {
-            bake_ok = host_baker_->bake(bi.source, bi.params, bi.child_hashes,
-                                        bi.child_modules, bi.child_params, hash);
-        } catch (std::bad_alloc&) {
-            bake_err = "out of memory baking part: " + bi.module;
-            return false;
-        } catch (std::exception& e) {
-            bake_err = std::string("exception baking part: ") + bi.module + ": " + e.what();
-            return false;
-        } catch (...) {
-            bake_err = "unknown exception baking part: " + bi.module;
-            return false;
+            // Bake
+            bool bake_ok = false;
+            try {
+                bake_ok = host_baker_->bake(bi.source, bi.params, bi.child_hashes,
+                                            bi.child_modules, bi.child_params, hash);
+            } catch (std::bad_alloc&) {
+                bake_err = "out of memory baking part: " + bi.module;
+                return false;
+            } catch (std::exception& e) {
+                bake_err = std::string("exception baking part: ") + bi.module + ": " + e.what();
+                return false;
+            } catch (...) {
+                bake_err = "unknown exception baking part: " + bi.module;
+                return false;
+            }
+            if (!bake_ok) {
+                bake_err = "bake failed for part: " + bi.module;
+                return false;
+            }
         }
-        if (!bake_ok) {
-            bake_err = "bake failed for part: " + bi.module;
+
+        // Match graph install: authored parameter rungs and noImpostor must
+        // reach the flattener before a body can become drawable.
+        if (!host_baker_->bake_static_lods(bi.source, bi.params, bi.child_hashes,
+                bi.child_modules, bi.child_params, hash)) {
+            bake_err = "static-lods bake failed for part: " + bi.module;
             return false;
         }
 
@@ -3824,8 +3933,11 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
         // Track freshly demand-baked parts in baked_count_ and baked_hashes_ so
         // frame_stats().parts_baked reflects demand-phase activity and future
         // reconcile() calls know this hash is freshly written to disk.
-        ++baked_count_;
-        baked_hashes_.insert(hash);
+        if (!ensure_part_surface(hash,bi,bake_err)) return false;
+        if (!cached) {
+            ++baked_count_;
+            baked_hashes_.insert(hash);
+        }
 
         return true;
     };
@@ -3876,6 +3988,13 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
             return true;
     }
 
+    {
+        const std::string path=root+"/"+part_asset::cache_path_resolved(part_hash);
+        part_asset::StaticPartSnapshot snapshot;matter::PartRenderPolicy policy;
+        if(part_asset::load_static_part_snapshot(path,part_hash,snapshot) &&
+           matter::load_part_render_policy(path,part_hash,snapshot.children.size(),policy) && policy.shared_surfaces)
+            return true; // Preserve the assembly; the renderer shares its local geometry.
+    }
     part_flatten::FlattenResult fr =
         part_flatten::flatten_part(root, part_hash);
     if (fr.ok) {
@@ -4219,10 +4338,9 @@ bool LocalProvider::run_tileset_deferred(
                     const bool cache_hit = tileset::gtex_cache_hit(gtex_path,expected);
                     bool repairing_cache = false;
                     double projection_ms = 0, projection_wall_ms = 0, gpu_ms = 0, compose_ms = 0, save_ms = 0;
+                    uint32_t face_cache_hits = 0;
+                    double face_cache_read_ms = 0, face_cache_write_ms = 0;
                     const auto generate_atlas = [&]() -> bool {
-                        if (!cfg_.vk_solid_face_project) {
-                            err = "brickBondV1 cache miss requires finite source projection service"; return false;
-                        }
                         std::array<gpu_meshing::FacePatch,16> patches;
                         const auto projection_start = std::chrono::steady_clock::now();
                         for (uint32_t seed = 0; seed < 8; ++seed) for (uint32_t side = 0; side < 2; ++side) {
@@ -4242,16 +4360,49 @@ bool LocalProvider::run_tileset_deferred(
                                 work->source.job(),work->source.resolved_hash,side!=0);
                             const auto project = cfg_.vk_solid_face_project;
                             const auto control = evaluation_options.control;
-                            const bool okay = run_gpu("detail.source_face",[work,project,control](std::string& message) {
-                                if (!project(work->job,work->patch,work->stats,work->error,control)) {
-                                    message=work->error.message; return false;
-                                }
-                                return true;
-                            },detail_error);
-                            if (!okay) { err = "brick bond source projection: " + detail_error; return false; }
-                            projection_ms += work->stats.host_ms;
-                            gpu_ms += work->stats.gpu_ms;
-                            patches[seed*2+side] = std::move(work->patch);
+                            // Geometry cache identity excludes the bond palette,
+                            // roughness and placement. Appearance-only rebakes
+                            // therefore reuse these same finite source faces.
+                            char face_key[17];
+                            std::snprintf(face_key,sizeof(face_key),"%016llx",
+                                static_cast<unsigned long long>(gpu_meshing::face_recipe_digest(work->job)));
+                            const std::string face_path = abs_cache_root_ + "/source-face-" + face_key + ".pfac";
+                            const gpu_meshing::SolidFaceProjector queued_project =
+                                [&,work,project](const gpu_meshing::FaceJob&,
+                                    gpu_meshing::FacePatch& output, gpu_meshing::FaceStats& stats,
+                                    gpu_meshing::Error& error, const gpu_meshing::BuildControl& c) {
+                                    if (!project) {
+                                        error={gpu_meshing::ErrorCode::Unavailable,
+                                            "finite face cache miss requires GPU projection service"};
+                                        return false;
+                                    }
+                                    std::string message;
+                                    const bool okay=run_gpu("detail.source_face",[work,project,c](std::string& why) {
+                                        if (!project(work->job,work->patch,work->stats,work->error,c)) {
+                                            why=work->error.message; return false;
+                                        }
+                                        return true;
+                                    },message);
+                                    if (!okay) {
+                                        error=work->error;
+                                        if (error.code==gpu_meshing::ErrorCode::None)
+                                            error={message=="cancelled" || message=="shutdown" ?
+                                                gpu_meshing::ErrorCode::Cancelled : gpu_meshing::ErrorCode::VulkanFailure,message};
+                                        return false;
+                                    }
+                                    output=std::move(work->patch); stats=work->stats; return true;
+                                };
+                            gpu_meshing::FaceCacheStats cached;
+                            gpu_meshing::Error face_error;
+                            if (!gpu_meshing::load_or_project_face(face_path,work->job,queued_project,
+                                    patches[seed*2+side],cached,face_error,control)) {
+                                err="brick bond source preparation: " + face_error.message; return false;
+                            }
+                            face_cache_hits += cached.hit ? 1u : 0u;
+                            face_cache_read_ms += cached.read_ms;
+                            face_cache_write_ms += cached.write_ms;
+                            projection_ms += cached.projection.host_ms;
+                            gpu_ms += cached.projection.gpu_ms;
                         }
                         projection_wall_ms = std::chrono::duration<double,std::milli>(
                             std::chrono::steady_clock::now()-projection_start).count();
@@ -4322,9 +4473,10 @@ bool LocalProvider::run_tileset_deferred(
                     err.clear();
                     ++baked_tileset_count_;
                     MATTER_LOGI("brick-bond",
-                        "module=%s cache_hit=%d cache_rebuilt=%d sources=8 faces=16 source_bundles=0 source_meshes=0 prepare_ms=%.3f source_eval_ms=%.3f projection_wall_ms=%.3f projection_host_ms=%.3f projection_gpu_ms=%.3f compose_ms=%.3f save_compress_ms=%.3f load_upload_ms=%.3f path=%s",
+                        "module=%s cache_hit=%d cache_rebuilt=%d sources=8 faces=16 source_bundles=0 source_meshes=0 prepare_ms=%.3f source_eval_ms=%.3f projection_wall_ms=%.3f projection_host_ms=%.3f projection_gpu_ms=%.3f compose_ms=%.3f save_compress_ms=%.3f load_upload_ms=%.3f face_cache_hits=%u face_cache_read_ms=%.3f face_cache_write_ms=%.3f path=%s",
                         root_module.c_str(),cache_hit&&!repairing_cache?1:0,repairing_cache?1:0,prepare_ms,prepared.source_evaluation_ms,
-                        projection_wall_ms,projection_ms,gpu_ms,compose_ms,save_ms,load_ms,gtex_path.c_str());
+                        projection_wall_ms,projection_ms,gpu_ms,compose_ms,save_ms,load_ms,
+                        face_cache_hits,face_cache_read_ms,face_cache_write_ms,gtex_path.c_str());
                     if (on_tileset_part) on_tileset_part(idx+1,total,root_module.c_str());
                     continue;
                 }
@@ -4497,6 +4649,8 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // After compose_world (which now skips flatten/refs in the async path),
     // eagerly flatten all placed roots and expand FlatInstanceRefs here.
     if (!install_graph(err, part_graph::BakePolicy::All)) return false;
+    for (const auto& item:ir_.bake_plan)
+        if (!ensure_part_surface(item.first,item.second,err)) return false;
     if (!compose_world(out, err)) return false;
 
     // Eager flatten: every placed root gets a .flat.part so synchronous callers
@@ -4716,6 +4870,7 @@ bool LocalProvider::restore_from_cache(
     hit_count_    = 0;
     install_bake_count_ = 0;
     baked_hashes_.clear();
+    part_surfaces_.clear(); part_surface_cache_.reset(); sources_without_surface_.clear();
     roots_.clear();
     root_transforms_.clear();
     expand_flags_.clear();
@@ -4735,7 +4890,7 @@ bool LocalProvider::restore_from_cache(
     // individual cache-miss parts without running a global resolve.
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
-    bind_solid_source_baker();
+    bind_solid_source_baker(*host_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_);
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
     // W3: thread the optional per-rung bake observer (null in production).

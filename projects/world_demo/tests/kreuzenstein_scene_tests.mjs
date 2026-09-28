@@ -9,7 +9,7 @@ const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../..",
 );
-const scene = path.join(root, "projects/world_demo/scenes/Kreuzenstein");
+const scene = path.join(root, "projects/world_demo/scenes/castles/layouts/Kreuzenstein");
 // Object lookup mirrors the engine's search path: a scene owns its own
 // objects/ over the shared project tier. KreuzensteinBrick lives in the
 // project tier because shared-lib/kreuzenstein.js places it by name, and a
