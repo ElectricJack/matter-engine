@@ -33,6 +33,7 @@
 #            RUN_TIMEOUT (1800 s) VARIANTS ("pom_reference pom_chart_only pom_work pom_off")
 #            PAGED_TERRAIN (0; 1 opts into the StreamMountain terrain geometry profile)
 #            PAGED_CACHE_ONLY (0; 1 forbids missing terrain-page compilation in that profile)
+#            PAGED_GPU_MB (1024; geometry page GPU budget, 1..4096 MiB)
 #            EDITOR_NAME (editor.exe; executable in MatterEditor/build/windows-msvc)
 #            Diagnostic variants: geometry, geometry_cutout, no_vt (POM off; images
 #            differ from pom_off and their timings are differential evidence).
@@ -46,9 +47,14 @@ stats_env=()
 if [ "$PIPELINE_STATS" = 1 ]; then stats_env=(MATTER_VK_PIPELINE_STATS=1); fi
 paged_env=()
 if [ "${PAGED_TERRAIN:-0}" = 1 ]; then
+  paged_gpu_mb=${PAGED_GPU_MB:-1024}
+  case "$paged_gpu_mb" in ''|*[!0-9]*) echo "PAGED_GPU_MB must be 1..4096" >&2; exit 2 ;; esac
+  if [ "$paged_gpu_mb" -lt 1 ] || [ "$paged_gpu_mb" -gt 4096 ]; then
+    echo "PAGED_GPU_MB must be 1..4096" >&2; exit 2
+  fi
   paged_env=(MATTER_GEOMETRY_TERRAIN=1 MATTER_GEOMETRY_PAGES=1
     MATTER_GEOMETRY_MODULE=MountainDetailRock MATTER_GEOMETRY_MIN_TRIANGLES=16384
-    MATTER_GEOMETRY_ROOT_MB=1024 MATTER_GEOMETRY_CPU_MB=1024 MATTER_GEOMETRY_GPU_MB=1024
+    MATTER_GEOMETRY_ROOT_MB=1024 MATTER_GEOMETRY_CPU_MB=1024 MATTER_GEOMETRY_GPU_MB="$paged_gpu_mb"
     MATTER_GEOMETRY_PAGES_PROFILE=1)
   if [ "${PAGED_CACHE_ONLY:-0}" = 1 ]; then paged_env+=(MATTER_GEOMETRY_CACHE_ONLY=1); fi
 fi

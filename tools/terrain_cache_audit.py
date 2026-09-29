@@ -27,12 +27,16 @@ def main():
     parser.add_argument('--sector-read-ahead-mb', type=int, choices=[0,1,4,8,16], default=0)
     parser.add_argument('--geometry-inflight', type=int, choices=[128,256,512,1024,2048,4096], default=128)
     parser.add_argument('--geometry-read-batch', type=int, choices=[32,64,128,256,512,1024], default=32)
+    parser.add_argument('--geometry-gpu-mb', type=int, default=1024,
+                        help='Geometry page GPU reservation budget (default: 1024 MiB)')
     parser.add_argument('--turn-after-ready', help='Second camera ex,ey,ez,tx,ty,tz after first stable readiness')
     parser.add_argument('--identity-cache', action='store_true')
     parser.add_argument('--identity-cook', action='store_true')
     parser.add_argument('--vt-cache', type=Path, help='Finished GPU-format VT page store (load mode)')
     parser.add_argument('--vt-cook', action='store_true', help='Capture missing VT pages and wait for durable writes')
     args = parser.parse_args()
+    if not 1 <= args.geometry_gpu_mb <= 4096:
+        parser.error('--geometry-gpu-mb must be 1..4096 MiB')
     if (args.vt_cache and args.mode != 'load') or (args.vt_cook and not args.vt_cache):
         parser.error('--vt-cache requires load mode; --vt-cook requires --vt-cache')
     if args.identity_cook and not args.identity_cache:
@@ -60,7 +64,7 @@ def main():
         'MATTER_VK_STATIC_RESERVE_VERTEX_MB': '2048',
         'MATTER_GEOMETRY_PAGES': '1', 'MATTER_GEOMETRY_MODULE': 'MountainDetailRock',
         'MATTER_GEOMETRY_MIN_TRIANGLES': '16384', 'MATTER_GEOMETRY_CPU_MB': '1024',
-        'MATTER_GEOMETRY_ROOT_MB': '1024', 'MATTER_GEOMETRY_GPU_MB': '1024',
+        'MATTER_GEOMETRY_ROOT_MB': '1024', 'MATTER_GEOMETRY_GPU_MB': str(args.geometry_gpu_mb),
         'MATTER_GEOMETRY_READ_AHEAD_MB': str(args.read_ahead_mb), 'MATTER_GEOMETRY_UPLOAD_CPU_MS': '4',
         'MATTER_GEOMETRY_MAX_INFLIGHT': str(args.geometry_inflight),
         'MATTER_GEOMETRY_READ_BATCH': str(args.geometry_read_batch),
