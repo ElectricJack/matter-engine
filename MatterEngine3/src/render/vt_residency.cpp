@@ -60,7 +60,7 @@
 //
 // TUNABLES all come from matter::VtResidencyBudgets (matter/vt_budgets.h) — no
 // local getenv reads remain except MATTER_VT_DEBUG_GENERATIONS, which arms the
-// abort-on-failure recycling audit rather than setting a value. The four LIVE
+// abort-on-failure recycling audit rather than setting a value. The LIVE
 // budgets are re-read every begin_frame (refresh_budgets), so an editor slider
 // takes effect on the next frame; max_variants_ and the indirection arena size
 // a buffer at init and are not live-editable.
@@ -70,6 +70,7 @@
 #include "vt_density.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -77,6 +78,7 @@
 #include <utility>
 
 #include "matter/log.h"
+#include "matter/gpu_timing_sample.h"
 #include "matter/vt_budgets.h"
 #include "matter/vulkan_device.h"
 #include "profile.h"
@@ -2640,7 +2642,7 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
 // Per-frame
 // ---------------------------------------------------------------------------
 
-// The four LIVE budgets, re-read from matter::vt_residency_budgets() every
+// Live budgets are re-read from matter::vt_residency_budgets() every
 // frame so an editor slider (or a FIFO `set vt.residency.fills_per_frame 24`)
 // takes effect on the next frame. max_variants_ and the indirection arena are
 // deliberately absent: both sized a buffer at init, which no world reload
@@ -2651,6 +2653,8 @@ void VtResidency::refresh_budgets() {
     max_fills_per_frame_ = clamp_u32(b.fills_per_frame, 1u, kMaxFillFlags);
     max_tail_fills_per_frame_ =
         clamp_u32(b.tail_fills_per_frame, 1u, kMaxFillFlags);
+    fill_budget_ms_ = std::isfinite(b.fill_budget_ms)
+        ? std::clamp(b.fill_budget_ms, 0.0f, 32.0f) : 12.0f;
     max_enrich_per_frame_ = clamp_u32(b.enrich_per_frame, 0u, 16u);
     if(enabling_enrichment && enricher_ && !enricher_->supports_separate_occlusion() &&
        (material_pages_.shared_references()!=0 || stats_.coverage_only_pages))
@@ -2665,6 +2669,16 @@ void VtResidency::refresh_budgets() {
         1024u;
     stats_.mesh_budget_bytes = mesh_budget_bytes_;
     slots_.set_protect_frames(clamp_u32(b.evict_protect_frames, 1u, 100000u));
+}
+
+void VtResidency::observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills) {
+    if (!recorded_fills || !std::isfinite(vt_ms) || vt_ms <= 0.0f) return;
+    // The fill subzone includes the compositor's page bake, BC encode and
+    // copies. An unusually costly page cuts the next quota immediately;
+    // decay slowly after a one-time pool clear.
+    const float observed = std::min(vt_ms / float(recorded_fills), 1000.0f);
+    estimated_fill_ms_ = std::max(observed, estimated_fill_ms_ * 0.95f);
+    estimated_fill_ms_ = std::max(estimated_fill_ms_, 0.25f);
 }
 
 // The frame's CPU-only phase, and the first VT call of a frame. Records nothing
@@ -2911,8 +2925,17 @@ void VtResidency::record_feedback_readback(VkCommandBuffer cmd,
 //
 // Returns true unconditionally today, including when the runtime is not up;
 // `error` is reserved for a filler that grows a failure path.
-bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
+bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
+                               VkQueryPool timing_pool,
+                               uint8_t* timing_written) {
     if (!ready_) return true;
+    recorded_fill_count_ = 0;
+    const auto stamp = [&](uint32_t zone, bool end) {
+        if (!timing_pool || !timing_written) return;
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                             timing_pool, zone * 2u + (end ? 1u : 0u));
+        timing_written[zone] |= end ? 2u : 1u;
+    };
     stats_.fills_last_frame = 0;
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
@@ -2932,7 +2955,9 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     // dependency that orders them.
     {
         PROFILE_SCOPE("vt.enrich");
+        stamp(matter::kGpuTimingVtEnrich, false);
         drain_enrich(cmd);
+        stamp(matter::kGpuTimingVtEnrich, true);
     }
     // --- pool transitions -------------------------------------------------
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
@@ -3047,11 +3072,15 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         // feedback-driven sharpening; both classes share the kMaxFillFlags
         // batch ceiling.
         uint32_t tail_taken = 0, page_taken = 0;
+        const uint32_t time_quota = fill_budget_ms_ > 0.0f
+            ? std::max(1u, std::min(4u, static_cast<uint32_t>(
+                  fill_budget_ms_ / std::max(estimated_fill_ms_, 0.25f))))
+            : kMaxFillFlags;
         bool page_admission_blocked = false;
         std::map<VtPreparationKey, bool> prepared_owners;
         std::vector<uint8_t> taken(queue_.size(), 0u);
         for (size_t i = 0; i < queue_.size(); ++i) {
-            if (batch_.size() >= kMaxFillFlags) break;
+            if (batch_.size() >= kMaxFillFlags || batch_.size() >= time_quota) break;
             const PendingFill& p = queue_[i];
             // Bounds first, matching drain_enrich and the feedback drain. A
             // layer past the table can only appear if the queue outlived the
@@ -3205,6 +3234,8 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         reindex_pending_fills();
     }
 
+    recorded_fill_count_ = static_cast<uint32_t>(batch_.size());
+
     if (!batch_.empty()) {
         // Must agree with the transitions recorded above, which is why the two
         // are set together and not per-filler: BOTH shipped fillers write the
@@ -3231,12 +3262,14 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         }
         {
             // Tier-1 page bake: the compositor samples the tileset slots and
-            // encodes BC blocks per page. Cost scales with batch size, which
-            // the per-frame fill budgets bound -- so a large vt.fill means the
-            // budgets are being hit every frame, not that one page is slow.
+            // encodes BC blocks per page. The shared time quota is estimated
+            // from retired GPU timestamps and still admits one page even if
+            // that page alone exceeds the target.
             PROFILE_SCOPE("vt.fill");
             PROFILE_COUNT("vt.fill_batch", batch_.size());
+            stamp(matter::kGpuTimingVtFill, false);
             filler_->fill(cmd, batch_.data(), batch_.size());
+            stamp(matter::kGpuTimingVtFill, true);
         }
 
         // --- map or roll back, per request --------------------------------

@@ -260,8 +260,9 @@ VtParallaxSample vt_parallax_sample(uint slot, vec2 uv, float lod,
         VtAddress mapped=vt_resolve_chart(ctx.slot,point.uv,vt_walk_lod(ctx,point.chart,lod),point.chart);
         vec2 local_uv_ray=vec2(dot(local_ray,chart.tangent_ou.xyz),dot(local_ray,chart.bitangent_ov.xyz))*
                           chart.origin_tpm.w/ctx.atlas_size;
-        float module_rate=max(abs(dot(vt_material_gradient(mapped).xy,local_uv_ray)),
-                              abs(dot(vt_material_gradient(mapped).zw,local_uv_ray)));
+        vec4 material_gradient = vt_material_gradient(mapped);
+        float module_rate=max(abs(dot(material_gradient.xy,local_uv_ray)),
+                              abs(dot(material_gradient.zw,local_uv_ray)));
         if (module_rate>0.0) half_texel_step=min(half_texel_step,.5/module_rate);
         hi = min(max_ray_m, lo + min(nominal_step, half_texel_step));
         if (!(hi > lo)) break;

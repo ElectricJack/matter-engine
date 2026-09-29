@@ -25,7 +25,7 @@
 // allocations that cannot change without recreating the renderer, which a WORLD
 // reload does not do. They are therefore ReadOnly here (displayed with their
 // env source, not editable), rather than RequiresReload, which would promise a
-// reload that does not in fact re-run init. The other four are re-read by
+// reload that does not in fact re-run init. The live fields are re-read by
 // VtResidency::begin_frame every frame, so editing them is genuinely live.
 //
 // USING IT. There is no instance to own or pass around: read through
@@ -59,6 +59,10 @@ struct VtResidencyBudgets {
     // many variants per frame and each renders legacy-flat until its single
     // tail page lands, so tails must never queue behind sharpening fills.
     uint32_t tail_fills_per_frame = 16;
+    // Shared GPU-time target for detail and tail fills. Residency estimates
+    // per-page cost from retired VT timestamps and always admits one page so
+    // a slow or unsupported timer cannot stall the queue. 0 disables it.
+    float fill_budget_ms = 12.0f;
     // Tier-2 hemisphere-AO enrichments per frame; 0 keeps the enricher loaded
     // but drains nothing.
     uint32_t enrich_per_frame = 2;
@@ -173,6 +177,11 @@ inline const props::Group& vt_residency_budgets_group() {
         prop(&VtResidencyBudgets::tail_fills_per_frame, "tail_fills_per_frame")
             .label("Tail fills / frame").range(1.0f, 64.0f)
             .env("MATTER_VT_TAIL_FILLS_PER_FRAME"),
+        prop(&VtResidencyBudgets::fill_budget_ms, "fill_budget_ms")
+            .label("Fill GPU budget").range(0.0f, 32.0f).units("ms")
+            .env("MATTER_VT_FILL_BUDGET_MS")
+            .doc("Shared tail/detail fill time target from retired GPU samples. "
+                 "At least one fill is admitted; 0 disables the time cap."),
         prop(&VtResidencyBudgets::enrich_per_frame, "enrich_per_frame")
             .label("Enrich / frame").range(0.0f, 16.0f)
             .env("MATTER_VT_ENRICH_PER_FRAME")

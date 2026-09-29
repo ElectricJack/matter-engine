@@ -176,7 +176,10 @@ void vt_tape_eval(uint ops_offset, uint ops_count,
                   vec3 lpos, float ny, float slope, vec3 wpos,
                   GpuTri tri, vec3 bary, float footprint_m,
                   out float regs[VT_TAPE_MAX_REGS]) {
-    for (int i = 0; i < VT_TAPE_MAX_REGS; ++i) regs[i] = 0.0;
+    // The CPU packer accepts only backward SSA references and maps every
+    // output to a physical register written before its first read. Clearing
+    // all 96 registers for every texel (and every derivative probe) kept an
+    // otherwise dead register file live through the interpreter.
     // One result tuple serves the distance/gap/value ops at identical inputs.
     // Keep this local to one invocation: normal derivatives, other layers and
     // neighboring texels must evaluate their own positions.

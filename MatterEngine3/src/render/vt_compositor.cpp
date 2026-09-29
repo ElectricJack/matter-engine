@@ -1,6 +1,6 @@
 // vt_compositor.cpp — WP-D tier-1 chart-page compositor + GPU BC encode.
 // See vt_compositor.h for the module contract and shaders_vk/vt_composite.comp
-// / vt_bc_encode.comp for the GPU passes this records.
+// / vt_height_normal.comp / vt_bc_encode.comp for the GPU passes this records.
 //
 // WHAT ONE fill() DOES, end to end:
 //   1. On the very first call only, record_init() transitions every ring's
@@ -14,7 +14,8 @@
 //      GpuFillRequest into the ring's request buffer — including the
 //      weight-seam mode this page will run in.
 //   4. In groups of kBatchStride: dispatch vt_composite.comp once per page
-//      into the group's intermediate image layer, barrier, dispatch
+//      into the group's intermediate image layer, barrier, resolve ordinary
+//      direct-source normals from those heights, barrier, dispatch
 //      vt_bc_encode.comp once per page into the ring's block buffers,
 //      barrier, then copy the three compressed channels and the uncompressed
 //      aux layer into each page's destination pool slot.
@@ -425,6 +426,7 @@ struct VtCompositor::Impl {
     VkPipelineLayout composite_pl = VK_NULL_HANDLE;
     VkPipelineLayout encode_pl = VK_NULL_HANDLE;
     VkPipeline composite_pipe = VK_NULL_HANDLE;
+    VkPipeline height_normal_pipe = VK_NULL_HANDLE;
     VkPipeline encode_pipe = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
@@ -715,6 +717,7 @@ struct VtCompositor::Impl {
                 for (auto& source : slot) source.reset();
         for (auto& slot : tileset_slots) slot = VtTilesetSlotViews{};
         if (composite_pipe) vkDestroyPipeline(device, composite_pipe, nullptr);
+        if (height_normal_pipe) vkDestroyPipeline(device, height_normal_pipe, nullptr);
         if (encode_pipe) vkDestroyPipeline(device, encode_pipe, nullptr);
         if (composite_pl) vkDestroyPipelineLayout(device, composite_pl, nullptr);
         if (encode_pl) vkDestroyPipelineLayout(device, encode_pl, nullptr);
@@ -909,6 +912,9 @@ bool VtCompositor::Impl::init(std::string& err) {
 
     if (!create_pipeline("vt_composite.comp.spv", composite_pl, composite_pipe,
                          err))
+        return false;
+    if (!create_pipeline("vt_height_normal.comp.spv", composite_pl,
+                         height_normal_pipe, err))
         return false;
     if (!create_pipeline("vt_bc_encode.comp.spv", encode_pl, encode_pipe, err))
         return false;
@@ -1608,7 +1614,8 @@ std::array<uint64_t, 2> VtCompositor::encoded_input_identity() const {
     // includes. The CPU preparation policy still carries kVtBakeVersion above.
     static const auto shader_identity = [] {
         std::vector<uint8_t> identity;
-        for (const char* name : {"vt_composite.comp.spv", "vt_bc_encode.comp.spv"}) {
+        for (const char* name : {"vt_composite.comp.spv", "vt_height_normal.comp.spv",
+                                 "vt_bc_encode.comp.spv"}) {
             const auto shader = matter::find_spirv(name);
             if (!shader.words || !shader.word_count) return asset_store::BlobHash{};
             const auto hash = asset_store::hash_bytes(shader.words, shader.word_count*sizeof(uint32_t));
@@ -2195,6 +2202,32 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
                           im.composite_pipe);
         for (size_t r = group_start; r < group_end; ++r) {
             const Rec& rec = recs[r];
+            VkDescriptorSet sets[2] = {rec.entry->set, ring.batch_set};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    im.composite_pl, 0, 2, sets, 0, nullptr);
+            vkCmdPushConstants(cmd, im.composite_pl,
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0, 4,
+                               &rec.req_index);
+            vkCmdDispatch(cmd, kPageStore / 8, kPageStore / 8, 1);
+        }
+
+        cmd_memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          im.height_normal_pipe);
+        for (size_t r = group_start; r < group_end; ++r) {
+            const Rec& rec = recs[r];
+            const GpuFillRequest& request = gpu_reqs[rec.req_index];
+            if (request.periodic[3] == 1u || request.periodic[2] != 0u ||
+                request.height_output[2] != 0.0f ||
+                request.source_range[1] <= request.source_range[0] ||
+                (request.source_b[3] != 1u && request.source_b[3] != 2u) ||
+                request.b[2] != static_cast<uint32_t>(WeightMode::kSurfaceTapeGpu))
+                continue;
             VkDescriptorSet sets[2] = {rec.entry->set, ring.batch_set};
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     im.composite_pl, 0, 2, sets, 0, nullptr);

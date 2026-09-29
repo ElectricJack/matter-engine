@@ -1500,9 +1500,13 @@ void test_atmosphere_timing_contract() {
               Renderer::kGpuZoneVt == 10 &&
               Renderer::kGpuZoneVtFeedbackReadback == 25 &&
               std::string(matter::kGpuTimingNames[25]) == "vt_feedback_readback" &&
-              Renderer::kGpuZoneCount == 26 &&
+              Renderer::kGpuZoneVtFill == 26 &&
+              Renderer::kGpuZoneVtEnrich == 27 &&
+              std::string(matter::kGpuTimingNames[26]) == "vt_fill" &&
+              std::string(matter::kGpuTimingNames[27]) == "vt_enrich" &&
+              Renderer::kGpuZoneCount == 28 &&
               matter::kGpuTimingNames.size() == Renderer::kGpuZoneCount,
-          "lighting detail timings append GPU zones without renumbering");
+          "VT detail timings append GPU zones without renumbering");
     CHECK(std::string(matter::kGpuTimingNames[21]) == "hdr_lighting" &&
               std::string(matter::kGpuTimingNames[22]) == "rt_gi_diffuse" &&
               std::string(matter::kGpuTimingNames[23]) == "rt_gi_reflection_transmission" &&

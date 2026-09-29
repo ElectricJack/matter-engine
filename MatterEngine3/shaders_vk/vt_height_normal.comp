@@ -1,0 +1,63 @@
+#version 460
+// Resolve the direct-source normal from the height field already evaluated
+// once per texel by vt_composite. Gutter texels supply centered differences
+// at the visible page edge; only the outermost store texels are one-sided.
+#include "vt_chart_types.glsl"
+#include "vt_normal_frame.glsl"
+#include "vt_fill_request.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer ChartsBuf { GpuChart charts[]; };
+layout(std430, set = 1, binding = 0) readonly buffer RequestBuf { GpuFillRequest requests[]; };
+layout(set = 1, binding = 6, rgba8) uniform image2DArray outNormal;
+layout(set = 1, binding = 8, rgba8) uniform readonly image2DArray outAux;
+layout(set = 1, binding = 10, r16) uniform readonly image2DArray outHeight;
+layout(push_constant) uniform Push { uint req_index; } pc;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, ivec2(VT_PAGE_STORE)))) return;
+    GpuFillRequest req = requests[pc.req_index];
+    int layer = int(req.a.w);
+    uvec4 aux = uvec4(imageLoad(outAux, ivec3(texel, layer)) * 255.0 + 0.5);
+    if (aux.a < 2u || aux.a > 4u)
+        return; // no surface or a chart ID too large for the aux transport
+    vec3 nrm = req.material_origin.w == 1.0 ? req.material_normal.xyz
+        : normalize(imageLoad(outNormal, ivec3(texel, layer)).xyz * 2.0 - 1.0);
+    mat3 basis = vt_normal_frame(nrm);
+    ivec2 left = max(texel - ivec2(1, 0), ivec2(0));
+    ivec2 right = min(texel + ivec2(1, 0), ivec2(VT_PAGE_STORE - 1));
+    ivec2 down = max(texel - ivec2(0, 1), ivec2(0));
+    ivec2 up = min(texel + ivec2(0, 1), ivec2(VT_PAGE_STORE - 1));
+    float range = req.height_output.y - req.height_output.x;
+    float hx = (imageLoad(outHeight, ivec3(right, layer)).r -
+                imageLoad(outHeight, ivec3(left, layer)).r) * range;
+    float hy = (imageLoad(outHeight, ivec3(up, layer)).r -
+                imageLoad(outHeight, ivec3(down, layer)).r) * range;
+    // The chart plane is the metric used to place neighboring texels. The
+    // compositor already resolved the chart and normal for this texel; aux
+    // and the temporary normal image carry them across this barrier.
+    uint chart_id = aux.g | (aux.b << 8u);
+    GpuChart chart = charts[chart_id];
+    float footprint_m = float(1u << req.a.z) / chart.origin_tpm.w;
+    vec3 dx = req.material_origin.w == 1.0
+        ? req.material_du.xyz
+        : chart.tangent_ou.xyz * footprint_m;
+    vec3 dy = req.material_origin.w == 1.0
+        ? req.material_dv.xyz
+        : chart.bitangent_ov.xyz * footprint_m;
+    vec3 px = dx * float(right.x - left.x);
+    vec3 py = dy * float(up.y - down.y);
+    vec2 x = vec2(dot(px, basis[0]), dot(px, basis[1]));
+    vec2 y = vec2(dot(py, basis[0]), dot(py, basis[1]));
+    float det = x.x * y.y - x.y * y.x;
+    vec3 detail = nrm;
+    if (abs(det) > 1e-12) {
+        vec2 gradient = vec2((hx * y.y - hy * x.y) / det,
+                             (hy * x.x - hx * y.x) / det);
+        detail = normalize(nrm - basis[0] * gradient.x - basis[1] * gradient.y);
+    }
+    vec3 ts = vt_frame_encode(detail, nrm);
+    if (ts.z < 0.05) { ts.z = 0.05; ts = normalize(ts); }
+    imageStore(outNormal, ivec3(texel, layer), vec4(ts.xy * 0.5 + 0.5, 0.0, 0.0));
+}

@@ -384,6 +384,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
+         build/shaders_vk/vt_height_normal.comp.spv \
          build/shaders_vk/vt_feedback.comp.spv \
          build/shaders_vk/vt_bc_encode.comp.spv \
          build/shaders_vk/vt_enrich_ao.comp.spv \
@@ -464,6 +465,7 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
 build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
     build/shaders_vk/raster_water.vert.spv \
     build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_height_normal.comp.spv \
     build/shaders_vk/vt_material_domain_probe.comp.spv \
     build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
@@ -520,8 +522,12 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
 # so the two must resolve every texel identically or the occlusion lands on the
 # wrong surface.
 build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_height_normal.comp.spv \
     build/shaders_vk/vt_enrich_ao.comp.spv: \
     shaders_vk/vt_chart_types.glsl shaders_vk/vt_chart_resolve.glsl
+
+build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_height_normal.comp.spv: shaders_vk/vt_fill_request.glsl
 
 # P2 (texel-rate tape): the GLSL noise twin + tape interpreter include.
 build/shaders_vk/vt_composite.comp.spv: shaders_vk/vt_surface_tape.glsl shaders_vk/vt_noise.glsl

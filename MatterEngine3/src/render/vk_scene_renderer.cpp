@@ -8210,11 +8210,22 @@ void VkSceneRenderer::vt_record_pre_pass(VkCommandBuffer command_buffer) {
     const auto vt_cpu_start = std::chrono::steady_clock::now();
     std::string error;
     vt_->set_surface_walk_enabled(tileset_pom_settings_.enabled && tileset_pom_settings_.steps > 0);
-    if (!vt_->record_frame(command_buffer, error)) {
+    FrameResources* timing_frame = active_frame_index_ < frames_.size()
+        ? &frames_[active_frame_index_] : nullptr;
+    // Some standalone raster fixtures record the VT hook without calling
+    // prepare_frame(), so their query pool has not been reset for this frame.
+    if (timing_frame &&
+        (timing_frame->ts_written[kGpuZoneTotal] & 1u) == 0u)
+        timing_frame = nullptr;
+    if (!vt_->record_frame(command_buffer, error,
+                           timing_frame ? timing_frame->ts_pool : VK_NULL_HANDLE,
+                           timing_frame ? timing_frame->ts_written : nullptr)) {
         MATTER_LOGE("vk", "VT frame record failed: %s\n",
                      error.c_str());
         std::fflush(stderr);
     }
+    if (timing_frame)
+        timing_frame->vt_recorded_fills = vt_->recorded_fill_count();
     vt_cpu_pre_pass_ms_ += std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - vt_cpu_start).count();
 }
@@ -16236,6 +16247,8 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                     gpu_last_ms_[z] = ms;
                     gpu_sample_valid_mask_ |= 1u << z;
                     gpu_smoothed_ms_[z] = gpu_smoothed_ms_[z] * 0.9f + ms * 0.1f;
+                    if (z == kGpuZoneVtFill && vt_)
+                        vt_->observe_gpu_fill_ms(ms, selected.vt_recorded_fills);
                 }
             }
         }

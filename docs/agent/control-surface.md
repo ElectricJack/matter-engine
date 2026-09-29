@@ -622,7 +622,9 @@ select the streaming/LOD scheme. `MATTER_NO_SEAM_WELD`, `MATTER_NO_SEAM_WELD_DRA
 Budget/sizing fields are property-registry `.env()` bindings, declared together
 in `MatterEngine3/include/matter/vt_budgets.h`: `MATTER_VT_MAX_VARIANTS`
 (read-only after launch), `MATTER_VT_FILLS_PER_FRAME`,
-`MATTER_VT_TAIL_FILLS_PER_FRAME`, `MATTER_VT_ENRICH_PER_FRAME`,
+`MATTER_VT_TAIL_FILLS_PER_FRAME`, `MATTER_VT_FILL_BUDGET_MS` (shared
+GPU-time target for tail and detail fills, 0 disables),
+`MATTER_VT_ENRICH_PER_FRAME`,
 `MATTER_VT_MESH_BUDGET_MB`, `MATTER_VT_INDIRECTION_MB` (read-only),
 `MATTER_VT_POOL_MB` (read-only — pool is allocated once at renderer init),
 `MATTER_VT_POOL_PAGES` (read-only, kept for backwards compatibility with

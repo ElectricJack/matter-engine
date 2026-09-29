@@ -1168,7 +1168,9 @@ class VtResidency {
                           std::string& error);
     // Records: pool/indirection transitions, bounded fills through the filler,
     // indirection + variant-table uploads. Call before the G-buffer pass.
-    bool record_frame(VkCommandBuffer cmd, std::string& error);
+    bool record_frame(VkCommandBuffer cmd, std::string& error,
+                      VkQueryPool timing_pool = VK_NULL_HANDLE,
+                      uint8_t* timing_written = nullptr);
     // Records the feedback readback copy. Call after the G-buffer pass.
     void record_feedback_readback(VkCommandBuffer cmd,
                                    matter::VkImageResource& visible_feedback);
@@ -1192,6 +1194,8 @@ class VtResidency {
     uint32_t max_tail_fills_per_frame() const {
         return max_tail_fills_per_frame_;
     }
+    uint32_t recorded_fill_count() const { return recorded_fill_count_; }
+    void observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills);
 
     // TAIL GATE query for the draw side (see the header note): true once this
     // transported slot's variant is live AND its tail fill is guaranteed
@@ -1532,6 +1536,9 @@ class VtResidency {
     uint32_t feedback_raster_w_ = 0, feedback_raster_h_ = 0;
     uint32_t pool_pages_ = 0;
     uint32_t max_fills_per_frame_ = 8;
+    float fill_budget_ms_ = 12.0f;
+    float estimated_fill_ms_ = 12.0f;
+    uint32_t recorded_fill_count_ = 0;
     // Dedicated tail-fill budget (MATTER_VT_TAIL_FILLS_PER_FRAME): a
     // streaming burst registers many variants per frame, and every one of
     // them renders legacy-flat until its single tail page is filled — so

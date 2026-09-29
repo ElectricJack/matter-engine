@@ -34,6 +34,7 @@ struct Budgets {
         current.mesh_budget_mb = 4;
         current.fills_per_frame = 8;
         current.tail_fills_per_frame = 16;
+        current.fill_budget_ms = 0.0f; // legacy page-count scenarios below
         current.queue_cap = 256;
         current.enrich_per_frame = 0;
     }
@@ -365,6 +366,25 @@ inline void run_page_probe(matter::VulkanDevice& vulkan) {
               "queue probe: the stale tail's durable dirty entry is retired on the next frame");
         residency.release_variant(0x9011u);
     }
+    // The shared time target limits tails as well as detail pages, using the
+    // retired GPU sample to lower admission after a costly frame. Disabling
+    // it restores the separate page-count limits for callers without timers.
+    auto& limits = matter::vt_residency_budgets();
+    limits.tail_fills_per_frame = 16;
+    limits.fill_budget_ms = 32.0f;
+    for (uint64_t hash = 0x9020u; hash < 0x9025u; ++hash) {
+        context.variant_hash = hash;
+        CHECK(residency.register_variant(hash, 0, atlas, context) != vt::kVtNoSlot,
+              "VT fill time: tail owner admitted");
+    }
+    CHECK(frames.next(residency, 11) && residency.recorded_fill_count() == 2,
+          "VT fill time: initial 32 ms target records at most two tails");
+    residency.observe_gpu_fill_ms(100.0f, 2);
+    CHECK(frames.next(residency, 12) && residency.recorded_fill_count() == 1,
+          "VT fill time: a slow retired sample lowers the next frame to one tail");
+    limits.fill_budget_ms = 0.0f;
+    CHECK(frames.next(residency, 13) && residency.recorded_fill_count() == 2,
+          "VT fill time: disabling the target drains remaining tails");
 }
 
 // A registration whose pinned tail must recycle a live unpinned page retires
