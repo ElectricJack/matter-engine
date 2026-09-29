@@ -1323,6 +1323,10 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_timers_supported\":" << (frame_stats.gpu_timers_supported ? "true" : "false")
            << ",\"raster_width\":" << frame_stats.raster_width
            << ",\"raster_height\":" << frame_stats.raster_height
+           << ",\"gbuffer_profile_mode\":\""
+           << json_string(std::getenv("MATTER_GBUFFER_PROFILE_MODE")
+                              ? std::getenv("MATTER_GBUFFER_PROFILE_MODE")
+                              : "full") << "\""
            << ",\"pom_enabled\":" << (loop_stats.tileset_pom.enabled ? "true" : "false")
            << ",\"pom_steps\":" << loop_stats.tileset_pom.steps
            << ",\"pom_max_distance_m\":" << loop_stats.tileset_pom.max_distance_m

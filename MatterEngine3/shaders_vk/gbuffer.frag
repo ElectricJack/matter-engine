@@ -26,6 +26,11 @@
 // Removing this path at pipeline creation also exposes its register/code cost.
 layout(constant_id = 0) const bool GBUFFER_CONNECTED_POM = true;
 layout(constant_id = 1) const bool GBUFFER_POM_WORK = false;
+// Differential GPU timing: 1 retains raster/depth/MRT cost, 2 adds ordinary
+// material and surface shading while omitting VT and ground tileset sampling,
+// 3 also keeps the full impostor cutout path to bound the mode-1 overdraw.
+// 0 is the shipped shader. These modes are diagnostic and change the image.
+layout(constant_id = 2) const int GBUFFER_PROFILE_MODE = 0;
 uvec3 gbuffer_seed_work, gbuffer_walk_work;
 #define VT_POM_CONNECTED_ENABLED GBUFFER_CONNECTED_POM
 #define VT_SEED_TRIANGLE_VISIT() { if (GBUFFER_POM_WORK) ++gbuffer_seed_work.x; }
@@ -176,6 +181,36 @@ vec3 lod_debug_color(uint lod) {
 }
 
 void main() {
+    if (GBUFFER_PROFILE_MODE == 1 ||
+        (GBUFFER_PROFILE_MODE == 3 && in_surface.x <= kImpostorMarker)) {
+        // Keep every attachment write and the rasterized depth. This measures
+        // vertex work, primitive setup, depth and MRT cost in the same pass.
+        // Retain basic VT demand; near-detail requests from the full shader
+        // are deliberately outside this reduced-cost diagnostic. Mode 3 lets
+        // impostors follow the ordinary path so cutout and depth stay correct.
+        out_vt_feedback = uvec4(0u);
+        if (in_vt_slot != 0u) {
+            vec2 dx = dFdx(in_surface.xy);
+            vec2 dy = dFdy(in_surface.xy);
+            VtAddress vt = vt_resolve(in_vt_slot, in_surface.xy,
+                                      vt_desired_mip(in_vt_slot, dx, dy));
+            if (vt.valid)
+                out_vt_feedback = vt_pack_visible_feedback(
+                    vt_feedback_request(vt), vt.module_request);
+            out_vt_feedback.w = vt_visible_input_word(
+                out_vt_feedback.w, vt.input_snapshot);
+            if (vt_is_direct_source(vt))
+                out_vt_feedback.w |= VT_VISIBLE_COMPOSED_HEIGHT;
+        }
+        out_albedo = vec4(in_tint.rgb, 1.0);
+        out_normal = vec4(normalize(in_normal), 0.0);
+        out_orm = vec4(0.5, 0.0, 1.0, 1.0);
+        out_velocity = in_velocity_valid.xy;
+        out_material_instance = uvec2(in_material_index, in_instance_token);
+        out_reactivity = 0.0;
+        gl_FragDepth = gl_FragCoord.z;
+        return;
+    }
     gbuffer_seed_work = gbuffer_walk_work = uvec3(0);
     out_vt_feedback = uvec4(0u);
     // Choose compatible inputs before POM, but keep only their identity and
@@ -188,9 +223,17 @@ void main() {
     float vt_lod = vt_desired_mip(in_vt_slot, atlas_dx, atlas_dy);
     uint vt_input_snapshot =
         vt_resolve(in_vt_slot, in_surface.xy, vt_lod).input_snapshot;
-    bool direct_source_page = vt_is_direct_source(vt_resolve(in_vt_slot, in_surface.xy, vt_lod));
+    bool direct_source_page =
+        vt_is_direct_source(vt_resolve(in_vt_slot, in_surface.xy, vt_lod));
+    if (GBUFFER_PROFILE_MODE == 2 && in_vt_slot != 0u) {
+        VtAddress vt = vt_resolve(in_vt_slot, in_surface.xy, vt_lod);
+        if (vt.valid)
+            out_vt_feedback = vt_pack_visible_feedback(
+                vt_feedback_request(vt), vt.module_request);
+    }
     MaterialGpu material;
-    if (vt_draw_material(vt_input_snapshot, in_material_index, material)) {
+    if (GBUFFER_PROFILE_MODE != 2 &&
+        vt_draw_material(vt_input_snapshot, in_material_index, material)) {
         // Captured material rows include the compatible source-bank index.
     } else if (in_material_valid != 0u) {
         material = materials[in_material_index];
@@ -514,8 +557,9 @@ void main() {
     // Ground tileset branch (Task 7): MaterialGpu.flags_misc.y low byte
     // carries detailSlot+1 (0 = no tileset). When present, the Wang-sampled
     // ground texture replaces the material's flat base color/normal/ORM.
-    int tileset_slot = direct_source_page ? -1 : tileset_detail_slot(material.flags_misc);
-    const bool finished_domain = !direct_source_page &&
+    int tileset_slot = GBUFFER_PROFILE_MODE == 2 || direct_source_page
+        ? -1 : tileset_detail_slot(material.flags_misc);
+    const bool finished_domain = GBUFFER_PROFILE_MODE != 2 && !direct_source_page &&
         (material.flags_misc.x & MATERIAL_SURFACE_DETAIL) != 0u && !is_impostor;
     bool finished_surface = false;
     if (finished_domain && in_vt_slot != 0u && tileset_slot >= 0 && tileset_slot < TILESET_SOURCE_SLOTS)
@@ -973,7 +1017,7 @@ void main() {
     // (the regression gate: chartless parts render byte-identically).
     // in_vt_slot is `flat` and comes from the draw record, so it is
     // quad-uniform — the derivatives below are well defined.
-    if (in_vt_slot != 0u && !finished_surface) {
+    if (GBUFFER_PROFILE_MODE != 2 && in_vt_slot != 0u && !finished_surface) {
         VtAddress vt = vt_resolve(in_vt_slot, in_surface.xy, vt_lod);
         bool connected_pom = false;
         uvec4 pom_origin_request=uvec4(0),pom_neighbor_request=uvec4(0);

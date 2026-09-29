@@ -144,6 +144,7 @@
 #include "matrix_math.h"
 #include "engine_profile_zones.h"
 #include "vk_perf.h"
+#include "vk_pipeline_stats.h"
 #include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "matter/vt_budgets.h"
@@ -4187,18 +4188,25 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     // true default; chart-only deliberately omits connected relief and must
     // never be reported as visual/performance acceptance.
     const char* pom_path = std::getenv("MATTER_GBUFFER_POM_PATH");
-    const VkBool32 pom_modes[] = {VK_FALSE, VK_TRUE};
-    const VkSpecializationMapEntry connected_entry{0, 0, sizeof(VkBool32)};
-    const VkSpecializationMapEntry work_entry{1, sizeof(VkBool32), sizeof(VkBool32)};
-    const VkSpecializationInfo connected_specialization{
-        1, &connected_entry, sizeof(pom_modes), pom_modes};
-    const VkSpecializationInfo work_specialization{
-        1, &work_entry, sizeof(pom_modes), pom_modes};
+    struct GbufferSpecialization {
+        VkBool32 connected = VK_TRUE;
+        VkBool32 work = VK_FALSE;
+        int32_t profile_mode = 0;
+    } specialization_data;
+    const VkSpecializationMapEntry specialization_entries[] = {
+        {0, offsetof(GbufferSpecialization, connected), sizeof(VkBool32)},
+        {1, offsetof(GbufferSpecialization, work), sizeof(VkBool32)},
+        {2, offsetof(GbufferSpecialization, profile_mode), sizeof(int32_t)}};
+    const VkSpecializationInfo specialization{
+        3, specialization_entries, sizeof(specialization_data), &specialization_data};
+    bool use_specialization = false;
     if (pom_path && std::strcmp(pom_path, "chart_only") == 0) {
-        raster_stages[1].pSpecializationInfo = &connected_specialization;
+        specialization_data.connected = VK_FALSE;
+        use_specialization = true;
         MATTER_LOGW("terrain-profile", "G-buffer POM path=chart_only (diagnostic; connected relief omitted)");
     } else if (pom_path && std::strcmp(pom_path, "work") == 0) {
-        raster_stages[1].pSpecializationInfo = &work_specialization;
+        specialization_data.work = VK_TRUE;
+        use_specialization = true;
         MATTER_LOGW("terrain-profile", "G-buffer POM path=work (diagnostic; raw albedo encodes log2(count+1)/24; horizon 9 selects walk work)");
     } else if (pom_path && std::strcmp(pom_path, "reference") != 0) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
@@ -4207,6 +4215,25 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         error = "MATTER_GBUFFER_POM_PATH must be reference, chart_only or work";
         return false;
     }
+    if (const char* profile = std::getenv("MATTER_GBUFFER_PROFILE_MODE")) {
+        if (std::strcmp(profile, "geometry") == 0)
+            specialization_data.profile_mode = 1;
+        else if (std::strcmp(profile, "no_vt") == 0)
+            specialization_data.profile_mode = 2;
+        else if (std::strcmp(profile, "geometry_cutout") == 0)
+            specialization_data.profile_mode = 3;
+        else {
+            vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+            vkDestroyShaderModule(device, raster_fragment, nullptr);
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+            error = "MATTER_GBUFFER_PROFILE_MODE must be geometry, no_vt or geometry_cutout";
+            return false;
+        }
+        use_specialization = true;
+        MATTER_LOGW("terrain-profile", "G-buffer profile mode=%s (diagnostic; image changed)", profile);
+    }
+    if (use_specialization)
+        raster_stages[1].pSpecializationInfo = &specialization;
     VkVertexInputBindingDescription vertex_binding{
         0, sizeof(VkRasterVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     const VkVertexInputAttributeDescription attributes[] = {
@@ -4310,6 +4337,10 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     raster_create.pColorBlendState = &color_blend;
     raster_create.pDynamicState = &dynamic;
     raster_create.layout = pipeline_layout_;
+    if (std::getenv("MATTER_VK_PIPELINE_STATS") &&
+        vkGetDeviceProcAddr(device, "vkGetPipelineExecutableStatisticsKHR"))
+        raster_create.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR |
+            VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
     VkResult result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &raster_create, [&] {
         return vkCreateGraphicsPipelines(
         device, VK_NULL_HANDLE, 1, &raster_create, nullptr, &raster_pipeline_);
@@ -4320,6 +4351,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         vkDestroyShaderModule(device, raster_vertex, nullptr);
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
     }
+    log_vk_pipeline_stats(device, raster_pipeline_, "gbuffer.frag");
 
     // ---- the occlusion ID pipeline (M4) ----------------------------------
     //

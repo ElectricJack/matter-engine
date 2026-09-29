@@ -47,6 +47,7 @@
 
 #include "matter/log.h"
 #include "profile.h"
+#include "vk_pipeline_stats.h"
 #include "shaders_gen/embedded_spirv.h"
 // GpuChart / GpuTri and the stream builder: shared with WP-H's enricher so the
 // two page passes can never disagree about a texel's owning triangle.
@@ -749,6 +750,10 @@ struct VtCompositor::Impl {
         info.stage.module = module;
         info.stage.pName = "main";
         info.layout = layout;
+        if (std::getenv("MATTER_VK_PIPELINE_STATS") &&
+            vkGetDeviceProcAddr(device, "vkGetPipelineExecutableStatisticsKHR"))
+            info.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR |
+                VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
         const VkResult result = vkCreateComputePipelines(
             device, pipeline_cache, 1, &info, nullptr, &out);
         vkDestroyShaderModule(device, module, nullptr);
@@ -756,6 +761,8 @@ struct VtCompositor::Impl {
             err = "vt_compositor: vkCreateComputePipelines failed";
             return false;
         }
+        if (std::strcmp(spirv_name, "vt_composite.comp.spv") == 0)
+            viewer::log_vk_pipeline_stats(device, out, "vt_composite.comp");
         return true;
     }
 

@@ -1458,6 +1458,24 @@ struct VulkanDevice::Impl {
         features2.features.fragmentStoresAndAtomics =
             rt_features2.features.fragmentStoresAndAtomics;
         features2.pNext = &features12;
+        // Driver-provided executable statistics are opt-in; this extension
+        // adds startup compilation work and is used only for diagnosis.
+        VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipeline_stats{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+        if (std::getenv("MATTER_VK_PIPELINE_STATS") &&
+            available_extensions.count(
+                VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
+            VkPhysicalDeviceFeatures2 stats_features{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            stats_features.pNext = &pipeline_stats;
+            vkGetPhysicalDeviceFeatures2(physical_device, &stats_features);
+            if (pipeline_stats.pipelineExecutableInfo) {
+                pipeline_stats.pNext = features2.pNext;
+                features2.pNext = &pipeline_stats;
+                extensions.push_back(
+                    VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+            }
+        }
 
         // MATTER_VK_ROBUSTNESS=1: turn every out-of-bounds buffer access into
         // a defined zero read instead of whatever the hardware does with an

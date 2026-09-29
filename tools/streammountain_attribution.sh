@@ -31,11 +31,16 @@
 # Usage: tools/streammountain_attribution.sh C:/tmp/attr
 # Overrides: WARMUP (45) SAMPLE (20) WIDTH (1920) HEIGHT (1080) RUNS (1)
 #            RUN_TIMEOUT (1800 s) VARIANTS ("pom_reference pom_chart_only pom_work pom_off")
+#            Diagnostic variants: geometry, geometry_cutout, no_vt (POM off; images
+#            differ from pom_off and their timings are differential evidence).
 set -euo pipefail
 OUT=${1:?usage: streammountain_attribution.sh <out-dir-windows-path e.g. C:/tmp/attr>}
 case "$OUT" in C:/*) ;; *) echo "out dir must be a space-free C:/ path" >&2; exit 2 ;; esac
 WARM=${WARMUP:-45}; SAMPLE=${SAMPLE:-20}; WIDTH=${WIDTH:-1920}; HEIGHT=${HEIGHT:-1080}
 RUN_TIMEOUT=${RUN_TIMEOUT:-1800}; RUNS=${RUNS:-1}
+PIPELINE_STATS=${PIPELINE_STATS:-0}
+stats_env=()
+if [ "$PIPELINE_STATS" = 1 ]; then stats_env=(MATTER_VK_PIPELINE_STATS=1); fi
 case "$RUNS" in ''|*[!0-9]*|0) echo "RUNS must be a positive integer" >&2; exit 2 ;; esac
 VARIANTS=${VARIANTS:-"pom_reference pom_chart_only pom_work pom_off"}
 WOUT="/mnt/c/${OUT#C:/}"
@@ -81,13 +86,13 @@ run() { # name, pom (true|false), extra env...
   "$SMI" --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 5 > "$WOUT/$name.gpu_during.csv" 2>&1 &
   smi_pid=$!
   local rc=0 start; start=$(date +%s.%N)
-  env WSLENV=MATTER_WORLD:MATTER_PERF_OUTPUT:MATTER_PERF_WARMUP_SECONDS:MATTER_PERF_SAMPLE_SECONDS:MATTER_PROFILE_TRACE:MATTER_GBUFFER_POM_PATH:MATTER_CMD_FIFO:MATTER_HIDE_WINDOW:MATTER_HIDE_UI:MATTER_WINDOW_WIDTH:MATTER_WINDOW_HEIGHT:MATTER_PRESENT_MODE:MATTER_FRAME_LIMIT:TMP:TEMP \
+  env WSLENV=MATTER_WORLD:MATTER_PERF_OUTPUT:MATTER_PERF_WARMUP_SECONDS:MATTER_PERF_SAMPLE_SECONDS:MATTER_PROFILE_TRACE:MATTER_GBUFFER_POM_PATH:MATTER_GBUFFER_PROFILE_MODE:MATTER_VK_PIPELINE_STATS:MATTER_CMD_FIFO:MATTER_HIDE_WINDOW:MATTER_HIDE_UI:MATTER_WINDOW_WIDTH:MATTER_WINDOW_HEIGHT:MATTER_PRESENT_MODE:MATTER_FRAME_LIMIT:TMP:TEMP \
       TMP="$WTEMP" TEMP="$WTEMP" \
       MATTER_WORLD=StreamMountain MATTER_PERF_OUTPUT="$OUT/$name.json" \
       MATTER_PERF_WARMUP_SECONDS="$WARM" MATTER_PERF_SAMPLE_SECONDS="$SAMPLE" \
       MATTER_PROFILE_TRACE="$OUT/$name.trace.json" MATTER_CMD_FIFO="$OUT/$name.commands.txt" \
       MATTER_HIDE_WINDOW=0 MATTER_HIDE_UI=1 MATTER_WINDOW_WIDTH="$WIDTH" MATTER_WINDOW_HEIGHT="$HEIGHT" \
-      MATTER_PRESENT_MODE=immediate MATTER_FRAME_LIMIT=0 "$@" \
+      MATTER_PRESENT_MODE=immediate MATTER_FRAME_LIMIT=0 "${stats_env[@]}" "$@" \
       timeout --kill-after=30 "$RUN_TIMEOUT" ./build/windows-msvc/editor.exe \
       > "$WOUT/$name.log" 2>&1 || rc=$?
   stop_own_editor
@@ -100,6 +105,14 @@ run() { # name, pom (true|false), extra env...
   grep '^perf: wrote' "$WOUT/$name.log"
   python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1]))["pom_enabled"] != (sys.argv[2] == "true"))' \
       "$WOUT/$name.json" "$pom" || { echo "$name sampled pom_enabled != $pom" >&2; return 1; }
+  case "$name" in
+    geometry_cutout*) expected=geometry_cutout ;;
+    geometry*) expected=geometry ;;
+    no_vt*) expected=no_vt ;;
+    *) expected=full ;;
+  esac
+  python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])).get("gbuffer_profile_mode", "full") != sys.argv[2])' \
+      "$WOUT/$name.json" "$expected" || { echo "$name sampled unexpected G-buffer profile mode" >&2; return 1; }
 }
 
 mkdir -p "$WOUT"
@@ -108,7 +121,7 @@ git -C "$REPO" rev-parse HEAD > "$WOUT/git_sha.txt"
 jsons=()
 for variant in $VARIANTS; do
   case "$variant" in
-    pom_reference|pom_chart_only|pom_work|pom_off) ;;
+    pom_reference|pom_chart_only|pom_work|pom_off|geometry|geometry_cutout|no_vt) ;;
     *) echo "unknown variant $variant" >&2; exit 2 ;;
   esac
 done
@@ -120,6 +133,9 @@ for variant in $VARIANTS; do
       pom_chart_only) run "$name" true  MATTER_GBUFFER_POM_PATH=chart_only ;;
       pom_work)       run "$name" true  MATTER_GBUFFER_POM_PATH=work ;;
       pom_off)        run "$name" false ;;
+      geometry)       run "$name" false MATTER_GBUFFER_PROFILE_MODE=geometry ;;
+      geometry_cutout) run "$name" false MATTER_GBUFFER_PROFILE_MODE=geometry_cutout ;;
+      no_vt)          run "$name" false MATTER_GBUFFER_PROFILE_MODE=no_vt ;;
     esac
     jsons+=("$WOUT/$name.json")
   done

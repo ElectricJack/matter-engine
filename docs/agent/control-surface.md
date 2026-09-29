@@ -765,6 +765,20 @@ with a verified visible Windows editor window and captures settings, binary
 hash, screenshot, logs and perf JSON in a fresh output directory. Invoke it
 using native Windows Python (`py -3`); see `--help` for comparison controls.
 
+`MATTER_GBUFFER_PROFILE_MODE=geometry|geometry_cutout|no_vt` selects a
+diagnostic fragment specialization. `geometry` retains depth/MRT writes and
+VT feedback demand but omits material shading; `geometry_cutout` keeps the
+full impostor cutout path to bound overdraw in that diagnostic; `no_vt`
+retains base material shading and feedback but omits ground tileset and VT
+material sampling. All three change the rendered image.
+`tools/streammountain_attribution.sh` accepts these names in `VARIANTS`; compare
+their `gbuffer` GPU times with `pom_off` only for differential cost attribution.
+`MATTER_VK_PIPELINE_STATS=1` enables `VK_KHR_pipeline_executable_properties`
+when supported and logs the driver's executable statistics for `gbuffer.frag`
+and `vt_composite.comp` at pipeline creation. The script's `PIPELINE_STATS=1`
+switch passes it through WSL interop. Driver statistics are static compilation
+properties, not runtime occupancy counters.
+
 `MATTER_VSYNC`, `MATTER_VK_ROBUSTNESS`, `MATTER_VK_SMOKE_MODE` (§ QA cookbook
 recipe 6), `MATTER_VK_STATIC_RESERVE_CLUSTER_MB` / `_VERTEX_MB` / `_INDEX_MB`
 (static-buffer reservation sizing, `vk_scene_renderer.cpp`), `MATTER_RASTER_CULL`,
