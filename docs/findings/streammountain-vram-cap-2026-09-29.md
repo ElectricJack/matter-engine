@@ -48,8 +48,12 @@ It compiled and persisted 444 missing geometry assets and hit 236 cached
 assets. At the deadline all 335 desired visible sectors were ready, the
 geometry coverage counters were `(0, 0, 0)`, and VT had no queued pages or
 rejected variants. Twelve geometry cooks remained in flight, so the audit
-correctly marked this pass incomplete. A second preparation pass against the
-persisted cache is needed before claiming steady state.
+correctly marked this pass incomplete. A second, warm preparation pass was
+stopped cleanly after 2,886 s to replace its short deadline with a longer
+one. It recorded 528 cache hits, no new compilations, no coverage gaps or
+failures, and 1,852 resident sectors with 12 cooks still in flight. Neither
+pass qualifies as steady-state acceptance; both retained their durable
+geometry cache entries for the longer continuation.
 
 Task 1's shipped, non-paged POM-off baseline had GPU total medians of
 402.1–454.2 ms and p99/max of 433.5–811.4 ms at 300 s; its pooled frame
