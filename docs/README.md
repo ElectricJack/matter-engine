@@ -134,6 +134,8 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
   smoke, seam, and performance gates.
 - **[Issue system](agent/issue-system.md)** — capture, file, and replay
   workflow.
+- **[Object evaluation adapter](agent/object-evaluation.md)** — frozen rock
+  candidates, native multi-view capture, audited-mask scoring, and repeat noise.
 - **[Debugging feedback loop](debugging-feedback-loop.md)** — visual GPU bug
   diagnosis workflow.
 - **[Baselines](baselines/README.md)** — screenshot baseline policy and tools.
