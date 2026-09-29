@@ -94,7 +94,7 @@ struct GeometryWorldRuntime::Impl {
         cached.indexed_nodes.reserve(nodes.size());
         for (size_t i=0;i<nodes.size();++i) {
             const auto& node=nodes[i];
-            geometry::IndexedCutNode indexed; indexed.self=node.self; indexed.ready=bool(node.page);
+            geometry::IndexedCutNode indexed; indexed.self=node.self; indexed.ready=node.ready;
             indexed.child_count=static_cast<uint32_t>(node.children.size());
             auto& gpu=(*cached.gpu_nodes)[i];
             gpu.page_lo=node.self.page.lo; gpu.page_hi=node.self.page.hi;
@@ -483,14 +483,16 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
             d.invalidate_scene();
             found = d.assets.emplace(instance.part_hash, Impl::Asset{lease, part->geometry_pages, d.epoch}).first;
             bool first_root=true;
-            for (const auto& root : part->geometry_pages->roots) {
+            for (const auto& root : part->geometry_pages->root_refs) {
                 auto& bounds=found->second.bounds;
                 for(int axis=0;axis<3;++axis) {
-                    bounds.lo[axis]=first_root?root.self.bounds.lo[axis]:std::min(bounds.lo[axis],root.self.bounds.lo[axis]);
-                    bounds.hi[axis]=first_root?root.self.bounds.hi[axis]:std::max(bounds.hi[axis],root.self.bounds.hi[axis]);
+                    bounds.lo[axis]=first_root?root.bounds.lo[axis]:std::min(bounds.lo[axis],root.bounds.lo[axis]);
+                    bounds.hi[axis]=first_root?root.bounds.hi[axis]:std::max(bounds.hi[axis],root.bounds.hi[axis]);
                 }
                 first_root=false;
-                d.locations[root.self.page] = part->geometry_pages->directory;
+                d.locations[root.page] = part->geometry_pages->directory;
+            }
+            for (const auto& root : part->geometry_pages->roots) {
                 d.root_bytes[root.self.page] = root.page;
             }
         }
@@ -534,9 +536,11 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     // unchanged roots do not require map allocation and reference churn.
     if(detached){
         d.root_bytes.clear();
-        for(const auto& asset:d.assets)for(const auto& root:asset.second.source->roots){
-            d.root_bytes[root.self.page]=root.page;
-            d.locations[root.self.page]=asset.second.source->directory;
+        for(const auto& asset:d.assets){
+            for(const auto& root:asset.second.source->root_refs)
+                d.locations[root.page]=asset.second.source->directory;
+            for(const auto& root:asset.second.source->roots)
+                d.root_bytes[root.self.page]=root.page;
         }
     }
     if (d.assets.empty()) d.locations.clear();
@@ -794,7 +798,7 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
             cached.pending_pages.clear();cached.pending_pages.reserve(nodes.size());
             for (size_t i=0;i<nodes.size();++i) {
                 cached.pending_pages.push_back(nodes[i].self.page);
-                if (!nodes[i].page) continue;
+                if (!nodes[i].ready) continue;
                 auto found=d.gpu_pages.find(nodes[i].self.page);
                 if(found==d.gpu_pages.end()){error="resident geometry page has no renderer allocation";return false;}
                 work.data.page_touches[i]=found->second.touched;

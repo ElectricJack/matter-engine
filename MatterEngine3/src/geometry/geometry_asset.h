@@ -16,6 +16,9 @@ struct CachedAsset {
     std::string key;
     std::string directory;
     asset_store::PageHandle manifest;
+    std::vector<NodeRef> root_refs;
+    // Only callers that need CPU root meshes pin their payloads here. Terrain
+    // admits descriptors alone and lets GeometryWorldRuntime stream the pages.
     std::vector<NodeView> roots;
 };
 // One retained index and aggregate root-payload budget per PartStore, shared by
@@ -25,7 +28,8 @@ public:
     explicit RootCache(std::string directory, uint64_t bytes = 16ull << 20);
     ~RootCache();
     std::shared_ptr<const CachedAsset> load(const std::string& key, std::string& error,
-                                            CacheLoadStatus* status = nullptr);
+                                            CacheLoadStatus* status = nullptr,
+                                            bool load_root_payloads = true);
     const std::string& directory() const;
     asset_store::PageCacheStats stats() const;
     struct WriterStats { uint64_t assets_written = 0, commits = 0, pending_assets = 0; };
@@ -36,9 +40,10 @@ public:
 private:
     friend std::shared_ptr<const CachedAsset> cache_asset(const std::string&,
         const std::string&, const MeshIndexed&, const CompileConfig&,
-        const std::vector<asset_store::PageSection>&, std::string&, RootCache*, CacheReport*, bool);
+        const std::vector<asset_store::PageSection>&, std::string&, RootCache*, CacheReport*, bool, bool);
     std::shared_ptr<const CachedAsset> write_asset(const std::string&, const Hierarchy&,
-        const std::vector<asset_store::PageSection>&, std::string&, double* write_ms);
+        const std::vector<asset_store::PageSection>&, std::string&, double* write_ms,
+        bool load_root_payloads);
     struct Impl;
     std::unique_ptr<Impl> d_;
 };
@@ -48,5 +53,5 @@ std::shared_ptr<const CachedAsset> cache_asset(const std::string& directory,
     const std::string& key, const MeshIndexed&, const CompileConfig&,
     const std::vector<asset_store::PageSection>& metadata, std::string& error,
     RootCache* roots = nullptr, CacheReport* report = nullptr,
-    bool cache_only = false);
+    bool cache_only = false, bool load_root_payloads = true);
 } // namespace geometry

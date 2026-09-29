@@ -81,7 +81,7 @@ bool decode_node(asset_store::PageHandle page,NodeView& out,std::string& error) 
     if(r && (!section(r,24) || !i || r->count!=i->count))return fail(error,"invalid receiver page section");
     if(!section(m,40)||m->count!=1||!section(p,12)||!section(i,4)||!section(s,92)||i->count%3||
        s->count!=i->count/3||v.sections.size()!=(c?5u:4u)+(r?1u:0u)|| (c&&(!section(c,ref_stride)||c->count!=2))) return fail(error,"invalid geometry page directory");
-    NodeView node;node.page=page;node.self.page=page->hash;node.self.bounds=read_bounds(m->data);node.self.error=read_f64(m->data+24);
+    NodeView node;node.page=page;node.ready=true;node.self.page=page->hash;node.self.bounds=read_bounds(m->data);node.self.error=read_f64(m->data+24);
     node.self.source_triangles=get_u32(m->data+32);node.self.triangles=get_u32(m->data+36);
     if(!valid_bounds(node.self.bounds)||!std::isfinite(node.self.error)||node.self.error<0||
        node.self.triangles!=s->count||node.self.source_triangles<node.self.triangles) return fail(error,"invalid geometry metadata");

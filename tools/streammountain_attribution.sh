@@ -31,6 +31,8 @@
 # Usage: tools/streammountain_attribution.sh C:/tmp/attr
 # Overrides: WARMUP (45) SAMPLE (20) WIDTH (1920) HEIGHT (1080) RUNS (1)
 #            RUN_TIMEOUT (1800 s) VARIANTS ("pom_reference pom_chart_only pom_work pom_off")
+#            PAGED_TERRAIN (0; 1 opts into the StreamMountain terrain geometry profile)
+#            EDITOR_NAME (editor.exe; executable in MatterEditor/build/windows-msvc)
 #            Diagnostic variants: geometry, geometry_cutout, no_vt (POM off; images
 #            differ from pom_off and their timings are differential evidence).
 set -euo pipefail
@@ -41,19 +43,28 @@ RUN_TIMEOUT=${RUN_TIMEOUT:-1800}; RUNS=${RUNS:-1}
 PIPELINE_STATS=${PIPELINE_STATS:-0}
 stats_env=()
 if [ "$PIPELINE_STATS" = 1 ]; then stats_env=(MATTER_VK_PIPELINE_STATS=1); fi
+paged_env=()
+if [ "${PAGED_TERRAIN:-0}" = 1 ]; then
+  paged_env=(MATTER_GEOMETRY_TERRAIN=1 MATTER_GEOMETRY_PAGES=1
+    MATTER_GEOMETRY_MODULE=MountainDetailRock MATTER_GEOMETRY_MIN_TRIANGLES=16384
+    MATTER_GEOMETRY_ROOT_MB=1024 MATTER_GEOMETRY_CPU_MB=1024 MATTER_GEOMETRY_GPU_MB=1024
+    MATTER_GEOMETRY_PAGES_PROFILE=1)
+fi
 case "$RUNS" in ''|*[!0-9]*|0) echo "RUNS must be a positive integer" >&2; exit 2 ;; esac
 VARIANTS=${VARIANTS:-"pom_reference pom_chart_only pom_work pom_off"}
 WOUT="/mnt/c/${OUT#C:/}"
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 PS=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
-EDITOR_WIN=$(wslpath -w "$REPO/MatterEditor/build/windows-msvc/editor.exe")
+EDITOR_NAME=${EDITOR_NAME:-editor.exe}
+case "$EDITOR_NAME" in *[!a-zA-Z0-9_.-]*|''|.*) echo "invalid EDITOR_NAME" >&2; exit 2 ;; esac
+EDITOR_WIN=$(wslpath -w "$REPO/MatterEditor/build/windows-msvc/$EDITOR_NAME")
 # Launch rule 1 (docs/agent/control-surface.md): a native exe needs TMP/TEMP.
 WTEMP=$(cd /mnt/c && /mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%\Temp' | tr -d '\r')
 # Inherited MATTER_* settings would silently change one variant or all four.
 for v in $(compgen -e | grep '^MATTER_' || true); do unset "$v"; done
 
 stop_own_editor() {
-  "$PS" -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='editor.exe'\" |
+  "$PS" -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='$EDITOR_NAME'\" |
     Where-Object { \$_.ExecutablePath -eq '$EDITOR_WIN' } |
     ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }" >/dev/null 2>&1 || true
 }
@@ -86,14 +97,14 @@ run() { # name, pom (true|false), extra env...
   "$SMI" --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 5 > "$WOUT/$name.gpu_during.csv" 2>&1 &
   smi_pid=$!
   local rc=0 start; start=$(date +%s.%N)
-  env WSLENV=MATTER_WORLD:MATTER_PERF_OUTPUT:MATTER_PERF_WARMUP_SECONDS:MATTER_PERF_SAMPLE_SECONDS:MATTER_PROFILE_TRACE:MATTER_GBUFFER_POM_PATH:MATTER_GBUFFER_PROFILE_MODE:MATTER_VK_PIPELINE_STATS:MATTER_CMD_FIFO:MATTER_HIDE_WINDOW:MATTER_HIDE_UI:MATTER_WINDOW_WIDTH:MATTER_WINDOW_HEIGHT:MATTER_PRESENT_MODE:MATTER_FRAME_LIMIT:TMP:TEMP \
+  env WSLENV=MATTER_WORLD:MATTER_PERF_OUTPUT:MATTER_PERF_WARMUP_SECONDS:MATTER_PERF_SAMPLE_SECONDS:MATTER_PROFILE_TRACE:MATTER_GBUFFER_POM_PATH:MATTER_GBUFFER_PROFILE_MODE:MATTER_VK_PIPELINE_STATS:MATTER_CMD_FIFO:MATTER_HIDE_WINDOW:MATTER_HIDE_UI:MATTER_WINDOW_WIDTH:MATTER_WINDOW_HEIGHT:MATTER_PRESENT_MODE:MATTER_FRAME_LIMIT:MATTER_GEOMETRY_TERRAIN:MATTER_GEOMETRY_PAGES:MATTER_GEOMETRY_MODULE:MATTER_GEOMETRY_MIN_TRIANGLES:MATTER_GEOMETRY_ROOT_MB:MATTER_GEOMETRY_CPU_MB:MATTER_GEOMETRY_GPU_MB:MATTER_GEOMETRY_PAGES_PROFILE:TMP:TEMP \
       TMP="$WTEMP" TEMP="$WTEMP" \
       MATTER_WORLD=StreamMountain MATTER_PERF_OUTPUT="$OUT/$name.json" \
       MATTER_PERF_WARMUP_SECONDS="$WARM" MATTER_PERF_SAMPLE_SECONDS="$SAMPLE" \
       MATTER_PROFILE_TRACE="$OUT/$name.trace.json" MATTER_CMD_FIFO="$OUT/$name.commands.txt" \
       MATTER_HIDE_WINDOW=0 MATTER_HIDE_UI=1 MATTER_WINDOW_WIDTH="$WIDTH" MATTER_WINDOW_HEIGHT="$HEIGHT" \
-      MATTER_PRESENT_MODE=immediate MATTER_FRAME_LIMIT=0 "${stats_env[@]}" "$@" \
-      timeout --kill-after=30 "$RUN_TIMEOUT" ./build/windows-msvc/editor.exe \
+      MATTER_PRESENT_MODE=immediate MATTER_FRAME_LIMIT=0 "${stats_env[@]}" "${paged_env[@]}" "$@" \
+      timeout --kill-after=30 "$RUN_TIMEOUT" "./build/windows-msvc/$EDITOR_NAME" \
       > "$WOUT/$name.log" 2>&1 || rc=$?
   stop_own_editor
   kill "$smi_pid" 2>/dev/null || true; smi_pid=""
@@ -118,6 +129,7 @@ run() { # name, pom (true|false), extra env...
 mkdir -p "$WOUT"
 cd "$REPO/MatterEditor"
 git -C "$REPO" rev-parse HEAD > "$WOUT/git_sha.txt"
+sha256sum "./build/windows-msvc/$EDITOR_NAME" > "$WOUT/editor_sha256.txt"
 jsons=()
 for variant in $VARIANTS; do
   case "$variant" in

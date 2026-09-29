@@ -226,6 +226,9 @@ static void test_terrain_page_success_keeps_static_fallback() {
     auto staged = store.stage_from_bake(baked.resolved_hash, *baked.geometry,
                                        /*first_rung=*/0, /*terrain_sector=*/true);
     CHECK(staged.ok && staged.lp.geometry_pages, "terrain pages compile and load");
+    CHECK(staged.lp.geometry_pages && !staged.lp.geometry_pages->root_refs.empty() &&
+          staged.lp.geometry_pages->roots.empty(),
+          "paged terrain retains root descriptors without pinning CPU payloads");
     CHECK(staged.lp.geometry_source_vt, "paged terrain retains source VT mapping");
     CHECK(staged.lp.thresholds.size() == 1 && staged.lp.lod_mesh_data.size() == 1,
           "paged terrain retains one static fallback rung");

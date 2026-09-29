@@ -90,11 +90,16 @@ asset_store::PageCacheStats RootCache::stats() const {
     std::lock_guard<std::mutex> lock(d_->mutex);
     return d_->cache ? d_->cache->stats() : asset_store::PageCacheStats{};
 }
-std::shared_ptr<const CachedAsset> RootCache::load(const std::string& key, std::string& error, CacheLoadStatus* status) {
+std::shared_ptr<const CachedAsset> RootCache::load(const std::string& key, std::string& error,
+                                                   CacheLoadStatus* status, bool load_root_payloads) {
     if (status) *status = CacheLoadStatus::Failed;
     std::lock_guard<std::mutex> lock(d_->mutex);
     const auto pending = d_->pending.find(key);
     if (pending != d_->pending.end()) {
+        if (load_root_payloads && pending->second->roots.empty() && !pending->second->root_refs.empty()) {
+            error = "geometry pending root payloads unavailable";
+            return {};
+        }
         if (status) *status = CacheLoadStatus::Hit;
         error.clear(); return pending->second;
     }
@@ -121,6 +126,11 @@ std::shared_ptr<const CachedAsset> RootCache::load(const std::string& key, std::
     result->manifest = manifest.page;
     std::vector<NodeRef> roots;
     if (!decode_roots(result->manifest, roots, error)) return {};
+    result->root_refs = roots;
+    if (!load_root_payloads) {
+        if (status) *status = CacheLoadStatus::Hit;
+        error.clear(); return result;
+    }
     // Roots are mandatory, but only roots: never walk the fine-page directory
     // at asset admission. Their explicit RAM cap may reject a poorly reduced
     // asset instead of secretly loading its complete source hierarchy.
@@ -154,12 +164,13 @@ std::shared_ptr<const CachedAsset> RootCache::load(const std::string& key, std::
     error.clear(); return result;
 }
 std::shared_ptr<const CachedAsset> RootCache::write_asset(const std::string& key, const Hierarchy& hierarchy,
-    const std::vector<asset_store::PageSection>& metadata, std::string& error, double* write_ms) {
+    const std::vector<asset_store::PageSection>& metadata, std::string& error, double* write_ms,
+    bool load_root_payloads) {
     const auto start = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> writer_lock(d_->writer_mutex);
     if (!d_->open_writer(error)) return {};
     CacheLoadStatus status;
-    if (auto existing = load(key, error, &status)) return existing;
+    if (auto existing = load(key, error, &status, load_root_payloads)) return existing;
     if (status != CacheLoadStatus::Missing) return {};
     std::vector<NodeRef> roots, all_refs;
     std::vector<uint8_t> manifest;
@@ -178,7 +189,8 @@ std::shared_ptr<const CachedAsset> RootCache::write_asset(const std::string& key
     result->key = key; result->directory = directory();
     result->manifest = d_->cache->insert(manifest, error).page;
     if (!result->manifest) return {};
-    for (size_t i = 0; i < hierarchy.roots.size(); ++i) {
+    result->root_refs = roots;
+    for (size_t i = 0; load_root_payloads && i < hierarchy.roots.size(); ++i) {
         const auto& node = hierarchy.nodes[hierarchy.roots[i]];
         std::vector<NodeRef> children;
         for (auto child : node.children) children.push_back(all_refs[child]);
@@ -196,14 +208,15 @@ std::shared_ptr<const CachedAsset> RootCache::write_asset(const std::string& key
 }
 std::shared_ptr<const CachedAsset> cache_asset(const std::string& directory,
     const std::string& key, const MeshIndexed& source, const CompileConfig& config,
-    const std::vector<asset_store::PageSection>& metadata, std::string& error, RootCache* roots, CacheReport* report, bool cache_only) {
+    const std::vector<asset_store::PageSection>& metadata, std::string& error, RootCache* roots, CacheReport* report,
+    bool cache_only, bool load_root_payloads) {
     CacheReport local; if (!report) report = &local; *report = {};
     using Clock = std::chrono::steady_clock;
     const auto elapsed = [](Clock::time_point t) { return std::chrono::duration<double,std::milli>(Clock::now()-t).count(); };
     if (!roots) { error = "geometry cache write requires a RootCache"; return {}; }
     if (roots->directory() != directory) { error = "geometry root cache directory mismatch"; return {}; }
     auto start = Clock::now();
-    auto cached = roots->load(key, error, &report->lookup); report->lookup_ms = elapsed(start);
+    auto cached = roots->load(key, error, &report->lookup, load_root_payloads); report->lookup_ms = elapsed(start);
     if (cached) return cached;
     report->reason = error;
     if (cache_only || report->lookup != CacheLoadStatus::Missing) return {};
@@ -213,7 +226,7 @@ std::shared_ptr<const CachedAsset> cache_asset(const std::string& directory,
     report->compile_ms = elapsed(start);
     start = Clock::now();
     double hierarchy_write_ms = 0;
-    auto result = roots->write_asset(key, hierarchy, metadata, error, &hierarchy_write_ms);
+    auto result = roots->write_asset(key, hierarchy, metadata, error, &hierarchy_write_ms, load_root_payloads);
     report->write_ms = elapsed(start);
     if(std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
         MATTER_LOGI("geometry", "cache_write_profile key=%s hierarchy_write_ms=%.3f total_ms=%.3f pending=%llu",
