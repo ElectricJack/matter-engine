@@ -1774,6 +1774,8 @@ uint32_t VtResidency::register_variant_impl(uint64_t variant_hash, uint32_t rung
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.evictions_total = slots_.evictions();
+    stats_.lru_scan_count = slots_.lru_scan_count();
+    stats_.lru_scan_ns = slots_.lru_scan_ns();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
     stats_.mesh_bytes = mesh_bytes_used_;
     refresh_indirection_stats();
@@ -2916,6 +2918,8 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     stats_.pool_pinned = slots_.pinned();
     stats_.evictions_total = slots_.evictions();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
+    stats_.lru_scan_count = slots_.lru_scan_count();
+    stats_.lru_scan_ns = slots_.lru_scan_ns();
 
     queue_dirty_pages();
     // --- WP-H: tier-2 enrichment, BEFORE this frame's fills ---------------
@@ -3481,6 +3485,8 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.evictions_total = slots_.evictions();
+    stats_.lru_scan_count = slots_.lru_scan_count();
+    stats_.lru_scan_ns = slots_.lru_scan_ns();
     refresh_queue_stats();
     refresh_indirection_stats();
     if (density_frame_ && frame_index_ >= density_frame_) {

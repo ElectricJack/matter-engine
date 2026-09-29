@@ -1297,6 +1297,27 @@ public:
         const std::vector<std::vector<SparseVoxelInstance>>& placements,std::string& error);
 
     uint64_t sparse_primary_gpu_bytes() const {return sparse_voxels_?sparse_voxels_->gpu_bytes():0;}
+    // Current dedicated allocations for the three static scene buffers.
+    // HOST_VISIBLE memory may also be DEVICE_LOCAL on a resizable BAR, so
+    // report both properties independently rather than assuming a heap.
+    struct StaticBufferMemory {
+        uint64_t clusters = 0, vertices = 0, indices = 0;
+        uint64_t device_local = 0, host_visible = 0;
+    };
+    StaticBufferMemory static_buffer_memory() const {
+        StaticBufferMemory result;
+        const auto add = [&](const matter::VkBufferResource& buffer, uint64_t& size) {
+            size = buffer.allocation_size;
+            if (buffer.memory_properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                result.device_local += size;
+            if (buffer.memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+                result.host_visible += size;
+        };
+        add(clusters_, result.clusters);
+        add(vertices_, result.vertices);
+        add(indices_, result.indices);
+        return result;
+    }
     // Independent immutable sun casters; empty input removes the snapshot.
     bool set_sparse_shadow_casters(const std::vector<SparseVoxelBatch>&,std::string& error);
     bool set_shared_sparse_shadow_casters(const std::vector<SparseShadowObject>&,std::string& error);

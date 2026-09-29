@@ -74,7 +74,11 @@ struct VtResidencyBudgets {
     // whole array layers) and then fails when the layer count exceeds the
     // device's maxImageArrayLayers. 0 means "derive from pool_pages instead"
     // — the legacy path. Init-consumed: ReadOnly.
-    uint32_t pool_mb = 4096;
+    // StreamMountain's paged geometry needs a separate multi-GiB reservation.
+    // A 4 GiB pool left too little room for that cut and static scene buffers
+    // during streaming. Keep the fixed allocation at 2 GiB by default; the
+    // runtime already degrades through coarser pages when detail is evicted.
+    uint32_t pool_mb = 2048;
     // Physical page pool, in pages. When pool_mb is non-zero this is IGNORED
     // (init derives the page count from the MiB budget). When pool_mb is 0
     // this is the direct page count, rounded up to whole array layers.

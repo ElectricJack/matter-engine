@@ -71,6 +71,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -668,6 +669,8 @@ class VtSlotPool {
         pinned_ = 0;
         evictions_ = 0;
         generation_ = 0;
+        lru_scan_count_ = 0;
+        lru_scan_ns_ = 0;
     }
 
     void set_debug(bool debug) { debug_ = debug; }
@@ -681,6 +684,8 @@ class VtSlotPool {
     uint32_t used() const { return used_; }
     uint32_t pinned() const { return pinned_; }
     uint64_t evictions() const { return evictions_; }
+    uint64_t lru_scan_count() const { return lru_scan_count_; }
+    uint64_t lru_scan_ns() const { return lru_scan_ns_; }
     uint32_t graveyard_slots() const {
         return static_cast<uint32_t>(graveyard_.size());
     }
@@ -786,6 +791,8 @@ class VtSlotPool {
     }
 
     bool pick_lru(uint64_t frame, uint32_t& out) const {
+        const auto start = std::chrono::steady_clock::now();
+        ++lru_scan_count_;
         bool found = false;
         uint32_t best = 0;
         uint64_t best_used = 0;
@@ -801,6 +808,9 @@ class VtSlotPool {
                 best_used = o.last_used;
             }
         }
+        lru_scan_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count());
         if (found) out = best;
         return found;
     }
@@ -812,6 +822,8 @@ class VtSlotPool {
     uint32_t used_ = 0;
     uint32_t pinned_ = 0;
     uint64_t evictions_ = 0;
+    mutable uint64_t lru_scan_count_ = 0;
+    mutable uint64_t lru_scan_ns_ = 0;
     uint64_t generation_ = 0;
     uint64_t protect_frames_ = 1;
     bool debug_ = false;
@@ -914,6 +926,8 @@ class VtResidency {
         uint64_t oldest_detail_age_frames = 0;
         uint64_t fills_total = 0;
         uint64_t evictions_total = 0;
+        uint64_t lru_scan_count = 0;    // full-pool victim selections attempted
+        uint64_t lru_scan_ns = 0;       // cumulative CPU time inside pick_lru
         uint64_t pool_bytes = 0;
         uint64_t mesh_bytes = 0;        // CPU copies held for the filler
         uint32_t rejected_variants = 0; // fell back to legacy (budget/slots)

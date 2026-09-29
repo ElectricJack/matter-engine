@@ -33,7 +33,8 @@
 #            RUN_TIMEOUT (1800 s) VARIANTS ("pom_reference pom_chart_only pom_work pom_off")
 #            PAGED_TERRAIN (0; 1 opts into the StreamMountain terrain geometry profile)
 #            PAGED_CACHE_ONLY (0; 1 forbids missing terrain-page compilation in that profile)
-#            PAGED_GPU_MB (1024; geometry page GPU budget, 1..4096 MiB)
+#            PAGED_GPU_MB (3072; geometry page GPU budget, 1..4096 MiB)
+#            PAGED_VT_MB (2048; physical VT pool budget, 1..16384 MiB)
 #            EDITOR_NAME (editor.exe; executable in MatterEditor/build/windows-msvc)
 #            Diagnostic variants: geometry, geometry_cutout, no_vt (POM off; images
 #            differ from pom_off and their timings are differential evidence).
@@ -47,15 +48,20 @@ stats_env=()
 if [ "$PIPELINE_STATS" = 1 ]; then stats_env=(MATTER_VK_PIPELINE_STATS=1); fi
 paged_env=()
 if [ "${PAGED_TERRAIN:-0}" = 1 ]; then
-  paged_gpu_mb=${PAGED_GPU_MB:-1024}
+  paged_gpu_mb=${PAGED_GPU_MB:-3072}
+  paged_vt_mb=${PAGED_VT_MB:-2048}
   case "$paged_gpu_mb" in ''|*[!0-9]*) echo "PAGED_GPU_MB must be 1..4096" >&2; exit 2 ;; esac
   if [ "$paged_gpu_mb" -lt 1 ] || [ "$paged_gpu_mb" -gt 4096 ]; then
     echo "PAGED_GPU_MB must be 1..4096" >&2; exit 2
   fi
+  case "$paged_vt_mb" in ''|*[!0-9]*) echo "PAGED_VT_MB must be 1..16384" >&2; exit 2 ;; esac
+  if [ "$paged_vt_mb" -lt 1 ] || [ "$paged_vt_mb" -gt 16384 ]; then
+    echo "PAGED_VT_MB must be 1..16384" >&2; exit 2
+  fi
   paged_env=(MATTER_GEOMETRY_TERRAIN=1 MATTER_GEOMETRY_PAGES=1
     MATTER_GEOMETRY_MODULE=MountainDetailRock MATTER_GEOMETRY_MIN_TRIANGLES=16384
     MATTER_GEOMETRY_ROOT_MB=1024 MATTER_GEOMETRY_CPU_MB=1024 MATTER_GEOMETRY_GPU_MB="$paged_gpu_mb"
-    MATTER_GEOMETRY_PAGES_PROFILE=1)
+    MATTER_VT_POOL_MB="$paged_vt_mb" MATTER_GEOMETRY_PAGES_PROFILE=1)
   if [ "${PAGED_CACHE_ONLY:-0}" = 1 ]; then paged_env+=(MATTER_GEOMETRY_CACHE_ONLY=1); fi
 fi
 case "$RUNS" in ''|*[!0-9]*|0) echo "RUNS must be a positive integer" >&2; exit 2 ;; esac
@@ -105,7 +111,7 @@ run() { # name, pom (true|false), extra env...
   "$SMI" --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 5 > "$WOUT/$name.gpu_during.csv" 2>&1 &
   smi_pid=$!
   local rc=0 start; start=$(date +%s.%N)
-  env WSLENV=MATTER_WORLD:MATTER_PERF_OUTPUT:MATTER_PERF_WARMUP_SECONDS:MATTER_PERF_SAMPLE_SECONDS:MATTER_PROFILE_TRACE:MATTER_GBUFFER_POM_PATH:MATTER_GBUFFER_PROFILE_MODE:MATTER_VK_PIPELINE_STATS:MATTER_CMD_FIFO:MATTER_HIDE_WINDOW:MATTER_HIDE_UI:MATTER_WINDOW_WIDTH:MATTER_WINDOW_HEIGHT:MATTER_PRESENT_MODE:MATTER_FRAME_LIMIT:MATTER_GEOMETRY_TERRAIN:MATTER_GEOMETRY_PAGES:MATTER_GEOMETRY_MODULE:MATTER_GEOMETRY_MIN_TRIANGLES:MATTER_GEOMETRY_ROOT_MB:MATTER_GEOMETRY_CPU_MB:MATTER_GEOMETRY_GPU_MB:MATTER_GEOMETRY_PAGES_PROFILE:MATTER_GEOMETRY_CACHE_ONLY:TMP:TEMP \
+  env WSLENV=MATTER_WORLD:MATTER_PERF_OUTPUT:MATTER_PERF_WARMUP_SECONDS:MATTER_PERF_SAMPLE_SECONDS:MATTER_PROFILE_TRACE:MATTER_GBUFFER_POM_PATH:MATTER_GBUFFER_PROFILE_MODE:MATTER_VK_PIPELINE_STATS:MATTER_CMD_FIFO:MATTER_HIDE_WINDOW:MATTER_HIDE_UI:MATTER_WINDOW_WIDTH:MATTER_WINDOW_HEIGHT:MATTER_PRESENT_MODE:MATTER_FRAME_LIMIT:MATTER_GEOMETRY_TERRAIN:MATTER_GEOMETRY_PAGES:MATTER_GEOMETRY_MODULE:MATTER_GEOMETRY_MIN_TRIANGLES:MATTER_GEOMETRY_ROOT_MB:MATTER_GEOMETRY_CPU_MB:MATTER_GEOMETRY_GPU_MB:MATTER_VT_POOL_MB:MATTER_GEOMETRY_PAGES_PROFILE:MATTER_GEOMETRY_CACHE_ONLY:TMP:TEMP \
       TMP="$WTEMP" TEMP="$WTEMP" \
       MATTER_WORLD=StreamMountain MATTER_PERF_OUTPUT="$OUT/$name.json" \
       MATTER_PERF_WARMUP_SECONDS="$WARM" MATTER_PERF_SAMPLE_SECONDS="$SAMPLE" \

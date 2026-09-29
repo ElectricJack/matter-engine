@@ -13728,6 +13728,26 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 static_cast<unsigned long long>(metrics.gpu_bytes),
                 static_cast<unsigned long long>(metrics.scratch_bytes), instance_view->size(),
                 static_cast<unsigned long long>(metrics.stale_completions));
+            const auto memory = matter::gpu_memory_stats();
+            const auto static_buffers = impl_->vk_scene->static_buffer_memory();
+            const auto vt = impl_->vk_scene->vt_stats();
+            MATTER_LOGI("geometry", "vram tracked_device_local=%llu tracked_host_visible=%llu vt_pool=%llu vt_indirection=%llu vt_occlusion=%llu vt_pages=%u/%u vt_pinned=%u vt_evictions=%llu vt_lru_scans=%llu vt_lru_scan_ns=%llu geometry_reserved=%llu geometry_budget=%llu static_clusters=%llu static_vertices=%llu static_indices=%llu static_device_local=%llu static_host_visible=%llu",
+                (unsigned long long)memory.device_local_bytes,
+                (unsigned long long)memory.host_visible_bytes,
+                (unsigned long long)vt.pool_bytes,
+                (unsigned long long)vt.indirection_capacity_bytes,
+                (unsigned long long)vt.occlusion_allocated_bytes,
+                vt.pool_used, vt.pool_capacity, vt.pool_pinned,
+                (unsigned long long)vt.evictions_total,
+                (unsigned long long)vt.lru_scan_count,
+                (unsigned long long)vt.lru_scan_ns,
+                (unsigned long long)metrics.gpu_bytes,
+                (unsigned long long)metrics.gpu_budget,
+                (unsigned long long)static_buffers.clusters,
+                (unsigned long long)static_buffers.vertices,
+                (unsigned long long)static_buffers.indices,
+                (unsigned long long)static_buffers.device_local,
+                (unsigned long long)static_buffers.host_visible);
         }
     }
     const auto& instances = *instance_view;

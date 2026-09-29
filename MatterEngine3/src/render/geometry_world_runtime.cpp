@@ -47,10 +47,17 @@ uint32_t geometry_inflight_limit() {
 geometry::ResidencyConfig geometry_config() {
     geometry::ResidencyConfig config; config.max_inflight = geometry_inflight_limit();
     const char* terrain = std::getenv("MATTER_GEOMETRY_TERRAIN");
-    if (terrain && std::string(terrain)=="1") {
+    const bool terrain_pages = terrain && std::string(terrain)=="1";
+    if (terrain_pages) {
         config.max_pages=262144; config.max_known_nodes=1048576;
     }
-    config.gpu_bytes = geometry_budget("MATTER_GEOMETRY_GPU_MB", config.gpu_bytes);
+    // The stress world's known, useful paged cut reached 2.31 GiB at a 4 GiB
+    // limit. A 1 GiB bank churned and fell back to static source geometry.
+    // Reserve at most 3 GiB by default for terrain pages, leaving room for the
+    // VT pool and static scene. The residency ledger still enforces this cap
+    // on every upload and reclaims cold pages under pressure.
+    config.gpu_bytes = geometry_budget("MATTER_GEOMETRY_GPU_MB",
+        terrain_pages ? 3072ull << 20 : config.gpu_bytes);
     config.scratch_bytes = geometry_budget("MATTER_GEOMETRY_SCRATCH_MB", config.scratch_bytes);
     return config;
 }

@@ -27,8 +27,8 @@ def main():
     parser.add_argument('--sector-read-ahead-mb', type=int, choices=[0,1,4,8,16], default=0)
     parser.add_argument('--geometry-inflight', type=int, choices=[128,256,512,1024,2048,4096], default=128)
     parser.add_argument('--geometry-read-batch', type=int, choices=[32,64,128,256,512,1024], default=32)
-    parser.add_argument('--geometry-gpu-mb', type=int, default=1024,
-                        help='Geometry page GPU reservation budget (default: 1024 MiB)')
+    parser.add_argument('--geometry-gpu-mb', type=int, default=3072,
+                        help='Geometry page GPU reservation budget (default: 3072 MiB)')
     parser.add_argument('--turn-after-ready', help='Second camera ex,ey,ez,tx,ty,tz after first stable readiness')
     parser.add_argument('--identity-cache', action='store_true')
     parser.add_argument('--identity-cook', action='store_true')
