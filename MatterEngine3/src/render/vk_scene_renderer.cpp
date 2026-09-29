@@ -242,6 +242,13 @@ VkDeviceSize static_reserve_bytes(const char* name, VkDeviceSize fallback_mb) {
     return mb * 1024ull * 1024ull;
 }
 
+VkBufferUsageFlags static_rt_input_usage(const matter::VulkanDevice& vulkan) {
+    return vulkan.ray_tracing_available()
+        ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+        : 0;
+}
+
 // Flat mirror of slot_of_ for the per-instance part lookup.
 bool slot_index_enabled() {
     static const bool value = env_flag_on("MATTER_VK_SLOT_INDEX");
@@ -5392,7 +5399,8 @@ bool VkSceneRenderer::ensure_vertex_buffer(VkDeviceSize required_size,
             *vulkan_, capacity,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                static_rt_input_usage(*vulkan_),
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                 VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -5420,8 +5428,10 @@ bool VkSceneRenderer::ensure_index_buffer(VkDeviceSize required_size,
     if (!matter::create_buffer(
             *vulkan_, capacity,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                static_rt_input_usage(*vulkan_),
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                 VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -8722,6 +8732,7 @@ void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer
 void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
                                            uint32_t part_slot,
                                            uint32_t vertex_base) {
+    const auto started_at = std::chrono::steady_clock::now();
     if (impostor_atlas_.image == VK_NULL_HANDLE) {
         // Create it on demand. Parts register BEFORE VkSceneRenderer::init()
         // in the production publish path -- measured on RockGallery, ten of
@@ -8760,8 +8771,10 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     }
 
     std::vector<uint8_t> staging_bytes;
+    const bool prepared = !part.impostor_upload_bytes.empty();
     std::vector<VkBufferImageCopy> regions;
     std::vector<uint32_t> assigned;
+    std::vector<size_t> assigned_impostors;
     // ordinal -> slot, for the vertex patch below.
     std::vector<uint32_t> slot_for_ordinal(part.impostors.size(), 0);
     uint32_t first_layer = UINT32_MAX;
@@ -8770,14 +8783,40 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         // Compared against the LATCH (what the image was created with), not a
         // fresh impostor::atlas_bytes(): those differ exactly when the
         // resolution changed after init, which is the case this catches.
-        if (imp.atlas.size() != impostor_atlas_bytes_) {
-            MATTER_LOGE("vk",
-                "impostor atlas for part %016llx cluster %u is %zu bytes, "
-                "expected %zu (atlas built for cell %u px) -- this impostor "
-                "will not draw\n",
-                static_cast<unsigned long long>(part.part_hash), imp.cluster,
-                imp.atlas.size(), impostor_atlas_bytes_,
-                impostor_layer_px_ / impostor::kGridDim);
+        const bool valid_prepared = prepared &&
+            imp.upload_mips.size() == impostor::filtered_mip_count(
+                impostor_layer_px_ / impostor::kGridDim) &&
+            !imp.upload_mips.empty() &&
+            imp.upload_mips.front().edge == impostor_layer_px_ &&
+            std::all_of(imp.upload_mips.begin(), imp.upload_mips.end(),
+                [&](const VkScenePartImpostor::UploadMip& mip) {
+                    const size_t mip_index = &mip - imp.upload_mips.data();
+                    const uint32_t expected_edge = impostor_layer_px_ >> mip_index;
+                    const size_t count = size_t(mip.edge) * mip.edge * 4;
+                    return mip.edge == expected_edge &&
+                        mip.shade_offset <= part.impostor_upload_bytes.size() &&
+                        count <= part.impostor_upload_bytes.size() - mip.shade_offset &&
+                        mip.tint_offset <= part.impostor_upload_bytes.size() &&
+                        count <= part.impostor_upload_bytes.size() - mip.tint_offset;
+                });
+        if (prepared ? !valid_prepared :
+            imp.atlas.size() != impostor_atlas_bytes_) {
+            if (prepared) {
+                MATTER_LOGE("vk",
+                    "impostor mip upload for part %016llx cluster %u has "
+                    "invalid offsets or resolution (expected cell %u px) "
+                    "-- this impostor will not draw\n",
+                    static_cast<unsigned long long>(part.part_hash),
+                    imp.cluster, impostor_layer_px_ / impostor::kGridDim);
+            } else {
+                MATTER_LOGE("vk",
+                    "impostor atlas for part %016llx cluster %u is %zu bytes, "
+                    "expected %zu (atlas built for cell %u px) -- this impostor "
+                    "will not draw\n",
+                    static_cast<unsigned long long>(part.part_hash),
+                    imp.cluster, imp.atlas.size(), impostor_atlas_bytes_,
+                    impostor_layer_px_ / impostor::kGridDim);
+            }
             std::fflush(stderr);
             continue;
         }
@@ -8806,25 +8845,42 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         if (imp.ordinal < slot_for_ordinal.size())
             slot_for_ordinal[imp.ordinal] = slot;
         assigned.push_back(slot);
-        const auto mips = impostor::filtered_mips(imp.atlas, impostor_layer_px_);
+        assigned_impostors.push_back(&imp - part.impostors.data());
+        const auto mips = prepared ? std::vector<impostor::FilteredMip>{}
+                                   : impostor::filtered_mips(imp.atlas,
+                                                             impostor_layer_px_);
         for (uint32_t layer = 0; layer < 2; ++layer) {
-          for (uint32_t mip = 0; mip < mips.size(); ++mip) {
-            const size_t offset = staging_bytes.size();
-            const auto& bytes = layer == 0 ? mips[mip].shade : mips[mip].tint;
-            staging_bytes.insert(staging_bytes.end(), bytes.begin(), bytes.end());
+          const uint32_t mip_count = prepared
+              ? static_cast<uint32_t>(imp.upload_mips.size())
+              : static_cast<uint32_t>(mips.size());
+          for (uint32_t mip = 0; mip < mip_count; ++mip) {
+            size_t offset;
+            uint32_t edge;
+            if (prepared) {
+                const auto& upload = imp.upload_mips[mip];
+                offset = layer == 0 ? upload.shade_offset : upload.tint_offset;
+                edge = upload.edge;
+            } else {
+                offset = staging_bytes.size();
+                const auto& bytes = layer == 0 ? mips[mip].shade : mips[mip].tint;
+                staging_bytes.insert(staging_bytes.end(), bytes.begin(), bytes.end());
+                edge = mips[mip].edge;
+            }
             VkBufferImageCopy region{};
             region.bufferOffset = static_cast<VkDeviceSize>(offset);
             region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             region.imageSubresource.mipLevel = mip;
             region.imageSubresource.baseArrayLayer = slot * 2 + layer;
             region.imageSubresource.layerCount = 1;
-            region.imageExtent = {mips[mip].edge, mips[mip].edge, 1};
+            region.imageExtent = {edge, edge, 1};
             regions.push_back(region);
             first_layer = std::min(first_layer, slot * 2 + layer);
           }
         }
     }
     if (regions.empty()) return;
+    const auto filtered_at = std::chrono::steady_clock::now();
+    const auto& upload_bytes = prepared ? part.impostor_upload_bytes : staging_bytes;
 
     // Layers are assigned from a free list, so a part's slots need not be
     // contiguous. The barrier covers the whole span they touch; layers inside
@@ -8837,7 +8893,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     std::string error;
     matter::VkBufferResource staging;
     if (!matter::create_buffer(*vulkan_,
-                               static_cast<VkDeviceSize>(staging_bytes.size()),
+                               static_cast<VkDeviceSize>(upload_bytes.size()),
                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
@@ -8852,8 +8908,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
         return;
     }
-    std::memcpy(staging.mapped, staging_bytes.data(), staging_bytes.size());
-    if (!matter::flush_buffer(staging, 0, staging_bytes.size(), error)) {
+    std::memcpy(staging.mapped, upload_bytes.data(), upload_bytes.size());
+    if (!matter::flush_buffer(staging, 0, upload_bytes.size(), error)) {
         MATTER_LOGE("vk",
             "impostor atlas flush failed for part %016llx: %s\n",
             static_cast<unsigned long long>(part.part_hash), error.c_str());
@@ -8861,6 +8917,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
         return;
     }
+    const auto staged_at = std::chrono::steady_clock::now();
     ImpostorUploadRecord upload;
     upload.image = impostor_atlas_.image;
     upload.staging = staging.buffer;
@@ -8887,6 +8944,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
         return;
     }
+    const auto submitted_at = std::chrono::steady_clock::now();
 
     // Patch the STAGED vertices, not the caller's copy: the billboard's tint
     // channel transports its atlas slot to raster.vert, and the slot is not
@@ -8907,6 +8965,18 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         dst.tint.y = static_cast<float>((slot >> 8) & 0xFFu) / 255.0f;
         ++patched;
     }
+    const auto finished_at = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    if (elapsed_ms(started_at, finished_at) > 100.0)
+        MATTER_LOGW("vk", "slow impostor adoption hash=%016llx slots=%zu "
+            "bytes=%zu filter=%.3f staging=%.3f submit=%.3f patch=%.3f ms",
+            static_cast<unsigned long long>(part.part_hash), assigned.size(),
+            upload_bytes.size(), elapsed_ms(started_at, filtered_at),
+            elapsed_ms(filtered_at, staged_at),
+            elapsed_ms(staged_at, submitted_at),
+            elapsed_ms(submitted_at, finished_at));
     if (patched == 0 && !assigned.empty()) {
         // The atlas is resident but nothing references it: the ladder and the
         // vertex stream disagree, which is exactly the class of silent
@@ -8926,11 +8996,14 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     // actually take the slot.
     static const bool debug = std::getenv("MATTER_IMPOSTOR_DEBUG") != nullptr;
     if (debug) {
-        for (size_t k = 0; k < part.impostors.size() && k < assigned.size(); ++k) {
-            const auto& imp = part.impostors[k];
+        for (size_t k = 0; k < assigned.size(); ++k) {
+            const auto& imp = part.impostors[assigned_impostors[k]];
             uint32_t max_cov = 0, covered = 0;
+            const auto& source = prepared ? part.impostor_upload_bytes : imp.atlas;
+            const size_t shade_offset = prepared
+                ? imp.upload_mips[0].shade_offset : 0;
             for (size_t t = 0; t + 3 < impostor_atlas_bytes_ / 2; t += 4) {
-                const uint8_t a = imp.atlas[t + 3];
+                const uint8_t a = source[shade_offset + t + 3];
                 if (a > max_cov) max_cov = a;
                 if (a > 0) ++covered;
             }
@@ -10855,21 +10928,23 @@ bool VkSceneRenderer::init(std::string& error) {
     const VkDeviceSize index_reserve = std::max<VkDeviceSize>(
         sizeof(uint32_t),
         static_reserve_bytes("MATTER_VK_STATIC_RESERVE_INDEX_MB", 256));
-    // CPU staging is separate from the Vulkan host-visible reservation.
-    // Pre-touch configured capacity here so streaming does not relocate and
-    // copy the entire live mesh when std::vector crosses a growth boundary.
-    // Keep logical size unchanged: unused storage is not drawable geometry.
+    // CPU staging is separate from the Vulkan host-visible reservation. The
+    // high-density stream reaches about 1.5 GB of vertices and 270 MB of
+    // indices; geometric std::vector growth copied the entire live array in
+    // publish.vulkan, producing multi-second frames even after GPU growth was
+    // made incremental. Reserve address space before streaming. Do not resize
+    // to pre-touch it: that would commit and zero gigabytes for small worlds.
+    // Unused capacity is never drawable geometry. The env values may be set
+    // to zero on memory-constrained hosts.
     try {
         const auto reserve_staging = [](auto& values, VkDeviceSize bytes) {
-            const size_t old_size = values.size();
             const size_t count = static_cast<size_t>(bytes / sizeof(values[0]));
-            if (count > values.capacity()) {
-                values.resize(count);
-                values.resize(old_size);
-            }
+            if (count > values.capacity()) values.reserve(count);
         };
-        reserve_staging(vertex_staging_, static_reserve_bytes("MATTER_VK_CPU_RESERVE_VERTEX_MB", 0));
-        reserve_staging(index_staging_, static_reserve_bytes("MATTER_VK_CPU_RESERVE_INDEX_MB", 0));
+        reserve_staging(vertex_staging_,
+            static_reserve_bytes("MATTER_VK_CPU_RESERVE_VERTEX_MB", 2048));
+        reserve_staging(index_staging_,
+            static_reserve_bytes("MATTER_VK_CPU_RESERVE_INDEX_MB", 384));
     } catch (const std::exception& exception) {
         error = std::string("CPU raster staging reservation failed: ") + exception.what();
         destroy_pipeline();
@@ -10877,7 +10952,9 @@ bool VkSceneRenderer::init(std::string& error) {
     }
     initialized_ =
         ensure_buffer(clusters_, cluster_reserve,
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) &&
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                          VK_BUFFER_USAGE_TRANSFER_DST_BIT, error) &&
         ensure_vertex_buffer(vertex_reserve, error) &&
         ensure_index_buffer(index_reserve, error);
     if (initialized_) {
@@ -11041,6 +11118,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     if (fail_if_poisoned(error)) return -1;
     const auto existing = slot_of_.find(part.part_hash);
     if (existing != slot_of_.end()) return existing->second;
+    const auto publish_started = std::chrono::steady_clock::now();
     if (part.clusters.empty()) {
         error = "VkScenePart requires at least one cluster";
         return -1;
@@ -11088,7 +11166,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         error = "VkScenePart exceeds uint32_t raster vertex capacity";
         return -1;
     }
+    size_t lod_count = 0;
     for (const auto& cluster : part.clusters) {
+        lod_count += cluster.lods.size();
         if (cluster.lods.empty() || cluster.lods.size() > kVkMaxLod) {
             error = "VkSceneCluster LOD count must be in [1, kVkMaxLod]";
             return -1;
@@ -11108,6 +11188,11 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             }
         }
     }
+    if (part.rt_material_ids_prepared &&
+        part.rt_lod_material_ids.size() != lod_count) {
+        error = "VkScenePart prepared RT material set count mismatch";
+        return -1;
+    }
     // Validate that all index values are in-range for the vertex array (one pass).
     if (!part.indices.empty() && !part.vertices.empty()) {
         for (uint32_t idx : part.indices) {
@@ -11117,45 +11202,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             }
         }
     }
-    std::shared_ptr<matter::VkBufferResource> rt_geometry;
-    std::shared_ptr<matter::VkBufferResource> rt_index;
-    if (!part.geometry_raster_only && vulkan_->ray_tracing_available() && !part.vertices.empty()) {
-        rt_geometry = std::make_shared<matter::VkBufferResource>();
-        const VkDeviceSize bytes =
-            static_cast<VkDeviceSize>(part.vertices.size()) *
-            sizeof(VkRasterVertex);
-        if (!matter::create_buffer(
-                *vulkan_, bytes,
-                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *rt_geometry, error) ||
-            !matter::map_buffer(*rt_geometry, error)) {
-            return -1;
-        }
-        std::memcpy(rt_geometry->mapped, part.vertices.data(),
-                    static_cast<size_t>(bytes));
-        if (!matter::flush_buffer(*rt_geometry, 0, bytes, error)) return -1;
-    }
-    if (!part.geometry_raster_only && vulkan_->ray_tracing_available() && !part.indices.empty()) {
-        rt_index = std::make_shared<matter::VkBufferResource>();
-        const VkDeviceSize index_bytes =
-            static_cast<VkDeviceSize>(part.indices.size()) * sizeof(uint32_t);
-        if (!matter::create_buffer(
-                *vulkan_, index_bytes,
-                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *rt_index, error) ||
-            !matter::map_buffer(*rt_index, error)) {
-            return -1;
-        }
-        std::memcpy(rt_index->mapped, part.indices.data(),
-                    static_cast<size_t>(index_bytes));
-        if (!matter::flush_buffer(*rt_index, 0, index_bytes, error)) return -1;
-    }
+    const auto validated_at = std::chrono::steady_clock::now();
     // Place the part's geometry: reuse a settled freed range when one fits
     // (steady-state streaming: an evicted sector's range carries the next
     // one), otherwise extend the tail as before.
@@ -11165,9 +11212,11 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     if (!part.vertices.empty())
         std::copy(part.vertices.begin(), part.vertices.end(),
                   vertex_staging_.begin() + vertex_base);
+    const auto vertices_at = std::chrono::steady_clock::now();
     if (!part.impostors.empty())
         adopt_part_impostors(part, static_cast<uint32_t>(parts_.size()),
                              vertex_base);
+    const auto impostors_at = std::chrono::steady_clock::now();
     const uint32_t index_base =
         allocate_index_range(static_cast<uint32_t>(part.indices.size()));
     if (!part.indices.empty())
@@ -11175,6 +11224,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
                   index_staging_.begin() + index_base);
     const uint32_t cluster_base =
         allocate_cluster_range(static_cast<uint32_t>(part.clusters.size()));
+    const auto staged_at = std::chrono::steady_clock::now();
     const int slot = static_cast<int>(parts_.size());
     PartRecord record{};
     record.hash = part.part_hash;
@@ -11191,13 +11241,11 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     record.raster_water_surface = part.raster_water_surface;
     record.cluster_start = cluster_base;
     record.cluster_count = static_cast<uint32_t>(part.clusters.size());
-    record.vertex_start = vertex_base;   // kept for Task 4 vertexOffset
+    record.vertex_start = vertex_base;   // shared raster/RT vertex base
     record.vertex_count = static_cast<uint32_t>(part.vertices.size());
     record.index_start = index_base;
     record.index_count = static_cast<uint32_t>(part.indices.size());
     record.live = true;
-    record.rt_geometry = std::move(rt_geometry);
-    record.rt_index = std::move(rt_index);
     record.rt_cluster_lod_offsets =
         vk_scene_detail::dense_rt_lod_offsets(part);
     // M2.5: the RT lane's per-cluster rung ceiling. Computed once here, off
@@ -11276,7 +11324,10 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             rt_lod.first_index = lod.first_index;
             rt_lod.index_count = lod.index_count;
             rt_lod.primitive_count = lod.index_count / 3;
-            if (!part.indices.empty() && !part.vertices.empty()) {
+            if (part.rt_material_ids_prepared) {
+                rt_lod.material_ids =
+                    part.rt_lod_material_ids[record.rt_lods.size()];
+            } else if (!part.indices.empty() && !part.vertices.empty()) {
                 for (uint32_t k = 0; k < lod.index_count; ++k) {
                     const uint32_t material =
                         part.vertices[part.indices[lod.first_index + k]]
@@ -11285,24 +11336,31 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
                         rt_lod.material_ids.push_back(material);
                 }
             }
-            std::sort(rt_lod.material_ids.begin(),
-                      rt_lod.material_ids.end());
-            rt_lod.material_ids.erase(
-                std::unique(rt_lod.material_ids.begin(),
-                            rt_lod.material_ids.end()),
-                rt_lod.material_ids.end());
+            if (!part.rt_material_ids_prepared) {
+                std::sort(rt_lod.material_ids.begin(),
+                          rt_lod.material_ids.end());
+                rt_lod.material_ids.erase(
+                    std::unique(rt_lod.material_ids.begin(),
+                                rt_lod.material_ids.end()),
+                    rt_lod.material_ids.end());
+            }
             record.rt_lods.push_back(std::move(rt_lod));
         }
     }
-    record.material_ids.reserve(part.vertices.size());
-    for (const VkRasterVertex& vertex : part.vertices) {
-        if (vertex.material_index != UINT32_MAX)
-            record.material_ids.push_back(vertex.material_index);
+    if (part.rt_material_ids_prepared) {
+        record.material_ids = part.rt_material_ids;
+    } else {
+        record.material_ids.reserve(part.vertices.size());
+        for (const VkRasterVertex& vertex : part.vertices) {
+            if (vertex.material_index != UINT32_MAX)
+                record.material_ids.push_back(vertex.material_index);
+        }
+        std::sort(record.material_ids.begin(), record.material_ids.end());
+        record.material_ids.erase(
+            std::unique(record.material_ids.begin(), record.material_ids.end()),
+            record.material_ids.end());
     }
-    std::sort(record.material_ids.begin(), record.material_ids.end());
-    record.material_ids.erase(
-        std::unique(record.material_ids.begin(), record.material_ids.end()),
-        record.material_ids.end());
+    const auto rt_at = std::chrono::steady_clock::now();
     for (size_t i = 0; i < part.clusters.size(); ++i) {
         const auto& source = part.clusters[i];
         GpuCluster cluster{};
@@ -11353,6 +11411,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // runtime on first use). A part with no charts leaves vt_slots all zero,
     // which is exactly the legacy path.
     register_vt_part(slot, part);
+    const auto vt_at = std::chrono::steady_clock::now();
     // Registration without a live VT variant only adds neutral draw buckets.
     // Preserve an already-current table instead of rescanning the whole world.
     // Reused cluster ranges must be cleared too, not only appended capacity.
@@ -11396,6 +11455,26 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // before the allocator handed it out; a tail range is safe because no
     // recorded frame reads past its old size.
     mark_static_append();
+    const auto finished_at = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    const double publish_ms = elapsed_ms(publish_started, finished_at);
+    if (publish_ms > 100.0)
+        MATTER_LOGW("vk", "slow part registration hash=%016llx vertices=%zu "
+            "indices=%zu clusters=%zu prepared=%u ms=%.3f "
+            "validate=%.3f vertex=%.3f impostor=%.3f index=%.3f "
+            "rt=%.3f vt=%.3f tail=%.3f",
+            static_cast<unsigned long long>(part.part_hash),
+            part.vertices.size(), part.indices.size(), part.clusters.size(),
+            part.rt_material_ids_prepared ? 1u : 0u, publish_ms,
+            elapsed_ms(publish_started, validated_at),
+            elapsed_ms(validated_at, vertices_at),
+            elapsed_ms(vertices_at, impostors_at),
+            elapsed_ms(impostors_at, staged_at),
+            elapsed_ms(staged_at, rt_at),
+            elapsed_ms(rt_at, vt_at),
+            elapsed_ms(vt_at, finished_at));
     return slot;
 }
 
@@ -11701,7 +11780,7 @@ bool VkSceneRenderer::geometry_page_render_ready_slot(uint32_t slot) const {
         uint64_t(part.vertex_start) + part.vertex_count <= uploaded_vertex_count_ &&
         uint64_t(part.index_start) + part.index_count <= uploaded_index_count_;
     return raster_ready && (part.geometry_raster_only ||
-        (part.rt_geometry && part.rt_index && part.rt_lods.size() == 1 &&
+        (vertices_.address && indices_.address && part.rt_lods.size() == 1 &&
          part.rt_lods[0].built && !part.rt_lods[0].candidate_serial &&
          !part.rt_geometry_classification_dirty));
 }
@@ -11711,7 +11790,9 @@ std::shared_ptr<const void> VkSceneRenderer::geometry_page_resources(uint64_t ha
     const auto& part = parts_[static_cast<size_t>(slot_of_.at(hash))];
     auto retained = std::make_shared<std::vector<std::shared_ptr<void>>>();
     if (!part.geometry_raster_only) {
-        retained->push_back(part.rt_geometry->lifetime); retained->push_back(part.rt_index->lifetime);
+        // The shared source buffers are owned by the renderer and retained by
+        // each frame that reads them. Holding them for a page's whole residency
+        // would pin every retired capacity rung after a growth.
         retained->push_back(part.rt_lods[0].blas->lifetime);
     }
     return retained;
@@ -11723,7 +11804,9 @@ VkDeviceAddress VkSceneRenderer::test_rt_geometry_address(
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return 0;
     const PartRecord& part = parts_[static_cast<size_t>(found->second)];
-    return part.rt_geometry ? part.rt_geometry->address : 0;
+    return !part.geometry_raster_only && part.vertex_count && vertices_.address
+        ? vertices_.address + VkDeviceSize{part.vertex_start} * sizeof(VkRasterVertex)
+        : 0;
 }
 
 bool VkSceneRenderer::record_test_surface_ray(
@@ -13933,10 +14016,14 @@ uint32_t VkSceneRenderer::allocate_vertex_range(uint32_t count) {
     const uint32_t start = static_cast<uint32_t>(vertex_staging_.size());
     const bool grows = vertex_staging_.size() + count > vertex_staging_.capacity();
     static const bool profile_growth = std::getenv("MATTER_GEOMETRY_PAGES_PROFILE") != nullptr;
-    const auto begin = grows && profile_growth ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const size_t old_capacity = vertex_staging_.capacity();
+    const bool log_growth = grows &&
+        (profile_growth || old_capacity * sizeof(vertex_staging_[0]) >=
+            64ull * 1024 * 1024);
+    const auto begin = log_growth ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
     vertex_staging_.resize(vertex_staging_.size() + count);
-    if (grows && profile_growth) {
+    if (log_growth) {
         const double ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
         MATTER_LOGI("geometry", "raster_staging_growth channel=vertex old_bytes=%llu new_bytes=%llu live_bytes=%llu ms=%.3f",
             (unsigned long long)(old_capacity*sizeof(vertex_staging_[0])),
@@ -13952,10 +14039,14 @@ uint32_t VkSceneRenderer::allocate_index_range(uint32_t count) {
     const uint32_t start = static_cast<uint32_t>(index_staging_.size());
     const bool grows = index_staging_.size() + count > index_staging_.capacity();
     static const bool profile_growth = std::getenv("MATTER_GEOMETRY_PAGES_PROFILE") != nullptr;
-    const auto begin = grows && profile_growth ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const size_t old_capacity = index_staging_.capacity();
+    const bool log_growth = grows &&
+        (profile_growth || old_capacity * sizeof(index_staging_[0]) >=
+            64ull * 1024 * 1024);
+    const auto begin = log_growth ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
     index_staging_.resize(index_staging_.size() + count);
-    if (grows && profile_growth) {
+    if (log_growth) {
         const double ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
         MATTER_LOGI("geometry", "raster_staging_growth channel=index old_bytes=%llu new_bytes=%llu live_bytes=%llu ms=%.3f",
             (unsigned long long)(old_capacity*sizeof(index_staging_[0])),
@@ -14869,12 +14960,11 @@ VkSceneRenderer::StaticUploadCensus VkSceneRenderer::static_upload_census() {
 // arrays, instances, the draw-command template, the VT slot / draw-override /
 // occlusion-class tables, and the skin transform tail.
 //
-// The static arrays take one of two paths. kAppend writes only the dirty
-// ranges in place and costs O(new parts); kFull recreates all three buffers
-// and rewrites O(world) into fresh host-visible memory -- a 366 ms frame in one
-// captured trace. kFull is reached only when a buffer outgrew its reservation,
-// and the diagnostic printed there gives the numbers needed to raise it (see
-// static_reserve_bytes in init()).
+// Static appends write only dirty ranges. Capacity growth allocates only the
+// undersized buffers, copies their unchanged uploaded ranges on the GPU, then
+// writes the dirty ranges into the replacement. The legacy kFull path remains
+// for fault tests and the standalone cull API, which has no frame command
+// buffer in which to record a copy.
 //
 // The command template is re-uploaded UNCONDITIONALLY every frame: cull.comp
 // writes instance_count into those records on the GPU, so the CPU copy has to
@@ -14883,8 +14973,10 @@ VkSceneRenderer::StaticUploadCensus VkSceneRenderer::static_upload_census() {
 // On failure most paths call poison() -- by then the buffers have been partly
 // replaced or partly written and cannot be unwound.
 bool VkSceneRenderer::upload_scene_buffers(
-    FrameResources& frame, VkCommandBuffer material_command_buffer,
+    FrameResources& frame, const matter::VulkanFrame* upload_frame,
     bool reset_stats, std::string& error) {
+    const VkCommandBuffer material_command_buffer =
+        upload_frame ? upload_frame->command_buffer : VK_NULL_HANDLE;
     VkDeviceSize cluster_bytes = 0;
     VkDeviceSize instance_bytes = 0;
     VkDeviceSize command_bytes = 0;
@@ -15074,6 +15166,22 @@ bool VkSceneRenderer::upload_scene_buffers(
     }
     matter::profile::Scope static_scope(engine_prof::id(engine_prof::kPfUploadStatic));
     const auto su_append_t0 = std::chrono::steady_clock::now();
+    const auto upload_ranges =
+        [&](matter::VkBufferResource& buffer,
+            const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
+            const void* base, size_t element_size,
+            uint64_t* upload_counter) {
+        for (const auto& range : ranges) {
+            const VkDeviceSize offset = VkDeviceSize{range.first} * element_size;
+            const VkDeviceSize size = VkDeviceSize{range.second} * element_size;
+            if (!upload_at(buffer, static_cast<const char*>(base) + offset,
+                           size, offset))
+                return false;
+        }
+        if (!ranges.empty() && upload_counter) ++*upload_counter;
+        return true;
+    };
+    bool capacity_growth = false;
     if (static_upload_dirty_ == StaticUpload::kAppend) {
         // Streaming fast path. Every static mutation since the last upload
         // was a register_part() ranged write — into a recycled interior range
@@ -15086,24 +15194,6 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (clusters_.size >= cluster_bytes &&
             vertices_.size >= vertex_bytes &&
             indices_.size >= index_bytes) {
-            const auto upload_ranges =
-                [&](matter::VkBufferResource& buffer,
-                    const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
-                    const void* base, size_t element_size,
-                    uint64_t* upload_counter) {
-                for (const auto& range : ranges) {
-                    const VkDeviceSize offset =
-                        VkDeviceSize{range.first} * element_size;
-                    const VkDeviceSize size =
-                        VkDeviceSize{range.second} * element_size;
-                    if (!upload_at(buffer,
-                                   static_cast<const char*>(base) + offset,
-                                   size, offset))
-                        return false;
-                }
-                if (!ranges.empty() && upload_counter) ++*upload_counter;
-                return true;
-            };
             if (!upload_ranges(clusters_, dirty_cluster_ranges_,
                                cluster_staging_.data(), sizeof(GpuCluster),
                                &upload_counters_.cluster_uploads) ||
@@ -15131,30 +15221,12 @@ bool VkSceneRenderer::upload_scene_buffers(
                         std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - su_append_t0).count());
         } else {
-            // A buffer outgrew its capacity.
-            //
-            // THIS IS THE PATH WE ARE TRYING TO MAKE UNREACHABLE. It escalates
-            // to the recreate + full-rewrite below, which allocates three fresh
-            // host-visible buffers and memcpys the ENTIRE resident world into
-            // them on the render thread. A 2026-08-08 capture caught it at
-            // 366 ms in one frame -- the largest single render-thread event in
-            // the trace, against a 32 ms median.
-            //
-            // The intended answer is the reservation applied in
-            // static_reserve_bytes() below: size the buffers once, generously,
-            // at first allocation, so a streaming load never crosses a capacity
-            // boundary mid-flight. This branch is what tells you the
-            // reservation was too small -- loudly, with the numbers needed to
-            // pick a better one, instead of silently eating a third of a
-            // second.
-            //
-            // It is NOT commented out yet, and deliberately so: doing that
-            // without a growth path in place converts a hitch into either a
-            // dead frame or geometry reading uninitialised memory, which in
-            // this subsystem means a device fault. See the report accompanying
-            // this change for the GPU-copy growth path and the dirty-range
-            // ordering hazard it has to solve first.
+            // A buffer outgrew its capacity. Keep the diagnostic, then copy
+            // unchanged ranges from the old GPU allocation into the new one.
+            // Only the ranges registered since the last upload need a host
+            // write; they are excluded from the GPU copy below.
             ++upload_counters_.static_capacity_overflows;
+            capacity_growth = true;
             // STAGING vs LIVE vs FREE is the whole diagnosis, and the reason
             // this prints three numbers per buffer rather than one.
             //
@@ -15183,7 +15255,7 @@ bool VkSceneRenderer::upload_scene_buffers(
                 live_indices += p.index_count;
             }
             MATTER_LOGW("vk",
-                "STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead.\n"
+                "STATIC CAPACITY GROWTH -- copying unchanged GPU ranges.\n"
                 "     bytes    clusters %llu/%llu  vertices %llu/%llu  "
                 "indices %llu/%llu\n"
                 "     elements clusters staging %llu live %llu free %llu | "
@@ -15191,7 +15263,7 @@ bool VkSceneRenderer::upload_scene_buffers(
                 "indices staging %llu live %llu free %llu  (parts %llu)\n"
                 "     live ~= staging -> raise MATTER_VK_STATIC_RESERVE_"
                 "{CLUSTER,VERTEX,INDEX}_MB. live << staging with large free "
-                "-> fragmented tail growth, a bigger reserve only delays it.\n",
+                "-> fragmented tail growth.\n",
                 (unsigned long long)cluster_bytes,
                 (unsigned long long)clusters_.size,
                 (unsigned long long)vertex_bytes,
@@ -15212,11 +15284,131 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_upload_dirty_ = StaticUpload::kFull;
         }
     }
+    if (static_upload_dirty_ == StaticUpload::kFull && capacity_growth &&
+        upload_frame) {
+        // Host writes to the new allocation happen before submission. A copy
+        // of the old uploaded prefix would overwrite any recycled interior
+        // range, so copy only the complement of this frame's dirty ranges.
+        // The source allocation is retained by this frame until the copy and
+        // all consumers of the replacement have finished.
+        const auto grow_or_upload =
+            [&](matter::VkBufferResource& buffer, VkDeviceSize required,
+                VkBufferUsageFlags usage, const char* label,
+                const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
+                const void* base, size_t element_size,
+                uint32_t uploaded_count, uint64_t* upload_counter) {
+            if (buffer.size >= required)
+                return upload_ranges(buffer, ranges, base, element_size,
+                                     upload_counter);
+            VkDeviceSize capacity = 0;
+            if (!vk_scene_detail::checked_grown_capacity(
+                    buffer.size, std::max<VkDeviceSize>(required, 1),
+                    limits_.max_buffer_size, capacity, label, error))
+                return false;
+            if (!allow_replacement()) return false;
+            matter::VkBufferResource replacement;
+            if (!matter::create_buffer(
+                    *vulkan_, capacity,
+                    usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                        VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                    replacement, error))
+                return false;
+            ++replacements;
+            if (!upload_ranges(replacement, ranges, base, element_size,
+                               upload_counter))
+                return false;
+            if (VkDeviceSize{uploaded_count} * element_size > buffer.size) {
+                error = std::string(label) + " uploaded prefix exceeds old buffer";
+                return false;
+            }
+            if (!vulkan_->retain_for_frame(
+                    *upload_frame, {buffer.lifetime}, error))
+                return false;
+            std::vector<std::pair<VkDeviceSize, VkDeviceSize>> dirty;
+            dirty.reserve(ranges.size());
+            for (const auto& range : ranges) {
+                const VkDeviceSize begin = std::min<VkDeviceSize>(
+                    range.first, uploaded_count);
+                const VkDeviceSize end = std::min<VkDeviceSize>(
+                    VkDeviceSize{range.first} + range.second, uploaded_count);
+                if (begin < end) dirty.emplace_back(begin, end);
+            }
+            std::sort(dirty.begin(), dirty.end());
+            VkDeviceSize cursor = 0;
+            bool copied = false;
+            const auto copy_interval = [&](VkDeviceSize begin,
+                                           VkDeviceSize end) {
+                if (begin >= end) return;
+                const VkBufferCopy copy{begin * element_size,
+                                        begin * element_size,
+                                        (end - begin) * element_size};
+                vkCmdCopyBuffer(material_command_buffer, buffer.buffer,
+                                replacement.buffer, 1, &copy);
+                copied = true;
+            };
+            for (const auto& interval : dirty) {
+                copy_interval(cursor, interval.first);
+                cursor = std::max(cursor, interval.second);
+            }
+            copy_interval(cursor, uploaded_count);
+            if (copied) {
+                VkBufferMemoryBarrier barrier{
+                    VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+                barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.buffer = replacement.buffer;
+                barrier.offset = 0;
+                barrier.size = VK_WHOLE_SIZE;
+                vkCmdPipelineBarrier(material_command_buffer,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                    0, nullptr, 1, &barrier, 0, nullptr);
+            }
+            buffer = std::move(replacement);
+            return true;
+        };
+        if (!grow_or_upload(clusters_, cluster_bytes,
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                            "cluster buffer", dirty_cluster_ranges_,
+                            cluster_staging_.data(), sizeof(GpuCluster),
+                            uploaded_cluster_count_,
+                            &upload_counters_.cluster_uploads) ||
+            !grow_or_upload(vertices_, vertex_bytes,
+                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                static_rt_input_usage(*vulkan_),
+                            "vertex buffer", dirty_vertex_ranges_,
+                            vertex_staging_.data(), sizeof(VkRasterVertex),
+                            uploaded_vertex_count_,
+                            &upload_counters_.vertex_uploads) ||
+            !grow_or_upload(indices_, index_bytes,
+                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                static_rt_input_usage(*vulkan_),
+                            "index buffer", dirty_index_ranges_,
+                            index_staging_.data(), sizeof(uint32_t),
+                            uploaded_index_count_, nullptr))
+            return poison(error);
+        ++upload_counters_.static_growth_uploads;
+        dirty_cluster_ranges_.clear();
+        dirty_vertex_ranges_.clear();
+        dirty_index_ranges_.clear();
+        uploaded_cluster_count_ = static_cast<uint32_t>(cluster_staging_.size());
+        uploaded_vertex_count_ = static_cast<uint32_t>(vertex_staging_.size());
+        uploaded_index_count_ = static_cast<uint32_t>(index_staging_.size());
+        static_upload_dirty_ = StaticUpload::kClean;
+        su_note(g_su_append_count, g_su_append_us, nullptr,
+                (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - su_append_t0).count());
+    }
     const auto su_full_t0 = std::chrono::steady_clock::now();
     if (static_upload_dirty_ == StaticUpload::kFull) {
-        // The reservation lives in init(), which is the only point all three
-        // buffers are created empty -- see static_reserve_bytes(). Growth from
-        // here keeps the plain doubling policy.
+        // Standalone cull and forced fault tests still use this synchronous
+        // fallback. Production frames take the GPU-copy growth path above.
         const auto replacement_capacity = [&](VkDeviceSize current,
                                               VkDeviceSize required,
                                               const char* label,
@@ -15246,7 +15438,10 @@ bool VkSceneRenderer::upload_scene_buffers(
         matter::VkBufferResource next_indices;
         if (!allow_replacement()) return false;
         if (!matter::create_buffer(
-                *vulkan_, cluster_capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                *vulkan_, cluster_capacity,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -15259,7 +15454,8 @@ bool VkSceneRenderer::upload_scene_buffers(
                 *vulkan_, vertex_capacity,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    static_rt_input_usage(*vulkan_),
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -15271,8 +15467,10 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (!matter::create_buffer(
                 *vulkan_, index_capacity,
                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    static_rt_input_usage(*vulkan_),
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -15973,7 +16171,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         return false;
     }
     anim_scope.stop();
-    if (!upload_scene_buffers(selected, frame.command_buffer, false, error))
+    if (!upload_scene_buffers(selected, &frame, false, error))
         return false;
     {
         matter::profile::Scope constants_scope(
@@ -16625,7 +16823,8 @@ bool VkSceneRenderer::build_ray_geometry(
     for (const RtBuildSel& selected_lod : selected_geometry) {
         auto& part = *selected_lod.part;
         auto& lod = *selected_lod.lod;
-        if (!part.rt_geometry || !part.rt_index || lod.candidate_serial != 0 ||
+        if (!part.vertex_count || !part.index_count ||
+            !vertices_.address || !indices_.address || lod.candidate_serial != 0 ||
             (lod.built && lod.geometry_opaque == selected_lod.opaque)) continue;
         if (blas_cache_ && blas_cache_->available() &&
             !part.blas_cache_directory.empty() && part.rt_lods.size() == 1) {
@@ -16647,7 +16846,8 @@ bool VkSceneRenderer::build_ray_geometry(
     for (const RtBuildSel& selected_lod : selected_geometry) {
         PartRecord& part = *selected_lod.part;
         RtLodRecord& lod = *selected_lod.lod;
-        if (!part.rt_geometry || !part.rt_index ||
+        if (!part.vertex_count || !part.index_count ||
+            !vertices_.address || !indices_.address ||
             lod.candidate_serial != 0 ||
             (lod.built && lod.geometry_opaque == selected_lod.opaque) ||
             std::any_of(pending.begin(), pending.end(),
@@ -16675,16 +16875,15 @@ bool VkSceneRenderer::build_ray_geometry(
         triangles.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
         triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-        triangles.vertexData.deviceAddress = part.rt_geometry->address;   // part base, no LOD offset
+        triangles.vertexData.deviceAddress = vertices_.address +
+            VkDeviceSize{part.vertex_start} * sizeof(VkRasterVertex);
         triangles.vertexStride = sizeof(VkRasterVertex);
         triangles.maxVertex = part.vertex_count - 1;
         triangles.indexType = VK_INDEX_TYPE_UINT32;
-        // lod.first_index is part-local (stored that way in RtLodRecord to
-        // remain compaction-invariant); use it directly as the byte offset
-        // into the per-part rt_index buffer.
+        // The LOD index is part-local; add the part's shared index range.
         triangles.indexData.deviceAddress =
-            part.rt_index->address +
-            static_cast<VkDeviceSize>(lod.first_index) * sizeof(uint32_t);
+            indices_.address +
+            (VkDeviceSize{part.index_start} + lod.first_index) * sizeof(uint32_t);
         item.geometry.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         item.geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
@@ -16833,8 +17032,8 @@ bool VkSceneRenderer::build_ray_geometry(
             if (!item.restored && blas_cache_ && !item.part->blas_cache_directory.empty())
                 blas_cache_->capture(frame, item.part->blas_cache_directory, item.lod->cache_key, item.target, item.part->geometry_budget_claim);
             retained.push_back(item.target->lifetime);
-            retained.push_back(item.part->rt_geometry->lifetime);
-            retained.push_back(item.part->rt_index->lifetime);
+            retained.push_back(vertices_.lifetime);
+            retained.push_back(indices_.lifetime);
         }
         if (!vulkan_->retain_for_frame(frame, std::move(retained), error)) return false;
     }
@@ -16955,7 +17154,8 @@ bool VkSceneRenderer::emit_ray_instances(
         const RtLodRecord& lod = *selected_lod.lod;
         const RtInstance& source = *selected_lod.source;
         const auto& traced_blas = lod.candidate ? lod.candidate : lod.blas;
-        if (!traced_blas || !part.rt_geometry || !part.rt_index) continue;
+        if (!traced_blas || !part.vertex_count || !part.index_count ||
+            !vertices_.address || !indices_.address) continue;
         if (part_records.size() >= kTlasCustomIndexMax) {
             error = "RT geometry table exceeds TLAS custom-index capacity";
             return false;
@@ -16973,10 +17173,11 @@ bool VkSceneRenderer::emit_ray_instances(
         instance.accelerationStructureReference = traced_blas->address;
         instances.push_back(instance);
         GpuRtPartRecord record{};
-        record.vertex_address = part.rt_geometry->address;    // part base
+        record.vertex_address = vertices_.address +
+            VkDeviceSize{part.vertex_start} * sizeof(VkRasterVertex);
         record.index_address =
-            part.rt_index->address +
-            static_cast<uint64_t>(lod.first_index) * sizeof(uint32_t);
+            indices_.address +
+            (VkDeviceSize{part.index_start} + lod.first_index) * sizeof(uint32_t);
         record.vertex_stride = sizeof(viewer::VkRasterVertex);
         record.vertex_count = part.vertex_count;
         record.primitive_count = lod.primitive_count;
@@ -17833,13 +18034,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         selected.rt_tlas_scratch.lifetime,
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
         selected.rt_error_counter.lifetime, selected.materials.lifetime,
-        selected.rt_test_output.lifetime, rt_sbt_.lifetime};
+        selected.rt_test_output.lifetime, rt_sbt_.lifetime,
+        vertices_.lifetime, indices_.lifetime};
     if (rt_primary_adaptive_)
         for (const auto* image : primary_history_inputs)
             retained.push_back(image->lifetime);
     for (const auto& part : parts_) {
-        if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
-        if (part.rt_index) retained.push_back(part.rt_index->lifetime);
         for (const auto& lod : part.rt_lods) {
             if (lod.candidate)
                 retained.push_back(lod.candidate->lifetime);
@@ -18514,7 +18714,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     }
     if (!ensure_frame_resources(1, error)) return false;
     FrameResources& selected = frames_[0];
-    if (!upload_scene_buffers(selected, VK_NULL_HANDLE, true, error))
+    if (!upload_scene_buffers(selected, nullptr, true, error))
         return false;
     if (!upload_frame_constants(selected, frame, camera_eye, pixel_budget,
                                 error))

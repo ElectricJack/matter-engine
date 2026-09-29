@@ -9858,6 +9858,9 @@ static void rt_scenario_blas_pinning(
         std::string& error) {
     {
         viewer::VkSceneRenderer pinning(vulkan);
+        CHECK(pinning.init(error),
+              error.empty() ? "init shared raster/RT geometry buffers"
+                            : error.c_str());
         const viewer::VkScenePart receiver = known_raster_triangle(910);
         CHECK(pinning.ensure_part(receiver, error) >= 0,
               error.empty() ? "build receiver BLAS" : error.c_str());
@@ -9872,7 +9875,7 @@ static void rt_scenario_blas_pinning(
         CHECK(pinning.ensure_part(growth, error) >= 0 && pinned != 0 &&
                   pinning.test_rt_geometry_address(910) == pinned,
               error.empty()
-                  ? "BLAS input geometry stays pinned across raster growth"
+                  ? "shared RT vertex offset stays stable across CPU staging growth"
                   : error.c_str());
     }
 }
@@ -15120,6 +15123,116 @@ void run_static_append_upload_tests(matter::VulkanDevice& vulkan) {
           "appended behind clusters are culled from GPU cluster data");
 }
 
+void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
+    // A zero-MiB floor leaves only the one-element minimum. Both registrations
+    // then cross capacity; the second must preserve the first part's uploaded
+    // prefix by copying it on the GPU rather than uploading the whole world.
+    constexpr const char* names[] = {
+        "MATTER_VK_STATIC_RESERVE_CLUSTER_MB",
+        "MATTER_VK_STATIC_RESERVE_VERTEX_MB",
+        "MATTER_VK_STATIC_RESERVE_INDEX_MB"};
+    std::array<std::string, 3> previous;
+    std::array<bool, 3> had_value{};
+    for (size_t i = 0; i < 3; ++i) {
+        if (const char* value = std::getenv(names[i])) {
+            previous[i] = value;
+            had_value[i] = true;
+        }
+#ifdef _WIN32
+        _putenv_s(names[i], "0");
+#else
+        setenv(names[i], "0", 1);
+#endif
+    }
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    const bool initialized = renderer.init(error);
+    for (size_t i = 0; i < 3; ++i) {
+#ifdef _WIN32
+        _putenv_s(names[i], had_value[i] ? previous[i].c_str() : "");
+#else
+        if (had_value[i]) setenv(names[i], previous[i].c_str(), 1);
+        else unsetenv(names[i]);
+#endif
+    }
+    CHECK(initialized,
+          error.empty() ? "init small-reserve growth renderer" : error.c_str());
+    if (!initialized) return;
+    const FixedCullScene scene = make_fixed_cull_scene();
+    const auto submit = [&] {
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) return false;
+        const bool prepared = renderer.prepare_frame(
+            frame, scene.frame, scene.eye, 1.0f, error);
+        const bool ended = vulkan.end_frame(frame, error);
+        return prepared && ended;
+    };
+    const auto first = known_raster_triangle(0x53544131);
+    const auto second = known_raster_triangle(0x53544132);
+    const matter::Mat4f identity = identity_matrix();
+    CHECK(renderer.ensure_part(first, error) >= 0 &&
+              renderer.update_instances({{first.part_hash, identity}}, error) &&
+              submit(),
+          error.empty() ? "submit first grown static part" : error.c_str());
+    const auto after_first = renderer.upload_counters();
+    CHECK(after_first.static_growth_uploads == 1 &&
+              after_first.static_full_uploads == 0,
+          "first capacity growth uses recorded GPU copy path");
+    CHECK(renderer.ensure_part(second, error) >= 0 &&
+              renderer.update_instances({{first.part_hash, identity},
+                                         {second.part_hash, identity}}, error) &&
+              submit(),
+          error.empty() ? "submit second grown static part" : error.c_str());
+    const auto after_second = renderer.upload_counters();
+    CHECK(after_second.static_growth_uploads >= 2 &&
+              after_second.static_full_uploads == 0,
+          "capacity growth never rewrites resident CPU staging");
+    if (vulkan.ray_tracing_available()) {
+        const auto first_address =
+            renderer.test_rt_geometry_address(first.part_hash);
+        const auto second_address =
+            renderer.test_rt_geometry_address(second.part_hash);
+        CHECK(first_address != 0 &&
+                  second_address - first_address ==
+                      first.vertices.size() * sizeof(viewer::VkRasterVertex),
+              "RT parts address their ranges in the shared raster vertex buffer");
+    }
+    CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error),
+          error.empty() ? "cull copied old and appended new parts" : error.c_str());
+    viewer::VkCullStats stats{};
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 2,
+          error.empty() ? "both grown parts remain visible" : error.c_str());
+
+    // Recycle an interior range, then grow the cluster/index tails in the
+    // same frame. The GPU copy must exclude the recycled dirty range or it
+    // would restore the old front-facing cluster over the new hidden one.
+    renderer.release_part(first.part_hash);
+    for (int i = 0; i < 4; ++i)
+        CHECK(submit(), error.empty() ? "retire freed static range"
+                                      : error.c_str());
+    auto recycled = known_raster_triangle(0x53544133);
+    recycled.clusters[0].aabb_min.z = 2.0f;
+    recycled.clusters[0].aabb_max.z = 2.0f;
+    for (auto& vertex : recycled.vertices) vertex.position.z = 2.0f;
+    const auto tail = known_raster_triangle(0x53544134);
+    CHECK(renderer.ensure_part(recycled, error) >= 0 &&
+              renderer.ensure_part(tail, error) >= 0 &&
+              renderer.update_instances({{second.part_hash, identity},
+                                         {recycled.part_hash, identity},
+                                         {tail.part_hash, identity}}, error) &&
+              submit(),
+          error.empty() ? "grow tail while replacing recycled static range"
+                        : error.c_str());
+    CHECK(renderer.upload_counters().static_growth_uploads >
+              after_second.static_growth_uploads,
+          "recycled interior write and tail growth share one GPU-copy upload");
+    CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+              renderer.cull_stats(stats, error) && stats.emitted == 2 &&
+              stats.frustum_culled == 1,
+          error.empty() ? "recycled hidden cluster survives GPU copy"
+                        : error.c_str());
+}
+
 void run_display_transform_tests(matter::VulkanDevice& vulkan) {
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
@@ -17498,6 +17611,7 @@ int main() {
         if (smoke_mode && std::string(smoke_mode) == "cull") {
             run_frame_upload_tests(*vulkan);
             run_static_append_upload_tests(*vulkan);
+            run_static_growth_copy_tests(*vulkan);
             run_frame_record_tests(*vulkan);
             run_frame_resource_recovery_tests(*vulkan);
             run_vk_scene_checked_size_tests(*vulkan);
@@ -17809,6 +17923,7 @@ int main() {
         uint32_t retained_probe_destroyed = 0;
         run_frame_upload_tests(*vulkan);
         run_static_append_upload_tests(*vulkan);
+        run_static_growth_copy_tests(*vulkan);
         run_frame_record_tests(*vulkan);
         run_frame_resource_recovery_tests(*vulkan);
         run_tileset_slot_load(*vulkan);

@@ -138,6 +138,7 @@
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
 #ifdef MATTER_VULKAN_VIEWER
 #include "matter/vulkan_device.h"
+#include "impostor_bake.h"
 #include "hydrology/hydrology_artifact.h"
 #include "render/gpu_meshing/water_scene_part.h"
 #include "render/water_mesh_animation_playback.h"
@@ -145,6 +146,7 @@
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/impostor_mips.h"
 #include "render/geometry_world_runtime.h"
 #include "render/chart_static_surface.h"
 #include "render/vt_surface_topology.h"
@@ -12547,6 +12549,41 @@ bool build_vulkan_part(uint64_t part_hash,
         out.atlas = imp.data.atlas;
         part.impostors.push_back(std::move(out));
     }
+    // Filtering a dense sector's impostors takes seconds. Pack the filtered
+    // upload on the build worker so publication only assigns atlas slots and
+    // stages bytes. Keep malformed atlases for the renderer's normal error path.
+    if (!part.impostors.empty() && std::all_of(part.impostors.begin(),
+            part.impostors.end(), [](const auto& imp) {
+                return imp.atlas.size() == impostor::atlas_bytes();
+            })) {
+        const uint32_t edge = impostor::layer_px();
+        size_t bytes_per_impostor = 0;
+        for (uint32_t mip_edge = edge;
+             mip_edge / impostor::kGridDim >= 4;
+             mip_edge /= 2) {
+            bytes_per_impostor += size_t(mip_edge) * mip_edge * 8;
+            if (mip_edge / impostor::kGridDim == 4) break;
+        }
+        part.impostor_upload_bytes.reserve(bytes_per_impostor *
+                                           part.impostors.size());
+        for (auto& imp : part.impostors) {
+            const auto mips = impostor::filtered_mips(imp.atlas, edge);
+            for (const auto& mip : mips) {
+                viewer::VkScenePartImpostor::UploadMip upload;
+                upload.edge = mip.edge;
+                upload.shade_offset = part.impostor_upload_bytes.size();
+                part.impostor_upload_bytes.insert(
+                    part.impostor_upload_bytes.end(), mip.shade.begin(),
+                    mip.shade.end());
+                upload.tint_offset = part.impostor_upload_bytes.size();
+                part.impostor_upload_bytes.insert(
+                    part.impostor_upload_bytes.end(), mip.tint.begin(),
+                    mip.tint.end());
+                imp.upload_mips.push_back(upload);
+            }
+            std::vector<uint8_t>().swap(imp.atlas);
+        }
+    }
 
     // WP-E (chart-space VT): hand the renderer the per-rung chart tables the
     // load-time ladder bake produced, plus the CPU rung meshes the page filler
@@ -12865,6 +12902,37 @@ bool build_vulkan_part(uint64_t part_hash,
         if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
     }
     if (part.clusters.empty()) return false;
+    // Stream prebuild runs on a worker. Derive the RT material sets here so
+    // ensure_part does not scan and sort millions of indices on the render
+    // thread while publishing a dense sector.
+    {
+        std::unordered_set<uint32_t> materials;
+        for (const auto& vertex : part.vertices)
+            if (vertex.material_index != UINT32_MAX)
+                materials.insert(vertex.material_index);
+        part.rt_material_ids.assign(materials.begin(), materials.end());
+        std::sort(part.rt_material_ids.begin(), part.rt_material_ids.end());
+        for (const auto& cluster : part.clusters) {
+            for (const auto& lod : cluster.lods) {
+                if (lod.first_index > part.indices.size() ||
+                    lod.index_count > part.indices.size() - lod.first_index)
+                    return false;
+                std::unordered_set<uint32_t> lod_materials;
+                for (uint32_t i = 0; i < lod.index_count; ++i) {
+                    const uint32_t vertex_index =
+                        part.indices[lod.first_index + i];
+                    if (vertex_index >= part.vertices.size()) return false;
+                    const uint32_t material =
+                        part.vertices[vertex_index].material_index;
+                    if (material != UINT32_MAX) lod_materials.insert(material);
+                }
+                auto& ids = part.rt_lod_material_ids.emplace_back();
+                ids.assign(lod_materials.begin(), lod_materials.end());
+                std::sort(ids.begin(), ids.end());
+            }
+        }
+        part.rt_material_ids_prepared = true;
+    }
     return true;
 }
 

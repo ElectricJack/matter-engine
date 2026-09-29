@@ -1222,16 +1222,15 @@ Profiling does not change scheduling or residency budgets.
 ### CPU raster staging reservation
 
 `MATTER_VK_CPU_RESERVE_VERTEX_MB` and `MATTER_VK_CPU_RESERVE_INDEX_MB` reserve
-and touch CPU-side raster staging storage during renderer initialization.
-Defaults are zero (existing dynamic behavior); the terrain cache audit uses
-2048 MiB vertex and 256 MiB index staging, plus a 2048 MiB Vulkan vertex
-reservation after the movement test exceeded 1 GiB. CPU reservations are separate from Vulkan
-`MATTER_VK_STATIC_RESERVE_*` allocations and consume system RAM. Logical array
-sizes remain unchanged. Later registrations reuse this capacity; exceeding it
-still grows the vector and logs `raster_staging_growth` when
-`MATTER_GEOMETRY_PAGES_PROFILE` is enabled. This is a reservation optimization,
-not yet a hard-cap allocator. Startup measurements include initialization and
-touching these allocations.
+CPU-side raster staging capacity during renderer initialization, without
+touching the unused pages. Defaults are 2048 MiB of vertices and 384 MiB of
+indices, enough for the measured StreamMountain static set. Set either value
+to zero to opt out on a memory-constrained host. CPU capacity is separate from
+Vulkan `MATTER_VK_STATIC_RESERVE_*` allocations; address space is reserved up
+front and physical pages are touched as parts arrive. Logical array sizes
+remain unchanged. Exceeding the reservation still grows the vector and logs
+`raster_staging_growth` for growth from at least 64 MiB (or for every growth
+with `MATTER_GEOMETRY_PAGES_PROFILE`). This is not a hard-cap allocator.
 
 
 ### Visible-first sector cubes

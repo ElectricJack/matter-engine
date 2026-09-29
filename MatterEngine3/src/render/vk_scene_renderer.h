@@ -531,7 +531,7 @@ struct VkSceneCluster {
 
 // The interleaved raster vertex, and a hard shader contract: raster.vert
 // consumes it as vertex attributes AND the ray-tracing hit shaders decode it
-// manually by word offset out of the part's rt_geometry buffer. Stride is 88
+// manually by word offset out of the shared static vertex buffer. Stride is 88
 // bytes (it grew from 72 by APPENDING the warp block below — see that comment
 // for why every pre-existing word offset had to stay put).
 //
@@ -596,6 +596,14 @@ struct VkScenePartImpostor {
     uint32_t cluster = 0;
     uint32_t ordinal = 0;   // this impostor's index within the part
     std::vector<uint8_t> atlas;   // impostor::kAtlasBytes: shade layer, tint layer
+    struct UploadMip {
+        uint32_t edge = 0;
+        size_t shade_offset = 0;
+        size_t tint_offset = 0;
+    };
+    // Worker-prepared offsets into VkScenePart::impostor_upload_bytes. Empty
+    // for fixtures and callers that still supply only the base atlas.
+    std::vector<UploadMip> upload_mips;
 };
 
 // Everything the renderer needs to register one part, assembled by the caller
@@ -680,6 +688,12 @@ struct VkScenePart {
     std::shared_ptr<const void> geometry_budget_claim;
     // Immutable registration policy; appended to preserve aggregate initializers.
     bool geometry_raster_only = false;
+    // Stream workers prepare the RT material sets before publication. Fixtures
+    // and synchronous callers leave this false and derive them in ensure_part.
+    bool rt_material_ids_prepared = false;
+    std::vector<uint32_t> rt_material_ids;
+    std::vector<std::vector<uint32_t>> rt_lod_material_ids;
+    std::vector<uint8_t> impostor_upload_bytes;
 };
 
 // Demand-driven VT: one wanted-but-unregistered (part, rung), surfaced by the
@@ -1178,26 +1192,24 @@ struct LocalLightRenderStats {
 
 // Monotonic upload census for one renderer, surfaced by upload_counters().
 // Observation only — nothing branches on these. The interesting ratios are
-// static_full vs static_append (a full count that climbs with resident parts is
-// the O(N^2) streaming regression) and static_capacity_overflows, which the
-// reservation floor exists to hold at zero.
+// static_full vs static_append/static_growth. A full count that climbs with
+// resident parts is the O(N^2) streaming regression.
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
     uint64_t cluster_uploads = 0;
     uint64_t instance_uploads = 0;
     uint64_t command_uploads = 0;
     uint64_t command_layout_rebuilds = 0;
-    // How the cluster/vertex/index staging reached the GPU: a full pass
-    // recreates the buffers and rewrites every byte (O(world)); an append
-    // writes only the staging tail past the already-uploaded counts
-    // (O(new part)). Streaming publishes must take the append path — a full
-    // count that climbs with resident parts is the O(N^2) load regression.
+    // How cluster/vertex/index staging reached the GPU: append writes only
+    // changed ranges, growth also copies unchanged ranges on the GPU, and
+    // full recreates all buffers and rewrites every byte from the CPU.
     uint64_t static_full_uploads = 0;
     uint64_t static_append_uploads = 0;
-    // Times the append path found a buffer too small and had to escalate to the
-    // O(world) rewrite. The reservation floor in upload_scene_buffers exists to
-    // hold this at ZERO after the initial allocation; a non-zero value in a
-    // steady-state world means the reservation is too small for it.
+    // Capacity growth copied the unchanged resident ranges on the GPU and
+    // uploaded only dirty ranges from the CPU staging arrays.
+    uint64_t static_growth_uploads = 0;
+    // Times append found an undersized buffer and grew it. A rising count in a
+    // settled world indicates fragmentation or a reserve that is too small.
     uint64_t static_capacity_overflows = 0;
 };
 
@@ -2543,12 +2555,9 @@ private:
         std::shared_ptr<const std::vector<uint8_t>> cached_blas;
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
-        // first_index is part-local and is NOT rebased, because there is
-        // nothing to rebase it against: RT indices live in the part's OWN
-        // rt_index buffer (PartRecord::rt_index), not in a shared arena the
-        // way the raster lane's index_staging_ works. Consumers address that
-        // buffer directly via this offset.
-        uint32_t first_index = 0;    // part-local index into rt_index buffer
+        // First index stays part-local; RT consumers add PartRecord::index_start
+        // when addressing the shared raster/RT index buffer.
+        uint32_t first_index = 0;
         uint32_t index_count = 0;    // 3 × triangle count
         uint32_t primitive_count = 0;
         std::shared_ptr<matter::VkAccelerationStructureResource> blas;
@@ -2568,7 +2577,7 @@ private:
     //
     // The record carries three families of state: the static staging ranges
     // (cluster/vertex/index start+count, all GLOBAL offsets into the shared
-    // staging arrays), the ray-tracing lane (rt_geometry / rt_index buffers,
+    // staging arrays), the ray-tracing lane (shared raster buffer offsets,
     // rt_lods and the two derived early-out bounds), and the VT bookkeeping
     // (transported slots plus the demand-driven mask and LRU stamps).
     struct PartRecord {
@@ -2578,9 +2587,9 @@ private:
         uint64_t hash = 0;
         uint32_t cluster_start = 0;
         uint32_t cluster_count = 0;
-        uint32_t vertex_start = 0;   // kept for Task 4 vertexOffset; NOT folded into lod offsets
+        uint32_t vertex_start = 0;   // global raster/RT vertex range
         uint32_t vertex_count = 0;
-        uint32_t index_start = 0;    // global offset into index_staging_
+        uint32_t index_start = 0;    // global raster/RT index range
         uint32_t index_count = 0;
         bool live = false;
         bool geometry_raster_only = false;
@@ -2605,8 +2614,6 @@ private:
         //   can be than the instance origin.
         float rt_mesh_span = std::numeric_limits<float>::infinity();
         float rt_center_extent = 0.0f;
-        std::shared_ptr<matter::VkBufferResource> rt_geometry;
-        std::shared_ptr<matter::VkBufferResource> rt_index;
         std::vector<RtLodRecord> rt_lods;
         std::vector<uint32_t> rt_cluster_lod_offsets;
         // M2.5: per cluster, the number of leading MESH rungs
@@ -3183,7 +3190,7 @@ private:
     void resolve_live_atmosphere(uint32_t change_mask, bool full_commit);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
-                              VkCommandBuffer material_command_buffer,
+                              const matter::VulkanFrame* upload_frame,
                               bool reset_stats, std::string& error);
     void record_material_upload(VkCommandBuffer command_buffer,
                                 FrameResources& frame);
@@ -4079,15 +4086,10 @@ private:
     uint64_t static_generation_ = 1;
     uint64_t command_generation_ = 1;
     // What the next upload_scene_buffers() owes the static cluster/vertex/
-    // index buffers. kAppend is only valid while every mutation since the
-    // last upload was a pure tail-append (register_part) or a write into a
-    // range the free lists have quarantined for a full in-flight window;
-    // anything that rewrites bytes an in-flight frame may still read must
-    // escalate to kFull, because kFull allocates NEW buffers and moves them
-    // in. Today the only escalation left is a static-capacity overflow in
-    // upload_scene_buffers -- release_part does NOT compact (it just returns
-    // ranges to the recyclers) and reset() idles the device and restarts from
-    // kClean.
+    // index buffers. kAppend is valid for tail appends and settled recycled
+    // ranges. An overflow grows just the undersized buffers and copies the
+    // unchanged prefix on the GPU. kFull remains the forced recovery/test
+    // path; release_part does not compact or request it.
     enum class StaticUpload : uint8_t { kClean, kAppend, kFull };
     // kCLEAN, not kFull. The buffers are RESERVED at init(), so seeding is just
     // an append of every registered range -- register_part is the only writer
