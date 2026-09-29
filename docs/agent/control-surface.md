@@ -561,7 +561,11 @@ for source counts, cameras, memory boundaries and remaining work.
   `tools/frame_attribution.py a.json b.json` tabulates an A/B (one
   median/p95/p99 column per file, zones by the first file's p95, plus a
   `frame_interval` row from `frame_times_ms`, the raw end-to-end cadence
-  samples in capture order).
+  samples in capture order). `--hitches` writes the repeat-run summary
+  instead: GPU `total` median/p99/max, frame-interval median/p99/max, frames
+  over 100 ms and over 1 s, a frame-interval histogram, and peak VRAM from a
+  sibling `<stem>.gpu_during.csv`. `tools/streammountain_attribution.sh` writes
+  it as `hitches.md` (`RUNS=N` repeats each variant).
   `gpu_rt_local_direct_ms` measures local direct lighting; `gpu_rt_ms` is the
   existing sun-shadow pass, and `gpu_gi_ms` is the secondary lighting dispatch.
   `present_cadence_statistics` separately reports actual successive CPU

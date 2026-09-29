@@ -32,7 +32,7 @@ Done rows come first. Open rows follow in the order of attribution §6; 1.10 and
 |---|---|---|---|---|---|
 | 1.1 | **Done: instrument the whole frame.** `528636f6` (Task 15: ProfileLib zones and scanned-instance counters for the five traversals), `78a5a994` (Task 16: p99/max per GPU zone, `frame_times_ms`, `tools/frame_attribution.py`), `a67034ab` (Task 17: capture script and findings). `35186eaa` added the per-frame `descriptors_written` counter. Not shipped: the `gbuffer` split (now 1.12), heap-allocation and memcpy-byte counters, and one frame serial across ProfileLib, `paging.json` and VT stats. | Prerequisite; produced every number below | §1–§4 | S–M | none |
 | 1.2 | **Done: cook writer (P0-3).** `03536326` (Task 18): one persistent writer `BlobStore` in `RootCache`, batched index/ref commits, assets returned from memory before commit. It also removed the per-call 16 MiB `RootCache` temporaries (`load_asset`, `cache_asset`). Error measurement (1.15) dominated the cook before this change and still does. | Same 140 assets: recorded write/commit subtotal 570.3 → 464.2 worker-s (−18.6 %); 120 commits for 140 assets. No end-to-end load speedup shown; median compile 61.5 s before and after. | §4.2, "Cook after batched commits" | M | none |
-| 1.3 | **POM march in physical page space (P0-1).** Resolve the VT address once per page crossing; hoist the envelope/snapshot/mapping validation out of the 128+12 step loop. Prerequisite for turning POM back on in the world props. | POM on vs off at 300 s: +221.0 ms `gbuffer`, +56.4 ms `rt_gi`, +277.0 ms `total` (medians). At 45 s: +23.1 ms `gbuffer` (1.6× the 14.4 ms run spread) and +4.1 ms `rt_gi`; `chart_only` +16.4 ms, within noise. The 10–100 ms estimate is confirmed, and exceeded once the stream fills. | §2.1, §2.2, §5 | M | none: the §2.2 on/off pair is the before number; re-run it after |
+| 1.3 | **POM march in physical page space (P0-1).** Resolve the VT address once per page crossing; hoist the envelope/snapshot/mapping validation out of the 128+12 step loop. Prerequisite for turning POM back on in the world props. Since `3bafe049` (clear-ridge task 1) POM is off by default: `TilesetPomSettings::enabled=false`, one flag for terrain and world props. Turning it back on means flipping that default. | POM on vs off at 300 s: +221.0 ms `gbuffer`, +56.4 ms `rt_gi`, +277.0 ms `total` (medians). At 45 s: +23.1 ms `gbuffer` (1.6× the 14.4 ms run spread) and +4.1 ms `rt_gi`; `chart_only` +16.4 ms, within noise. The 10–100 ms estimate is confirmed, and exceeded once the stream fills. | §2.1, §2.2, §5 | M | none: the §2.2 on/off pair is the before number; re-run it after |
 | 1.12 | **New: split `gbuffer` with POM off.** Split it into geometry, VT sampling and shading (the 1.1 split Tasks 15–17 did not ship), and take the occupancy/spill profile (measure-first #3). The split decides between a geometry fix (1.5, 1.7) and a shading fix (1.9). | POM-off `gbuffer` median 145.5 ms at 45 s and 302.2 ms at 300 s, the largest GPU zone. The Windows `GPU Engine` counter reads 99.9 % busy while `nvidia-smi` reads 128.8 W of 450 W, which suggests latency-bound shaders (an inference, not an occupancy measurement). | §1, §2.1, §2.2, §6 item 2 | S–M | none |
 | 1.7 | **One canonical triangle residency (P1-2), plus a bounded static-buffer policy.** Six resident owners of every triangle → one, with the others referencing it; reserve `vertex_staging_` as the stopgap; stop a static-capacity overflow from forcing a full O(world) rewrite on the render thread. After the session, `18d8a4b5` capped the paged-path terrain static fallback at 4,096 triangles per sector; not re-measured. | Render-thread stalls of 2.29–2.73 s in `pf.static` and 2.28–2.49 s in `publish.vulkan`, about two per 20 s while the stream fills (7 of the 8 frames over 1 s). Three `STATIC CAPACITY OVERFLOW` rewrites per launch, the last at 1.50 GB of vertices and 269 MB of indices. Paged profile: `VK_ERROR_OUT_OF_DEVICE_MEMORY` at 2.58–4.30 GB of static vertices. RSS was not captured. | §3.2, §4.2, §5 | L (M stopgap) | none for the bounded-buffer stopgap; the single-owner layout still waits for 1.5 to settle the runtime's needs |
 | 1.13 | **New: terrain assets refused by the root bank.** Assets whose root pages the bank refuses (`geometry root payload budget exceeded`, `geometry_asset.cpp:137-139`; bank sized by `MATTER_GEOMETRY_ROOT_MB`) fail paging and fall back to static geometry. Until they page, the paged path cannot load this world and 1.5 cannot be measured. `18d8a4b5` bounds the fallback (see 1.7) but does not make those assets page. Attribution §4.2 words this as assets that exceed `MATTER_GEOMETRY_ROOT_MB`; the bank is shared across assets, so whether single assets exceed it or it fills across assets is not split. | Cold `prepare`: 243 of 381 cooked terrain assets failed with `root payload budget exceeded` at `MATTER_GEOMETRY_ROOT_MB=1024`; warm: 100 of 227 terrain cache outcomes. Both runs ended in `VK_ERROR_OUT_OF_DEVICE_MEMORY` (4,412 s with 1,538 resident sectors; 1,503 s with 1,089). | §4.2, §6 item 4 | unscoped | none |
@@ -47,6 +47,33 @@ Done rows come first. Open rows follow in the order of attribution §6; 1.10 and
 | 1.11 | **Bank commit policy.** Done: `prepared_sector::Cache` allocates its 128 MiB bank on first use, and `PartStore` creates the cache only when `MATTER_PREPARED_SECTOR_CACHE` or geometry pages enable it (`bbbfb769`, Task 20); the per-call 16 MiB `RootCache` temporaries went with `load_asset` in `03536326` (Task 18). Open: the 512 MiB encoded-VT bank (`vk_scene_renderer.cpp:6760-6761`, when `MATTER_VT_ENCODED_CACHE` is set), the geometry runtime bank (`geometry_world_runtime.cpp:184`) and the 16 MiB `PartStore` root bank (`geometry_asset.cpp:74`) are still created eagerly with their owners. | Not measured: the attribution session captured no RSS. | — | S–M | none |
 
 Measure-first list (do not fix blind), with its 2026-09-28 status: (1) GPU zone breakdown: done per zone (attribution §2); the `gbuffer` split is 1.12. (2) Hardware-counter profile of the render thread for LLC misses and bandwidth: not taken. (3) Occupancy/register spill for `vt_composite.comp` and `gbuffer.frag`: not taken; gates 1.9 and 1.12. (4) A true cold load: not obtained, because both paged `prepare` runs ran out of device memory (§4.2). (5) The 24–26 ms geometry runtime split: not measurable on this world until 1.13 lands (§3.3). (6) Render-thread allocation counters: not taken; only `descriptors_written` exists (`35186eaa`).
+
+## clear-ridge POM-off baseline — 2026-09-28
+
+The number every clear-ridge task beats. Full tables, hitch attribution and
+protocol: `docs/findings/streammountain-pom-off-baseline-2026-09-28.md`. SHA
+`3bafe049`, MSVC RelWithDebInfo, RTX 4090, StreamMountain as shipped (POM
+off by default, verified by perf.json `pom_enabled=false` with no FIFO `set`).
+Capture with `VARIANTS=pom_off RUNS=3 WARMUP=45|300
+tools/streammountain_attribution.sh C:/tmp/<dir>`, then compare `hitches.md`.
+
+| | 45 s warmup, 3 runs | 300 s warmup, 3 runs |
+|---|---|---|
+| GPU total median (per run) | 227.5–248.3 ms | 402.1–454.2 ms |
+| GPU total p99 = max (per run) | 394.1–594.3 ms | 433.5–811.4 ms |
+| Frame interval median / p99 / max (pooled) | 233.2 / 3807.1 / 3939.9 ms | 409.5 / 922.2 / 1061.8 ms |
+| Frames over 100 ms (pooled) | 161 of 172 | 138 of 141 |
+| Frames over 1 s (pooled; per run) | 6; 3 / 1 / 2 | 1; 0 / 0 / 1 |
+| `gbuffer` / `rt_gi` median | 159.4–170.2 / 54.3–55.8 ms | 307.0–330.0 / 80.3–102.2 ms |
+| `vt` p99 | 162.6–354.6 ms | 0.02–371.1 ms |
+| Peak whole-GPU VRAM | 12,545–12,688 MiB | 12,927–13,071 MiB |
+
+Five of the six frames over 1 s at 45 s are single render-thread stalls of
+2.65–3.36 s, in `pf.static` or `publish.vulkan` (row 1.7). The captures
+shared the host with other agent sessions (WSL load average 8.7–16.5). Next
+to the attribution's single POM-off runs, the CPU-side numbers are higher:
+root bake 198–225 s against 146–149 s, and stalls about 0.5 s longer. So
+compare later work with this table, not with the attribution.
 
 ## Tier 2 — remaining defects by subsystem
 
