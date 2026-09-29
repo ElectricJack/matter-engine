@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <set>
+#include <vector>
 #include <chrono>
 #include <cstdlib>
 #include "matter/log.h"
@@ -90,11 +91,20 @@ bool decode_node(asset_store::PageHandle page,NodeView& out,std::string& error) 
         const auto n=read_vec3(r->data+size_t(corner)*24+12);
         if(double(n.x)*n.x+double(n.y)*n.y+double(n.z)*n.z<1e-12)return fail(error,"zero receiver normal");
     }
+    // Bounds describe the drawn mesh. Simplification may leave unused source
+    // positions in the page, and those positions need not fit its bounds.
+    std::vector<uint8_t> referenced(p->count,0);
+    for(uint32_t index=0;index<i->count;++index) {
+        const uint32_t vertex=get_u32(i->data+size_t(index)*4);
+        if(vertex>=p->count)return fail(error,"geometry page index outside vertices");
+        referenced[vertex]=1;
+    }
     for(uint32_t vertex=0;vertex<p->count;++vertex)for(int k=0;k<3;++k) {
         const float x=read_f32(p->data+size_t(vertex)*12+k*4);
-        if(!std::isfinite(x)||x<node.self.bounds.lo[k]||x>node.self.bounds.hi[k])return fail(error,"geometry vertex outside bounds");
+        if(!std::isfinite(x))return fail(error,"nonfinite geometry vertex");
+        if(referenced[vertex] && (x<node.self.bounds.lo[k]||x>node.self.bounds.hi[k]))
+            return fail(error,"geometry vertex outside bounds");
     }
-    for(uint32_t index=0;index<i->count;++index)if(get_u32(i->data+size_t(index)*4)>=p->count)return fail(error,"geometry page index outside vertices");
     for(uint32_t t=0;t<s->count;++t) {
         const auto a=read_vec3(p->data+size_t(get_u32(i->data+size_t(t)*12))*12);
         const auto b=read_vec3(p->data+size_t(get_u32(i->data+size_t(t)*12+4))*12);

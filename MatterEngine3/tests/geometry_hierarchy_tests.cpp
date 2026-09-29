@@ -780,6 +780,16 @@ int main(int argc,char** argv) {
     }
     std::vector<uint8_t> leaf_bytes;
     CHECK(encode_node(hierarchy.nodes.front(),{},limits,leaf_bytes,error),error.c_str());
+    {
+        Node with_unused_vertex=hierarchy.nodes.front();
+        with_unused_vertex.mesh.positions.push_back(make_float3(1000,1000,1000));
+        std::vector<uint8_t> unused_bytes;
+        CHECK(encode_node(with_unused_vertex,{},limits,unused_bytes,error),
+              "an unused simplifier vertex outside draw bounds does not reject a geometry page");
+        with_unused_vertex.mesh.indices[0]=static_cast<uint32_t>(with_unused_vertex.mesh.positions.size()-1);
+        CHECK(!encode_node(with_unused_vertex,{},limits,unused_bytes,error),
+              "a referenced vertex outside draw bounds still rejects a geometry page");
+    }
     auto malformed=std::make_shared<asset_store::CachedPage>();
     CHECK(asset_store::decode_page(leaf_bytes.data(),leaf_bytes.size(),limits,malformed->view,error),error.c_str());
     auto index_section=malformed->view.find(3);
