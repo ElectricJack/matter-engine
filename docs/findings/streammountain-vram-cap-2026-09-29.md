@@ -36,10 +36,10 @@ overrides remain available.
 This is a memory-safety comparison, not a frame-time speedup claim. The
 terrain cache was still filling and the sampled scenes differed: the CPU
 trace counted 49,643 RT-scanned instances per frame before and 13,681 after.
-The after
-run's 146 static uploads and rising source fallbacks show it had not reached a
-settled paged scene. It survived the 300 s window without OOM, but the
-steady-state acceptance still needs cache preparation and a cache-only load.
+The after run's 146 static uploads and rising source fallbacks show it had not
+reached a settled paged scene. It survived the 300 s warmup and sample window
+without OOM; the cache preparation and bounded load below establish the
+separate in-view readiness result.
 
 A separate `terrain_cache_audit.py prepare` pass ran for its 5,400 s deadline
 with the new budgets. The editor exited normally after its active cooks
@@ -84,6 +84,21 @@ require all in-view roots without treating offscreen source fallbacks as a
 failure; it still requires an idle page pipeline, VT readiness, and all
 prepared-cache hits.
 
+The bounded cache-only load **completed and validated** after 5,591 s with
+the final pressure gate and two prepared-sector readers. It recorded all 816
+expected geometry-cache hits, zero misses or compilations, all 2,441 sectors
+resident, zero sector cooks, zero geometry pages in flight, and an empty VT
+queue. All 153 in-view geometry assets had their 16,523 root descriptors ready.
+The 641 offscreen assets retained source fallback. The geometry reservation
+peaked at 2,764.81 MiB of its 3,072 MiB cap and deferred 83 optional uploads
+at the threshold; it reported zero reservation stalls and evictions. The
+allocation tracker peaked at 7,148.01 MiB device-local and 5,003.48 MiB
+host-visible, including a 2,032.03 MiB VT physical pool and 4,640 MiB of
+host-visible static scene buffers. Two static-buffer capacity growth events
+occurred, but there was no paging failure, Vulkan validation failure, or OOM.
+The audit's 15 s stable-readiness check passed. Raw output is in
+`C:/tmp/clear-ridge-4-load-bounded/result.json`.
+
 An additional 300 s POM-off sample after a 300 s warmup used the diagnostic
 editor before this pressure gate (`19f5a8fe…ecb7e36`). It wrote 1,123 frames:
 GPU total median/p99/max 266.12/285.38/291.97 ms, frame interval
@@ -92,6 +107,18 @@ and none above 1 s. Peak whole-GPU use was 10,632 MiB, with zero OOM or paging
 failures. There were 1,123 static uploads in the sample, and in-view assets
 grew from 90 to 120, so it was still loading and is not a steady-state timing
 result. Raw artifacts are in `C:/tmp/clear-ridge-4-after-paged-300sample/`.
+
+The final editor with the pressure gate (`162b0962…a9e732b6`) then ran the
+same POM-off 300 s warmup and 300 s sample. It wrote 1,166 frames: GPU total
+median/p99/max 256.34/299.85/308.13 ms, frame interval median/p99/max
+254.53/450.52/992.45 ms, 1,166/1,166 intervals above 100 ms, and none above
+1 s. Peak whole-GPU use was 10,764 MiB. There were zero OOMs, paging failures,
+or static-capacity overflows. All 1,166 sampled frames included static uploads,
+and the view grew to 119 geometry assets, of which 35 still awaited roots at
+the last profile. This is a full 300 s no-OOM timing observation, not a
+steady-state speedup claim. The separate bounded load above establishes
+settled in-view coverage. Raw artifacts are in
+`C:/tmp/clear-ridge-4-final-paged-300sample/`.
 
 Task 1's shipped, non-paged POM-off baseline had GPU total medians of
 402.1–454.2 ms and p99/max of 433.5–811.4 ms at 300 s; its pooled frame
