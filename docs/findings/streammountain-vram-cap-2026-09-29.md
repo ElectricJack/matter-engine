@@ -55,6 +55,14 @@ failures, and 1,852 resident sectors with 12 cooks still in flight. Neither
 pass qualifies as steady-state acceptance; both retained their durable
 geometry cache entries for the longer continuation.
 
+The longer continuation **completed and validated** after 6,268 s. It read
+680 cached geometry assets, compiled and persisted 136 more, and reported no
+failed outcomes, paging failures, or device-memory fault. Its final state was
+2,441 resident sectors, zero cooks in flight, bake ready, all 335 desired
+visible sectors ready, and geometry coverage `(0, 0, 0)`. The audit's
+15-second stable-residency check passed. This establishes a fully prepared
+cache for the separate cache-only paged-load test.
+
 Task 1's shipped, non-paged POM-off baseline had GPU total medians of
 402.1–454.2 ms and p99/max of 433.5–811.4 ms at 300 s; its pooled frame
 interval counts were 138/141 over 100 ms and 1/141 over 1 s. The paged
