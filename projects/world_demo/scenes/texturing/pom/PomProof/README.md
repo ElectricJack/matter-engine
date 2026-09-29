@@ -58,7 +58,7 @@ over the FIFO:
 | `render.pom.relief_cap_m` | 0.352 | 0–0.5 | caps how deep the relief is taken to be. `relief = min(atlas h_range, this)`. **This is the "displacement" slider** — sweep it and watch the rocks slide inward. Useful travel is 0 → ~0.35; see below. |
 | `render.pom.max_march_m` | 1.59 | 0.1–2.0 | hard cap on how far the ray may travel. This is the grazing-smear knob; see below. |
 | `render.pom.steps` | 30 | 4–64 | linear march steps before the 4 refine iterations. Fades to a floor of 8 by `max_distance_m`. |
-| `render.pom.enabled` | true | — | soft disable (uploads 0 steps); the flat Wang tile still shows. |
+| `render.pom.enabled` | false | — | soft disable (uploads 0 steps); the flat Wang tile still shows. **Off by default since 2026-09-28** (`TilesetPomSettings::enabled`, pending the DASHR rewrite): `set render.pom.enabled true` before inspecting this scene. |
 
 ### How much travel the relief cap actually has
 

@@ -56,7 +56,8 @@ loads do not perform a preliminary full decode. Recovery receipts are in
 The scene now opts into `detailMode: 'surface'`. Height drives bounded local
 parallax and all material channels follow the displaced coordinate. Toggle
 `set render.pom.enabled false` / `true` for a matched comparison; the default
-is enabled. No global near-band override is needed for this material.
+is disabled since 2026-09-28 (`TilesetPomSettings::enabled`, pending the DASHR
+rewrite), so enable it before judging the parallax. No global near-band override is needed for this material.
 
 Visible raster and RT depth/registration tests passed, including rotated
 walls and secondary hits. The RT seam correction carries parallax distance

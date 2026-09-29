@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
-# Four matched StreamMountain perf captures: POM reference, chart_only, work,
-# and POM disabled. Same warmup, same sample window, same camera (the world's
-# default), same resolution, sequential on one GPU. Output, per variant:
-# <out>/<variant>.json (MATTER_PERF_OUTPUT), .trace.json (MATTER_PROFILE_TRACE),
-# .log and .commands.txt; then <out>/attribution.md from
-# tools/frame_attribution.py and <out>/cpu_zones.md from the traces.
+# Matched StreamMountain perf captures: POM reference, chart_only, work, and
+# POM disabled. Same warmup, same sample window, same camera (the world's
+# default), same resolution, sequential on one GPU. Output, per run:
+# <out>/<run>.json (MATTER_PERF_OUTPUT), .trace.json (MATTER_PROFILE_TRACE),
+# .log, .commands.txt and the nvidia-smi logs; then <out>/attribution.md from
+# tools/frame_attribution.py, <out>/hitches.md from its --hitches summary
+# (GPU total median/p99/max, frames over 100 ms and 1 s, frame-interval
+# histogram, peak VRAM) and <out>/cpu_zones.md from the traces. A run is named
+# after its variant, or <variant>_r<N> when RUNS > 1.
 #
-# POM toggle: StreamMountain saves render.pom.enabled=false in
-# scenes/streaming/StreamMountain/props.json and no environment variable turns
-# POM on or off, so every run sets it through the command FIFO after
-# bake.finished -- true for the three MATTER_GBUFFER_POM_PATH variants, false
-# for pom_off. `set` on a World prop is not persisted (world props save only on
-# an explicit Save or a world switch); each run fails unless perf.json's
-# pom_enabled field matches what was requested.
+# POM toggle: POM is off by default (TilesetPomSettings::enabled, 2026-09-28)
+# and StreamMountain also saves render.pom.enabled=false in
+# scenes/streaming/StreamMountain/props.json. No environment variable turns
+# POM on or off, so the three MATTER_GBUFFER_POM_PATH variants set it true
+# through the command FIFO after bake.finished; pom_off sends no `set`, so it
+# measures the world as it ships. `set` on a World prop is not persisted (world
+# props save only on an explicit Save or a world switch); each run fails unless
+# perf.json's pom_enabled field matches what was requested.
+#
+# The clear-ridge POM-off baseline (docs/vg-vt-work-queue-2026-09-19.md) is
+#   VARIANTS=pom_off RUNS=3 WARMUP=45  tools/streammountain_attribution.sh C:/tmp/<dir>
+#   VARIANTS=pom_off RUNS=3 WARMUP=300 tools/streammountain_attribution.sh C:/tmp/<dir>
 #
 # Presentation is uncapped (IMMEDIATE, frame limit 0) with a visible window:
 # the 2026-09-17 terrain-framerate runs found that a hidden window and FIFO
@@ -21,13 +29,14 @@
 # settles, and the trap stops only this checkout's editor.exe.
 #
 # Usage: tools/streammountain_attribution.sh C:/tmp/attr
-# Overrides: WARMUP (45) SAMPLE (20) WIDTH (1920) HEIGHT (1080)
+# Overrides: WARMUP (45) SAMPLE (20) WIDTH (1920) HEIGHT (1080) RUNS (1)
 #            RUN_TIMEOUT (1800 s) VARIANTS ("pom_reference pom_chart_only pom_work pom_off")
 set -euo pipefail
 OUT=${1:?usage: streammountain_attribution.sh <out-dir-windows-path e.g. C:/tmp/attr>}
 case "$OUT" in C:/*) ;; *) echo "out dir must be a space-free C:/ path" >&2; exit 2 ;; esac
 WARM=${WARMUP:-45}; SAMPLE=${SAMPLE:-20}; WIDTH=${WIDTH:-1920}; HEIGHT=${HEIGHT:-1080}
-RUN_TIMEOUT=${RUN_TIMEOUT:-1800}
+RUN_TIMEOUT=${RUN_TIMEOUT:-1800}; RUNS=${RUNS:-1}
+case "$RUNS" in ''|*[!0-9]*|0) echo "RUNS must be a positive integer" >&2; exit 2 ;; esac
 VARIANTS=${VARIANTS:-"pom_reference pom_chart_only pom_work pom_off"}
 WOUT="/mnt/c/${OUT#C:/}"
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -61,9 +70,10 @@ wait_for_idle_gpu() {
 run() { # name, pom (true|false), extra env...
   local name=$1 pom=$2; shift 2
   # World props (render.pom among them) are applied on bake.finished, so a
-  # `set` dispatched earlier is overwritten; wait for the event first.
-  printf 'wait_event bake.finished 3600\nwait_frames 2\nset render.pom.enabled %s\n' "$pom" \
-      > "$WOUT/$name.commands.txt"
+  # `set` dispatched earlier is overwritten; wait for the event first. POM off
+  # is the default, so pom=false sends no `set` and checks the shipped state.
+  printf 'wait_event bake.finished 3600\nwait_frames 2\n' > "$WOUT/$name.commands.txt"
+  [ "$pom" = true ] && printf 'set render.pom.enabled true\n' >> "$WOUT/$name.commands.txt"
   wait_for_idle_gpu
   { date -Is; "$SMI" --query-gpu=name,driver_version,utilization.gpu,memory.used --format=csv,noheader; } \
       > "$WOUT/$name.gpu_before.txt" 2>&1 || true
@@ -98,16 +108,26 @@ git -C "$REPO" rev-parse HEAD > "$WOUT/git_sha.txt"
 jsons=()
 for variant in $VARIANTS; do
   case "$variant" in
-    pom_reference)  run "$variant" true  MATTER_GBUFFER_POM_PATH=reference ;;
-    pom_chart_only) run "$variant" true  MATTER_GBUFFER_POM_PATH=chart_only ;;
-    pom_work)       run "$variant" true  MATTER_GBUFFER_POM_PATH=work ;;
-    pom_off)        run "$variant" false ;;
+    pom_reference|pom_chart_only|pom_work|pom_off) ;;
     *) echo "unknown variant $variant" >&2; exit 2 ;;
   esac
-  jsons+=("$WOUT/$variant.json")
+done
+for variant in $VARIANTS; do
+  for i in $(seq 1 "$RUNS"); do
+    name=$variant; [ "$RUNS" -gt 1 ] && name=${variant}_r$i
+    case "$variant" in
+      pom_reference)  run "$name" true  MATTER_GBUFFER_POM_PATH=reference ;;
+      pom_chart_only) run "$name" true  MATTER_GBUFFER_POM_PATH=chart_only ;;
+      pom_work)       run "$name" true  MATTER_GBUFFER_POM_PATH=work ;;
+      pom_off)        run "$name" false ;;
+    esac
+    jsons+=("$WOUT/$name.json")
+  done
 done
 python3 "$REPO/tools/frame_attribution.py" "${jsons[@]}" --out "$WOUT/attribution.md"
 echo "wrote $WOUT/attribution.md"
+python3 "$REPO/tools/frame_attribution.py" "${jsons[@]}" --hitches --out "$WOUT/hitches.md"
+echo "wrote $WOUT/hitches.md"
 
 # CPU zones from the Chrome traces. ProfileLib writes each frame as its X zone
 # events, then the frame_ms counter, then that frame's named counters, so file

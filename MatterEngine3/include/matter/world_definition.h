@@ -288,17 +288,29 @@ struct TilesetPomSettings {
     // before that were relief 0.178, datum 0.105, march 0.73, steps 50,
     // distance 50.4, fade 1.0, ao 0.63, shadow 0.68, horizon 1.0.
     //
-    // enabled defaults to TRUE as of 2026-07-30, reversing the 2026-07-29
-    // opt-in default: with steps down to 30 and the reach traded for it, the
-    // march is what the ground is supposed to look like rather than a thing
-    // you switch on to inspect it.
+    // enabled defaults to FALSE as of 2026-09-28, reversing the 2026-07-30
+    // default-on. This one flag gates every POM march (ground tileset, VT
+    // chart, finished-surface detail and the RT secondary lift all read the
+    // uploaded pom_steps), so off means off for terrain and world props
+    // alike. On StreamMountain POM measured +221 ms gbuffer and +56 ms rt_gi
+    // median after 300 s (docs/findings/streammountain-frame-attribution-
+    // 2026-09-27.md §2.2), and the march is to be rewritten along the DASHR
+    // revision-2 proposal (docs/design/2026-09-28-dashr-initial-proposal.md).
+    // It is a default, not a deletion: a world opts back in with
+    // render.pom.enabled=true in its props.json (VillaDoricColumnStudy
+    // does), or live with `set render.pom.enabled true`. Returning POM to
+    // every world is flipping this back once the rewrite lands.
+    // StreamMountain also saves enabled=false explicitly; while that equals
+    // this default the sparse world-props save drops it on the next editor
+    // Save, which is harmless until the default flips back.
     //
-    // The 30-step / 1564 m pairing is the shape of this pass: steps 40 -> 30
-    // pays for max_distance 100 -> 1564, so the parallax reaches most of the
-    // way to the fog wall instead of dying just past the camera, at a slightly
-    // coarser march per texel. Relief up (0.260 -> 0.352) and datum down
-    // (0.240 -> 0.168) both deepen what that march has to bite into.
-    bool  enabled            = true;
+    // The 30-step / 1564 m pairing is the shape of the 2026-07-30 pass: steps
+    // 40 -> 30 pays for max_distance 100 -> 1564, so the parallax reaches
+    // most of the way to the fog wall instead of dying just past the camera,
+    // at a slightly coarser march per texel. Relief up (0.260 -> 0.352) and
+    // datum down (0.240 -> 0.168) both deepen what that march has to bite
+    // into.
+    bool  enabled            = false;
     float relief_cap_m       = 0.352f;  // pom_max_relief_m
     float datum_bias_m       = 0.168f;  // Ground POM datum-bias fix knob
     float max_march_m        = 1.59f;   // pom_max_march_m

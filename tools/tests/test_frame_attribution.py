@@ -88,6 +88,54 @@ class FrameAttributionTests(unittest.TestCase):
             header = table_rows(fa.render([a, b]))[0]
         self.assertEqual(header, "| zone | before/perf median / p95 / p99 | after/perf median / p95 / p99 |")
 
+    def test_hitch_summary_counts_strictly_over_each_threshold(self):
+        data = fixture(1, 200)
+        data["frame_times_ms"] = [16.7, 50, 100, 100.5, 999, 1000, 1000.5, 2500]
+        data["static_vertex_upload_delta"] = 3
+        with tempfile.TemporaryDirectory() as d:
+            lines = fa.render_hitches([self.write(d, "run.json", data)]).splitlines()
+        self.assertEqual(lines[2], "| run | 8 | 200.00 / 400.00 / 600.00 | 549.75 / 2500.00 / 2500.00 "
+                                   "| 5 | 2 | 3 | — |")
+        self.assertNotIn("pooled", "\n".join(lines))
+        histogram = dict(line.split(" | ", 1) for line in lines[6:])
+        self.assertEqual(histogram["| 0–16.7 ms"], "1 |")
+        self.assertEqual(histogram["| 33.3–50 ms"], "1 |")
+        self.assertEqual(histogram["| 50–100 ms"], "1 |")
+        self.assertEqual(histogram["| 500–1000 ms"], "2 |")
+        self.assertEqual(histogram["| 1000–2000 ms"], "1 |")
+        self.assertEqual(histogram["| > 2000 ms"], "1 |")
+        self.assertEqual(sum(int(v.rstrip(" |")) for v in histogram.values()), 8)
+
+    def test_hitch_summary_pools_runs_and_reads_peak_vram(self):
+        a, b = fixture(1, 100), fixture(1, 300)
+        a["frame_times_ms"] = [90, 110]
+        b["frame_times_ms"] = [120, 1500, 130]
+        with tempfile.TemporaryDirectory() as d:
+            pa, pb = self.write(d, "a.json", a), self.write(d, "b.json", b)
+            (pathlib.Path(d) / "a.gpu_during.csv").write_text(
+                "timestamp, utilization.gpu [%], memory.used [MiB]\n"
+                "2026/09/28 08:19:21.224, 0 %, 843 MiB\n2026/09/28 08:19:26.226, 99 %, 12004 MiB\n")
+            lines = fa.render_hitches([pa, pb]).splitlines()
+        self.assertTrue(lines[2].endswith("| 1 | 0 | — | 12004 |"))
+        self.assertTrue(lines[3].endswith("| 3 | 1 | — | — |"))
+        self.assertEqual(lines[4], "| pooled | 5 | — | 120.00 / 1500.00 / 1500.00 | 4 | 1 | — | — |")
+        self.assertIn("| frame interval | a | b | pooled |", lines)
+        self.assertIn("| 100–250 ms | 1 | 2 | 3 |", lines)
+
+    def test_hitch_summary_requires_frame_samples(self):
+        data = fixture(1, 2)
+        del data["frame_times_ms"]
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(fa.AttributionError):
+                fa.render_hitches([self.write(d, "old.json", data)])
+
+    def test_cli_hitches_flag_writes_the_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self.write(d, "a.json", fixture(20, 60))
+            out = pathlib.Path(d) / "hitches.md"
+            subprocess.run([sys.executable, str(TOOL), str(a), "--hitches", "--out", str(out)], check=True)
+            self.assertEqual(out.read_text(encoding="utf-8"), fa.render_hitches([a]))
+
     def test_cli_writes_the_table_to_out(self):
         with tempfile.TemporaryDirectory() as d:
             a = self.write(d, "a.json", fixture(20, 60))
