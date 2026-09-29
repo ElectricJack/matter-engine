@@ -2153,6 +2153,10 @@ public:
                    ? frames_[frame_slot].material_upload.memory_properties
                    : 0;
     }
+    bool test_static_triangle_buffers_device_local() const {
+        return (vertices_.memory_properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0 &&
+               (indices_.memory_properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    }
     bool test_scene_buffers_device_local(uint32_t frame_slot) const {
         if (frame_slot >= frames_.size()) return false;
         const auto& f = frames_[frame_slot];
@@ -2921,6 +2925,10 @@ private:
         matter::VkComputePipelineResource visibility_id_reduce;
         matter::VkBufferResource animation_bounds;
         matter::VkBufferResource material_upload;
+        // Reused per frame slot while static geometry resides in device-local
+        // memory. The slot fence protects recorded copies from staging reuse.
+        matter::VkBufferResource static_vertex_upload;
+        matter::VkBufferResource static_index_upload;
         matter::VkBufferResource materials;
         matter::VkImageResource dlss_output;
         matter::VkBufferResource rt_instances;

@@ -15187,6 +15187,8 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
     CHECK(after_second.static_growth_uploads >= 2 &&
               after_second.static_full_uploads == 0,
           "capacity growth never rewrites resident CPU staging");
+    CHECK(renderer.test_static_triangle_buffers_device_local(),
+          "grown triangles reside in device-local buffers");
     if (vulkan.ray_tracing_available()) {
         const auto first_address =
             renderer.test_rt_geometry_address(first.part_hash);
@@ -15230,6 +15232,23 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
               renderer.cull_stats(stats, error) && stats.emitted == 2 &&
               stats.frustum_culled == 1,
           error.empty() ? "recycled hidden cluster survives GPU copy"
+                        : error.c_str());
+
+    // Force the large staged transfer path, then verify the recorded GPU
+    // copy and cull observe the same first triangle as the small path.
+    auto large = known_raster_triangle(0x53544135);
+    large.vertices.resize(800000, large.vertices.front());
+    CHECK(renderer.ensure_part(large, error) >= 0 &&
+              renderer.update_instances({{second.part_hash, identity},
+                                         {recycled.part_hash, identity},
+                                         {tail.part_hash, identity},
+                                         {large.part_hash, identity}}, error) &&
+              submit(),
+          error.empty() ? "submit large staged static upload" : error.c_str());
+    CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+              renderer.cull_stats(stats, error) && stats.emitted == 3 &&
+              stats.frustum_culled == 1,
+          error.empty() ? "large staged upload preserves visible triangle"
                         : error.c_str());
 }
 

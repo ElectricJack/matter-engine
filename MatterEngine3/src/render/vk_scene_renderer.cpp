@@ -137,6 +137,7 @@
 #include <limits>
 #include <new>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -15168,15 +15169,117 @@ bool VkSceneRenderer::upload_scene_buffers(
     const auto su_append_t0 = std::chrono::steady_clock::now();
     const auto upload_ranges =
         [&](matter::VkBufferResource& buffer,
+            matter::VkBufferResource* staging,
             const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
             const void* base, size_t element_size,
             uint64_t* upload_counter) {
+        const bool gpu_staging = staging && material_command_buffer != VK_NULL_HANDLE &&
+            (buffer.memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0;
+        VkDeviceSize staged_bytes = 0;
+        const auto staging_start = std::chrono::steady_clock::now();
+        if (gpu_staging) {
+            for (const auto& range : ranges) {
+                const VkDeviceSize bytes = VkDeviceSize{range.second} * element_size;
+                if (bytes > limits_.max_buffer_size - staged_bytes) {
+                    error = "static upload staging exceeds Vulkan maxBufferSize";
+                    return false;
+                }
+                staged_bytes += bytes;
+            }
+            if (staged_bytes && !ensure_buffer(*staging, staged_bytes,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT, error)) return false;
+        }
+        const auto staging_ready = std::chrono::steady_clock::now();
+        const bool parallel_stage = gpu_staging &&
+            staged_bytes >= 64ull * 1024ull * 1024ull;
+        if (parallel_stage) {
+            if (!matter::map_buffer(*staging, error)) return poison(error);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            const auto range_uploads = static_cast<uint32_t>(
+                std::count_if(ranges.begin(), ranges.end(),
+                    [](const auto& range) { return range.second != 0; }));
+            if (uploads <= test_fail_after_uploads_ &&
+                test_fail_after_uploads_ - uploads < range_uploads) {
+                error = "forced scene buffer upload failure";
+                return poison(error);
+            }
+            uploads += range_uploads;
+#endif
+            struct CopyJob { const char* source; char* destination; size_t bytes; };
+            std::vector<CopyJob> jobs;
+            constexpr size_t kCopyChunk = 16ull * 1024ull * 1024ull;
+            VkDeviceSize packed_offset = 0;
+            for (const auto& range : ranges) {
+                const size_t source_offset = size_t{range.first} * element_size;
+                const size_t bytes = size_t{range.second} * element_size;
+                for (size_t copied = 0; copied < bytes; copied += kCopyChunk) {
+                    jobs.push_back({static_cast<const char*>(base) + source_offset + copied,
+                        static_cast<char*>(staging->mapped) + packed_offset + copied,
+                        std::min(kCopyChunk, bytes - copied)});
+                }
+                packed_offset += bytes;
+            }
+            std::atomic<size_t> next_job{0};
+            const auto copy_jobs = [&] {
+                for (;;) {
+                    const size_t index = next_job.fetch_add(1, std::memory_order_relaxed);
+                    if (index >= jobs.size()) return;
+                    const CopyJob& job = jobs[index];
+                    std::memcpy(job.destination, job.source, job.bytes);
+                }
+            };
+            const size_t worker_count = std::min<size_t>(
+                8, std::max(1u, std::thread::hardware_concurrency()));
+            std::vector<std::thread> workers;
+            workers.reserve(worker_count - 1);
+            try {
+                for (size_t i = 1; i < worker_count; ++i)
+                    workers.emplace_back(copy_jobs);
+            } catch (const std::system_error&) {
+                // The calling thread still drains every unclaimed chunk.
+            }
+            copy_jobs();
+            for (auto& worker : workers) worker.join();
+            if (!matter::flush_buffer(*staging, 0, staged_bytes, error))
+                return poison(error);
+        }
+        VkDeviceSize staged_offset = 0;
         for (const auto& range : ranges) {
             const VkDeviceSize offset = VkDeviceSize{range.first} * element_size;
             const VkDeviceSize size = VkDeviceSize{range.second} * element_size;
-            if (!upload_at(buffer, static_cast<const char*>(base) + offset,
-                           size, offset))
-                return false;
+            if (gpu_staging) {
+                if (!parallel_stage &&
+                    !upload_at(*staging, static_cast<const char*>(base) + offset,
+                               size, staged_offset)) return false;
+                const VkBufferCopy copy{staged_offset, offset, size};
+                vkCmdCopyBuffer(material_command_buffer, staging->buffer,
+                                buffer.buffer, 1, &copy);
+                staged_offset += size;
+            } else if (!upload_at(buffer,
+                                  static_cast<const char*>(base) + offset,
+                                  size, offset)) return false;
+        }
+        if (gpu_staging && staged_bytes) {
+            if (staged_bytes >= 64ull * 1024ull * 1024ull) {
+                MATTER_LOGI("vk", "static dirty stage bytes=%llu MiB reserve=%.2f ms copy=%.2f ms flags=%u\n",
+                    static_cast<unsigned long long>(staged_bytes >> 20),
+                    std::chrono::duration<double, std::milli>(
+                        staging_ready - staging_start).count(),
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - staging_ready).count(),
+                    static_cast<unsigned int>(staging->memory_properties));
+            }
+            VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.buffer = buffer.buffer;
+            barrier.offset = 0;
+            barrier.size = VK_WHOLE_SIZE;
+            vkCmdPipelineBarrier(material_command_buffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                0, 0, nullptr, 1, &barrier, 0, nullptr);
         }
         if (!ranges.empty() && upload_counter) ++*upload_counter;
         return true;
@@ -15194,13 +15297,15 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (clusters_.size >= cluster_bytes &&
             vertices_.size >= vertex_bytes &&
             indices_.size >= index_bytes) {
-            if (!upload_ranges(clusters_, dirty_cluster_ranges_,
+            if (!upload_ranges(clusters_, nullptr, dirty_cluster_ranges_,
                                cluster_staging_.data(), sizeof(GpuCluster),
                                &upload_counters_.cluster_uploads) ||
-                !upload_ranges(vertices_, dirty_vertex_ranges_,
+                !upload_ranges(vertices_, &frame.static_vertex_upload,
+                               dirty_vertex_ranges_,
                                vertex_staging_.data(), sizeof(VkRasterVertex),
                                &upload_counters_.vertex_uploads) ||
-                !upload_ranges(indices_, dirty_index_ranges_,
+                !upload_ranges(indices_, &frame.static_index_upload,
+                               dirty_index_ranges_,
                                index_staging_.data(), sizeof(uint32_t),
                                nullptr)) {
                 return false;
@@ -15294,11 +15399,12 @@ bool VkSceneRenderer::upload_scene_buffers(
         const auto grow_or_upload =
             [&](matter::VkBufferResource& buffer, VkDeviceSize required,
                 VkBufferUsageFlags usage, const char* label,
+                matter::VkBufferResource* staging,
                 const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
                 const void* base, size_t element_size,
                 uint32_t uploaded_count, uint64_t* upload_counter) {
             if (buffer.size >= required)
-                return upload_ranges(buffer, ranges, base, element_size,
+                return upload_ranges(buffer, staging, ranges, base, element_size,
                                      upload_counter);
             VkDeviceSize capacity = 0;
             if (!vk_scene_detail::checked_grown_capacity(
@@ -15307,19 +15413,23 @@ bool VkSceneRenderer::upload_scene_buffers(
                 return false;
             if (!allow_replacement()) return false;
             matter::VkBufferResource replacement;
+            const auto allocation_start = std::chrono::steady_clock::now();
             if (!matter::create_buffer(
                     *vulkan_, capacity,
                     usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                         VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                        VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                    staging ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                            : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                    staging ? 0u : (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
                     replacement, error))
                 return false;
+            const auto allocation_end = std::chrono::steady_clock::now();
             ++replacements;
-            if (!upload_ranges(replacement, ranges, base, element_size,
+            if (!upload_ranges(replacement, staging, ranges, base, element_size,
                                upload_counter))
                 return false;
+            const auto upload_end = std::chrono::steady_clock::now();
             if (VkDeviceSize{uploaded_count} * element_size > buffer.size) {
                 error = std::string(label) + " uploaded prefix exceeds old buffer";
                 return false;
@@ -15370,18 +15480,23 @@ bool VkSceneRenderer::upload_scene_buffers(
                     0, nullptr, 1, &barrier, 0, nullptr);
             }
             buffer = std::move(replacement);
+            MATTER_LOGI("vk", "static growth %s capacity=%llu MiB allocate=%.2f ms dirty_stage=%.2f ms\n",
+                label, static_cast<unsigned long long>(capacity >> 20),
+                std::chrono::duration<double, std::milli>(allocation_end - allocation_start).count(),
+                std::chrono::duration<double, std::milli>(upload_end - allocation_end).count());
             return true;
         };
         if (!grow_or_upload(clusters_, cluster_bytes,
                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            "cluster buffer", dirty_cluster_ranges_,
+                            "cluster buffer", nullptr, dirty_cluster_ranges_,
                             cluster_staging_.data(), sizeof(GpuCluster),
                             uploaded_cluster_count_,
                             &upload_counters_.cluster_uploads) ||
             !grow_or_upload(vertices_, vertex_bytes,
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                                 static_rt_input_usage(*vulkan_),
-                            "vertex buffer", dirty_vertex_ranges_,
+                            "vertex buffer", &frame.static_vertex_upload,
+                            dirty_vertex_ranges_,
                             vertex_staging_.data(), sizeof(VkRasterVertex),
                             uploaded_vertex_count_,
                             &upload_counters_.vertex_uploads) ||
@@ -15389,7 +15504,8 @@ bool VkSceneRenderer::upload_scene_buffers(
                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                 static_rt_input_usage(*vulkan_),
-                            "index buffer", dirty_index_ranges_,
+                            "index buffer", &frame.static_index_upload,
+                            dirty_index_ranges_,
                             index_staging_.data(), sizeof(uint32_t),
                             uploaded_index_count_, nullptr))
             return poison(error);
@@ -15401,6 +15517,9 @@ bool VkSceneRenderer::upload_scene_buffers(
         uploaded_vertex_count_ = static_cast<uint32_t>(vertex_staging_.size());
         uploaded_index_count_ = static_cast<uint32_t>(index_staging_.size());
         static_upload_dirty_ = StaticUpload::kClean;
+        MATTER_LOGI("vk", "static growth publish=%.2f ms\n",
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - su_append_t0).count());
         su_note(g_su_append_count, g_su_append_us, nullptr,
                 (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - su_append_t0).count());

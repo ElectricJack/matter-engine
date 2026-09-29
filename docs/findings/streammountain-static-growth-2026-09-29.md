@@ -58,6 +58,41 @@ The implementation reduces duplicate **GPU** triangle residency, but the
 decoded part store and CPU staging arrays still own triangle data. It does
 not establish a single owner across the entire pipeline.
 
+## Device-local growth follow-up
+
+The next pass moved replacement vertex/index allocations to device-local
+memory and uploads dirty ranges through per-frame-slot host-visible staging.
+Large staging copies use up to eight CPU threads. A Vulkan cull smoke fixture
+forces a 67 MiB dirty upload, verifies the visible triangle after the transfer,
+and reports 10.15 ms copy time with zero validation errors.
+
+| POM-off 45 s warmup, 20 s sample | Prior GPU-copy build | Device-local before parallel copy | Device-local with parallel copy |
+|---|---:|---:|---:|
+| Sampled frames | 85 | 321 | 297 |
+| GPU total median / p99 / max, ms | 229.94 / 410.18 / 410.18 | 35.41 / 347.44 / 384.66 | 36.87 / 332.60 / 512.89 |
+| Frame intervals over 100 ms | 83/85 | 53/321 | 54/297 |
+| Frame intervals over 1 s | 0/85 | 0/321 | 0/297 |
+| First / second / third growth publish, ms | 540.83 / 329.32 / 34.62 | 349.02 / 140.14 / 13.89 | 229.73 / 116.27 / 11.76 |
+
+Raw captures: `C:/tmp/clear-ridge-5-device-local-timed-w45/` and
+`C:/tmp/clear-ridge-5-parallel-stage-w45/`. These new runs drew a much smaller
+scene population than the earlier sample: their steady G-buffer median was
+about 18.5 ms, compared with 145–170 ms in the task-1 baseline. The GPU
+medians and overall hitch counts therefore describe those runs; they do not
+demonstrate a scene-matched speedup. The 45 s samples start after the first
+two growth events, so their frame-interval counts cannot prove the all-load
+static-publish target. Growth timings above come from explicit per-event logs.
+
+The first parallel-copy run staged 743 MiB of dirty vertices: staging reserve
+1.72 ms, CPU copy 163.21 ms, vertex device-local allocation 4.86 ms, and
+`pf.static` publish 229.73 ms. The second staged 178 MiB: copy 55.07 ms,
+device-local allocation 38.28 ms, publish 116.27 ms. The non-parallel capture
+had 275.59 and 108.38 ms dirty-staging steps, while its vertex allocations
+were 4.88 and 12.13 ms. The remaining large work is bulk CPU-to-staging
+copy in one render frame. The strict under-100-ms target remains **unmet**;
+it needs dirty uploads spread across frames with new parts hidden until their
+geometry is resident, or staging prepared before render-thread publication.
+
 ## Verification
 
 The Vulkan growth smoke scenario forces tiny static capacities, grows through
