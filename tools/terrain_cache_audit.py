@@ -29,6 +29,8 @@ def main():
     parser.add_argument('--geometry-read-batch', type=int, choices=[32,64,128,256,512,1024], default=32)
     parser.add_argument('--geometry-gpu-mb', type=int, default=3072,
                         help='Geometry page GPU reservation budget (default: 3072 MiB)')
+    parser.add_argument('--bounded-paging', action='store_true',
+                        help='For load, require all in-view roots ready; allow offscreen source fallback')
     parser.add_argument('--turn-after-ready', help='Second camera ex,ey,ez,tx,ty,tz after first stable readiness')
     parser.add_argument('--identity-cache', action='store_true')
     parser.add_argument('--identity-cook', action='store_true')
@@ -37,6 +39,8 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.geometry_gpu_mb <= 4096:
         parser.error('--geometry-gpu-mb must be 1..4096 MiB')
+    if args.bounded_paging and args.mode != 'load':
+        parser.error('--bounded-paging requires load mode')
     if (args.vt_cache and args.mode != 'load') or (args.vt_cook and not args.vt_cache):
         parser.error('--vt-cache requires load mode; --vt-cook requires --vt-cache')
     if args.identity_cook and not args.identity_cache:
@@ -108,6 +112,7 @@ def main():
     failures = []
     page_inflight = None
     geometry_coverage = None
+    visible_coverage = None
     vt_ready = False
     last_vt_poll = 0
     vt_samples = []
@@ -163,6 +168,9 @@ def main():
                 coverage = re.search(r'paging_coverage rejected_assets=(\d+) unready_assets=(\d+) source_fallbacks=(\d+)', line)
                 if coverage:
                     geometry_coverage = tuple(map(int, coverage.groups()))
+                visible = re.search(r'visible_assets=(\d+) visible_unready=(\d+) visible_roots=(\d+) visible_ready_roots=(\d+)', line)
+                if visible:
+                    visible_coverage = tuple(map(int, visible.groups()))
                 if line.startswith('STATSVT,cache_audit_poll,'):
                     values = dict(re.findall(r'(active|rejected|queue)=(\d+)', line))
                     vt_ready = values.get('active') == '1' and values.get('rejected') == '0' and values.get('queue') == '0'
@@ -195,7 +203,12 @@ def main():
                         with fifo.open('a') as f:
                             f.write('stats cache_audit_poll\n')
                         last_vt_poll = now
-                    settled = state == 3 and resident > 0 and inflight == 0 and ready and (args.mode != 'load' or (page_inflight == 0 and geometry_coverage == (0,0,0) and vt_ready and encoded_ready))
+                    coverage_ready = geometry_coverage == (0,0,0)
+                    if args.bounded_paging:
+                        coverage_ready = (geometry_coverage is not None and geometry_coverage[0] == 0 and
+                            visible_coverage is not None and visible_coverage[0] > 0 and
+                            visible_coverage[1] == 0 and visible_coverage[2] == visible_coverage[3])
+                    settled = state == 3 and resident > 0 and inflight == 0 and ready and (args.mode != 'load' or (page_inflight == 0 and coverage_ready and vt_ready and encoded_ready))
                     if settled and resident == previous:
                         stable_since = stable_since or now
                     else:
@@ -212,6 +225,7 @@ def main():
                             stable_since = None
                             page_inflight = None
                             geometry_coverage = None
+                            visible_coverage = None
                             vt_ready = False
                         else:
                             complete = True
@@ -236,7 +250,8 @@ def main():
         prepared_surface_reuse=dict(prepared_surface_reuse),
         prepared_hashes_missing=sorted(expected_prepared-prepared_hashes),
         prepared_hashes_unexpected=sorted(prepared_hashes-expected_prepared) if expected_prepared else [],
-        geometry_coverage=geometry_coverage, vt_samples=vt_samples, encoded_samples=encoded_samples, readiness_phases=readiness_phases, visible_sector_samples=visible_sector_samples, visible_detail_samples=visible_detail_samples,
+        geometry_coverage=geometry_coverage, visible_coverage=visible_coverage, bounded_paging=args.bounded_paging,
+        vt_samples=vt_samples, encoded_samples=encoded_samples, readiness_phases=readiness_phases, visible_sector_samples=visible_sector_samples, visible_detail_samples=visible_detail_samples,
         events=events, prepared_events=prepared_events, prepared_writes=prepared_writes, statuses=statuses, failures=failures)
     result['valid'] = (not failures and code == 0 and complete and bool(keys) and not result['expected_keys_missing'] and
         not result['unexpected_keys'] and not result['outcomes'].get('failed',0) and

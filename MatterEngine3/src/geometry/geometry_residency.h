@@ -26,6 +26,10 @@ struct ResidencyStats {
     uint64_t stale_completions = 0, budget_rejections = 0;
     uint64_t failed_retries = 0;
 };
+struct ResidencyVisibleStats {
+    uint32_t assets = 0, unready_assets = 0;
+    uint64_t roots = 0, ready_roots = 0;
+};
 // The backend creates this resource only after raster upload AND triangle BLAS
 // are ready. Its deleter must honor the renderer's in-flight retirement fence.
 // Shared snapshots retain this resource and its reservation after page eviction.
@@ -62,11 +66,13 @@ public:
     // in-flight tickets and resource lifetimes are unchanged.
     void set_visible_assets(std::vector<uint64_t> leases);
     bool page_visible(const asset_store::BlobHash&) const;
+    bool root_page(PageTicket) const;
     // One request can serve multiple world attachments. Only roots and children
     // discovered through this asset's accepted pages can be requested. A failed
     // page starts a fresh bounded retry cycle when explicitly requested again.
     bool request(AssetLease, const asset_store::BlobHash&, float priority = 0);
-    std::vector<PageTicket> dispatch(uint32_t count, uint64_t epoch);
+    std::vector<PageTicket> dispatch(uint32_t count, uint64_t epoch,
+                                     bool visible_only = false, bool roots_only = false);
     bool complete_read(PageTicket, asset_store::PageHandle, std::string& error);
     // Call before allocating/uploading GPU geometry or BLAS scratch. Admission
     // includes externally retained snapshots and already reserved uploads.
@@ -89,6 +95,7 @@ public:
     bool contains_page(const asset_store::BlobHash&) const;
     ResidentHandle resident(const asset_store::BlobHash&) const;
     ResidencyStats stats() const;
+    ResidencyVisibleStats visible_stats() const;
     bool snapshot(AssetLease, ResidentHierarchy&, std::string& error) const;
 private:
     struct Impl;

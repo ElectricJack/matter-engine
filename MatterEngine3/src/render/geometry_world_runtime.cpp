@@ -599,6 +599,18 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         if(elapsed_ms(upload_budget_start)>=d.upload_cpu_budget_ms){upload_budget_exhausted=true;break;}
         geometry::NodeView node;
         if (!d.residency.staged_node(it->work.ticket, node)) { it = d.prepared.erase(it); continue; }
+        const auto capacity=d.residency.stats();
+        const bool offscreen_full=!d.residency.page_visible(it->work.ticket.page) &&
+            capacity.gpu_bytes>=capacity.gpu_budget-capacity.gpu_budget/4;
+        const bool detail_full=!d.residency.root_page(it->work.ticket) &&
+            capacity.gpu_bytes>=capacity.gpu_budget-capacity.gpu_budget/10;
+        if (offscreen_full || detail_full) {
+            // Keep headroom for visible roots. Decoded optional work releases
+            // its slot rather than churning fine pages at the cap.
+            d.residency.defer(it->work.ticket,d.epoch+120);
+            if(d.profiling)++d.profile.budget_deferred;
+            it=d.prepared.erase(it);continue;
+        }
         uint64_t bytes = 0, scratch = 0;
         if (!renderer.geometry_page_upload_cost(it->part, bytes, scratch, error)) {
             d.residency.fail(it->work.ticket, d.epoch + 30); it = d.prepared.erase(it); error.clear(); continue;
@@ -663,7 +675,10 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     const auto dispatch_pending = [&]() -> bool {
     const auto queue_room=static_cast<uint32_t>(d.pipeline->available());
     const auto dispatch_start=PagingClock::now();
-    const auto tickets=d.residency.dispatch(queue_room, d.epoch);
+    const auto capacity=d.residency.stats();
+    const bool visible_only=capacity.gpu_bytes>=capacity.gpu_budget-capacity.gpu_budget/4;
+    const bool roots_only=capacity.gpu_bytes>=capacity.gpu_budget-capacity.gpu_budget/10;
+    const auto tickets=d.residency.dispatch(queue_room, d.epoch, visible_only, roots_only);
     if(d.profiling)d.profile.dispatch.add(elapsed_ms(dispatch_start));
     for (const auto ticket : tickets) {
         auto location = d.locations.find(ticket.page);
@@ -953,6 +968,7 @@ GeometryPagingProfile GeometryWorldRuntime::take_profile() {
     result.rejected_assets=static_cast<uint32_t>(d.rejected_admissions.size());
     result.source_fallbacks=d.source_fallbacks;
     for(const auto& entry:d.assets)if(!d.residency.ready(entry.second.lease))++result.unready_assets;
+    result.visible=d.residency.visible_stats();
     std::lock_guard<std::mutex> lock(d.queue_mutex);
     auto& w=d.worker_profile;
     result.worker_queue=w.worker_queue;result.cache_open=w.cache_open;result.cache_refresh=w.cache_refresh;

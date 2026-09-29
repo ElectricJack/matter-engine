@@ -13692,8 +13692,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             MATTER_LOGI("geometry", "paging_admission rejected=%llu deferred=%llu hierarchy_failures=%llu",
                 (unsigned long long)paging.admission_rejections, (unsigned long long)paging.admission_deferred,
                 (unsigned long long)paging.hierarchy_failures);
-            MATTER_LOGI("geometry", "paging_coverage rejected_assets=%u unready_assets=%u source_fallbacks=%u",
-                paging.rejected_assets,paging.unready_assets,paging.source_fallbacks);
+            MATTER_LOGI("geometry", "paging_coverage rejected_assets=%u unready_assets=%u source_fallbacks=%u visible_assets=%u visible_unready=%u visible_roots=%llu visible_ready_roots=%llu",
+                paging.rejected_assets,paging.unready_assets,paging.source_fallbacks,
+                paging.visible.assets,paging.visible.unready_assets,
+                (unsigned long long)paging.visible.roots,(unsigned long long)paging.visible.ready_roots);
             timing("cpu_cut",paging.cpu_cut);timing("snapshot",paging.snapshot);
             timing("hierarchy_worker",paging.hierarchy_worker);timing("scene_worker",paging.scene_worker);
             MATTER_LOGI("geometry","paging_scene submitted=%llu published=%llu discarded=%llu reused=%llu pending=%u",
@@ -13711,10 +13713,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             MATTER_LOGI("geometry", "paging_io requests=%llu hits=%llu reads=%llu bytes=%llu cpu_payload_bytes=%llu prefetched=%llu",
                 (unsigned long long)paging.read_requests,(unsigned long long)paging.cache_hits,
                 (unsigned long long)paging.disk_reads,(unsigned long long)paging.disk_bytes,(unsigned long long)paging.cpu_payload_bytes,(unsigned long long)paging.prefetched_pages);
-            MATTER_LOGI("geometry", "paging_queue reads=%u decode_queue=%u completions=%u prepared=%u uploads=%u published=%llu reservation_stalls=%llu upload_limit_frames=%llu cpu_deferrals=%llu failures=%llu watchdogs=%llu gpu_stalls=%llu scratch_stalls=%llu evictions=%llu visible_dispatched=%llu background_dispatched=%llu visible_uploaded=%llu background_uploaded=%llu",
+            MATTER_LOGI("geometry", "paging_queue reads=%u decode_queue=%u completions=%u prepared=%u uploads=%u published=%llu reservation_stalls=%llu upload_limit_frames=%llu cpu_deferrals=%llu budget_deferred=%llu failures=%llu watchdogs=%llu gpu_stalls=%llu scratch_stalls=%llu evictions=%llu visible_dispatched=%llu background_dispatched=%llu visible_uploaded=%llu background_uploaded=%llu",
                 paging.queued_reads,paging.queued_prepare,paging.completed_reads,paging.prepared_pages,paging.pending_uploads,
                 (unsigned long long)paging.published,(unsigned long long)paging.reservation_stalls,
                 (unsigned long long)paging.upload_limit_frames,(unsigned long long)paging.cpu_budget_deferrals,
+                (unsigned long long)paging.budget_deferred,
                 (unsigned long long)paging.read_failures,(unsigned long long)paging.watchdogs,
                 (unsigned long long)paging.gpu_budget_stalls,(unsigned long long)paging.scratch_budget_stalls,
                 (unsigned long long)paging.evictions,

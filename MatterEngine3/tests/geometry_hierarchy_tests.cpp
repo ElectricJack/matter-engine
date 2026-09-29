@@ -89,14 +89,20 @@ static void visibility_priority_checks(asset_store::PageCache& cache) {
     residency.set_visible_assets({shared.id,a.id,a.id});
     CHECK(residency.page_visible(root.page),"shared root follows any visible owner");
     CHECK(residency.page_visible(child),"child follows visible owner");
-    auto work=residency.dispatch(1,0);
+    CHECK(residency.visible_stats().assets==2 && residency.visible_stats().unready_assets==0,
+          "visible readiness counts leases without duplicate camera entries");
+    CHECK(residency.dispatch(1,0,true,true).empty(),
+          "root-only pressure gate parks refinement and offscreen roots");
+    auto work=residency.dispatch(1,0,true,false);
     CHECK(work.size()==1 && work[0].page==child,"visible refinement precedes offscreen mandatory roots");
     if(work.empty())return;
+    CHECK(!residency.root_page(work[0]),"refinement ticket is optional");
     residency.defer(work[0],1);
     residency.set_visible_assets({background.id});
     CHECK(!residency.page_visible(child),"camera turn demotes queued old-view refinement");
-    work=residency.dispatch(1,1);
+    work=residency.dispatch(1,1,true,true);
     CHECK(work.size()==1 && work[0].page!=child,"new-view root precedes old-view refinement");
+    if(!work.empty())CHECK(residency.root_page(work[0]),"new-view ticket is a root");
     if(!work.empty())residency.defer(work[0],2);
     residency.set_visible_assets({a.id});
     work=residency.dispatch(1,2);

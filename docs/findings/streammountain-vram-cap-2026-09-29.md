@@ -63,6 +63,36 @@ visible sectors ready, and geometry coverage `(0, 0, 0)`. The audit's
 15-second stable-residency check passed. This establishes a fully prepared
 cache for the separate cache-only paged-load test.
 
+The first cache-only load read all 816 expected geometry assets as hits, with
+zero misses, compilations, paging failures, or device-memory faults. It reached
+2,441 resident sectors and zero sector cooks, and VT reached an empty request
+queue. After 5,735 s, the geometry reservation was exactly at its 3,072 MiB
+cap, with 641 unready assets and source fallbacks. It continued to evict and
+reload fine pages at the cap, so I ended the run after more than 300 s at that
+limit. The strict audit correctly reported `completed=false` and `valid=false`;
+the no-OOM result alone does not establish settled paged coverage. Its output is
+`C:/tmp/clear-ridge-4-load-cache-only/result.json`.
+
+The 816 prepared assets advertised 137,100 root descriptors in that load.
+Keeping every offscreen root resident under a fixed 3 GiB geometry budget is
+not possible. The runtime now reports in-view root readiness separately and
+pauses offscreen page reads above 75% of the reservation and optional fine-page
+reads above 90%. Already decoded optional work is deferred at those thresholds.
+This keeps headroom for roots that enter the view and prevents optional detail
+from driving continuous eviction at the cap. A bounded cache-only audit can
+require all in-view roots without treating offscreen source fallbacks as a
+failure; it still requires an idle page pipeline, VT readiness, and all
+prepared-cache hits.
+
+An additional 300 s POM-off sample after a 300 s warmup used the diagnostic
+editor before this pressure gate (`19f5a8fe…ecb7e36`). It wrote 1,123 frames:
+GPU total median/p99/max 266.12/285.38/291.97 ms, frame interval
+median/p99/max 266.55/449.47/898.89 ms, 1,123/1,123 intervals above 100 ms,
+and none above 1 s. Peak whole-GPU use was 10,632 MiB, with zero OOM or paging
+failures. There were 1,123 static uploads in the sample, and in-view assets
+grew from 90 to 120, so it was still loading and is not a steady-state timing
+result. Raw artifacts are in `C:/tmp/clear-ridge-4-after-paged-300sample/`.
+
 Task 1's shipped, non-paged POM-off baseline had GPU total medians of
 402.1–454.2 ms and p99/max of 433.5–811.4 ms at 300 s; its pooled frame
 interval counts were 138/141 over 100 ms and 1/141 over 1 s. The paged

@@ -183,6 +183,10 @@ bool Residency::page_visible(const asset_store::BlobHash& hash) const {
     const auto it=d_->pages.find(hash);
     return it!=d_->pages.end() && d_->visible(it->second);
 }
+bool Residency::root_page(PageTicket ticket) const {
+    const auto it=d_->pages.find(ticket.page);
+    return it!=d_->pages.end() && it->second.issuance==ticket.issuance && !it->second.roots.empty();
+}
 bool Residency::request(AssetLease lease, const asset_store::BlobHash& hash, float priority) {
     auto& d = *d_; auto asset = d.assets.find(lease.id);
     if (asset == d.assets.end() || !std::isfinite(priority)) return false;
@@ -205,7 +209,8 @@ bool Residency::request(AssetLease lease, const asset_store::BlobHash& hash, flo
     if (page.resident) d.discover(lease.id, page.resident->node);
     return true;
 }
-std::vector<PageTicket> Residency::dispatch(uint32_t count, uint64_t epoch) {
+std::vector<PageTicket> Residency::dispatch(uint32_t count, uint64_t epoch,
+                                            bool visible_only, bool roots_only) {
     auto& d = *d_;
     count = std::min(count, d.cfg.max_inflight - std::min(d.inflight(), d.cfg.max_inflight));
     if (!count) return {};
@@ -218,6 +223,8 @@ std::vector<PageTicket> Residency::dispatch(uint32_t count, uint64_t epoch) {
     std::vector<PageTicket> result;
     result.reserve(count);
     while (result.size() < count && !d.ready_queue.empty() && d.next_issuance != UINT64_MAX) {
+        const auto& first=*d.ready_queue.begin();
+        if ((visible_only && !first.visible) || (roots_only && !first.root)) break;
         auto& page = d.pages.at(d.ready_queue.begin()->hash);
         d.ready_queue.erase(d.ready_queue.begin());
         page.state = Impl::State::Reading; page.issuance = d.next_issuance++; ++page.attempts;
@@ -327,6 +334,23 @@ ResidencyStats Residency::stats() const {
     result.gpu_budget = d_->cfg.gpu_bytes; result.scratch_budget = d_->cfg.scratch_bytes;
     result.pages = static_cast<uint32_t>(d_->pages.size()); result.inflight = d_->inflight();
     result.gpu_bytes = d_->ledger->gpu.load(); result.scratch_bytes = d_->ledger->scratch.load(); return result;
+}
+ResidencyVisibleStats Residency::visible_stats() const {
+    ResidencyVisibleStats result;
+    for (const auto lease : d_->visible_assets) {
+        const auto asset = d_->assets.find(lease);
+        if (asset == d_->assets.end()) continue;
+        ++result.assets;
+        bool ready = true;
+        for (const auto& root : asset->second.roots) {
+            ++result.roots;
+            const auto page = d_->pages.find(root.page);
+            if (page != d_->pages.end() && page->second.resident) ++result.ready_roots;
+            else ready = false;
+        }
+        if (!ready) ++result.unready_assets;
+    }
+    return result;
 }
 bool Residency::snapshot(AssetLease lease, ResidentHierarchy& out, std::string& error) const {
     const auto asset = d_->assets.find(lease.id);
