@@ -1,6 +1,7 @@
 #pragma once
 
 #include "matter/gpu_timing_sample.h"
+#include "matter/evaluation_channels.h"
 
 // MatterEngine3/src/render/vk_scene_renderer.h
 //
@@ -1938,6 +1939,9 @@ public:
     void set_gi_settings(const matter::VulkanGiSettings& settings);
     // See RenderOptions::vulkan_forest_history_reset.
     void set_forest_history_reset(bool enabled) noexcept { forest_history_reset_ = enabled; }
+    void request_dlss_history_reset() noexcept {
+        dlss_history_reset_pending_ = true;
+    }
     void note_sparse_snapshot_changed();
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
@@ -2239,6 +2243,19 @@ public:
     bool readback_pick_identity(uint32_t x, uint32_t y,
                                 uint32_t& instance_token,
                                 std::string& error);
+
+    // Record all numeric evaluation planes into the active frame. Decode only
+    // after VulkanDevice::end_frame has completed its screenshot fence wait.
+    bool queue_evaluation_channels(const matter::VulkanFrame& frame,
+                                   std::string& error);
+    bool finish_evaluation_channels(uint64_t frame_serial,
+                                    matter::EvaluationChannels& out,
+                                    std::string& error);
+    bool evaluation_detail_report(const matter::EvaluationChannels& channels,
+                                  uint32_t desired_max_lod, bool require_rt,
+                                  matter::VisibleDetailReport& report,
+                                  std::string& error);
+    void abandon_evaluation_channels() { evaluation_pending_ = false; }
 
     int fill_rt_instances(std::vector<RtInstance>& output) const;
 
@@ -2592,6 +2609,9 @@ private:
         // per-part writes on unchanged views. Entry indices deduplicate the
         // selection and retain the maximum priority across instances.
         uint32_t vt_rung_mask = 0;
+        // Chart-bearing rungs, including eager registration failures. This is
+        // distinct from vt_rung_mask, which controls deferred demand only.
+        uint32_t vt_expected_rung_mask = 0;
         // Indexed by CHART RUNG, not LOD index — see kVkMaxChartRung.
         std::array<uint64_t, kVkMaxChartRung> vt_last_wanted{};
         std::array<uint32_t, kVkMaxChartRung> vt_demand_entry_index{};
@@ -3477,6 +3497,11 @@ private:
     matter::VkImageResource orm_;
     matter::VkImageResource velocity_;
     matter::VkImageResource material_instance_;
+    matter::VkBufferResource evaluation_readback_;
+    std::array<VkDeviceSize, matter::EvaluationChannels::Count>
+        evaluation_offsets_{};
+    uint64_t evaluation_frame_serial_ = 0;
+    bool evaluation_pending_ = false;
     matter::VkImageResource reactivity_;
     // Full-resolution depth-tested requests; CPU transport remains 1/8 per axis.
     matter::VkImageResource vt_feedback_;

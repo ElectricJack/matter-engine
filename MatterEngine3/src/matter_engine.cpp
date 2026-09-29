@@ -1520,6 +1520,7 @@ struct WorldSession::Impl {
     // Phase C Task 6: execute one camera-driven refine step.
     // Called by worker_loop in the pop_wait timeout path when refine_ctrl is live.
     void execute_refine_step();
+    void publish_refinement_status();
     // Execute one Runtime-coordinator streaming step on the existing worker.
     void execute_sector_stream_step();
     // Phase C Task 9: install world-kind field, set world binding on host_baker,
@@ -1702,6 +1703,8 @@ struct WorldSession::Impl {
     // Tile count from the most-recent RefineController::build() (used in emitted events).
     // Worker thread only.
     size_t refine_tile_count = 0;
+    mutable std::mutex refinement_status_mutex;
+    std::vector<uint64_t> pending_refinement_hashes;
 
     // World-kind field runtime (owned; lives for the session generation).
     // Null for closed-world sessions or before install completes.
@@ -3290,6 +3293,7 @@ void WorldSession::Impl::worker_loop() {
                 refine_ctrl.reset();
                 refine_provider.reset();
                 refine_pending_upgrades_.clear();
+                publish_refinement_status();
                 clear_streaming_once(/*restore_on_failure=*/false);
                 return;
             }
@@ -3305,6 +3309,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
+                    publish_refinement_status();
                     clear_streaming_once(/*restore_on_failure=*/false);
                     return;
                 }
@@ -3314,6 +3319,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
+                    publish_refinement_status();
                     if (!clear_streaming_once(/*restore_on_failure=*/true)) {
                         continue;
                     }
@@ -3397,7 +3403,10 @@ void WorldSession::Impl::worker_loop() {
                     event.message = message;
                     self.emit_bake(std::move(event));
                 });
-            if (refine_ctrl) execute_refine_step();
+            if (refine_ctrl) {
+                execute_refine_step();
+                publish_refinement_status();
+            }
             continue;
         }
 
@@ -5309,6 +5318,7 @@ void WorldSession::Impl::publish_pipeline(
 
         refine_tile_count = new_ctrl->tile_count();
         refine_ctrl = std::move(new_ctrl);
+        publish_refinement_status();
         MATTER_LOGI("refine", "controller built: %zu tiles\n", refine_tile_count);
     }
 
@@ -5318,6 +5328,7 @@ void WorldSession::Impl::publish_pipeline(
     // closed-world sessions: world_field == null → skip.
     if (p.provider_ref && !is_cancelled() && world_field) {
         refine_ctrl.reset();   // world sessions don't use refine
+        publish_refinement_status();
 
         // Scale default rings to the world's sector size.
         // Rung is a pure SCATTER DETAIL TIER, not a mesh resolution: WorldSector
@@ -5338,6 +5349,24 @@ void WorldSession::Impl::publish_pipeline(
 }
 
 // ---------------------------------------------------------------------------
+// WorldSession::Impl::execute_refine_step
+// Publish only value-owned hashes across the worker/app boundary. The controller
+// itself remains worker-affine; capture queries never race its tile records.
+void WorldSession::Impl::publish_refinement_status() {
+    std::vector<uint64_t> pending;
+    if (refine_ctrl) {
+        pending.reserve(refine_ctrl->tile_count());
+        for (uint32_t i = 0; i < refine_ctrl->tile_count(); ++i) {
+            const auto& tile = refine_ctrl->tile_at(i);
+            if (tile.placed && tile.coarse_hash != 0 &&
+                tile.state != matter_refine::TileRecord::State::Full)
+                pending.push_back(tile.coarse_hash);
+        }
+    }
+    std::lock_guard<std::mutex> lock(refinement_status_mutex);
+    pending_refinement_hashes.swap(pending);
+}
+
 // WorldSession::Impl::execute_refine_step
 // Phase C Task 6: one camera-driven refine step. Called by worker_loop in the
 // pop_wait timeout slot when refine_ctrl is live and no command is pending.
@@ -14414,7 +14443,10 @@ bool WorldSession::resolved_atmosphere_status(
 }
 
 void WorldSession::request_atmosphere_history_reset() {
-    if (impl_) impl_->vk_atmosphere_history_reset_pending = true;
+    if (impl_) {
+        impl_->vk_atmosphere_history_reset_pending = true;
+        if (impl_->vk_scene) impl_->vk_scene->request_dlss_history_reset();
+    }
 }
 
 bool WorldSession::readback_swapchain_rgba8(
@@ -14425,6 +14457,59 @@ bool WorldSession::readback_swapchain_rgba8(
     }
     return impl_->engine->render_device->readback_swapchain_rgba8(frame, rgba,
                                                                   err);
+}
+
+bool WorldSession::queue_evaluation_channels(const VulkanFrame& frame,
+                                              std::string& err) {
+    if (!impl_ || !impl_->vk_scene) {
+        err = "evaluation channels require an active Vulkan scene";
+        return false;
+    }
+    return impl_->vk_scene->queue_evaluation_channels(frame, err);
+}
+
+bool WorldSession::finish_evaluation_channels(
+    uint64_t frame_serial, bool frame_completed,
+    EvaluationChannels& channels, std::string& err) {
+    if (!impl_ || !impl_->vk_scene) {
+        err = "evaluation channels require an active Vulkan scene";
+        return false;
+    }
+    if (!frame_completed) {
+        impl_->vk_scene->abandon_evaluation_channels();
+        err = "evaluation frame did not complete";
+        return false;
+    }
+    return impl_->vk_scene->finish_evaluation_channels(
+        frame_serial, channels, err);
+}
+
+bool WorldSession::evaluation_detail_report(
+    const EvaluationChannels& channels, uint32_t desired_max_lod,
+    bool require_rt, VisibleDetailReport& report, std::string& err) {
+    if (!impl_ || !impl_->vk_scene) {
+        err = "visible detail requires an active Vulkan scene";
+        return false;
+    }
+    if (!impl_->vk_scene->evaluation_detail_report(
+            channels, desired_max_lod, require_rt, report, err)) return false;
+    for (EvaluationObjectIdentity& identity : report.identities) {
+        const auto scene_pick = impl_->dynamic_bridge.resolve_pick(
+            identity.frame_token);
+        if (scene_pick.kind == matter::scene::ScenePickKind::DynamicEntity) {
+            identity.dynamic_entity = true;
+            identity.entity_id = scene_pick.scene_entity_id.value;
+            identity.entity_generation = scene_pick.scene_entity_id.generation;
+            identity.resolved = true;
+        } else {
+            const auto found = impl_->pick_token_to_part_hash.find(
+                identity.frame_token);
+            identity.resolved = found != impl_->pick_token_to_part_hash.end() &&
+                found->second == identity.part_hash;
+        }
+        if (!identity.resolved) ++report.unmatched_tokens;
+    }
+    return true;
 }
 #endif
 
@@ -14446,6 +14531,24 @@ bool WorldSession::render(const CameraDesc&, const VulkanFrame&,
 
 bool WorldSession::readback_swapchain_rgba8(
     const VulkanFrame&, std::vector<uint8_t>&, std::string& err) {
+    err = "this MatterEngine3 build does not include Vulkan viewer support";
+    return false;
+}
+
+bool WorldSession::queue_evaluation_channels(const VulkanFrame&, std::string& err) {
+    err = "this MatterEngine3 build does not include Vulkan viewer support";
+    return false;
+}
+
+bool WorldSession::finish_evaluation_channels(
+    uint64_t, bool, EvaluationChannels&, std::string& err) {
+    err = "this MatterEngine3 build does not include Vulkan viewer support";
+    return false;
+}
+
+bool WorldSession::evaluation_detail_report(
+    const EvaluationChannels&, uint32_t, bool,
+    VisibleDetailReport&, std::string& err) {
     err = "this MatterEngine3 build does not include Vulkan viewer support";
     return false;
 }
@@ -14631,6 +14734,11 @@ AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {
     std::lock_guard<std::mutex> lock(impl_->streaming_status_mutex);
     return impl_->streaming_status_copy;
+}
+
+std::vector<uint64_t> WorldSession::pending_refinement_parts() const {
+    std::lock_guard<std::mutex> lock(impl_->refinement_status_mutex);
+    return impl_->pending_refinement_hashes;
 }
 
 // Aggregate the live seam-weld pool plus the session's cumulative seam counters.

@@ -294,6 +294,19 @@ struct ViewFocus {
     agent::ObjectIdentity object;
 };
 
+// Set a complete calibrated pinhole camera. A complete replacement prevents
+// an agent from mixing fresh intrinsics with an old pose by omission.
+struct ViewSetCamera {
+    MT_COMMAND_NAME("view.set_camera");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::CameraDesc camera;
+};
+
+struct RenderResetTemporal {
+    MT_COMMAND_NAME("render.reset_temporal");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
 // --- typed regeneration job control (regen_jobs.h) --------------------------
 // These five make the reload / regenerate work the engine already does
 // OBSERVABLE, rather than something an agent infers from a sleep. They are

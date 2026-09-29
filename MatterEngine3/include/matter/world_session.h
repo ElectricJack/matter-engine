@@ -56,6 +56,7 @@
 #include <vector>
 
 #include "matter/camera.h"
+#include "matter/evaluation_channels.h"
 #include "matter/gpu_timing_sample.h"
 #include "matter/animation_debug.h"
 #include "matter/render_debug.h"
@@ -651,6 +652,14 @@ public:
     bool readback_swapchain_rgba8(const VulkanFrame& frame,
                                   std::vector<uint8_t>& rgba,
                                   std::string& err);
+    bool queue_evaluation_channels(const VulkanFrame& frame, std::string& err);
+    bool finish_evaluation_channels(uint64_t frame_serial, bool frame_completed,
+                                    EvaluationChannels& channels,
+                                    std::string& err);
+    bool evaluation_detail_report(const EvaluationChannels& channels,
+                                  uint32_t desired_max_lod, bool require_rt,
+                                  VisibleDetailReport& report,
+                                  std::string& err);
 
     // Phase B: run queued render-thread bake work for up to ms_budget
     // milliseconds. Call once per frame on the thread that owns the render
@@ -862,6 +871,9 @@ public:
     // Copied coordinator state; no streamer or render-resource state crosses
     // the worker/app boundary.
     streaming::SectorStreamingStatus streaming_status() const;
+    // Snapshot of coarse part hashes whose closed-world refinement is not
+    // published yet. A captured visible part matching one is not detail-ready.
+    std::vector<uint64_t> pending_refinement_parts() const;
 
     // ---- Seam welding (volumetric-sectors M0-WP3b) --------------------------
     //

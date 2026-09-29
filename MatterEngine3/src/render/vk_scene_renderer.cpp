@@ -7167,6 +7167,7 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
     // runtime, exactly like a chartless world.
     if (part.vt_deferred_rung_mask != 0) {
         record.vt_rung_mask = part.vt_deferred_rung_mask;
+        record.vt_expected_rung_mask = part.vt_deferred_rung_mask;
         record.vt_last_wanted.fill(0);
         record.vt_cached_wanted_mask = 0;
         vt_demand_cache_valid_ = false;
@@ -7178,6 +7179,11 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
         if (!rung.charts.empty()) { any_charts = true; break; }
     }
     if (!any_charts) return;   // legacy path, no runtime start
+    for (size_t rung = 0;
+         rung < std::min<size_t>(part.lod_charts.size(), kVkMaxChartRung);
+         ++rung)
+        if (!part.lod_charts[rung].charts.empty())
+            record.vt_expected_rung_mask |= 1u << rung;
     std::string error;
     if (!ensure_vt_runtime(error)) return;
 
@@ -19890,6 +19896,232 @@ VkRasterAttachments VkSceneRenderer::raster_attachments() const {
 // ---------------------------------------------------------------------------
 // GPU pick: single-pixel readback of the identity attachment.
 // ---------------------------------------------------------------------------
+bool VkSceneRenderer::queue_evaluation_channels(
+    const matter::VulkanFrame& frame, std::string& error) {
+    error.clear();
+    if (evaluation_pending_) {
+        error = "evaluation channels are already queued";
+        return false;
+    }
+    if (fail_if_poisoned(error)) return false;
+    const uint64_t pixels = uint64_t(raster_extent_.width) * raster_extent_.height;
+    if (!raster_attachments_ready_ || pixels == 0 || pixels > 2048u * 2048u ||
+        material_instance_.image == VK_NULL_HANDLE || hdr_.image == VK_NULL_HANDLE) {
+        error = "evaluation channels require a rendered raster extent of at most 2048x2048 pixels";
+        return false;
+    }
+    VkDeviceSize total = 0;
+    for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i) {
+        evaluation_offsets_[i] = total;
+        total += pixels * matter::EvaluationChannels::bytes_per_pixel[i];
+    }
+    if (!matter::create_buffer(
+            *vulkan_, total, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            evaluation_readback_, error))
+        return false;
+    matter::VkImageResource* images[] = {
+        &material_instance_, &depth_, &normal_, &hdr_, &albedo_, &orm_};
+    std::vector<std::shared_ptr<void>> retained{evaluation_readback_.lifetime};
+    for (auto* image : images) retained.push_back(image->lifetime);
+    if (!vulkan_->retain_for_frame(frame, std::move(retained), error))
+        return false;
+    for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i) {
+        const VkImageAspectFlags aspect = i == matter::EvaluationChannels::DepthF32
+            ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        transition_for_use(frame.command_buffer, *images[i],
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_READ_BIT, aspect);
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = evaluation_offsets_[i];
+        copy.imageSubresource.aspectMask = aspect;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {raster_extent_.width, raster_extent_.height, 1};
+        vkCmdCopyImageToBuffer(frame.command_buffer, images[i]->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               evaluation_readback_.buffer, 1, &copy);
+    }
+    VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    evaluation_frame_serial_ = frame.serial;
+    evaluation_pending_ = true;
+    return true;
+}
+
+bool VkSceneRenderer::finish_evaluation_channels(
+    uint64_t frame_serial, matter::EvaluationChannels& out,
+    std::string& error) {
+    out = {};
+    if (!evaluation_pending_ || evaluation_frame_serial_ != frame_serial) {
+        error = "evaluation channel readback does not match the completed frame";
+        return false;
+    }
+    evaluation_pending_ = false;
+    out.width = raster_extent_.width;
+    out.height = raster_extent_.height;
+    const uint64_t pixels = uint64_t(out.width) * out.height;
+    for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i) {
+        auto& plane = out.planes[i];
+        plane.resize(static_cast<size_t>(pixels *
+            matter::EvaluationChannels::bytes_per_pixel[i]));
+        if (!matter::readback_buffer(*vulkan_, evaluation_readback_,
+                                     plane.data(), plane.size(),
+                                     evaluation_offsets_[i], error)) {
+            out = {};
+            return false;
+        }
+    }
+    return true;
+}
+
+bool VkSceneRenderer::evaluation_detail_report(
+    const matter::EvaluationChannels& channels, uint32_t desired_max_lod,
+    bool require_rt, matter::VisibleDetailReport& report,
+    std::string& error) {
+    report = {};
+    report.desired_max_lod = desired_max_lod;
+    error.clear();
+    const uint64_t pixels = uint64_t(channels.width) * channels.height;
+    if (!pixels || channels.planes[matter::EvaluationChannels::IdentityRg32u].size()
+                       != pixels * 8 || frames_.empty()) {
+        error = "visible detail requires the completed frame identity plane";
+        return false;
+    }
+    std::set<uint32_t> visible_tokens;
+    const auto& identity = channels.planes[matter::EvaluationChannels::IdentityRg32u];
+    for (uint64_t pixel = 0; pixel < pixels; ++pixel) {
+        uint32_t token = UINT32_MAX;
+        std::memcpy(&token, identity.data() + pixel * 8 + 4, 4);
+        if (token != UINT32_MAX && token != 0) visible_tokens.insert(token);
+    }
+    report.visible_instances = static_cast<uint32_t>(visible_tokens.size());
+    if (uploaded_command_count_ > 1u << 20 ||
+        uploaded_transform_slots_ > 1u << 20) {
+        error = "visible detail draw census exceeds its capture bound";
+        return false;
+    }
+    FrameResources& selected = frames_[active_frame_index_];
+    std::vector<DrawCommand> commands(uploaded_command_count_);
+    std::vector<GpuDrawTransform> transforms(uploaded_transform_slots_);
+    if ((!commands.empty() && !matter::readback_buffer(
+            *vulkan_, selected.commands, commands.data(),
+            commands.size() * sizeof(DrawCommand), 0, error)) ||
+        (!transforms.empty() && !matter::readback_buffer(
+            *vulkan_, selected.draw_transforms, transforms.data(),
+            transforms.size() * sizeof(GpuDrawTransform), 0, error)))
+        return false;
+    std::unordered_map<uint32_t, const GpuInstance*> instances;
+    std::set<uint32_t> duplicate_tokens;
+    for (const GpuInstance& instance : instance_staging_)
+        if (instance.instance_token != 0 && instance.instance_token != UINT32_MAX &&
+            !instances.emplace(instance.instance_token, &instance).second)
+            duplicate_tokens.insert(instance.instance_token);
+    std::set<uint32_t> drawn_tokens;
+    for (size_t command_index = 0; command_index < commands.size();
+         ++command_index) {
+        const DrawCommand& command = commands[command_index];
+        if (!command.instance_count) continue;
+        const size_t cluster_index = command_index / kVkMaxLod;
+        for (uint32_t i = 0; i < command.instance_count; ++i) {
+            const uint64_t slot = uint64_t(command.first_instance) + i;
+            if (slot >= transforms.size()) break;
+            const GpuDrawTransform& transform = transforms[static_cast<size_t>(slot)];
+            if (!visible_tokens.count(transform.instance_token)) continue;
+            drawn_tokens.insert(transform.instance_token);
+            if (transform.selected_lod > desired_max_lod) ++report.coarse_draws;
+            report.max_selected_lod =
+                std::max(report.max_selected_lod, transform.selected_lod);
+            const auto found = instances.find(transform.instance_token);
+            if (found == instances.end() || found->second->part_slot >= parts_.size() ||
+                cluster_index < found->second->cluster_start ||
+                cluster_index >= uint64_t(found->second->cluster_start) +
+                                 found->second->cluster_count ||
+                cluster_index >= cluster_lods_.size() ||
+                transform.selected_lod >= cluster_lods_[cluster_index].size()) {
+                ++report.unmatched_tokens;
+                continue;
+            }
+            const PartRecord& part = parts_[found->second->part_slot];
+            if (require_rt) {
+                const uint32_t local_cluster = static_cast<uint32_t>(
+                    cluster_index - part.cluster_start);
+                const bool blas_ready = !part.geometry_raster_only &&
+                    std::any_of(part.rt_lods.begin(), part.rt_lods.end(),
+                        [&](const RtLodRecord& lod) {
+                            return lod.cluster_index == local_cluster &&
+                                lod.lod_index == transform.selected_lod &&
+                                lod.built && lod.blas;
+                        });
+                if (!blas_ready) ++report.missing_blas;
+            }
+            const uint32_t rung =
+                cluster_lods_[cluster_index][transform.selected_lod].chart_rung;
+            if (rung < 32u && (part.vt_expected_rung_mask & (1u << rung))) {
+                const uint32_t expected_slot = rung < part.vt_slots.size()
+                    ? part.vt_slots[rung] : vt::kVtNoSlot;
+                if (vt_unavailable_ || !vt_ ||
+                    expected_slot == vt::kVtNoSlot ||
+                    !vt_->slot_active(expected_slot) ||
+                    transform.vt_slot != expected_slot)
+                    ++report.missing_vt;
+            }
+        }
+    }
+    std::unordered_map<uint64_t, size_t> part_rows;
+    for (uint32_t token : visible_tokens) {
+        if (duplicate_tokens.count(token)) ++report.unmatched_tokens;
+        if (!drawn_tokens.count(token)) ++report.missing_draws;
+        const auto found = instances.find(token);
+        if (found == instances.end() || found->second->part_slot >= parts_.size()) {
+            ++report.unmatched_tokens;
+            continue;
+        }
+        const PartRecord& part = parts_[found->second->part_slot];
+        if (!part.live) {
+            ++report.unmatched_tokens;
+            continue;
+        }
+        matter::EvaluationObjectIdentity identity;
+        identity.frame_token = token;
+        identity.part_hash = part.hash;
+        report.identities.push_back(identity);
+        auto row = part_rows.find(part.hash);
+        if (row == part_rows.end()) {
+            matter::VisiblePartResource resource;
+            resource.part_hash = part.hash;
+            resource.vertex_count = part.vertex_count;
+            resource.index_count = part.index_count;
+            resource.blas_rungs_total = static_cast<uint32_t>(part.rt_lods.size());
+            for (const RtLodRecord& lod : part.rt_lods)
+                if (lod.built && lod.blas) ++resource.blas_rungs_ready;
+            for (size_t rung = 0; rung < part.vt_slots.size(); ++rung) {
+                if (rung >= 32u ||
+                    !(part.vt_expected_rung_mask & (1u << rung))) continue;
+                ++resource.vt_rungs_total;
+                const uint32_t slot = part.vt_slots[rung];
+                if (vt_ && slot != vt::kVtNoSlot && vt_->slot_active(slot))
+                    ++resource.vt_rungs_active;
+            }
+            const size_t index = report.parts.size();
+            report.parts.push_back(resource);
+            row = part_rows.emplace(part.hash, index).first;
+        }
+        ++report.parts[row->second].visible_instances;
+    }
+    report.observed = true;
+    return true;
+}
+
 namespace {
 struct PickReadbackRecord {
     matter::VkImageResource* image;

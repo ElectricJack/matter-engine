@@ -9,10 +9,14 @@
 // back to the wrong pick coordinate -- are all decidable from plain values.
 
 #include "../src/viewport_capture.h"
+#include "../src/camera_calibration.h"
+#include "../src/view_projection.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -48,6 +52,48 @@ cap::Geometry docked_geometry() {
     geometry.image_width = 1600;
     geometry.image_height = 900;
     return geometry;
+}
+
+void test_calibrated_projection_round_trip() {
+    matter::CameraDesc camera;
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 0.8f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 100.0f;
+    std::string error;
+    CHECK(viewer::camera_calibration::valid(camera, error),
+          "a finite calibrated camera is accepted");
+    const cap::Geometry geometry = docked_geometry();
+    const cap::Rect rect = cap::viewport_in_image(geometry);
+    const Value calibration = viewer::camera_calibration::intrinsics(
+        camera, rect.width, rect.height, rect.x, rect.y);
+    const double fx = field(calibration, "fx", "focal x exists").num;
+    const double fy = field(calibration, "fy", "focal y exists").num;
+    const double cx = field(calibration, "cx", "principal x exists").num;
+    const double cy = field(calibration, "cy", "principal y exists").num;
+    const float eye[] = {0.0f, 0.0f, 0.0f};
+    const float target[] = {0.0f, 0.0f, -1.0f};
+    const float up[] = {0.0f, 1.0f, 0.0f};
+    const float point[] = {0.25f, -0.1f, -2.0f};
+    const auto view = viewer::projection::look_at(eye, target, up);
+    const auto proj = viewer::projection::perspective(
+        camera.vertical_fov_radians, static_cast<float>(rect.width / rect.height),
+        camera.near_plane, camera.far_plane);
+    const auto vp = viewer::projection::multiply(proj, view);
+    float px = 0.0f, py = 0.0f;
+    CHECK(viewer::projection::project_to_pixels(
+              vp, static_cast<float>(rect.width),
+              static_cast<float>(rect.height), static_cast<float>(rect.x),
+              static_cast<float>(rect.y), point, px, py),
+          "world point projects into captured image");
+    CHECK(std::fabs((px - cx) / fx * 2.0 - point[0]) < 1e-5 &&
+              std::fabs(-(py - cy) / fy * 2.0 - point[1]) < 1e-5,
+          "image intrinsics reconstruct the original camera-space point");
+    camera.target = camera.position;
+    CHECK(!viewer::camera_calibration::valid(camera, error),
+          "degenerate camera is refused before it can reach projection");
 }
 
 cap::Request request(const char* path, bool annotate,
@@ -456,6 +502,100 @@ void test_arguments() {
           "a string annotate_selection is invalid_input, not truthy");
 }
 
+void test_numeric_bundle_and_receipt() {
+    matter::EvaluationChannels channels;
+    channels.width = 2;
+    channels.height = 1;
+    for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i)
+        channels.planes[i].assign(2 *
+            matter::EvaluationChannels::bytes_per_pixel[i],
+            static_cast<uint8_t>(i + 1));
+    const std::string path = "viewport-capture-channel-test.bin";
+    std::remove(path.c_str());
+    std::string error;
+    CHECK(cap::write_channel_bundle(path, channels, error),
+          "six synchronized numeric planes write as one bundle");
+    std::ifstream input(path, std::ios::binary);
+    std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
+                             std::istreambuf_iterator<char>());
+    CHECK(bytes.size() == 16 + 2 * (8 + 4 + 8 + 8 + 4 + 8),
+          "bundle contains exactly its header and six planes");
+    CHECK(std::string(bytes.data(), 8) == "MECAP001" &&
+              static_cast<unsigned char>(bytes[8]) == 2 &&
+              static_cast<unsigned char>(bytes[12]) == 1,
+          "bundle header records magic and little-endian dimensions");
+    CHECK(bytes[16] == 1 && bytes[32] == 2 && bytes[40] == 3,
+          "identity, depth and normal offsets align with the receipt contract");
+    CHECK(!cap::write_channel_bundle(path, channels, error),
+          "an existing bundle cannot be silently replaced by a later frame");
+    std::remove(path.c_str());
+
+    cap::Request pending = request("C:/tmp/shot.png", false,
+                                   std::chrono::seconds(5));
+    pending.export_channels = true;
+    cap::Geometry geometry = docked_geometry();
+    geometry.channels_path = "C:/tmp/shot.png.channels.bin";
+    geometry.channels_width = 2;
+    geometry.channels_height = 1;
+    const Value receipt = cap::capture_result_json(
+        pending, geometry, matter::CameraDesc{}, viewer::agent::Context{}, nullptr);
+    const Value& block = field(receipt, "channels", "channel receipt exists");
+    CHECK(field(block, "available", "bundle availability").b,
+          "bundle receipt is available only after write success");
+    const Value& planes = field(block, "planes", "plane manifest exists");
+    CHECK(planes.arr.size() == 6 &&
+              field(planes.arr[1], "offset_bytes", "depth offset").str == "32",
+          "plane offsets describe the written byte layout");
+}
+
+void test_visible_detail_readiness_fails_closed() {
+    cap::ReadinessInput input;
+    input.production_view = true;
+    input.scene_ready = true;
+    input.gpu_jobs_idle = true;
+    input.stable_camera_frames = 3;
+    input.detail.observed = true;
+    input.detail.visible_instances = 1;
+    input.detail.identities.push_back({42, 99, 0, 0, false, true});
+    CHECK(cap::evaluate_readiness(input).ready,
+          "observed finest raster detail with settled resources can be ready");
+    input.detail.identities.clear();
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "a missing frame-token identity row refuses readiness");
+    input.detail.identities.push_back({42, 99, 0, 0, false, true});
+    input.detail.coarse_draws = 1;
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "a visible coarse VG draw refuses readiness");
+    input.detail.coarse_draws = 0;
+    input.require_rt = true;
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "unavailable RT refuses a requested RT capture");
+    input.rt_available = input.rt_effective = true;
+    input.detail.missing_blas = 1;
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "a visible missing BLAS refuses RT readiness");
+    input.detail.missing_blas = 0;
+    input.detail.missing_vt = 1;
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "missing visible VT content refuses readiness");
+    input.detail.missing_vt = 0;
+    input.vt_queue_depth = 1;
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "pending VT work refuses readiness");
+    input.vt_queue_depth = 0;
+    input.visible_refinement_pending = 1;
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "pending coarse-to-full refinement refuses readiness");
+    input.visible_refinement_pending = 0;
+    input.visible_sectors_pending = 1;
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "pending visible sector detail refuses readiness");
+    input.visible_sectors_pending = 0;
+    input.stable_camera_frames = 2;
+    CHECK(!cap::evaluate_readiness(input).ready,
+          "temporal settling refuses the first two stable frames");
+}
+
 }  // namespace
 
 int main() {
@@ -463,10 +603,13 @@ int main() {
     test_capture_timeout();
     test_failed_presentation();
     test_pick_from_capture_coherence();
+    test_calibrated_projection_round_trip();
     test_resize_between_arm_and_capture();
     test_result_shape_and_revisions();
     test_annotations();
     test_arguments();
+    test_numeric_bundle_and_receipt();
+    test_visible_detail_readiness_fails_closed();
     std::printf("Viewport capture tests passed.\n");
     return 0;
 }

@@ -1262,6 +1262,7 @@ run-test-selection-commands: build/test_selection_commands.exe
 # pick coherence are all decidable with no window.
 build/test_viewport_capture.exe: tests/test_viewport_capture.cpp \
         src/viewport_capture.cpp src/viewport_capture.h src/view_projection.h \
+        src/camera_calibration.h \
         src/selection_bounds.h src/selection_set.h \
         src/agent_protocol.cpp src/agent_protocol.h \
         $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h

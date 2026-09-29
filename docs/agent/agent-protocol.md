@@ -286,6 +286,9 @@ decide where to look, look there, read again.
 | --- | --- | --- |
 | `path` | string, required | Absolute `.png` path. The same rule the `shot_now` FIFO verb applies (`fifo_safe_absolute_png_path`: drive-absolute or UNC, no `..`, no reserved DOS names, no control characters). |
 | `annotate_selection` | boolean | Also project every selected object's bounding box into the captured image. Default false, because it costs a bounds scan. |
+| `export_channels` | boolean | Write numeric channels from the captured render submission. Default false. |
+| `desired_max_lod` | integer 0–7 | Highest accepted visible VG ladder index; 0 requires the finest. Requires `export_channels:true`. |
+| `require_rt` | boolean | Require native RT and visible BLAS readiness. Requires `export_channels:true`. |
 
 It is the ONE command whose result is not produced on the app lane. The request
 is accepted, a capture is armed on the same present/readback queue `shot_now`
@@ -320,6 +323,8 @@ The four terminal outcomes are deliberately distinct:
   no pick coordinate at all, and clamping to the nearest edge would answer for
   a pixel the caller never saw;
 - `camera` — the pose the image was rendered with;
+  `camera.intrinsics` gives the unjittered pinhole `fx`, `fy`, `cx`, `cy` in
+  PNG image pixels for the 3D viewport rectangle;
 - `captured` — the full context block AS OF THE CAPTURED FRAME. The envelope's
   own `context` is a completion-time snapshot; these two differ whenever a
   later frame presented in between, which is precisely when the newer numbers
@@ -342,6 +347,41 @@ The four terminal outcomes are deliberately distinct:
 
 The existing `shot` / `shot_now` FIFO verbs are untouched, keep their stdout
 wording, and share the queue.
+
+With `export_channels:true`, `result.channels.path` names `<path>.channels.bin`.
+Its `MECAP001` container starts with eight ASCII magic bytes, then little-endian
+`uint32` width and height, then six tightly packed top-left row-major planes.
+The receipt lists each plane's byte offset, size and format. The planes are
+identity (`rg32_uint`: material index and frame-local instance token),
+reversed-Z device depth (`r32_float`), normal (`rgba16_float`), linear HDR
+composite (`rgba16_float`), linear albedo (`rgba8_unorm`) and ORM/displacement
+(`rgba16_float`). The numeric extent is the internal raster extent and can
+differ from the display PNG when scaling is active. Identity tokens are valid
+only for that frame; `channels.identities` maps them to static part hashes or
+dynamic entity IDs. The map is capped at 2048 rows and signals truncation.
+The PNG, channel bundle and receipt share `captured.frame.id`; the `.done`
+marker is written only after both files finish. Use a fresh path per capture.
+
+`result.readiness` reports `ready`, explicit `blockers`, visible selected LOD,
+draw/identity coverage, BLAS and VT resources, streaming/refinement state, RT
+status, and stable-camera frames. It is a captured-frame quality gate, not a
+promise that a later frame has the same state. A coarse visible draw, missing
+visible VT or BLAS, pending refinement, unavailable required RT, or incomplete
+identity map keeps `ready:false`. A scene with no visible object pixels also
+fails closed. For a controlled sequence, use `render.reset_temporal`, wait for
+at least three unchanged camera frames, then inspect `readiness` on every
+capture. Compare cold and warm repeated captures to establish the scene's
+pixel variation band before scoring.
+
+### `view.set_camera` and `render.reset_temporal`
+
+`view.set_camera` requires the complete pose: `position`, `target`, `up` as
+three-number arrays, plus `vertical_fov_radians`, `near_plane`, `far_plane`.
+The eye and target must differ, up must be nonparallel, FOV must be in
+`[0.05,3]`, and clip planes must satisfy
+`0.001 <= near_plane < far_plane <= 1e7` in world meters. The camera applies
+on the next presented frame. `render.reset_temporal` takes no arguments and
+requests a reset of the renderer's presentation histories on the next frame.
 
 ### `view.focus`
 
