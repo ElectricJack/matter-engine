@@ -2157,6 +2157,14 @@ public:
         return (vertices_.memory_properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0 &&
                (indices_.memory_properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
     }
+    void test_set_static_upload_budget(VkDeviceSize bytes) {
+        static_upload_budget_bytes_ = std::max<VkDeviceSize>(bytes, sizeof(VkRasterVertex));
+    }
+    bool test_triangle_resident(uint64_t hash) const {
+        const int slot = part_slot_lookup(hash);
+        return slot >= 0 && parts_[slot].triangle_resident;
+    }
+    VkDeviceSize test_static_upload_bytes() const { return static_upload_frame_bytes_; }
     bool test_scene_buffers_device_local(uint32_t frame_slot) const {
         if (frame_slot >= frames_.size()) return false;
         const auto& f = frames_[frame_slot];
@@ -2596,6 +2604,9 @@ private:
         uint32_t index_start = 0;    // global raster/RT index range
         uint32_t index_count = 0;
         bool live = false;
+        // Shared raster/RT gate: allocation and registration do not mean that
+        // the bounded vertex/index transfers have finished recording.
+        bool triangle_resident = false;
         bool geometry_raster_only = false;
         std::string blas_cache_directory, blas_cache_content;
         std::shared_ptr<const void> geometry_budget_claim;
@@ -4152,6 +4163,11 @@ private:
     std::vector<std::pair<uint32_t, uint32_t>> dirty_cluster_ranges_;
     std::vector<std::pair<uint32_t, uint32_t>> dirty_vertex_ranges_;
     std::vector<std::pair<uint32_t, uint32_t>> dirty_index_ranges_;
+    VkDeviceSize static_upload_budget_bytes_ = 32ull * 1024ull * 1024ull;
+    VkDeviceSize static_upload_frame_bytes_ = 0;
+    uint64_t static_upload_budget_serial_ = UINT64_MAX;
+    std::vector<uint32_t> pending_triangle_parts_;
+    std::vector<GpuInstance> resident_instance_scratch_;
     // Escalate-only: never lets an append downgrade an owed full rewrite.
     void mark_static_append() {
         if (static_upload_dirty_ == StaticUpload::kClean)

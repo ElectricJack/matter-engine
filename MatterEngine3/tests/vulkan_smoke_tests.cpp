@@ -15158,14 +15158,20 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
     CHECK(initialized,
           error.empty() ? "init small-reserve growth renderer" : error.c_str());
     if (!initialized) return;
+    matter::VulkanRayTracingSettings growth_rt{};
+    growth_rt.enabled = true;
+    renderer.set_ray_tracing_settings(growth_rt);
+    renderer.test_set_static_upload_budget(sizeof(viewer::VkRasterVertex) + sizeof(uint32_t) * 3);
     const FixedCullScene scene = make_fixed_cull_scene();
-    const auto submit = [&] {
+    const auto submit = [&](bool draw = false) {
         matter::VulkanFrame frame{};
         if (!vulkan.begin_frame(frame, error)) return false;
         const bool prepared = renderer.prepare_frame(
             frame, scene.frame, scene.eye, 1.0f, error);
+        const bool rendered = prepared && (!draw || renderer.record_cull_and_render(
+            frame, scene.frame, scene.eye, 1.0f, error));
         const bool ended = vulkan.end_frame(frame, error);
-        return prepared && ended;
+        return rendered && ended;
     };
     const auto first = known_raster_triangle(0x53544131);
     const auto second = known_raster_triangle(0x53544132);
@@ -15187,6 +15193,13 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
     CHECK(after_second.static_growth_uploads >= 2 &&
               after_second.static_full_uploads == 0,
           "capacity growth never rewrites resident CPU staging");
+    CHECK(!renderer.test_triangle_resident(first.part_hash) &&
+              !renderer.test_triangle_resident(second.part_hash),
+          "growth preserves partially uploaded ranges without publishing them");
+    renderer.test_set_static_upload_budget(32ull * 1024ull * 1024ull);
+    CHECK(submit() && renderer.test_triangle_resident(first.part_hash) &&
+              renderer.test_triangle_resident(second.part_hash),
+          "pending ranges finish correctly after a second capacity growth");
     CHECK(renderer.test_static_triangle_buffers_device_local(),
           "grown triangles reside in device-local buffers");
     if (vulkan.ray_tracing_available()) {
@@ -15234,8 +15247,10 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "recycled hidden cluster survives GPU copy"
                         : error.c_str());
 
-    // Force the large staged transfer path, then verify the recorded GPU
-    // copy and cull observe the same first triangle as the small path.
+    // The large transfer spans frames. Its instance must stay hidden until
+    // both streams are resident, including when its first triangle already
+    // fits in the first chunk. Use the production recorder: dispatch_culling
+    // deliberately drains all pending transfers for synchronous test callers.
     auto large = known_raster_triangle(0x53544135);
     large.vertices.resize(800000, large.vertices.front());
     CHECK(renderer.ensure_part(large, error) >= 0 &&
@@ -15243,13 +15258,80 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
                                          {recycled.part_hash, identity},
                                          {tail.part_hash, identity},
                                          {large.part_hash, identity}}, error) &&
-              submit(),
+              submit(true),
           error.empty() ? "submit large staged static upload" : error.c_str());
-    CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
-              renderer.cull_stats(stats, error) && stats.emitted == 3 &&
+    CHECK(!renderer.test_triangle_resident(large.part_hash) &&
+              renderer.test_static_upload_bytes() <= 32ull * 1024ull * 1024ull,
+          "large part stays pending within the per-frame upload budget");
+    vulkan.wait_idle();
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 2,
+          "pending triangles are hidden while resident parts still draw");
+    const auto& pending_rt = renderer.test_last_rt_geometry_records();
+    CHECK(std::none_of(pending_rt.begin(), pending_rt.end(),
+              [&](const auto& record) { return record.part_hash == large.part_hash; }),
+          "pending triangles never enter the RT build set");
+    int upload_frames = 1;
+    while (!renderer.test_triangle_resident(large.part_hash) && upload_frames < 8) {
+        CHECK(submit(true), error.empty() ? "drain next bounded static chunk" : error.c_str());
+        CHECK(renderer.test_static_upload_bytes() <= 32ull * 1024ull * 1024ull,
+              "every partial frame obeys the shared vertex/index byte budget");
+        ++upload_frames;
+    }
+    vulkan.wait_idle();
+    CHECK(renderer.test_triangle_resident(large.part_hash) && upload_frames == 3,
+          "large part becomes resident after its final chunk");
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 3 &&
               stats.frustum_culled == 1,
           error.empty() ? "large staged upload preserves visible triangle"
                         : error.c_str());
+    if (vulkan.ray_tracing_available()) {
+        const auto& resident_rt = renderer.test_last_rt_geometry_records();
+        CHECK(std::any_of(resident_rt.begin(), resident_rt.end(),
+                  [&](const auto& record) { return record.part_hash == large.part_hash; }),
+              "completed triangles enter RT through the shared raster buffers");
+    }
+
+    renderer.release_part(large.part_hash);
+    for (int i = 0; i < 4; ++i) CHECK(submit(), "retire large static range");
+    renderer.test_set_static_upload_budget(1024);
+    auto cancelled = known_raster_triangle(0x53544136);
+    cancelled.vertices.resize(32, cancelled.vertices.front());
+    CHECK(renderer.ensure_part(cancelled, error) >= 0 && submit() &&
+              !renderer.test_triangle_resident(cancelled.part_hash),
+          "interior recycled geometry also waits for residency");
+    renderer.release_part(cancelled.part_hash);
+    CHECK(submit() && renderer.test_static_upload_bytes() == 0,
+          "eviction cancels the remaining dirty triangle writes");
+    for (int i = 0; i < 4; ++i) CHECK(submit(), "retire cancelled range");
+    cancelled.part_hash = 0x53544137;
+    cancelled.vertices.resize(3);
+    CHECK(renderer.ensure_part(cancelled, error) >= 0 &&
+              renderer.update_instances({{cancelled.part_hash, identity}}, error) &&
+              submit(true) && renderer.test_triangle_resident(cancelled.part_hash),
+          "new owner of a cancelled range becomes resident independently");
+    vulkan.wait_idle();
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 1,
+          "recycled range draws only its current owner");
+
+    auto index_heavy = known_raster_triangle(0x53544138);
+    for (int i = 0; i < 199; ++i)
+        index_heavy.indices.insert(index_heavy.indices.end(), {0, 1, 2});
+    CHECK(renderer.ensure_part(index_heavy, error) >= 0 &&
+              renderer.update_instances({{cancelled.part_hash, identity},
+                                         {index_heavy.part_hash, identity}}, error) &&
+              submit(true) && !renderer.test_triangle_resident(index_heavy.part_hash),
+          "an index stream alone can exhaust the shared upload budget");
+    vulkan.wait_idle();
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 1,
+          "pending indices suppress the new draw");
+    for (int i = 0; i < 2; ++i) {
+        CHECK(submit(true) && renderer.test_static_upload_bytes() <= 1024,
+              "index and vertex chunks share one byte budget");
+    }
+    vulkan.wait_idle();
+    CHECK(renderer.test_triangle_resident(index_heavy.part_hash) &&
+              renderer.cull_stats(stats, error) && stats.emitted == 2,
+          "index-heavy part draws once both streams are resident");
 }
 
 void run_display_transform_tests(matter::VulkanDevice& vulkan) {

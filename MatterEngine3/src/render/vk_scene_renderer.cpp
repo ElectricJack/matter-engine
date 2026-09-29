@@ -6167,6 +6167,13 @@ bool VkSceneRenderer::record_animation_skinning(
             resources.ready_skin_raster_draws =
                 filter_ready_animation_skin_raster_draws(
                     staged.raster_draws, validation);
+            auto& draws = resources.ready_skin_raster_draws;
+            draws.erase(std::remove_if(draws.begin(), draws.end(),
+                [this](const VkSkinRasterDraw& draw) {
+                    if (draw.instance_slot >= dynamic_instance_part_slots_.size()) return true;
+                    const auto slot = dynamic_instance_part_slots_[draw.instance_slot];
+                    return slot >= parts_.size() || !parts_[slot].triangle_resident;
+                }), draws.end());
             resources.skin_raster_ready =
                 !resources.ready_skin_raster_draws.empty();
             probe_skin_raster_draws(resources.ready_skin_raster_draws);
@@ -11404,6 +11411,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         cluster_lods_[cluster_base + i] = std::move(lods);
     }
     parts_.push_back(record);
+    pending_triangle_parts_.push_back(static_cast<uint32_t>(slot));
     slot_of_[part.part_hash] = slot;
     // Retires the flat lookup mirror and update_instances()' input snapshot in
     // one integer (see slot_of_version_).
@@ -11777,7 +11785,8 @@ bool VkSceneRenderer::resolve_geometry_page(VkGeometryCutNode& node) const {
 bool VkSceneRenderer::geometry_page_render_ready_slot(uint32_t slot) const {
     if (poisoned() || slot >= parts_.size()) return false;
     const auto& part = parts_[slot];
-    const bool raster_ready = part.live && part.vertex_count && part.index_count &&
+    const bool raster_ready = part.live && part.triangle_resident &&
+        part.vertex_count && part.index_count &&
         uint64_t(part.vertex_start) + part.vertex_count <= uploaded_vertex_count_ &&
         uint64_t(part.index_start) + part.index_count <= uploaded_index_count_;
     return raster_ready && (part.geometry_raster_only ||
@@ -14108,6 +14117,21 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
         }
     }
     PartRecord& record = parts_[released_slot];
+    // A partially uploaded part can be evicted before its remaining ranges
+    // drain. Cancel them before the recycler can hand those bytes to a new
+    // owner; otherwise a later transfer could race that owner's draws.
+    const auto cancel_upload = [](auto& ranges, uint32_t start, uint32_t count) {
+        if (!count) return;
+        const uint64_t end = uint64_t{start} + count;
+        ranges.erase(std::remove_if(ranges.begin(), ranges.end(),
+            [&](const auto& range) {
+                return range.first < end &&
+                    uint64_t{range.first} + range.second > start;
+            }), ranges.end());
+    };
+    cancel_upload(dirty_cluster_ranges_, record.cluster_start, record.cluster_count);
+    cancel_upload(dirty_vertex_ranges_, record.vertex_start, record.vertex_count);
+    cancel_upload(dirty_index_ranges_, record.index_start, record.index_count);
     command_metadata_dirty_cluster_ = std::min(command_metadata_dirty_cluster_,size_t(record.cluster_start));
     // Return the geometry ranges to the recycler. No compaction and no static
     // re-upload: the bytes stay where they are, unreferenced (the instance
@@ -15190,66 +15214,12 @@ bool VkSceneRenderer::upload_scene_buffers(
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT, error)) return false;
         }
         const auto staging_ready = std::chrono::steady_clock::now();
-        const bool parallel_stage = gpu_staging &&
-            staged_bytes >= 64ull * 1024ull * 1024ull;
-        if (parallel_stage) {
-            if (!matter::map_buffer(*staging, error)) return poison(error);
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-            const auto range_uploads = static_cast<uint32_t>(
-                std::count_if(ranges.begin(), ranges.end(),
-                    [](const auto& range) { return range.second != 0; }));
-            if (uploads <= test_fail_after_uploads_ &&
-                test_fail_after_uploads_ - uploads < range_uploads) {
-                error = "forced scene buffer upload failure";
-                return poison(error);
-            }
-            uploads += range_uploads;
-#endif
-            struct CopyJob { const char* source; char* destination; size_t bytes; };
-            std::vector<CopyJob> jobs;
-            constexpr size_t kCopyChunk = 16ull * 1024ull * 1024ull;
-            VkDeviceSize packed_offset = 0;
-            for (const auto& range : ranges) {
-                const size_t source_offset = size_t{range.first} * element_size;
-                const size_t bytes = size_t{range.second} * element_size;
-                for (size_t copied = 0; copied < bytes; copied += kCopyChunk) {
-                    jobs.push_back({static_cast<const char*>(base) + source_offset + copied,
-                        static_cast<char*>(staging->mapped) + packed_offset + copied,
-                        std::min(kCopyChunk, bytes - copied)});
-                }
-                packed_offset += bytes;
-            }
-            std::atomic<size_t> next_job{0};
-            const auto copy_jobs = [&] {
-                for (;;) {
-                    const size_t index = next_job.fetch_add(1, std::memory_order_relaxed);
-                    if (index >= jobs.size()) return;
-                    const CopyJob& job = jobs[index];
-                    std::memcpy(job.destination, job.source, job.bytes);
-                }
-            };
-            const size_t worker_count = std::min<size_t>(
-                8, std::max(1u, std::thread::hardware_concurrency()));
-            std::vector<std::thread> workers;
-            workers.reserve(worker_count - 1);
-            try {
-                for (size_t i = 1; i < worker_count; ++i)
-                    workers.emplace_back(copy_jobs);
-            } catch (const std::system_error&) {
-                // The calling thread still drains every unclaimed chunk.
-            }
-            copy_jobs();
-            for (auto& worker : workers) worker.join();
-            if (!matter::flush_buffer(*staging, 0, staged_bytes, error))
-                return poison(error);
-        }
         VkDeviceSize staged_offset = 0;
         for (const auto& range : ranges) {
             const VkDeviceSize offset = VkDeviceSize{range.first} * element_size;
             const VkDeviceSize size = VkDeviceSize{range.second} * element_size;
             if (gpu_staging) {
-                if (!parallel_stage &&
-                    !upload_at(*staging, static_cast<const char*>(base) + offset,
+                if (!upload_at(*staging, static_cast<const char*>(base) + offset,
                                size, staged_offset)) return false;
                 const VkBufferCopy copy{staged_offset, offset, size};
                 vkCmdCopyBuffer(material_command_buffer, staging->buffer,
@@ -15284,6 +15254,45 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (!ranges.empty() && upload_counter) ++*upload_counter;
         return true;
     };
+    // Bound the CPU bus work even when one registration adds hundreds of MiB.
+    // The budget belongs to the submission serial, so repeated preparation of
+    // the same frame cannot spend it twice. The standalone test API drains
+    // synchronously because it has no subsequent production frames to service.
+    if (upload_frame && static_upload_budget_serial_ != upload_frame->serial) {
+        static_upload_budget_serial_ = upload_frame->serial;
+        static_upload_frame_bytes_ = 0;
+    }
+    VkDeviceSize remaining_budget = upload_frame
+        ? static_upload_budget_bytes_ - std::min(static_upload_budget_bytes_, static_upload_frame_bytes_)
+        : std::numeric_limits<VkDeviceSize>::max();
+    using UploadRanges = std::vector<std::pair<uint32_t, uint32_t>>;
+    UploadRanges selected_vertices, selected_indices, remaining_vertices, remaining_indices;
+    const auto select_ranges = [&](const UploadRanges& source, size_t element_size,
+                                   UploadRanges& selected, UploadRanges& remaining) {
+        for (const auto& range : source) {
+            const auto count = static_cast<uint32_t>(std::min<VkDeviceSize>(
+                range.second, remaining_budget / element_size));
+            if (count) selected.emplace_back(range.first, count);
+            if (count < range.second)
+                remaining.emplace_back(range.first + count, range.second - count);
+            remaining_budget -= VkDeviceSize{count} * element_size;
+        }
+    };
+    // Indices are small and servicing them first lets completed vertex ranges
+    // become visible immediately, without waiting behind later vertices.
+    select_ranges(dirty_index_ranges_, sizeof(uint32_t), selected_indices, remaining_indices);
+    select_ranges(dirty_vertex_ranges_, sizeof(VkRasterVertex), selected_vertices, remaining_vertices);
+    const auto finish_ranges = [&] {
+        for (const auto& range : selected_vertices)
+            static_upload_frame_bytes_ += VkDeviceSize{range.second} * sizeof(VkRasterVertex);
+        for (const auto& range : selected_indices)
+            static_upload_frame_bytes_ += VkDeviceSize{range.second} * sizeof(uint32_t);
+        dirty_cluster_ranges_.clear();
+        dirty_vertex_ranges_ = std::move(remaining_vertices);
+        dirty_index_ranges_ = std::move(remaining_indices);
+        static_upload_dirty_ = dirty_vertex_ranges_.empty() && dirty_index_ranges_.empty()
+            ? StaticUpload::kClean : StaticUpload::kAppend;
+    };
     bool capacity_growth = false;
     if (static_upload_dirty_ == StaticUpload::kAppend) {
         // Streaming fast path. Every static mutation since the last upload
@@ -15301,26 +15310,23 @@ bool VkSceneRenderer::upload_scene_buffers(
                                cluster_staging_.data(), sizeof(GpuCluster),
                                &upload_counters_.cluster_uploads) ||
                 !upload_ranges(vertices_, &frame.static_vertex_upload,
-                               dirty_vertex_ranges_,
+                               selected_vertices,
                                vertex_staging_.data(), sizeof(VkRasterVertex),
                                &upload_counters_.vertex_uploads) ||
                 !upload_ranges(indices_, &frame.static_index_upload,
-                               dirty_index_ranges_,
+                               selected_indices,
                                index_staging_.data(), sizeof(uint32_t),
                                nullptr)) {
                 return false;
             }
             ++upload_counters_.static_append_uploads;
-            dirty_cluster_ranges_.clear();
-            dirty_vertex_ranges_.clear();
-            dirty_index_ranges_.clear();
+            finish_ranges();
             uploaded_cluster_count_ =
                 static_cast<uint32_t>(cluster_staging_.size());
             uploaded_vertex_count_ =
                 static_cast<uint32_t>(vertex_staging_.size());
             uploaded_index_count_ =
                 static_cast<uint32_t>(index_staging_.size());
-            static_upload_dirty_ = StaticUpload::kClean;
             su_note(g_su_append_count, g_su_append_us, nullptr,
                     (uint64_t)std::chrono::duration_cast<
                         std::chrono::microseconds>(
@@ -15496,7 +15502,7 @@ bool VkSceneRenderer::upload_scene_buffers(
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                                 static_rt_input_usage(*vulkan_),
                             "vertex buffer", &frame.static_vertex_upload,
-                            dirty_vertex_ranges_,
+                            selected_vertices,
                             vertex_staging_.data(), sizeof(VkRasterVertex),
                             uploaded_vertex_count_,
                             &upload_counters_.vertex_uploads) ||
@@ -15505,18 +15511,15 @@ bool VkSceneRenderer::upload_scene_buffers(
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                 static_rt_input_usage(*vulkan_),
                             "index buffer", &frame.static_index_upload,
-                            dirty_index_ranges_,
+                            selected_indices,
                             index_staging_.data(), sizeof(uint32_t),
                             uploaded_index_count_, nullptr))
             return poison(error);
         ++upload_counters_.static_growth_uploads;
-        dirty_cluster_ranges_.clear();
-        dirty_vertex_ranges_.clear();
-        dirty_index_ranges_.clear();
+        finish_ranges();
         uploaded_cluster_count_ = static_cast<uint32_t>(cluster_staging_.size());
         uploaded_vertex_count_ = static_cast<uint32_t>(vertex_staging_.size());
         uploaded_index_count_ = static_cast<uint32_t>(index_staging_.size());
-        static_upload_dirty_ = StaticUpload::kClean;
         MATTER_LOGI("vk", "static growth publish=%.2f ms\n",
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - su_append_t0).count());
@@ -15628,6 +15631,43 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_cast<uint32_t>(index_staging_.size());
     }
 
+    // Publish residency only after BOTH triangle streams have their copies
+    // recorded. The barriers above make those copies visible to this frame's
+    // draws and BLAS builds. Prefix counts describe allocation coverage only;
+    // recycled interior ranges require this per-owner gate as well.
+    const auto overlaps = [](const UploadRanges& ranges, uint32_t start, uint32_t count) {
+        return std::any_of(ranges.begin(), ranges.end(), [&](const auto& range) {
+            return uint64_t{range.first} < uint64_t{start} + count &&
+                uint64_t{range.first} + range.second > start;
+        });
+    };
+    bool residency_changed = false;
+    bool instance_residency_changed = false;
+    pending_triangle_parts_.erase(std::remove_if(
+        pending_triangle_parts_.begin(), pending_triangle_parts_.end(),
+        [&](uint32_t slot) {
+            PartRecord& part = parts_[slot];
+            if (!part.live) return true;
+            if (overlaps(dirty_vertex_ranges_, part.vertex_start, part.vertex_count) ||
+                overlaps(dirty_index_ranges_, part.index_start, part.index_count)) return false;
+            part.triangle_resident = true;
+            residency_changed = true;
+            instance_residency_changed |= std::any_of(
+                instance_staging_.begin(), instance_staging_.end(),
+                [slot](const GpuInstance& instance) { return instance.part_slot == slot; });
+            return true;
+        }), pending_triangle_parts_.end());
+    if (instance_residency_changed)
+        ++instance_generation_;  // refresh this slot's masked GPU instances
+    if (residency_changed)
+        ++rt_geometry_epoch_;   // the traced instance set may now grow
+    if (upload_frame && (capacity_growth || static_upload_frame_bytes_ != 0)) {
+        MATTER_LOGI("vk", "static upload frame bytes=%llu pending_parts=%zu publish=%.2f ms",
+            static_cast<unsigned long long>(static_upload_frame_bytes_),
+            pending_triangle_parts_.size(),
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - su_append_t0).count());
+    }
     static_scope.stop();
     if (frame.static_generation != static_generation_) {
         update_descriptor(frame.descriptor_sets[1], 0,
@@ -15809,8 +15849,18 @@ bool VkSceneRenderer::upload_scene_buffers(
         matter::profile::Scope instances_scope(
             engine_prof::id(engine_prof::kPfUploadInstances));
         if (frame.instance_generation != instance_generation_) {
+            const GpuInstance* instances = instance_staging_.data();
+            if (!pending_triangle_parts_.empty()) {
+                resident_instance_scratch_ = instance_staging_;
+                for (auto& instance : resident_instance_scratch_) {
+                    if (instance.part_slot < parts_.size() &&
+                        !parts_[instance.part_slot].triangle_resident)
+                        instance.cluster_count = 0;
+                }
+                instances = resident_instance_scratch_.data();
+            }
             if (!upload_gpu(frame.instances, frame.instance_upload,
-                            instance_staging_.data(), instance_bytes))
+                            instances, instance_bytes))
                 return false;
             if (instance_bytes != 0) ++upload_counters_.instance_uploads;
             frame.instance_generation = instance_generation_;
@@ -16653,6 +16703,7 @@ bool VkSceneRenderer::build_ray_geometry(
         const int found_slot = part_slot_lookup(source.part_hash);
         if (found_slot < 0) continue;
         PartRecord& part = parts_[static_cast<size_t>(found_slot)];
+        if (!part.triangle_resident) continue;
         // ---- Per-module draw overrides, the RT half -------------------------
         //
         // cull.comp reads this same table (by cluster.part_slot, which is the
@@ -16929,6 +16980,7 @@ bool VkSceneRenderer::build_ray_geometry(
             it = geometry_page_warmups_.erase(it); continue;
         }
         auto& part = parts_[static_cast<size_t>(found->second)];
+        if (!part.triangle_resident) { ++it; continue; }
         if (part.rt_lods.size() == 1) {
             auto& lod = part.rt_lods.front();
             if(lod.candidate_serial!=0){++it;continue;}
@@ -20961,6 +21013,10 @@ void VkSceneRenderer::reset() {
     dirty_vertex_ranges_.clear();
     dirty_index_ranges_.clear();
     instance_staging_.clear();
+    pending_triangle_parts_.clear();
+    resident_instance_scratch_.clear();
+    static_upload_budget_serial_ = UINT64_MAX;
+    static_upload_frame_bytes_ = 0;
     instance_part_slots_.clear();
     // The part table below is being discarded, so dynamic slots holding part
     // indices into it cannot survive the reset. The ECS bridge will rebind
