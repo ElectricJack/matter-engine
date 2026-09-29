@@ -115,3 +115,41 @@ postprocessing shell encountered a parser error because this script was edited
 while that shell was running. `frame_attribution.py` generated its
 `attribution.md` and `hitches.md` directly from the intact JSON. All later
 captures completed through the script without that error.
+
+## Retry: rebuilt editor and larger GPU bank
+
+The pool retry began with an editor binary older than the referenced-vertex
+validation fix in `geometry_pages.cpp`. Its cold prepare reproduced the two
+known bounds failures. Rebuilding `matter_editor` from the current branch
+resolved both: `d6d2d2b7faed5068` and `b202773bf55424f4` then finished with
+25 and 21 ready roots. Rebuilt MSVC RelWithDebInfo `geometry_hierarchy_tests`,
+`partstore_tests`, and `vulkan_smoke_tests` all passed when run serially; Vulkan
+smoke reported zero validation errors.
+
+The rebuilt `prepare` audit (`C:/tmp/clear-ridge-3-prepare-rebuilt/`) recorded
+350 distinct terrain outcomes in 2,192.70 s: 110 cache hits and 240
+compilations. It had no paging failures, root-payload rejection, or device
+memory fault, and all 335 desired visible sectors were ready. The audit was
+stopped with 12 background cooks still in flight, so `completed=false` and
+`valid=false`; these are bounded coverage observations, not an idle pass.
+
+To separate the CPU root fix from the 1 GiB geometry GPU bank, the audit tools
+now accept an explicit geometry GPU budget, defaulting to the original
+1,024 MiB. A cache-only `load --geometry-gpu-mb 4096` run
+(`C:/tmp/clear-ridge-3-load-4g/`) lasted 2,314.64 s. It loaded all 350
+prepared terrain assets without a root-payload rejection, geometry admission
+rejection, reservation stall, or device memory fault. At most 369 paged assets
+were admitted, and the highest sampled geometry GPU reservation was
+2,479,909,036 bytes, below the 4 GiB cap. All 335 desired visible sectors
+were ready. Continued background streaming requested 154 further terrain
+manifests that the bounded prepare had not cooked. The final global coverage
+report was 216 unready assets and 216 source fallbacks, and the cache-only
+audit correctly returned `valid=false` without compiling any misses.
+
+This retry strengthens the root-bank conclusion: terrain roots stream through
+the runtime worker beyond the old 1 GiB GPU plateau, including the two repaired
+assets. It still does not prove a fully settled paged StreamMountain load. The
+load audit's global coverage includes background sectors beyond the ready
+visible set, and a complete cache for those sectors was not obtained. The
+earlier POM-off before/after frame captures and task-1 comparisons above remain
+the performance evidence; the 4 GiB load audit did not record a frame sample.
