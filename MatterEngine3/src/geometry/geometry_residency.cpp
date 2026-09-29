@@ -268,6 +268,9 @@ bool Residency::publish(PageTicket ticket, std::shared_ptr<const void> resource)
     // Everything that can allocate completed before the visible state changes.
     resident->raster_and_rt = std::move(resource); page->reservation->release_scratch();
     resident->reservation = std::move(page->reservation); page->decoded = {};
+    // The GPU resource owns the geometry now. Keep descriptors and readiness
+    // for cuts, but release the CPU page so the shared bank can stream others.
+    resident->node.page.reset();
     page->resident = std::move(resident); page->state = Impl::State::Ready;
     --d.active_pages;
     return true;

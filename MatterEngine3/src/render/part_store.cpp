@@ -1653,7 +1653,8 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
             const char* cache_only_env = std::getenv("MATTER_GEOMETRY_CACHE_ONLY");
             const bool cache_only = cache_only_env && std::string(cache_only_env) == "1";
             staged.lp.geometry_pages = geometry::cache_asset(cache_root_ + "/geometry-pages", key,
-                geometry_source, config, {}, error, &geometry_roots_, &cache_report, cache_only);
+                geometry_source, config, {}, error, &geometry_roots_, &cache_report, cache_only,
+                false);
             if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
                 MATTER_LOGI("geometry", "terrain_cache key=%s outcome=%s compiled=%u lookup_ms=%.3f compile_ms=%.3f write_ms=%.3f reason=%s",
                     key, cache_report.lookup == geometry::CacheLoadStatus::Hit ? "hit" :
@@ -1663,7 +1664,7 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
             if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
                 MATTER_LOGI("geometry", "terrain_prepare_end hash=%016llx ready=%u roots=%zu ms=%.3f",
                     static_cast<unsigned long long>(part_hash), staged.lp.geometry_pages ? 1u : 0u,
-                    staged.lp.geometry_pages ? staged.lp.geometry_pages->roots.size() : 0,
+                    staged.lp.geometry_pages ? staged.lp.geometry_pages->root_refs.size() : 0,
                     std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-terrain_page_start).count());
             staged.lp.geometry_source_vt = bool(staged.lp.geometry_pages);
             if (!staged.lp.geometry_pages) MATTER_LOGW("geometry", "terrain %016llx paging failed: %s",

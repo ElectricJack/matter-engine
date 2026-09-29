@@ -327,7 +327,7 @@ inline void run(matter::VulkanDevice& vulkan) {
             std::copy(node.self.bounds.lo, node.self.bounds.lo+3, gpu.lo);
             std::copy(node.self.bounds.hi, node.self.bounds.hi+3, gpu.hi); gpu.error = static_cast<float>(node.self.error);
             for (size_t c = 0; c < node.children.size(); ++c) gpu.children[c] = node_ids.at(node.children[c].page);
-            if (node.page) gpu.ready_part_hash = gpu_ids.at(node.self.page);
+            if (node.ready) gpu.ready_part_hash = gpu_ids.at(node.self.page);
             gpu_nodes.push_back(gpu);
         }
         for (bool fine : {true, false}) {

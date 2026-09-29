@@ -41,8 +41,8 @@ struct ResidentCut {
 };
 struct ResidentHierarchy {
     std::vector<NodeRef> roots;
-    // Missing children are descriptors with an empty page handle. They carry
-    // request identity without accepting an unavailable replacement.
+    // Missing children are descriptors with ready=false. Published nodes keep
+    // ready=true after their CPU page handle is released.
     std::vector<NodeView> nodes;
     std::vector<ResidentHandle> resources;
 };

@@ -196,6 +196,9 @@ static void residency_checks(asset_store::PageCache& cache) {
     CHECK(residency.reserve_upload(root, 100, 10), "reserve root geometry and BLAS scratch");
     CHECK(!residency.ready(a), "uploading root is not render-ready");
     CHECK(residency.publish(root, std::make_shared<int>(1)), "publish raster and RT together");
+    CHECK(residency.resident(root.page) && residency.resident(root.page)->node.ready &&
+          !residency.resident(root.page)->node.page,
+          "published root releases its CPU payload while remaining render-ready");
     CHECK(residency.ready(a) && residency.ready(b), "both owners see ready shared root");
     CHECK(residency.stats().gpu_bytes == 100 && residency.stats().scratch_bytes == 0, "build scratch retires after ready publication");
     CHECK(!residency.evict(root.page), "mandatory root cannot be evicted");
@@ -713,6 +716,33 @@ int main(int argc,char** argv) {
               "root budget rejection is not mislabeled as corrupt geometry");
     }
     {
+        const auto manifest = cache->read_manifest("unique").page;
+        CHECK(manifest != nullptr, "streamed root fixture has a manifest");
+        if (manifest) {
+            RootCache metadata_roots(path.string(), manifest->size + 8);
+            CacheLoadStatus status = CacheLoadStatus::Failed;
+            const auto asset = metadata_roots.load("unique", error, &status, false);
+            CHECK(asset && status == CacheLoadStatus::Hit && asset->roots.empty() &&
+                  asset->root_refs.size() == roots.size() &&
+                  std::equal(asset->root_refs.begin(), asset->root_refs.end(), roots.begin(),
+                             [](const NodeRef& a, const NodeRef& b) {
+                                 return a.page == b.page && a.triangles == b.triangles &&
+                                        a.source_triangles == b.source_triangles;
+                             }),
+                  "terrain admission retains root descriptors without pinning root payloads");
+            CHECK(!metadata_roots.load("unique", error) &&
+                  error.find("budget exceeded") != std::string::npos,
+                  "fixture root payload exceeds the metadata-only bank");
+            if (asset && !asset->root_refs.empty()) {
+                const auto streamed = cache->read({asset->root_refs.front().page})[0];
+                NodeView node;
+                CHECK(streamed.page && decode_node(streamed.page, node, error) &&
+                      node.self.page == asset->root_refs.front().page,
+                      "runtime page cache can stream an admitted root by descriptor");
+            }
+        }
+    }
+    {
         CacheReport report;
         RootCache tiny(path.string(), 32);
         CHECK(!cache_asset(path.string(), "unique", source, config, {}, error, &tiny, &report) &&
@@ -750,6 +780,16 @@ int main(int argc,char** argv) {
     }
     std::vector<uint8_t> leaf_bytes;
     CHECK(encode_node(hierarchy.nodes.front(),{},limits,leaf_bytes,error),error.c_str());
+    {
+        Node with_unused_vertex=hierarchy.nodes.front();
+        with_unused_vertex.mesh.positions.push_back(make_float3(1000,1000,1000));
+        std::vector<uint8_t> unused_bytes;
+        CHECK(encode_node(with_unused_vertex,{},limits,unused_bytes,error),
+              "an unused simplifier vertex outside draw bounds does not reject a geometry page");
+        with_unused_vertex.mesh.indices[0]=static_cast<uint32_t>(with_unused_vertex.mesh.positions.size()-1);
+        CHECK(!encode_node(with_unused_vertex,{},limits,unused_bytes,error),
+              "a referenced vertex outside draw bounds still rejects a geometry page");
+    }
     auto malformed=std::make_shared<asset_store::CachedPage>();
     CHECK(asset_store::decode_page(leaf_bytes.data(),leaf_bytes.size(),limits,malformed->view,error),error.c_str());
     auto index_section=malformed->view.find(3);
