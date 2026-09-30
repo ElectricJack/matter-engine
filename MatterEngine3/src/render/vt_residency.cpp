@@ -1348,7 +1348,7 @@ void VtResidency::set_filler(std::unique_ptr<VtPageFiller> filler) {
 void VtResidency::set_enricher(std::unique_ptr<VtPageEnricher> enricher) {
     for (auto& pending : enrich_queue_) {
         retire_occlusion(std::move(pending.factor));
-        pending.rows = 0;
+        pending.tiles = 0;
     }
     enricher_ = std::move(enricher);
     // Context-dependent ORM must become private before enrichment is queued.
@@ -2501,7 +2501,7 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
         if (p.factor && (p.generation != owner.generation || p.revision != v.content_revision ||
                         p.inputs != v.inputs || !same_settings(p.settings, settings))) {
             retire_occlusion(std::move(p.factor));
-            p.rows = 0;
+            p.tiles = 0;
         }
         const bool separate=enricher_->supports_separate_occlusion() &&
             slot_geometry_lifetimes_[p.slot] && slot_page_metadata_[p.slot].height.version==1;
@@ -2513,7 +2513,7 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
             if (incremental && !p.factor) {
                 p.factor = factor; p.inputs = v.inputs;
                 p.generation = owner.generation; p.revision = v.content_revision;
-                p.rows = 0; p.settings = settings;
+                p.tiles = 0; p.settings = settings;
             }
         }
         VtEnrichRequest request;
@@ -2535,8 +2535,8 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
             request.occlusion_offset=factor->offset();request.occlusion_address=factor->address();
             request.out_enriched=&written[candidates.size()];
             if (incremental) {
-                request.row_begin = p.rows;
-                request.row_count = std::min(enrich_work_budget_.rows(), kVtPageStride - p.rows);
+                request.tile_begin = p.tiles;
+                request.tile_count = std::min(enrich_work_budget_.tiles(), kVtPageTiles - p.tiles);
             }
         }
         enrich_batch_.push_back(request);
@@ -2586,9 +2586,9 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
             v.inputs==request.part_snapshot && !dirty_pages_.count(p.slot);
         if(current && written[i]) {
             if (incremental) {
-                recorded_enrich_rows_ += request.row_count;
-                candidate.pending.rows += request.row_count;
-                if (candidate.pending.rows < kVtPageStride) {
+                recorded_enrich_tiles_ += request.tile_count;
+                candidate.pending.tiles += request.tile_count;
+                if (candidate.pending.tiles < kVtPageTiles) {
                     deferred.push_back(candidate.pending);
                     continue;
                 }
@@ -2724,8 +2724,8 @@ void VtResidency::refresh_budgets() {
     slots_.set_protect_frames(clamp_u32(b.evict_protect_frames, 1u, 100000u));
 }
 
-void VtResidency::observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills, uint32_t rows) {
-    fill_work_budget_.observe(vt_ms, rows);
+void VtResidency::observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills, uint32_t tiles) {
+    fill_work_budget_.observe(vt_ms, tiles);
     if (!recorded_fills || !std::isfinite(vt_ms) || vt_ms <= 0.0f) return;
     // The fill subzone includes the compositor's page bake, BC encode and
     // copies. An unusually costly page cuts the next quota immediately;
@@ -2984,7 +2984,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
                                uint8_t* timing_written) {
     if (!ready_) return true;
     recorded_fill_count_ = 0;
-    recorded_fill_rows_ = recorded_enrich_rows_ = 0;
+    recorded_fill_tiles_ = recorded_enrich_tiles_ = 0;
     const auto stamp = [&](uint32_t zone, bool end) {
         if (!timing_pool || !timing_written) return;
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -3001,7 +3001,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
     stats_.lru_scan_ns = slots_.lru_scan_ns();
 
     queue_dirty_pages();
-    // When even the minimum-progress rows exceed the combined targets, pace
+    // When even the minimum-progress tiles exceed the combined targets, pace
     // fill and AO on alternate frames. Both queues still advance, without
     // adding their individually expensive slices to the same GPU frame.
     const bool pace_pair = filler_ && filler_->supports_incremental_fill() &&
@@ -3023,7 +3023,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
         PROFILE_SCOPE("vt.enrich");
         stamp(matter::kGpuTimingVtEnrich, false);
         if (!defer_enrich) drain_enrich(cmd);
-        PROFILE_COUNT("vt.enrich_rows", recorded_enrich_rows_);
+        PROFILE_COUNT("vt.enrich_tiles", recorded_enrich_tiles_);
         stamp(matter::kGpuTimingVtEnrich, true);
     }
     // --- pool transitions -------------------------------------------------
@@ -3168,7 +3168,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
             const bool is_tail = p.preassigned_slot != 0xFFFFFFFFu;
             if (!is_tail && page_admission_blocked) continue;
             VtFillRequest request;
-            request.work_rows = incremental ? fill_work_budget_.rows() : 0;
+            request.work_tiles = incremental ? fill_work_budget_.tiles() : 0;
             request.variant_hash = v.variant_hash;
             request.rung = static_cast<uint16_t>(v.rung);
             request.mip = static_cast<uint16_t>(p.page.mip);
@@ -3324,8 +3324,8 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
             fill_flags_[i] = fill_pending_[i] = false;
             batch_[i].out_filled = &fill_flags_[i];
             batch_[i].out_pending = &fill_pending_[i];
-            fill_work_rows_[i] = 0;
-            batch_[i].out_work_rows = &fill_work_rows_[i];
+            fill_work_tiles_[i] = 0;
+            batch_[i].out_work_tiles = &fill_work_tiles_[i];
             fill_heights_[i] = {};
             batch_[i].out_height = &fill_heights_[i];
             fill_geometries_[i] = {};
@@ -3343,8 +3343,8 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
             filler_->fill(cmd, batch_.data(), batch_.size());
             stamp(matter::kGpuTimingVtFill, true);
             if (batch_.size() == 1 && fill_pending_[0])
-                recorded_fill_rows_ = fill_work_rows_[0];
-            PROFILE_COUNT("vt.fill_rows", recorded_fill_rows_);
+                recorded_fill_tiles_ = fill_work_tiles_[0];
+            PROFILE_COUNT("vt.fill_tiles", recorded_fill_tiles_);
         }
 
         // --- map or roll back, per request --------------------------------

@@ -59,8 +59,8 @@ struct VtResidencyBudgets {
     // many variants per frame and each renders legacy-flat until its single
     // tail page lands, so tails must never queue behind sharpening fills.
     uint32_t tail_fills_per_frame = 16;
-    // Independent GPU targets. Production pages advance in row slices priced
-    // by retired timestamps; one row ensures progress. 0 restores whole pages.
+    // Independent GPU targets. Production pages advance in 32-texel slices priced
+    // by retired timestamps; one tile ensures progress. 0 restores whole pages.
     float fill_budget_ms = 4.0f;
     float enrich_budget_ms = 4.0f;
     // Tier-2 hemisphere-AO enrichments per frame; 0 keeps the enricher loaded
@@ -181,11 +181,11 @@ inline const props::Group& vt_residency_budgets_group() {
             .label("Fill GPU budget").range(0.0f, 32.0f).units("ms")
             .env("MATTER_VT_FILL_BUDGET_MS")
             .doc("Shared tail/detail fill time target from retired GPU samples. "
-                 "Resumable producers admit row slices; 0 restores whole pages."),
+                 "Resumable producers admit 32-texel slices; 0 restores whole pages."),
         prop(&VtResidencyBudgets::enrich_budget_ms, "enrich_budget_ms")
             .label("AO GPU budget").range(0.0f, 32.0f).units("ms")
             .env("MATTER_VT_ENRICH_BUDGET_MS")
-            .doc("Separate AO row-slice target from retired GPU samples; 0 restores whole pages."),
+            .doc("Separate AO 32-texel slice target from retired GPU samples; 0 restores whole pages."),
         prop(&VtResidencyBudgets::enrich_per_frame, "enrich_per_frame")
             .label("Enrich / frame").range(0.0f, 16.0f)
             .env("MATTER_VT_ENRICH_PER_FRAME")

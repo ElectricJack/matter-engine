@@ -496,7 +496,7 @@ struct VtCompositor::Impl {
         std::shared_ptr<const VtInputSnapshot> inputs;
         uint64_t revision = 0, material_revision = 0;
         uint16_t mip = 0, x = 0, y = 0;
-        uint32_t rows = 0, ring = 0;
+        uint32_t tiles = 0, ring = 0;
         bool live = false, coverage_only = false;
         bool matches(const VtFillRequest& req, uint64_t material) const {
             return live && key == req.preparation_key() && snapshot == req.part_snapshot &&
@@ -2211,8 +2211,8 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
     }
     if (recs.empty()) return;
 
-    const bool incremental = count == 1 && recs.size() == 1 && batch[0].work_rows > 0;
-    uint32_t row_begin = 0, row_count = kPageStore;
+    const bool incremental = count == 1 && recs.size() == 1 && batch[0].work_tiles > 0;
+    uint32_t tile_begin = 0, tile_count = kVtPageTiles;
     if (incremental) {
         const auto& request = *recs[0].request;
         if (!im.partial.matches(request, im.input_revision)) {
@@ -2226,7 +2226,7 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
             im.partial.x = request.page_x; im.partial.y = request.page_y;
             im.partial.coverage_only = request.coverage_only;
             im.partial.live = true;
-        } else if (im.partial.rows && im.partial.ring != ring_index) {
+        } else if (im.partial.tiles && im.partial.ring != ring_index) {
             // Queue order and these transfer dependencies protect both rings,
             // including submissions that are still in flight.
             cmd_memory_barrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -2248,8 +2248,8 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
         }
-        row_begin = im.partial.rows;
-        row_count = std::min(batch[0].work_rows, kPageStore - row_begin);
+        tile_begin = im.partial.tiles;
+        tile_count = std::min(batch[0].work_tiles, kVtPageTiles - tile_begin);
         im.partial.ring = ring_index;
     } else im.partial = {};
 
@@ -2281,17 +2281,17 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
             VkDescriptorSet sets[2] = {rec.entry->set, ring.batch_set};
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     im.composite_pl, 0, 2, sets, 0, nullptr);
-            const uint32_t push[2] = {rec.req_index, row_begin};
+            const uint32_t push[2] = {rec.req_index, tile_begin};
             vkCmdPushConstants(cmd, im.composite_pl,
                                VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, push);
-            if (row_count) vkCmdDispatch(cmd, (kPageStore + 31) / 32, row_count, 1);
+            if (tile_count) vkCmdDispatch(cmd, tile_count, 1, 1);
         }
 
-        if (incremental && row_count) {
-            im.partial.rows += row_count;
+        if (incremental && tile_count) {
+            im.partial.tiles += tile_count;
             // Normal resolve and encoding get a separate frame, even after
             // the last slice; none of the destination pool has changed yet.
-            recs[0].request->mark_pending(row_count);
+            recs[0].request->mark_pending(tile_count);
             return;
         }
 

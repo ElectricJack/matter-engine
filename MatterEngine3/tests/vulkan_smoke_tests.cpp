@@ -5995,14 +5995,14 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     // of assuming a fixed five submissions are enough on a cold worker.
     const auto settle_pages = [&]() {
         uint32_t stable_frames = 0;
-        for (int i = 0; i < 512 && stable_frames < 5; ++i) {
+        for (int i = 0; i < int(4*vt::kVtPageTiles) && stable_frames < 5; ++i) {
             render_once("vt-surfaces: render VT frame");
             const auto stats = renderer.vt_stats();
             stable_frames = stats.fills_total > 0 && stats.queue_depth == 0 &&
                             stats.dirty_pages == 0 && stats.fills_last_frame == 0
                                 ? stable_frames + 1 : 0;
         }
-        CHECK(stable_frames == 5, "vt-surfaces: page work completes within bounded rows");
+        CHECK(stable_frames == 5, "vt-surfaces: page work completes within bounded tiles");
     };
     settle_pages();
     const viewer::VkRasterPixel p_grass = pixel_at(48, 80);
@@ -7299,7 +7299,7 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
         };
         const auto settle = [&] {
             uint32_t stable = 0;
-            for(int i=0;i<240 && stable<5;++i) {
+            for(int i=0;i<int(4*vt::kVtPageTiles) && stable<5;++i) {
                 glfwPollEvents(); frame_with_probe(false,{},{},0,0);
                 const auto s=renderer.vt_stats();
                 stable = s.fills_total && !s.queue_depth && !s.dirty_pages && !s.fills_last_frame ? stable+1 : 0;
@@ -7323,7 +7323,7 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
         };
         // Publish only the pinned tail, then deliberately withhold requested
         // fine pages. A stable coarse source must still yield analytic depth.
-        for(int i=0;i<120 && !renderer.vt_stats().fills_total;++i) {
+        for(int i=0;i<int(vt::kVtPageTiles) && !renderer.vt_stats().fills_total;++i) {
             glfwPollEvents(); frame_with_probe(false,{},{},0,0);
         }
         CHECK(renderer.vt_stats().fills_total==1,"composed POM: only the pinned tail was produced");
@@ -7688,7 +7688,7 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
             CHECK(renderer.update_materials(materials, finished_surface ? 3 : 2, 1, error),
                   error.c_str());
             uint32_t stable = 0;
-            for (int i = 0; i < 240 && stable < 5; ++i) {
+            for (int i = 0; i < int(4*vt::kVtPageTiles) && stable < 5; ++i) {
                 glfwPollEvents();
                 frame_with_probe(false, {}, {}, 0, 0);
                 const auto stats = renderer.vt_stats();

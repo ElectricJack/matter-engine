@@ -623,8 +623,8 @@ Budget/sizing fields are property-registry `.env()` bindings, declared together
 in `MatterEngine3/include/matter/vt_budgets.h`: `MATTER_VT_MAX_VARIANTS`
 (read-only after launch), `MATTER_VT_FILLS_PER_FRAME`,
 `MATTER_VT_TAIL_FILLS_PER_FRAME`, `MATTER_VT_FILL_BUDGET_MS` (shared
-GPU row-slice target for tail and detail fills, default 4 ms; 0 restores
-whole-page dispatch), `MATTER_VT_ENRICH_BUDGET_MS` (separate AO row-slice
+GPU 32-texel slice target for tail and detail fills, default 4 ms; 0 restores
+whole-page dispatch), `MATTER_VT_ENRICH_BUDGET_MS` (separate AO 32-texel slice
 target, default 4 ms; 0 restores whole-page dispatch), `MATTER_VT_ENRICH_PER_FRAME`,
 `MATTER_VT_MESH_BUDGET_MB`, `MATTER_VT_INDIRECTION_MB` (read-only),
 `MATTER_VT_POOL_MB` (read-only — pool is allocated once at renderer init),

@@ -3922,7 +3922,7 @@ int main() {
                     auto sliced = make_request(direct, 0, 2);
                     bool done = false, pending = false;
                     sliced.out_filled = &done; sliced.out_pending = &pending;
-                    sliced.work_rows = 7;
+                    sliced.work_tiles = 7;
                     CHECK(run_fill(&sliced, 1) && !done && pending && read_slot(2, actual) &&
                         actual.albedo == old.albedo && actual.normal == old.normal && actual.orm == old.orm &&
                         actual.aux == old.aux && actual.height == old.height,
@@ -3931,9 +3931,9 @@ int main() {
                     // Every old row must be discarded before publication.
                     sliced.mip = 1; sliced.content_revision = 2;
                     uint32_t calls = 0;
-                    while (!done && calls < 140) {
+                    while (!done && calls < 160) {
                         pending = false;
-                        sliced.work_rows = calls % 2 ? 3 : 7;
+                        sliced.work_tiles = calls % 2 ? 3 : 7;
                         CHECK(run_fill(&sliced, 1), "sliced fill: bounded submission");
                         CHECK(done || pending, "sliced fill: every slice reports progress or completion");
                         ++calls;
@@ -3975,12 +3975,12 @@ int main() {
                         CHECK(tc.submit(err) && recorded, "sliced AO: whole-page reference recorded");
                         request.occlusion_buffer = factors[1].buffer; request.occlusion_address = factors[1].address;
                         enricher->invalidate_part(direct.variant_hash);
-                        request.row_count = 3; recorded = false;
+                        request.tile_count = 3; recorded = false;
                         CHECK(tc.begin(err),err.c_str()); enricher->enrich(tc.cmd,&request,1);
                         CHECK(tc.submit(err) && !recorded,
                             "sliced AO: a cold acceleration build defers row zero without publication");
-                        for (uint32_t row=0;row<kPageStore;row+=3) {
-                            request.row_begin = row; request.row_count = std::min(3u,kPageStore-row);
+                        for (uint32_t tile=0;tile<vt::kVtPageTiles;tile+=7) {
+                            request.tile_begin = tile; request.tile_count = std::min(7u,vt::kVtPageTiles-tile);
                             ++request.frame_index; recorded = false;
                             CHECK(tc.begin(err),err.c_str()); enricher->enrich(tc.cmd,&request,1);
                             CHECK(tc.submit(err) && recorded, "sliced AO: requested rows recorded across ring wraps");

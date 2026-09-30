@@ -222,7 +222,7 @@ class VtCompositor final : public VtPageFiller {
     // unretired" contract above into a correctness requirement rather than a
     // suggestion.
     //
-    // A single request with work_rows>0 advances private scratch and reports
+    // A single request with work_tiles>0 advances private scratch and reports
     // pending until normal resolve/encode/copy complete on a later call. Keep
     // that request first in the queue; changing its identity discards old rows.
     // At most 256 synchronous requests are recorded per call; requests past that, and

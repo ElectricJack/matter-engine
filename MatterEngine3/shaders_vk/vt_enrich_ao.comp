@@ -6,7 +6,7 @@
 // vt_enrich_ao.comp — WP-H tier-2 hemisphere AO page enrichment (chart-space
 // virtual texturing, spec Phase 6).
 //
-// Dispatches cover bounded rows of an already-filled page (or resident tail),
+// Dispatches cover bounded 32-texel tiles of an already-filled page (or resident tail),
 // using 32x1 workgroups. All 136^2 texels are eventually written, including
 // the 4-texel border, before the private factor publishes. Per texel:
 //
@@ -175,7 +175,9 @@ bool occludeQuery(vec3 P, vec3 dir, float maxRayDist) {
 }
 
 void main() {
-    uvec2 t = gl_GlobalInvocationID.xy + uvec2(0, requests[pc.req_index].c.w);
+    const uint tiles_per_row = (uint(VT_PAGE_STORE) + 31u) / 32u;
+    uint tile = gl_WorkGroupID.x + requests[pc.req_index].c.w;
+    uvec2 t = uvec2((tile % tiles_per_row) * 32u + gl_LocalInvocationID.x, tile / tiles_per_row);
     if (t.x >= uint(VT_PAGE_STORE) || t.y >= uint(VT_PAGE_STORE)) return;
     GpuEnrichRequest req = requests[pc.req_index];
     ivec3 store_at = ivec3(ivec2(t), int(req.a.w));

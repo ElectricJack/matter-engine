@@ -676,7 +676,7 @@ inline void run_slice_publication(matter::VulkanDevice& vulkan) {
         std::vector<uint64_t> owners;
         bool supports_incremental_fill() const override { return true; }
         void fill(VkCommandBuffer cmd,const vt::VtFillRequest* requests,size_t count) override {
-            CHECK(count == 1 && requests[0].work_rows <= 4, "sliced publication: one priced slice admitted");
+            CHECK(count == 1 && requests[0].work_tiles <= 4, "sliced publication: one priced slice admitted");
             owners.push_back(requests[0].owner_key);
             if (owners.size() % 4) requests[0].mark_pending();
             else producer->fill(cmd,requests,count);
@@ -712,9 +712,14 @@ inline void run_slice_publication(matter::VulkanDevice& vulkan) {
         bool supports_incremental_enrichment() const override { return true; }
         void enrich(VkCommandBuffer cmd,const vt::VtEnrichRequest* requests,size_t count) override {
             CHECK(count==1, "sliced AO: one private factor admitted");
-            const auto& r = requests[0]; starts.push_back(r.row_begin); addresses.push_back(r.occlusion_address);
-            CHECK(r.row_count<=4 && r.occlusion_buffer, "sliced AO: bounded real factor storage");
-            vkCmdFillBuffer(cmd,r.occlusion_buffer,r.occlusion_offset+r.row_begin*136u*2u,r.row_count*136u*2u,0x80008000u);
+            const auto& r = requests[0]; starts.push_back(r.tile_begin); addresses.push_back(r.occlusion_address);
+            CHECK(r.tile_count<=4 && r.occlusion_buffer, "sliced AO: bounded real factor storage");
+            for (uint32_t tile=r.tile_begin;tile<r.tile_begin+r.tile_count;++tile) {
+                const uint32_t x=(tile%vt::kVtPageTilesPerRow)*vt::kVtPageTileWidth;
+                const uint32_t texel=(tile/vt::kVtPageTilesPerRow)*vt::kVtPageStride+x;
+                const uint32_t width=std::min(vt::kVtPageTileWidth,vt::kVtPageStride-x);
+                vkCmdFillBuffer(cmd,r.occlusion_buffer,r.occlusion_offset+texel*2u,width*2u,0x80008000u);
+            }
             r.mark_enriched();
         }
         void invalidate_part(uint64_t) override {}
@@ -731,11 +736,11 @@ inline void run_slice_publication(matter::VulkanDevice& vulkan) {
           "sliced AO: next frame retains private factor and cursor");
     residency.invalidate_owners({owners[0]});
     residency.observe_gpu_fill_ms(12,1,1); residency.observe_gpu_enrich_ms(12,1);
-    CHECK(frames.next(residency,11) && residency.recorded_fill_rows()==1 && residency.recorded_enrich_rows()==0,
+    CHECK(frames.next(residency,11) && residency.recorded_fill_tiles()==1 && residency.recorded_enrich_tiles()==0,
           "sliced pair budget: an expensive fill advances while AO waits");
-    CHECK(frames.next(residency,12) && residency.recorded_fill_rows()==0 && residency.recorded_enrich_rows()==1,
+    CHECK(frames.next(residency,12) && residency.recorded_fill_tiles()==0 && residency.recorded_enrich_tiles()==1,
           "sliced pair budget: the next frame advances AO while fill waits");
-    for (uint64_t frame=13;frame<360 && residency.stats().enrich_total<2;++frame)
+    for (uint64_t frame=13;frame<1600 && residency.stats().enrich_total<2;++frame)
         CHECK(frames.next(residency,frame), "sliced AO: cancellation and completion frames submitted");
     CHECK(residency.stats().enrich_total==2 && residency.stats().occlusion_pages==2 &&
           residency.stats().enrich_queue_depth==0,

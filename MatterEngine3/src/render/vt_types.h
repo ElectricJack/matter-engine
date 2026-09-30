@@ -41,6 +41,10 @@ struct VtFiniteSources;
 // out as a kVtPagesPerLayerEdge^2 grid per array layer.
 constexpr uint32_t kVtPageStride =
     chart_atlas::kVtPagePayload + 2u * chart_atlas::kVtPageBorder;   // 136
+// One horizontal warp is the minimum independently scheduled GPU slice.
+constexpr uint32_t kVtPageTileWidth = 32u;
+constexpr uint32_t kVtPageTilesPerRow = (kVtPageStride + kVtPageTileWidth - 1u) / kVtPageTileWidth;
+constexpr uint32_t kVtPageTiles = kVtPageTilesPerRow * kVtPageStride; // 680
 constexpr uint32_t kVtPagesPerLayerEdge = 16u;
 constexpr uint32_t kVtPagesPerLayer = kVtPagesPerLayerEdge * kVtPagesPerLayerEdge;
 constexpr uint32_t kVtPoolLayerEdgeTexels = kVtPagesPerLayerEdge * kVtPageStride;  // 2176
@@ -396,12 +400,12 @@ struct VtFillRequest {
     // Bounded production may retain private scratch across calls. Pending
     // requests keep their queue age and priority without publishing any bytes.
     bool* out_pending = nullptr;
-    uint32_t work_rows = 0; // 0: complete synchronous page; otherwise a slice
-    uint32_t* out_work_rows = nullptr;
+    uint32_t work_tiles = 0; // 0: complete synchronous page; otherwise a slice
+    uint32_t* out_work_tiles = nullptr;
     bool linear_resolve = false; // exact linear reference for GPU comparisons
-    void mark_pending(uint32_t rows = 0) const {
+    void mark_pending(uint32_t tiles = 0) const {
         if (out_pending) *out_pending = true;
-        if (out_work_rows) *out_work_rows = rows ? rows : work_rows;
+        if (out_work_tiles) *out_work_tiles = tiles ? tiles : work_tiles;
     }
 
     // Residency publication identity. A producer records into isolated scratch
@@ -552,8 +556,8 @@ struct VtEnrichRequest {
     VkDeviceAddress occlusion_address = 0;
     bool* out_enriched = nullptr;
     // A separate factor producer reports a recorded slice through out_enriched.
-    // The caller retains its lease/cursor and publishes only after all rows.
-    uint32_t row_begin = 0, row_count = kVtPageStride;
+    // The caller retains its lease/cursor and publishes only after all tiles.
+    uint32_t tile_begin = 0, tile_count = kVtPageTiles;
     void mark_enriched() const {if(out_enriched)*out_enriched=true;}
 
     VtPreparationKey preparation_key() const {

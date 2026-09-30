@@ -1157,21 +1157,21 @@ void test_receiver_coverage_pages() {
 int main() {
     {
         VtGpuWorkBudget budget;
-        CHECK(budget.rows() == 2, "GPU work budget bounds unpriced page transitions to two rows");
+        CHECK(budget.tiles() == 2, "GPU work budget bounds unpriced page transitions to two tiles");
         VtGpuWorkBudget other;
         CHECK(!budget.pair_exceeds_budget(other), "cheap paired slices fit their combined targets");
         budget.observe(40, 4);
-        CHECK(budget.rows() == 1, "costly slice immediately reduces admission to one row");
+        CHECK(budget.tiles() == 1, "costly slice immediately reduces admission to one tile");
         CHECK(budget.pair_exceeds_budget(other), "expensive minimum-progress work requires separate frames");
         budget.observe(NAN, 8); budget.observe(0, 8); budget.observe(10, 0);
-        CHECK(budget.rows() == 1, "invalid/empty GPU samples cannot inflate the budget");
+        CHECK(budget.tiles() == 1, "invalid/empty GPU samples cannot inflate the budget");
         for (int i=0;i<200;++i) budget.observe(.1f, 1);
-        CHECK(budget.rows() == 2 && !budget.pair_exceeds_budget(other), "cheap retired samples recover within the row ceiling");
+        CHECK(budget.tiles() == 2 && !budget.pair_exceeds_budget(other), "cheap retired samples recover within the tile ceiling");
         budget.set_ms(0);
-        CHECK(!budget.enabled() && budget.rows() == 136, "zero time target restores full-page work");
+        CHECK(!budget.enabled() && budget.tiles() == kVtPageTiles, "zero time target restores full-page work");
         CHECK(!budget.pair_exceeds_budget(other), "disabled time targets bypass pair pacing");
         budget.set_ms(NAN);
-        CHECK(budget.enabled() && budget.rows() <= 2, "invalid settings restore a bounded default");
+        CHECK(budget.enabled() && budget.tiles() <= 2, "invalid settings restore a bounded default");
     }
     {
         std::vector<GpuChart> charts(1); std::vector<GpuTriGeometry> tris(2200);

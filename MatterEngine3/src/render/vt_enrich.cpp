@@ -63,7 +63,7 @@ namespace {
 struct GpuEnrichRequest {
     uint32_t a[4];   // page_x, page_y, mip, out_layer
     uint32_t b[4];   // cand_offset, cand_count, sample_count, seed
-    uint32_t c[4];   // slot_origin_x, slot_origin_y, pool_layer, unused
+    uint32_t c[4];   // slot_origin_x, slot_origin_y, pool_layer, tile_begin
     float    d[4];   // strength, cap_texels, cap_meters, min_ao
     uint32_t e[4];   // optional packed R16 factor BDA, reserved
 };
@@ -1269,7 +1269,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         if(req.occlusion_address && (!req.occlusion_buffer || (req.occlusion_address&15u) || (req.occlusion_offset&3u))) {
             ++stats_.requests_skipped;continue;
         }
-        if (req.row_begin >= kPageStore || !req.row_count || req.row_count > kPageStore - req.row_begin) {
+        if (req.tile_begin >= kVtPageTiles || !req.tile_count || req.tile_count > kVtPageTiles - req.tile_begin) {
             ++stats_.requests_skipped; continue;
         }
         // Enforce the single-ORM-image invariant the write-back barriers
@@ -1331,7 +1331,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         g.c[0] = sx;
         g.c[1] = sy;
         g.c[2] = layer;
-        g.c[3] = req.row_begin;
+        g.c[3] = req.tile_begin;
         g.d[0] = settings.strength;
         g.d[1] = settings.cap_texels;
         g.d[2] = settings.cap_meters;
@@ -1350,16 +1350,16 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     for (Impl::VariantEntry* entry : pending_builds)
         im.record_as_build(cmd, *entry);
     // Build and trace occupy separate frames on the incremental path. The
-    // caller retains the private factor and retries row zero, still invisible.
-    if (count == 1 && batch[0].occlusion_address && batch[0].row_count < kPageStore && !pending_builds.empty())
+    // caller retains the private factor and retries tile zero, still invisible.
+    if (count == 1 && batch[0].occlusion_address && batch[0].tile_count < kVtPageTiles && !pending_builds.empty())
         return;
 
-    // Clear only when row zero will actually trace. A build-only frame must
+    // Clear only when tile zero will actually trace. A build-only frame must
     // not clear the same factor again on its retry without a transfer dependency.
     // Each invocation ORs disjoint R16 halves into the zeroed packed words.
     for (const Rec& rec : recs) {
         const auto& req = *rec.request;
-        if (req.occlusion_address && req.row_begin == 0)
+        if (req.occlusion_address && req.tile_begin == 0)
             vkCmdFillBuffer(cmd, req.occlusion_buffer, req.occlusion_offset, kPageStore*kPageStore*2, 0);
     }
 
@@ -1385,7 +1385,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                                 im.enrich_pl, 0, 2, sets, 0, nullptr);
         vkCmdPushConstants(cmd, im.enrich_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4,
                            &rec.req_index);
-        vkCmdDispatch(cmd, (kPageStore + 31) / 32, rec.request->row_count, 1);
+        vkCmdDispatch(cmd, rec.request->tile_count, 1, 1);
     }
 
     cmd_memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1449,7 +1449,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     cmd_memory_barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     for(const Rec& rec:recs)if(rec.request->occlusion_address) {
-        if (rec.request->row_begin + rec.request->row_count == kPageStore)
+        if (rec.request->tile_begin + rec.request->tile_count == kVtPageTiles)
             ++stats_.pages_enriched;
         rec.request->mark_enriched();
     }
