@@ -146,6 +146,7 @@
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/vertex_cache_order.h"
 #include "render/impostor_mips.h"
 #include "render/geometry_world_runtime.h"
 #include "render/chart_static_surface.h"
@@ -12531,7 +12532,13 @@ bool build_vulkan_part(uint64_t part_hash,
         // Append indices rebased by this mesh's vertex offset within the part.
         // Index VALUES become part-local: already include mesh_offsets[mi].
         mesh_index_offsets[mi] = static_cast<uint32_t>(part.indices.size());
-        for (uint32_t idx : mesh.indices)
+        // Each loaded mesh is one complete cluster/rung draw span. Only the
+        // GPU copy changes order: CPU bake/chart meshes retain their identity.
+        // BLAS construction and hit decoding both consume this same GPU index
+        // buffer, so primitive IDs still address the triangle actually built.
+        std::vector<uint32_t> ordered = mesh.indices;
+        viewer::optimize_vertex_cache_order(ordered, mesh.vertex_count);
+        for (uint32_t idx : ordered)
             part.indices.push_back(mesh_offsets[mi] + idx);
     }
     if (part.vertices.empty()) return false;

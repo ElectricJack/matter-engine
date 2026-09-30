@@ -781,6 +781,15 @@ when supported and logs the driver's executable statistics for `gbuffer.frag`
 and `vt_composite.comp` at pipeline creation. The script's `PIPELINE_STATS=1`
 switch passes it through WSL interop. Driver statistics are static compilation
 properties, not runtime occupancy counters.
+`MATTER_GBUFFER_WORKLOAD=1` instead records runtime Vulkan pipeline statistics
+for the G-buffer: input primitives, vertex shader invocations, primitives after
+clipping, and fragment shader invocations. The optional query pool belongs to
+each fenced frame slot; unsupported devices log a warning and continue.
+`GBUFFER_WORKLOAD=1 tools/streammountain_attribution.sh ...` passes the flag
+through WSL and retains `[gbuffer-workload]` lines in each capture log. Counts
+include helper fragment invocations, so fragments divided by pixel count is
+workload per pixel, not an exact visible-surface overdraw count. The logged
+frame serial is the readback frame, not the older query's submission serial.
 
 `MATTER_VSYNC`, `MATTER_VK_ROBUSTNESS`, `MATTER_VK_SMOKE_MODE` (§ QA cookbook
 recipe 6), `MATTER_VK_STATIC_RESERVE_CLUSTER_MB` / `_VERTEX_MB` / `_INDEX_MB`

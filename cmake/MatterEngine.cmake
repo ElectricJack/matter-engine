@@ -468,6 +468,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/part_asset_flat_refs_tests.cpp)
     matter_add_engine_cpu_test(eval_world_tests
         MatterEngine3/tests/eval_world_tests.cpp)
+    matter_add_engine_cpu_test(vertex_cache_order_tests
+        MatterEngine3/tests/vertex_cache_order_tests.cpp)
     matter_add_engine_cpu_test(lod_distance_tests
         MatterEngine3/tests/lod_distance_tests.cpp)
     matter_add_engine_cpu_test(event_channel_tests

@@ -3075,6 +3075,8 @@ private:
         bool rt_tlas_valid = false;
         // GPU timestamp query pool: one begin/end pair per kGpuZone* lane.
         VkQueryPool ts_pool = VK_NULL_HANDLE;
+        VkQueryPool raster_stats_pool = VK_NULL_HANDLE;
+        bool raster_stats_written = false;
         uint32_t vt_recorded_fills = 0;
         uint32_t vt_fill_tiles = 0, vt_enrich_tiles = 0;
         // Per zone: bit 0 set when begin was written, bit 1 when end was.

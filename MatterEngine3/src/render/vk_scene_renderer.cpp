@@ -198,6 +198,15 @@ bool lighting_detail_timers_enabled() {
     return enabled;
 }
 
+// Opt-in workload counters, read only after the owning frame fence completes.
+bool raster_workload_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MATTER_GBUFFER_WORKLOAD");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
 // Experimental lossy light budgets are process-fixed: zero keeps exact lighting.
 // Read once so a live environment edit cannot change lighting without history
 // invalidation. Metadata carries primary in byte 0 and secondary in byte 1.
@@ -796,6 +805,7 @@ struct RasterRecord {
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     uint32_t* recorded_water_draw_count = nullptr;
 #endif
+    VkQueryPool raster_stats_pool = VK_NULL_HANDLE;
     VkSceneRenderer* water_forward_owner = nullptr;
     void* water_forward_record = nullptr;
     const VkSparseVoxelScene* sparse_voxels = nullptr;
@@ -997,6 +1007,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         record.ts_written[record.gbuffer_zone] |= 1u;
     }
     vkCmdBeginRendering(command_buffer, &rendering);
+    if (record.raster_stats_pool != VK_NULL_HANDLE)
+        vkCmdBeginQuery(command_buffer, record.raster_stats_pool, 0, 0);
     vkCmdSetViewport(command_buffer, 0, 1, &raster_viewport);
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1125,6 +1137,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     }
     if (record.sparse_voxels && record.sparse_voxel_matrices)
         record.sparse_voxels->record(command_buffer, *record.sparse_voxel_matrices, record.frame_slot);
+    if (record.raster_stats_pool != VK_NULL_HANDLE)
+        vkCmdEndQuery(command_buffer, record.raster_stats_pool, 0);
     vkCmdEndRendering(command_buffer);
     // WP-E: extract visible requests into this frame slot's compact readback
     // buffer; it is consumed at the next begin_frame on the same slot.
@@ -3175,6 +3189,8 @@ void VkSceneRenderer::destroy_pipeline() {
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     for (auto& f : frames_) {
+        if (f.raster_stats_pool != VK_NULL_HANDLE)
+            vkDestroyQueryPool(vulkan_->device(), f.raster_stats_pool, nullptr);
         if (f.ts_pool != VK_NULL_HANDLE) {
             vkDestroyQueryPool(device, f.ts_pool, nullptr);
             f.ts_pool = VK_NULL_HANDLE;
@@ -5774,6 +5790,27 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             }
         }
     }
+    if (raster_workload_enabled()) {
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(vulkan_->physical_device(), &features);
+        if (features.pipelineStatisticsQuery) {
+            for (auto& candidate : next_frames) {
+                VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+                info.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+                info.queryCount = 1;
+                info.pipelineStatistics =
+                    VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
+                if (vkCreateQueryPool(vulkan_->device(), &info, nullptr,
+                                      &candidate.raster_stats_pool) != VK_SUCCESS)
+                    MATTER_LOGW("gbuffer-workload", "query pool unavailable");
+            }
+        } else {
+            MATTER_LOGW("gbuffer-workload", "pipeline statistics unsupported");
+        }
+    }
     if (descriptor_pool_ != VK_NULL_HANDLE) {
         vulkan_->wait_idle();
         vkDestroyDescriptorPool(vulkan_->device(), descriptor_pool_, nullptr);
@@ -5782,6 +5819,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         vkDestroyDescriptorPool(vulkan_->device(),
                                 water_forward_descriptor_pool_, nullptr);
     for (auto& f : frames_) {
+        if (f.raster_stats_pool != VK_NULL_HANDLE)
+            vkDestroyQueryPool(vulkan_->device(), f.raster_stats_pool, nullptr);
         if (f.ts_pool != VK_NULL_HANDLE) {
             vkDestroyQueryPool(vulkan_->device(), f.ts_pool, nullptr);
             f.ts_pool = VK_NULL_HANDLE;
@@ -16209,6 +16248,24 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     test_last_rt_geometry_records_.clear();
     test_last_rt_blas_build_count_ = 0;
 #endif
+    if (selected.raster_stats_pool != VK_NULL_HANDLE) {
+        if (selected.raster_stats_written) {
+            // Query bits are returned in increasing bit order, then availability.
+            uint64_t counts[5]{};
+            const VkResult result = vkGetQueryPoolResults(vulkan_->device(),
+                selected.raster_stats_pool, 0, 1, sizeof(counts), counts,
+                sizeof(counts), VK_QUERY_RESULT_64_BIT |
+                                VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (result == VK_SUCCESS && counts[4])
+                MATTER_LOGI("gbuffer-workload",
+                    "frame=%llu primitives=%llu vertices=%llu clipped=%llu fragments=%llu",
+                    (unsigned long long)frame.serial,
+                    (unsigned long long)counts[0], (unsigned long long)counts[1],
+                    (unsigned long long)counts[2], (unsigned long long)counts[3]);
+        }
+        vkCmdResetQueryPool(frame.command_buffer, selected.raster_stats_pool, 0, 1);
+        selected.raster_stats_written = false;
+    }
     // GPU timestamp readback, reset, and begin of the 'total' zone.
     // Must happen outside any render pass (vkCmdResetQueryPool requirement).
     if (gpu_timers_supported_ && selected.ts_pool != VK_NULL_HANDLE) {
@@ -18736,6 +18793,8 @@ bool VkSceneRenderer::record_cull_and_render(
                         this,              // WP-E: vt_hooks
                         kGpuZoneVt,         // WP-E: vt_zone
                         kGpuZoneVtFeedbackReadback};
+    record.raster_stats_pool = selected.raster_stats_pool;
+    selected.raster_stats_written = selected.raster_stats_pool != VK_NULL_HANDLE;
     record.sparse_voxels = sparse_voxels_.get();
     record.sparse_voxel_matrices = &matrices;
     record.sparse_temporal=sparse_temporal();

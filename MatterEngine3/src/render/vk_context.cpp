@@ -1430,6 +1430,8 @@ struct VulkanDevice::Impl {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.features.drawIndirectFirstInstance = VK_TRUE;
         features2.features.multiDrawIndirect = VK_TRUE;
+        features2.features.pipelineStatisticsQuery =
+            rt_features2.features.pipelineStatisticsQuery;
         // VK_POLYGON_MODE_LINE (the wireframe debug view) is invalid unless
         // this is enabled at logical-device creation. It is optional: devices
         // without it retain filled rendering and the editor reports the
