@@ -18170,8 +18170,10 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                 ++last_rt_trace_dispatches_;
             };
             if (raw_diffuse_extent_.width == raw_reflection_extent_.width &&
-                raw_diffuse_extent_.height == raw_reflection_extent_.height) {
-                // Identical extents retain the original combined dispatch.
+                raw_diffuse_extent_.height == raw_reflection_extent_.height &&
+                !lighting_detail_timers_enabled()) {
+                // Identical extents retain the original combined dispatch
+                // unless profiling requests attribution at unchanged ray counts.
                 trace_signal(raw_diffuse_extent_, 0u);
             } else {
                 // These dispatches write disjoint signal images. Their shared

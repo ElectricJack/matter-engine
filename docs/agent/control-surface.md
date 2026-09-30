@@ -704,9 +704,11 @@ to change them):
   restart required. Set 1 to enable the additional profiling timestamp pairs for
   `hdr_lighting` (zone 21), `rt_gi_diffuse` (22),
   `rt_gi_reflection_transmission` (23), and `primary_light_cull` (24).
-  Rendering and the original `rt_gi`
-  aggregate and `composite` display-transform timers remain unchanged.
-  Previous zone indices remain intact in the 25-zone contract: disabled detail zones have
+  GI uses separate diffuse and reflection/transmission dispatches even when
+  their extents match, so both child zones receive samples at unchanged ray
+  counts, source pixels and random streams. The original `rt_gi` aggregate
+  and `composite` display-transform timers remain. Previous zone indices
+  remain intact in the 28-zone contract: disabled detail zones have
   no written timestamps or validity bits, so raw perf statistics report zero
   samples with null median/p95 (EMA fields report 0). Use matching restarted
   captures to measure the incremental cost of these timestamp barriers. From

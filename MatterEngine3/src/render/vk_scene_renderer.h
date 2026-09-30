@@ -2348,7 +2348,7 @@ public:
     static constexpr uint32_t kGpuZoneRtLocalDirect = 20;
     // HDR composite.frag lighting reconstruction, before the display transform.
     static constexpr uint32_t kGpuZoneHdrLighting = 21;
-    // Children of RtGi, available only for the split-resolution dispatch path.
+    // Children of RtGi, available for split extents or detailed profiling.
     static constexpr uint32_t kGpuZoneRtGiDiffuse = 22;
     static constexpr uint32_t kGpuZoneRtGiReflectionTransmission = 23;
     static constexpr uint32_t kGpuZonePrimaryLightCull = 24;

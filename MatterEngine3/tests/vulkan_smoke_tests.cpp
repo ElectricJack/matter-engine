@@ -13216,6 +13216,21 @@ static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
               error.empty() ? "render baked-AO-zero GI fixture"
                             : error.c_str());
         renderer.finish_ray_tracing_frame(ao_frame.serial, true);
+        CHECK(renderer.test_raw_diffuse_extent().width ==
+                  renderer.test_raw_reflection_extent().width &&
+              renderer.test_raw_diffuse_extent().height ==
+                  renderer.test_raw_reflection_extent().height,
+              "full-rate GI fixture exercises equal signal extents");
+        if (renderer.gpu_timers_supported()) {
+            const char* detail = std::getenv("MATTER_GPU_LIGHTING_DETAIL_TIMERS");
+            const uint8_t expected = detail && std::strcmp(detail, "1") == 0
+                ? 3u : 0u;
+            CHECK(renderer.test_gpu_zone_written(ao_frame.frame_slot,
+                      viewer::VkSceneRenderer::kGpuZoneRtGiDiffuse) == expected &&
+                  renderer.test_gpu_zone_written(ao_frame.frame_slot,
+                      viewer::VkSceneRenderer::kGpuZoneRtGiReflectionTransmission) == expected,
+                  "equal-size GI writes both child timestamp pairs only for detailed profiling");
+        }
         float ao_zero_max_raw = 0.0f;
         float ao_min_visibility = 1.0f;
         float ao_max_visibility = 0.0f;
@@ -13274,6 +13289,11 @@ static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
               error.empty() ? "render RT-active GI-disabled fixture"
                             : error.c_str());
         renderer.finish_ray_tracing_frame(disabled_gi_frame.serial, true);
+        CHECK(renderer.test_gpu_zone_written(disabled_gi_frame.frame_slot,
+                  viewer::VkSceneRenderer::kGpuZoneRtGiDiffuse) == 0u &&
+              renderer.test_gpu_zone_written(disabled_gi_frame.frame_slot,
+                  viewer::VkSceneRenderer::kGpuZoneRtGiReflectionTransmission) == 0u,
+              "GI disable leaves child timing queries unavailable");
         bool disabled_receiver_seen = false;
         float disabled_receiver_raw = 0.0f;
         float disabled_min_visibility = 1.0f;
