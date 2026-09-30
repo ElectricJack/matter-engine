@@ -142,6 +142,10 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [StreamMountain GI attribution and specialization](findings/streammountain-gi-attribution-2026-09-29.md)
+  identifies diffuse as the dominant GI lane, records shader specialization
+  and the POM-off secondary-hit skip, and compares native captures with the
+  task-1 baseline while retaining fixed-seed signal and material checks.
 - [VT normal-frame readiness](findings/vt-normal-frame-readiness-2026-09-29.md)
   reproduces the unchanged smoke failure and verifies bounded residency waits
   with the original raster/RT normal oracles and parity thresholds.
