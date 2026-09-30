@@ -713,12 +713,21 @@ to change them):
   samples with null median/p95 (EMA fields report 0). Use matching restarted
   captures to measure the incremental cost of these timestamp barriers. From
   WSL, include this variable in `WSLENV` when launching the native editor.
+- `MATTER_RT_GI_SPECIALIZE=0|1` — default 1, restart required. Compiles
+  diffuse and reflection/transmission ownership separately from the shared GI
+  implementation, preserving rays, resolutions, source pixels and random
+  streams. Set 0 to use the original runtime-masked shader; equal extents then
+  combine unless detailed timers request a split. Separate compiled lanes use
+  disjoint output images. `LIGHTING_DETAIL=1 GI_SPECIALIZE=0|1` in
+  `tools/streammountain_attribution.sh` compares their child timings. The
+  POM-off hit path skips march-only metrics and redundant parallax lookup in
+  both modes; this switch changes raygen specialization only.
 - `MATTER_PRIMARY_LIGHT_CULLING=0|1` — default 0, restart required. Builds
   conservative 16×16 primary receiver masks and compact light lists from
   current jittered G-buffer depth, rejecting finite-range and spotlight-cone
   misses before raster/RT direct BRDF evaluation. Primary shading chooses the
   shorter tile/world list. Secondary/reflection/transmission hits keep the
-  world-space lists and original GI shader. Candidate order and shadow sample
+  world-space lists and shared GI implementation. Candidate order and shadow sample
   counts are preserved. Masks plus list capacity are capped at 64 MiB and device limits; over-budget or
   invalid metadata selects the exact world-list path without truncating lights.
 - `MATTER_RT_PRIMARY_ONLY=0|1` — default 0, restart required. Selects a smaller
@@ -743,8 +752,8 @@ to change them):
   Diagnostics add atomics; disable them for performance comparisons. Fixed
   1..4 stages compile adaptive policy out entirely. Adaptive primary has its
   own raygen and optional history descriptor set 3; the original scene,
-  environment and local-light sets retain their layout. GI retains the fixed
-  lighting stage and its normal sample policy.
+  environment and local-light sets retain their layout. GI retains its normal
+  sample policy.
 - `MATTER_RT_VISIBILITY_COUNTERS=0|1` — any-hit diagnostic atomics; default 0
   in normal builds, 1 in fault-injection tests. Disabling counters does not
   disable transparent visibility or the per-ray layer limit.

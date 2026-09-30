@@ -62,6 +62,11 @@ layout(constant_id = 1) const uint walk_alpha_test = 0u;
 // Budgets are process-fixed. Unlimited pipelines can remove the complete
 // selection branch and its dynamically indexed private arrays at compile time.
 layout(constant_id = 6) const uint enable_local_light_selection = 1u;
+// Compile each indirect lane independently without changing its estimator.
+// 0 retains the original dispatch-mask path, 1 owns diffuse, 2 owns reflection
+// and transmission. Removing the other lane also removes its private state
+// and call graph from the driver's raygen compilation.
+layout(constant_id = 11) const uint gi_signal = 0u;
 #ifdef MATTER_PRIMARY_LIGHT_AUDIT
 layout(constant_id = 10) const uint audit_primary_culling = 0u;
 // Invocation-private audit accumulation avoids a global atomic per candidate.
@@ -1004,9 +1009,10 @@ void main() {
     const bool gi_dispatch = false;
     const bool local_direct_enabled = true;
 #else
-    const bool gi_dispatch = (constants.shadow_samples & 0x80000000u) != 0u;
+    const bool gi_dispatch = gi_signal != 0u ||
+        (constants.shadow_samples & 0x80000000u) != 0u;
     const bool local_direct_enabled =
-        (constants.shadow_samples & 0x40000000u) != 0u;
+        gi_signal == 0u && (constants.shadow_samples & 0x40000000u) != 0u;
 #endif
     const bool scene_gi_enabled =
         (constants.shadow_samples & 0x20000000u) != 0u;
@@ -1015,8 +1021,10 @@ void main() {
     const bool specular_only =
         (constants.shadow_samples & 0x08000000u) != 0u;
     // With neither selector set, retain the combined GI dispatch contract.
-    const bool owns_diffuse = gi_dispatch && !specular_only;
-    const bool owns_specular = gi_dispatch && !diffuse_only;
+    const bool owns_diffuse = gi_signal == 1u ||
+        (gi_signal == 0u && gi_dispatch && !specular_only);
+    const bool owns_specular = gi_signal == 2u ||
+        (gi_signal == 0u && gi_dispatch && !diffuse_only);
     float depth;
     vec4 albedo;
     ivec2 source_extent = textureSize(depth_texture, 0);

@@ -1811,6 +1811,8 @@ public:
                    : live_eye;
     }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    bool test_gi_specialization_enabled() const noexcept { return rt_specialize_gi_; }
+    void test_set_gi_specialization_enabled(bool enabled) noexcept { rt_specialize_gi_ = enabled; }
     bool part_is_raster_water(uint64_t part_hash) const noexcept;
     VkPipeline test_water_forward_static_pipeline() const noexcept {
         return water_forward_static_pipeline_;
@@ -3874,6 +3876,9 @@ private:
     VkDeviceAddress rt_sbt_test_raygen_address_ = 0;
     VkDeviceAddress rt_sbt_lighting_raygen_address_ = 0;
     VkDeviceAddress rt_sbt_primary_raygen_address_ = 0;
+    VkDeviceAddress rt_sbt_diffuse_raygen_address_ = 0;
+    VkDeviceAddress rt_sbt_reflection_raygen_address_ = 0;
+    bool rt_specialize_gi_ = true;
     bool rt_primary_adaptive_ = false;
     bool rt_separate_primary_ = false;
     bool rt_adaptive_diagnostics_ = false;

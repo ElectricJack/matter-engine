@@ -384,7 +384,11 @@ float rt_chart_texel_m;
 bool rt_chart_metric_valid;
 
 void apply_rt_composed_height(inout RtSurface surface, VtAddress initial) {
-    if (!rt_chart_metric_valid) return;
+    int steps = RT_SURFACE_DETAIL_MODE == 2u ? 0 : int(tileset.pom_a.x);
+    // A zero-step chart sample can only return ray_t=0. Skip its second
+    // address resolution and all march-only transforms. Material/normal
+    // sampling still happens in rt_vt_sample at the unchanged proxy hit.
+    if (!rt_chart_metric_valid || steps <= 0) return;
     mat3 world_to_local = mat3(gl_WorldToObjectEXT);
     vec3 world_ray = normalize(gl_WorldRayDirectionEXT);
     vec3 local_ray = world_to_local * world_ray;
@@ -395,7 +399,6 @@ void apply_rt_composed_height(inout RtSurface surface, VtAddress initial) {
     float footprint = max(surface.cone_width * cone_scale, 0.0);
     float band = max(tileset.pom_a.w, 1e-4);
     float fade = 1.0 - clamp((surface.hit_t - (tileset.pom_a.z - band)) / band, 0.0, 1.0);
-    int steps = RT_SURFACE_DETAIL_MODE == 2u ? 0 : int(tileset.pom_a.x);
     VtParallaxSample hit = vt_parallax_sample(surface.vt_slot, surface.uv,
         float(initial.desired_mip), rt_chart_uv_ray, -dot(local_normal, local_ray),
         rt_chart_texel_m, footprint, steps, int(tileset.pom_a.y),
@@ -571,11 +574,15 @@ RtSurface load_rt_surface(vec2 hit_barycentrics) {
         vec2 duv1 = v1.surface.xy - v0.surface.xy;
         vec2 duv2 = v2.surface.xy - v0.surface.xy;
 #ifdef RT_SURFACE_CLOSEST_HIT_SHADER
-        VtVariantRecord record = vt_variants[part.vt_slot - 1u];
-        rt_chart_metric_valid = vt_parallax_metric(v1.position - v0.position,
-            v2.position - v0.position, duv1, duv2,
-            mat3(gl_WorldToObjectEXT) * normalize(gl_WorldRayDirectionEXT),
-            vec2(record.atlas_w, record.atlas_h), rt_chart_uv_ray, rt_chart_texel_m);
+        // This metric is consumed only by composed-height marching. Keep the
+        // ray-cone UV density below for ordinary material/normal filtering.
+        if (RT_SURFACE_DETAIL_MODE != 2u && int(tileset.pom_a.x) > 0) {
+            VtVariantRecord record = vt_variants[part.vt_slot - 1u];
+            rt_chart_metric_valid = vt_parallax_metric(v1.position - v0.position,
+                v2.position - v0.position, duv1, duv2,
+                mat3(gl_WorldToObjectEXT) * normalize(gl_WorldRayDirectionEXT),
+                vec2(record.atlas_w, record.atlas_h), rt_chart_uv_ray, rt_chart_texel_m);
+        }
 #endif
         float uv_area = abs(duv1.x * duv2.y - duv1.y * duv2.x);
         mat3 object_to_world = mat3(gl_ObjectToWorldEXT);

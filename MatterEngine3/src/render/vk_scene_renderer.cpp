@@ -3177,6 +3177,9 @@ void VkSceneRenderer::destroy_pipeline() {
     rt_sbt_test_raygen_address_ = 0;
     rt_sbt_lighting_raygen_address_ = 0;
     rt_sbt_primary_raygen_address_ = 0;
+    rt_sbt_diffuse_raygen_address_ = 0;
+    rt_sbt_reflection_raygen_address_ = 0;
+    rt_specialize_gi_ = true;
     rt_primary_adaptive_ = false;
     rt_separate_primary_ = false;
     rt_adaptive_diagnostics_ = false;
@@ -3668,6 +3671,7 @@ bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
 // individually -- a trace picks its entry point by choosing an address, not
 // by an index. Adaptive primary optionally appends stage 9 / group 7 and a
 // fourth raygen record after all existing SBT regions, preserving their offsets.
+// Two signal-specialized copies of lighting follow the optional primary record.
 bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
     // Compile the sample count into the shader: keep the four-sample baseline
@@ -3688,6 +3692,14 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         MATTER_LOGW("rt", "MATTER_RT_PRIMARY_ONLY must be 0 or 1; using 0");
     rt_separate_primary_ = rt_primary_adaptive_ || primary_light_culling_ ||
                            primary_light_audit_ || primary_only;
+    rt_specialize_gi_ = true;
+    if (const char* value = std::getenv("MATTER_RT_GI_SPECIALIZE")) {
+        if (std::strcmp(value, "0") == 0)
+            rt_specialize_gi_ = false;
+        else if (std::strcmp(value, "1") != 0)
+            MATTER_LOGW("rt", "MATTER_RT_GI_SPECIALIZE must be 0 or 1; using 1");
+    }
+    MATTER_LOGI("rt", "independent GI shader specialization=%u", rt_specialize_gi_ ? 1u : 0u);
     rt_adaptive_diagnostics_ = false;
     if (const char* value = std::getenv("MATTER_RT_ADAPTIVE_DIAGNOSTICS")) {
         if (std::strcmp(value, "1") == 0)
@@ -3865,15 +3877,18 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                     &rt_pipeline_layout_);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreatePipelineLayout(ray tracing)", result, error);
-    const uint32_t stage_count = rt_separate_primary_ ? 10u : 9u;
-    const uint32_t group_count = rt_separate_primary_ ? 8u : 7u;
+    const uint32_t diffuse_stage = rt_separate_primary_ ? 10u : 9u;
+    const uint32_t diffuse_group = rt_separate_primary_ ? 8u : 7u;
+    const uint32_t stage_count = diffuse_stage + 2u;
+    const uint32_t group_count = diffuse_group + 2u;
     const char* names[] = {"rt_shadow.rgen.spv", "rt_surface_test.rgen.spv",
                            "rt_lighting.rgen.spv",
                            "rt_visibility.rmiss.spv", "rt_radiance.rmiss.spv",
                            "rt_visibility.rchit.spv",
                            "rt_visibility.rahit.spv",
                            "rt_surface.rchit.spv",
-                           "rt_surface.rahit.spv", "rt_primary_adaptive.rgen.spv"};
+                           "rt_surface.rahit.spv", "rt_primary_adaptive.rgen.spv",
+                           "rt_lighting.rgen.spv", "rt_lighting.rgen.spv"};
     // Stage 2 always keeps the original full GI module. Only the optional
     // primary stage includes tile iteration/audit code, so secondary rays do
     // not inherit its larger call graph or compiler resource requirements.
@@ -3888,6 +3903,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
             : (primary_light_culling_ ? "rt_lighting_culled.rgen.spv"
                                       : "rt_primary_fixed.rgen.spv");
     }
+    names[diffuse_stage] = names[diffuse_stage + 1u] = "rt_lighting.rgen.spv";
     const VkShaderStageFlagBits stages_bits[] = {
         VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR,
         VK_SHADER_STAGE_RAYGEN_BIT_KHR,
@@ -3895,9 +3911,10 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
         VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
-        VK_SHADER_STAGE_ANY_HIT_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR};
-    VkShaderModule modules[10]{};
-    VkPipelineShaderStageCreateInfo stages[10]{};
+        VK_SHADER_STAGE_ANY_HIT_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR};
+    VkShaderModule modules[12]{};
+    VkPipelineShaderStageCreateInfo stages[12]{};
     for (uint32_t i = 0; i < stage_count; ++i) {
         if (!create_shader_module(device, names[i], modules[i], error)) {
             for (VkShaderModule module : modules)
@@ -3983,6 +4000,20 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkSpecializationInfo lighting_specialization{
         5u, lighting_entries, 5u * sizeof(uint32_t), lighting_constants};
     stages[2].pSpecializationInfo = &lighting_specialization;
+    // Keep all original lighting constants and specialize only ownership.
+    // The shared module retains exactly the same random streams and ray work.
+    uint32_t signal_constants[2][6]{};
+    VkSpecializationMapEntry signal_entries[6]{};
+    std::copy_n(lighting_entries, 5, signal_entries);
+    signal_entries[5] = {11, 5u * sizeof(uint32_t), sizeof(uint32_t)};
+    VkSpecializationInfo signal_specializations[2]{};
+    for (uint32_t signal = 0; signal < 2; ++signal) {
+        std::copy_n(lighting_constants, 5, signal_constants[signal]);
+        signal_constants[signal][5] = signal + 1u;
+        signal_specializations[signal] = {
+            6u, signal_entries, sizeof(signal_constants[signal]), signal_constants[signal]};
+        stages[diffuse_stage + signal].pSpecializationInfo = &signal_specializations[signal];
+    }
     const VkSpecializationInfo primary_specialization{
         lighting_constant_count, lighting_entries,
         lighting_constant_count * sizeof(uint32_t), lighting_constants};
@@ -4020,7 +4051,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkSpecializationInfo detail_specialization{
         1, &detail_entry, sizeof(surface_detail_mode), &surface_detail_mode};
     stages[7].pSpecializationInfo = &detail_specialization;
-    VkRayTracingShaderGroupCreateInfoKHR groups[8]{};
+    VkRayTracingShaderGroupCreateInfoKHR groups[10]{};
     for (auto& group : groups) {
         group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         group.generalShader = VK_SHADER_UNUSED_KHR;
@@ -4050,6 +4081,10 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     if (rt_separate_primary_) {
         groups[7].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
         groups[7].generalShader = 9;
+    }
+    for (uint32_t signal = 0; signal < 2; ++signal) {
+        groups[diffuse_group + signal].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+        groups[diffuse_group + signal].generalShader = diffuse_stage + signal;
     }
     VkRayTracingPipelineCreateInfoKHR create{
         VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
@@ -4111,8 +4146,9 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     // Keep every existing raygen/miss/hit offset unchanged. Optional group 7
     // is a separately base-aligned raygen record appended after the hit span.
     const VkDeviceSize primary_offset = raygen_span + 2 * category_span;
-    const VkDeviceSize sbt_span = primary_offset +
+    const VkDeviceSize diffuse_offset = primary_offset +
         (rt_separate_primary_ ? raygen_record_stride : 0);
+    const VkDeviceSize sbt_span = diffuse_offset + 2 * raygen_record_stride;
     if (!matter::create_buffer(
             *vulkan_, sbt_span +
                            props.shader_group_base_alignment - 1,
@@ -4129,6 +4165,8 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     rt_sbt_lighting_raygen_address_ = rt_sbt_address_ + 2 * raygen_record_stride;
     rt_sbt_primary_raygen_address_ = rt_separate_primary_
         ? rt_sbt_address_ + primary_offset : 0;
+    rt_sbt_diffuse_raygen_address_ = rt_sbt_address_ + diffuse_offset;
+    rt_sbt_reflection_raygen_address_ = rt_sbt_diffuse_raygen_address_ + raygen_record_stride;
     rt_sbt_miss_address_ = rt_sbt_address_ + raygen_span;
     rt_sbt_hit_address_ = rt_sbt_miss_address_ + category_span;
     rt_sbt_miss_size_ = category_size;
@@ -4156,6 +4194,12 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
                         primary_offset,
                     handles.data() + 7 * handle_size,
+                    static_cast<size_t>(handle_size));
+    }
+    for (uint32_t signal = 0; signal < 2; ++signal) {
+        std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
+                        diffuse_offset + signal * raygen_record_stride,
+                    handles.data() + (diffuse_group + signal) * handle_size,
                     static_cast<size_t>(handle_size));
     }
     return matter::flush_buffer(rt_sbt_, mapped_offset, sbt_span, error);
@@ -18165,15 +18209,20 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                     kGiDispatchBit | scene_gi_state | mask;
                 vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                    VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
-                cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
+                VkStridedDeviceAddressRegionKHR signal_raygen = gi_raygen;
+                if (rt_specialize_gi_) {
+                    signal_raygen.deviceAddress = mask == kDiffuseOnlyBit
+                        ? rt_sbt_diffuse_raygen_address_ : rt_sbt_reflection_raygen_address_;
+                }
+                cmd_trace(frame.command_buffer, &signal_raygen, &miss, &hit, &callable,
                           extent.width, extent.height, 1);
                 ++last_rt_trace_dispatches_;
             };
             if (raw_diffuse_extent_.width == raw_reflection_extent_.width &&
                 raw_diffuse_extent_.height == raw_reflection_extent_.height &&
-                !lighting_detail_timers_enabled()) {
-                // Identical extents retain the original combined dispatch
-                // unless profiling requests attribution at unchanged ray counts.
+                !lighting_detail_timers_enabled() && !rt_specialize_gi_) {
+                // The reference option retains the original combined dispatch
+                // at equal extents unless detailed profiling requests a split.
                 trace_signal(raw_diffuse_extent_, 0u);
             } else {
                 // These dispatches write disjoint signal images. Their shared

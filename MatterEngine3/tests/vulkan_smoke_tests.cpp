@@ -7328,8 +7328,17 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
         }
         CHECK(renderer.vt_stats().fills_total==1,"composed POM: only the pinned tail was produced");
         renderer.test_pause_vt_page_fills(true);
-        const auto coarse_flat=pixel(false,true),coarse=pixel(true,true);
-        auto p0=world_at_depth(coarse_flat.depth),p1=world_at_depth(coarse.depth);
+        const auto coarse_flat=pixel(false,true);
+        auto p0=world_at_depth(coarse_flat.depth);
+        frame_with_probe(true,camera.position,sub(p0,camera.position),0,0);
+        CHECK(probe_hit.valid && probe_hit.vt_applied && probe_invalid==0 &&
+                  length(sub(probe_hit.position,p0))<.00006f &&
+                  std::fabs(probe_hit.vt_albedo.x-coarse_flat.albedo.x)<.025f &&
+                  length(sub(probe_hit.vt_normal,{coarse_flat.normal.x,
+                      coarse_flat.normal.y,coarse_flat.normal.z}))<.03f,
+              "composed POM off: secondary proxy retains VT color and normal sampling");
+        const auto coarse=pixel(true,true);
+        auto p1=world_at_depth(coarse.depth);
         CHECK(std::fabs((p0.z-p1.z)-.01f)<.0003f,"composed POM: absent fine pages retain analytic coarse depth");
         frame_with_probe(true,camera.position,sub(p1,camera.position),0,0);
         CHECK(probe_hit.valid && probe_hit.vt_mapped_mip>probe_hit.vt_desired_mip &&
@@ -10341,6 +10350,13 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
                 }
             }
         }
+        std::array<viewer::VkRasterPixel, 8> signal_reference{};
+        for (uint32_t i = 0; i < signal_reference.size(); ++i) {
+            CHECK(renderer.readback_raster_pixel(64u * (1u + i % 4u),
+                      60u * (1u + i / 4u), signal_reference[i], error),
+                  "read fixed-seed GI signal reference");
+        }
+        const bool specialized = renderer.test_gi_specialization_enabled();
         renderer.finish_ray_tracing_frame(frame.serial, false);
         CHECK(renderer.test_gi_presented_history_index() == 0u,
               "failed presentation does not publish candidate GI history");
@@ -10348,6 +10364,7 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "failed frame rolls back candidate BLAS state");
         gi_temporal.attempt_token = 202;
+        renderer.test_set_gi_specialization_enabled(!specialized);
         renderer.set_temporal_frame(gi_temporal);
         CHECK(vulkan.begin_frame(frame, error) &&
                   renderer.prepare_frame(frame, matrices, camera.position,
@@ -10370,6 +10387,16 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
                   retry_pixel.material_index == 1u &&
                   close4(retry_pixel.raw_diffuse, failed_raw, 1e-6f),
               "failed-attempt retry keeps GPU GI deterministic from committed frame identity");
+        for (uint32_t i = 0; i < signal_reference.size(); ++i) {
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(64u * (1u + i % 4u),
+                      60u * (1u + i / 4u), pixel, error) &&
+                      close4(pixel.raw_diffuse, signal_reference[i].raw_diffuse, 1e-6f) &&
+                      close4(pixel.raw_specular, signal_reference[i].raw_specular, 1e-6f) &&
+                      close4(pixel.raw_transmission, signal_reference[i].raw_transmission, 1e-6f),
+                  "specialized GI stages preserve fixed-seed diffuse and reflection signals");
+        }
+        renderer.test_set_gi_specialization_enabled(specialized);
         viewer::GiTemporalGpuFixture temporal_fixture{};
         const float fixture_luminance =
             0.2126f * temporal_fixture.raw.x +
@@ -13830,6 +13857,15 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
           "rt-transmission: fixed frame index reproduces bit-identical rays");
     CHECK(passthrough,
           "rt-transmission: smooth pixels pass the denoiser bit-exactly");
+    const bool specialized = renderer.test_gi_specialization_enabled();
+    renderer.test_set_gi_specialization_enabled(!specialized);
+    render_frame(renderer, true, fixed_index);
+    vulkan.wait_idle();
+    const auto other_stage_row = sample_row(renderer, 8, false);
+    for (size_t i = 0; i < smooth_row.size(); ++i)
+        CHECK(close4(smooth_row[i], other_stage_row[i], 1e-6f),
+              "rt-transmission: specialized GI preserves smooth refraction rays");
+    renderer.test_set_gi_specialization_enabled(specialized);
     // Roughness below the 0.02 sampling threshold must not perturb anything:
     // no VNDF sample is drawn, so the whole lane stays bit-identical.
     author(0.019f, 0.85f, {1.0f, 1.0f, 1.0f});
