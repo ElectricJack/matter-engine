@@ -456,6 +456,9 @@ if(BUILD_TESTING)
 
     set(matter_vt_compositor_test_sources
         MatterEngine3/src/render/vt_compositor.cpp
+        MatterEngine3/src/render/vt_enrich.cpp
+        MatterEngine3/src/props/props.cpp
+        MatterEngine3/src/util/json_doc.cpp
         MatterEngine3/src/terrain_field.cpp
         MatterEngine3/src/render/vk_context.cpp
         MatterEngine3/src/render/vk_resources.cpp

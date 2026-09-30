@@ -19,6 +19,7 @@
 #include "render/vt_density.h"
 #include "render/vt_canonical_page.h"
 #include "render/vt_world_receivers.h"
+#include "render/vt_resolve_bvh.h"
 
 using namespace vt;
 
@@ -1154,6 +1155,43 @@ void test_receiver_coverage_pages() {
 }  // namespace
 
 int main() {
+    {
+        VtGpuWorkBudget budget;
+        CHECK(budget.rows() == 4, "GPU work budget starts with four conservative rows");
+        budget.observe(40, 4);
+        CHECK(budget.rows() == 1, "costly slice immediately reduces admission to one row");
+        budget.observe(NAN, 8); budget.observe(0, 8); budget.observe(10, 0);
+        CHECK(budget.rows() == 1, "invalid/empty GPU samples cannot inflate the budget");
+        for (int i=0;i<200;++i) budget.observe(.1f, 1);
+        CHECK(budget.rows() == 8, "cheap retired samples recover within the row ceiling");
+        budget.set_ms(0);
+        CHECK(!budget.enabled() && budget.rows() == 136, "zero time target restores full-page work");
+        budget.set_ms(NAN);
+        CHECK(budget.enabled() && budget.rows() <= 8, "invalid settings restore a bounded default");
+    }
+    {
+        std::vector<GpuChart> charts(1); std::vector<GpuTriGeometry> tris(2200);
+        charts[0].tri_range[1] = uint32_t(tris.size());
+        for (uint32_t i=0;i<tris.size();++i) {
+            tris[i].p0[3]=float(i);tris[i].p1[3]=float(i)+.5f;tris[i].p2[3]=float(i)+.2f;
+            tris[i].n0[3]=tris[i].n1[3]=1;tris[i].n2[3]=2;
+        }
+        std::vector<VtResolveChart> table;std::vector<VtResolveNode> nodes;
+        CHECK(vt_build_resolve_bvh(charts,tris,table,nodes) && table[0].range[0]==16 &&
+              table[0].range[1]==nodes.size(), "resolve BVH: full hierarchy built past the POM seed limit");
+        uint32_t next=0;bool valid=true;
+        for (uint32_t i=0;i<nodes.size();++i) {
+            const auto& n=nodes[i];valid &= n.range[2]>i && n.range[2]<=nodes.size();
+            if (!n.range[1]) continue;
+            valid &= n.range[0]==next && n.range[1]<=8;
+            for (uint32_t t=next;t<next+n.range[1];++t) {
+                const auto& tri=tris[t];
+                valid &= n.bounds[0]<=tri.p0[3] && n.bounds[2]>=tri.p1[3] && n.bounds[1]<=1 && n.bounds[3]>=2;
+            }
+            next+=n.range[1];
+        }
+        CHECK(valid && next==tris.size(), "resolve BVH: conservative leaves cover every triangle in original tie order");
+    }
     test_world_receiver_frames();
     test_layout();
     test_indirection();

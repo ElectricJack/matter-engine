@@ -3076,6 +3076,7 @@ private:
         // GPU timestamp query pool: one begin/end pair per kGpuZone* lane.
         VkQueryPool ts_pool = VK_NULL_HANDLE;
         uint32_t vt_recorded_fills = 0;
+        uint32_t vt_fill_rows = 0, vt_enrich_rows = 0;
         // Per zone: bit 0 set when begin was written, bit 1 when end was.
         uint8_t ts_written[kGpuZoneCount]{};
         // True when the previous recording wrote at least the total zone.

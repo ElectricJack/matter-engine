@@ -1346,6 +1346,10 @@ void VtResidency::set_filler(std::unique_ptr<VtPageFiller> filler) {
 }
 
 void VtResidency::set_enricher(std::unique_ptr<VtPageEnricher> enricher) {
+    for (auto& pending : enrich_queue_) {
+        retire_occlusion(std::move(pending.factor));
+        pending.rows = 0;
+    }
     enricher_ = std::move(enricher);
     // Context-dependent ORM must become private before enrichment is queued.
     if (enricher_ && max_enrich_per_frame_ && !enricher_->supports_separate_occlusion() &&
@@ -2368,6 +2372,7 @@ void VtResidency::slot_reset_tier(uint32_t slot) {
     const size_t index = found->second;
     enrich_queued_slot_.erase(found);
     if (index < enrich_queue_.size()) {
+        retire_occlusion(std::move(enrich_queue_[index].factor));
         enrich_queue_.erase(enrich_queue_.begin() + static_cast<long>(index));
         for (auto& entry : enrich_queued_slot_)
             if (entry.second > index) --entry.second;
@@ -2407,6 +2412,7 @@ void VtResidency::queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot) {
     }
     const auto found = enrich_queued_slot_.find(slot);
     if (found != enrich_queued_slot_.end()) {
+        retire_occlusion(std::move(enrich_queue_[found->second].factor));
         enrich_queue_[found->second] =
             PendingEnrich{layer, page, slot, frame_index_};
         return;
@@ -2448,6 +2454,20 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
     if (!enricher_ || max_enrich_per_frame_ == 0 || enrich_queue_.empty())
         return;
     enrich_batch_.clear();
+    const bool incremental = enricher_->supports_incremental_enrichment() && enrich_work_budget_.enabled();
+    if (incremental) {
+        std::stable_sort(enrich_queue_.begin(), enrich_queue_.end(),
+            [](const PendingEnrich& a, const PendingEnrich& b) { return bool(a.factor) > bool(b.factor); });
+    }
+    const auto settings = matter::vt_enrich_settings();
+    const auto same_settings = [](const matter::VtEnrichSettings& a, const matter::VtEnrichSettings& b) {
+        return a.samples == b.samples && a.strength == b.strength && a.cap_texels == b.cap_texels &&
+            a.cap_meters == b.cap_meters && a.min_ao == b.min_ao;
+    };
+    const auto requeue = [&](const PendingEnrich& pending) {
+        enrich_queued_slot_[pending.slot] = enrich_queue_.size();
+        enrich_queue_.push_back(pending);
+    };
     struct Candidate {
         PendingEnrich pending;
         uint64_t generation,revision;
@@ -2459,13 +2479,13 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
     candidates.reserve(16);
     size_t consumed = 0;
     for (size_t i = 0; i < enrich_queue_.size() &&
-                       enrich_batch_.size() < max_enrich_per_frame_;
+                       enrich_batch_.size() < (incremental ? 1u : max_enrich_per_frame_);
          ++i) {
-        const PendingEnrich p = enrich_queue_[i];
+        PendingEnrich p = enrich_queue_[i];
         consumed = i + 1;
-        if (p.layer >= variants_.size()) continue;
+        if (p.layer >= variants_.size()) { retire_occlusion(std::move(p.factor)); continue; }
         VariantRung& v = variants_[p.layer];
-        if (!v.live || p.slot >= slots_.capacity()) continue;
+        if (!v.live || p.slot >= slots_.capacity()) { retire_occlusion(std::move(p.factor)); continue; }
         const VtSlotPool::Owner& owner = slots_.owner(p.slot);
         // The slot must still hold exactly the page we queued. An eviction or a
         // re-fill in between makes the candidate stale: the re-fill queued its
@@ -2473,17 +2493,28 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
         if (!owner.live || dirty_pages_.find(p.slot) != dirty_pages_.end() ||
             owner.variant_key != v.param_key ||
             !(owner.page == p.page)) {
+            retire_occlusion(std::move(p.factor));
             ++stats_.enrich_dropped_total;
             continue;
         }
-        if (slot_tier_[p.slot] != 0) continue;   // already tier-2
+        if (slot_tier_[p.slot] != 0) { retire_occlusion(std::move(p.factor)); continue; }
+        if (p.factor && (p.generation != owner.generation || p.revision != v.content_revision ||
+                        p.inputs != v.inputs || !same_settings(p.settings, settings))) {
+            retire_occlusion(std::move(p.factor));
+            p.rows = 0;
+        }
         const bool separate=enricher_->supports_separate_occlusion() &&
             slot_geometry_lifetimes_[p.slot] && slot_page_metadata_[p.slot].height.version==1;
         std::shared_ptr<VtOcclusionPages::Page> factor;
         if(separate) {
             std::string allocation_error;
-            factor=occlusion_pages_->allocate(*vulkan_,allocation_error);
+            factor = p.factor ? p.factor : occlusion_pages_->allocate(*vulkan_,allocation_error);
             if(!factor) {++stats_.enrich_deferred_total;deferred.push_back(p);continue;}
+            if (incremental && !p.factor) {
+                p.factor = factor; p.inputs = v.inputs;
+                p.generation = owner.generation; p.revision = v.content_revision;
+                p.rows = 0; p.settings = settings;
+            }
         }
         VtEnrichRequest request;
         request.variant_hash = v.variant_hash;
@@ -2503,6 +2534,10 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
             request.occlusion_buffer=factor->slab->buffer.buffer;
             request.occlusion_offset=factor->offset();request.occlusion_address=factor->address();
             request.out_enriched=&written[candidates.size()];
+            if (incremental) {
+                request.row_begin = p.rows;
+                request.row_count = std::min(enrich_work_budget_.rows(), kVtPageStride - p.rows);
+            }
         }
         enrich_batch_.push_back(request);
         candidates.push_back({p,owner.generation,v.content_revision,std::move(factor)});
@@ -2521,7 +2556,7 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
         enrich_queued_slot_[enrich_queue_[i].slot] = i;
     stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
     if (enrich_batch_.empty()) {
-        for(const auto& p:deferred)queue_enrich(p.layer,p.page,p.slot);
+        for(const auto& p:deferred)requeue(p);
         return;
     }
 
@@ -2550,6 +2585,14 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
             v.live && v.table_generation==request.owner_generation && v.content_revision==candidate.revision &&
             v.inputs==request.part_snapshot && !dirty_pages_.count(p.slot);
         if(current && written[i]) {
+            if (incremental) {
+                recorded_enrich_rows_ += request.row_count;
+                candidate.pending.rows += request.row_count;
+                if (candidate.pending.rows < kVtPageStride) {
+                    deferred.push_back(candidate.pending);
+                    continue;
+                }
+            }
             retire_slot_occlusion(p.slot);
             slot_page_metadata_[p.slot].occlusion_address=candidate.factor->address();
             slot_occlusion_pages_[p.slot]=std::move(candidate.factor);
@@ -2559,17 +2602,25 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
         } else {
             // A declined or stale producer may already have recorded writes.
             // Never reuse those bytes before the normal reader horizon.
-            retire_occlusion(std::move(candidate.factor));
-            if(current){++stats_.enrich_deferred_total;deferred.push_back(p);}
-            else ++stats_.enrich_dropped_total;
+            if(current){
+                // A build-only frame or a declined slice keeps the same factor
+                // lease and cursor. Legacy whole-page retries allocate afresh.
+                if (!incremental) retire_occlusion(std::move(candidate.factor));
+                ++stats_.enrich_deferred_total;deferred.push_back(p);
+            } else {
+                retire_occlusion(std::move(candidate.factor));
+                ++stats_.enrich_dropped_total;
+            }
         }
     }
     for(const auto& p:deferred) {
         const auto& owner=slots_.owner(p.slot);
         if(p.layer<variants_.size() && variants_[p.layer].live && owner.live &&
            owner.variant_key==variants_[p.layer].param_key && owner.page==p.page)
-            queue_enrich(p.layer,p.page,p.slot);
+            requeue(p);
+        else retire_occlusion(p.factor);
     }
+    stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
     stats_.enrich_last_frame=published;
     stats_.enrich_total+=published;
     // Only jobs that explicitly retain inputs should extend their lifetime.
@@ -2654,7 +2705,9 @@ void VtResidency::refresh_budgets() {
     max_tail_fills_per_frame_ =
         clamp_u32(b.tail_fills_per_frame, 1u, kMaxFillFlags);
     fill_budget_ms_ = std::isfinite(b.fill_budget_ms)
-        ? std::clamp(b.fill_budget_ms, 0.0f, 32.0f) : 12.0f;
+        ? std::clamp(b.fill_budget_ms, 0.0f, 32.0f) : 4.0f;
+    fill_work_budget_.set_ms(b.fill_budget_ms);
+    enrich_work_budget_.set_ms(b.enrich_budget_ms);
     max_enrich_per_frame_ = clamp_u32(b.enrich_per_frame, 0u, 16u);
     if(enabling_enrichment && enricher_ && !enricher_->supports_separate_occlusion() &&
        (material_pages_.shared_references()!=0 || stats_.coverage_only_pages))
@@ -2671,7 +2724,8 @@ void VtResidency::refresh_budgets() {
     slots_.set_protect_frames(clamp_u32(b.evict_protect_frames, 1u, 100000u));
 }
 
-void VtResidency::observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills) {
+void VtResidency::observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills, uint32_t rows) {
+    fill_work_budget_.observe(vt_ms, rows);
     if (!recorded_fills || !std::isfinite(vt_ms) || vt_ms <= 0.0f) return;
     // The fill subzone includes the compositor's page bake, BC encode and
     // copies. An unusually costly page cuts the next quota immediately;
@@ -2930,6 +2984,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
                                uint8_t* timing_written) {
     if (!ready_) return true;
     recorded_fill_count_ = 0;
+    recorded_fill_rows_ = recorded_enrich_rows_ = 0;
     const auto stamp = [&](uint32_t zone, bool end) {
         if (!timing_pool || !timing_written) return;
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -2957,6 +3012,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
         PROFILE_SCOPE("vt.enrich");
         stamp(matter::kGpuTimingVtEnrich, false);
         drain_enrich(cmd);
+        PROFILE_COUNT("vt.enrich_rows", recorded_enrich_rows_);
         stamp(matter::kGpuTimingVtEnrich, true);
     }
     // --- pool transitions -------------------------------------------------
@@ -3058,6 +3114,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
         // highest priority first; ties retain insertion order.
         std::stable_sort(queue_.begin(), queue_.end(),
                          [](const PendingFill& a, const PendingFill& b) {
+                             if (a.continuation != b.continuation) return a.continuation;
                              const bool a_tail = a.preassigned_slot != 0xFFFFFFFFu;
                              const bool b_tail = b.preassigned_slot != 0xFFFFFFFFu;
                              if (a_tail != b_tail) return a_tail;
@@ -3072,7 +3129,8 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
         // feedback-driven sharpening; both classes share the kMaxFillFlags
         // batch ceiling.
         uint32_t tail_taken = 0, page_taken = 0;
-        const uint32_t time_quota = fill_budget_ms_ > 0.0f
+        const bool incremental = filler_->supports_incremental_fill() && fill_work_budget_.enabled();
+        const uint32_t time_quota = incremental ? 1u : fill_budget_ms_ > 0.0f
             ? std::max(1u, std::min(4u, static_cast<uint32_t>(
                   fill_budget_ms_ / std::max(estimated_fill_ms_, 0.25f))))
             : kMaxFillFlags;
@@ -3099,6 +3157,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
             const bool is_tail = p.preassigned_slot != 0xFFFFFFFFu;
             if (!is_tail && page_admission_blocked) continue;
             VtFillRequest request;
+            request.work_rows = incremental ? fill_work_budget_.rows() : 0;
             request.variant_hash = v.variant_hash;
             request.rung = static_cast<uint16_t>(v.rung);
             request.mip = static_cast<uint16_t>(p.page.mip);
@@ -3251,8 +3310,11 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
         // vector is sized before any pointer into it is handed out, so the
         // addresses stay valid for the whole fill() call.
         for (size_t i = 0; i < batch_.size(); ++i) {
-            fill_flags_[i] = false;
+            fill_flags_[i] = fill_pending_[i] = false;
             batch_[i].out_filled = &fill_flags_[i];
+            batch_[i].out_pending = &fill_pending_[i];
+            fill_work_rows_[i] = 0;
+            batch_[i].out_work_rows = &fill_work_rows_[i];
             fill_heights_[i] = {};
             batch_[i].out_height = &fill_heights_[i];
             fill_geometries_[i] = {};
@@ -3262,14 +3324,16 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
         }
         {
             // Tier-1 page bake: the compositor samples the tileset slots and
-            // encodes BC blocks per page. The shared time quota is estimated
-            // from retired GPU timestamps and still admits one page even if
-            // that page alone exceeds the target.
+            // encodes BC blocks only after the final slice. Retired timestamps
+            // price row slices; legacy producers retain a page-count quota.
             PROFILE_SCOPE("vt.fill");
             PROFILE_COUNT("vt.fill_batch", batch_.size());
             stamp(matter::kGpuTimingVtFill, false);
             filler_->fill(cmd, batch_.data(), batch_.size());
             stamp(matter::kGpuTimingVtFill, true);
+            if (batch_.size() == 1 && fill_pending_[0])
+                recorded_fill_rows_ = fill_work_rows_[0];
+            PROFILE_COUNT("vt.fill_rows", recorded_fill_rows_);
         }
 
         // --- map or roll back, per request --------------------------------
@@ -3412,6 +3476,23 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
                 slot_reset_tier(m.slot);
                 queue_enrich(m.layer, m.page, m.slot);
                 ++mapped;
+                continue;
+            }
+            if (fill_pending_[i]) {
+                // Scratch contains a bounded slice, never a resident page.
+                // Keep age and put the continuation ahead of new work so the
+                // compositor's single scratch page cannot be overwritten.
+                if (m.acquired) {
+                    slots_.release_now(m.slot);
+                    material_pages_.release(m.slot);
+                }
+                queue_page(v, m.page, true, m.preassigned ? m.slot : UINT32_MAX);
+                const auto retry = queued_keys_.find(page_key(v.layer, m.page));
+                if (retry != queued_keys_.end()) {
+                    auto& pending = queue_[retry->second];
+                    pending.requested_frame = std::min(pending.requested_frame, m.requested_frame);
+                    pending.continuation = true;
+                }
                 continue;
             }
             // The filler skipped this request. Nothing wrote the slot, so the

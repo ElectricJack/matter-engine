@@ -5993,15 +5993,18 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     // 48 / 80 / 112 with the 90-degree camera.
     // Preparation is asynchronous. Wait for actual page work to drain instead
     // of assuming a fixed five submissions are enough on a cold worker.
-    uint32_t stable_frames = 0;
-    for (int i = 0; i < 240 && stable_frames < 5; ++i) {
-        render_once("vt-surfaces: render VT frame");
-        const auto stats = renderer.vt_stats();
-        stable_frames = stats.fills_total > 0 && stats.queue_depth == 0 &&
-                        stats.dirty_pages == 0 && stats.fills_last_frame == 0
-                            ? stable_frames + 1 : 0;
-    }
-    CHECK(stable_frames == 5, "vt-surfaces: initial page work completes");
+    const auto settle_pages = [&]() {
+        uint32_t stable_frames = 0;
+        for (int i = 0; i < 512 && stable_frames < 5; ++i) {
+            render_once("vt-surfaces: render VT frame");
+            const auto stats = renderer.vt_stats();
+            stable_frames = stats.fills_total > 0 && stats.queue_depth == 0 &&
+                            stats.dirty_pages == 0 && stats.fills_last_frame == 0
+                                ? stable_frames + 1 : 0;
+        }
+        CHECK(stable_frames == 5, "vt-surfaces: page work completes within bounded rows");
+    };
+    settle_pages();
     const viewer::VkRasterPixel p_grass = pixel_at(48, 80);
     const viewer::VkRasterPixel p_rock = pixel_at(80, 80);
     const viewer::VkRasterPixel p_snow = pixel_at(112, 80);
@@ -6047,7 +6050,7 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
                                           0x5EAF00D100000002ull),
           "vt-surfaces: the registered rung accepts the edited tape");
     renderer.end_vt_surface_update();
-    for (int i = 0; i < 6; ++i) render_once("vt-surfaces: post-edit frame");
+    settle_pages();
     const vt::VtResidency::Stats after_edit = renderer.vt_stats();
     std::printf("vt-surfaces stats: fills=%llu -> %llu, invalidations=%llu, "
                 "dropped=%llu\n",
@@ -6083,7 +6086,7 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.update_vt_part_surface(0x7710, {}, {}, 0),
           "vt-surfaces: stripping the tape updates the registered rung");
     renderer.end_vt_surface_update();
-    for (int i = 0; i < 6; ++i) render_once("vt-surfaces: stripped frame");
+    settle_pages();
     const viewer::VkRasterPixel stripped = pixel_at(80, 80);
     CHECK(close_albedo(stripped, tri_albedo, 2.0e-2f),
           "vt-surfaces: without the tape the TriEx materialId stub shades "
@@ -6173,8 +6176,7 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
         CHECK(renderer.update_instances({{0x7711, identity, 1}}, error),
               error.empty() ? "vt-surfaces: upload mode-3 instance"
                             : error.c_str());
-        for (int i = 0; i < 6; ++i)
-            render_once("vt-surfaces: mode-3 frame");
+        settle_pages();
         // Probe columns ~0.04 m either side of the step (quad spans screen
         // x 64..96 with this camera; the edge is at x = 80).
         const viewer::VkRasterPixel m3_left = pixel_at(78, 80);
@@ -6245,6 +6247,8 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
             "input lx\nsmoothstep -0.0025 0.0025 r0\noneminus r1\n"
             "material 30 r2\nmaterial 34 r1\n";
         CHECK(renderer.ensure_part(part3, error) >= 0, error.c_str());
+        CHECK(renderer.update_instances({{0x7712, identity, 1}}, error), error.c_str());
+        settle_pages();
         const auto collect_boundary = [&]() {
             std::vector<viewer::VkRasterPixel> result;
             for (float offset : {-0.004f, -0.002f, 0.f, 0.002f, 0.004f}) {
@@ -6287,7 +6291,7 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
         const auto before_authored_edit = pixel_at(78, 80);
         materials[mat_a].flags_misc[1] = 2u;
         CHECK(renderer.update_materials(materials, 4, 1, error), error.c_str());
-        for (int i = 0; i < 8; ++i) render_once("categorical IDs: authored edit");
+        settle_pages();
         CHECK(normal_error(before_authored_edit, pixel_at(78, 80)) > .1f,
               "categorical IDs: authored source control changes visible detail");
         renderer.release_part(0x7712);
@@ -7730,6 +7734,10 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
         auto& budgets = matter::vt_residency_budgets();
         const auto saved_budgets = budgets;
         budgets.enrich_per_frame = 0;
+        // This fixture intentionally submits one authoring edit per frame to
+        // exhaust the descriptor-version bank. Keep its synchronous page
+        // contract; sliced publication and supersession have dedicated tests.
+        budgets.fill_budget_ms = 0;
         const auto draw_pixel = [&]() {
             glfwPollEvents();
             frame_with_probe(false, {}, {}, 0, 0);

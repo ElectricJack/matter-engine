@@ -17,6 +17,9 @@ if (-not $linkLine) {
 $expectedObjects = @(
     'vt_compositor_tests.cpp.obj',
     'vt_compositor.cpp.obj',
+    'vt_enrich.cpp.obj',
+    'props.cpp.obj',
+    'json_doc.cpp.obj',
     'terrain_field.cpp.obj',
     'vk_context.cpp.obj',
     'vk_resources.cpp.obj',

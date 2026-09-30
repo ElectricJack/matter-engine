@@ -10,6 +10,7 @@
 #include "vt_periodic_material.h"
 #include "vt_surface_boundary.h"
 #include "vt_seed_bvh.h"
+#include "vt_resolve_bvh.h"
 
 #include <atomic>
 #include <functional>
@@ -25,6 +26,8 @@ struct VtPreparedInputs {
     std::vector<GpuChart> charts;
     std::vector<GpuTriGeometry> geometry;
     std::vector<VtSeedNode> seed_nodes;
+    std::vector<VtResolveChart> resolve_charts;
+    std::vector<VtResolveNode> resolve_nodes;
     VtPreparedCorners corners;
     std::shared_ptr<const VtSurfaceBoundary> boundary;
     std::vector<GpuTriSurface> weights, lanes;
@@ -103,7 +106,8 @@ inline bool vt_prepare_cpu(const chart_atlas::ChartAtlasRung& atlas,
         auto boundary=std::make_shared<VtSurfaceBoundary>();
         if(!vt_extract_surface_boundary(out.charts,out.geometry,*boundary))return false;
         out.boundary=std::move(boundary);
-        if (!vt_build_seed_bvh(out.charts, out.geometry, out.seed_nodes)) return false;
+        if (!vt_build_seed_bvh(out.charts, out.geometry, out.seed_nodes) ||
+            !vt_build_resolve_bvh(out.charts, out.geometry, out.resolve_charts, out.resolve_nodes)) return false;
         out.corners = std::move(corners);
     }
     out.weights.resize(out.corners->size());
@@ -332,7 +336,8 @@ private:
         const size_t triangles = reuse ? reuse->size() : vt_preparation_triangle_bound(g.atlas);
         if (reuse) vector(*reuse);
         else {
-            add(g.atlas.charts.size(), sizeof(GpuChart));
+            add(g.atlas.charts.size(), sizeof(GpuChart) + sizeof(VtResolveChart));
+            add(triangles / 2 + triangles % 2, sizeof(VtResolveNode));
             add(triangles, sizeof(GpuTri) + sizeof(GpuTriGeometry) + sizeof(VtTriangleCorners));
             add(triangles / 2 + triangles % 2, sizeof(VtSeedNode));
             add(triangles, 3*sizeof(VtSurfaceBoundaryEdge));

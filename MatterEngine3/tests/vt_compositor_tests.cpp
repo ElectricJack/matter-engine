@@ -5,8 +5,8 @@
 // Device bootstrap follows vulkan_smoke_tests.cpp: visible GLFW window +
 // matter::VulkanDevice with validation layers; the run requires ZERO
 // validation errors. Everything else is deliberately minimal — the compositor
-// is standalone by contract, so this exe links only the device layer
-// (vk_context/vk_resources/streamline_bridge) plus the compositor itself.
+// is standalone by contract, so this exe links the device layer, the compositor
+// and AO producer, and their small support libraries without the scene renderer.
 //
 // Coverage (all on synthetic, deterministic fixtures):
 //   (a) golden determinism — same inputs across two submissions produce
@@ -1175,7 +1175,7 @@ int main() {
             create_test_image(*vulkan, pool_w, kPageStore, 1, 1,
                               VK_FORMAT_BC7_UNORM_BLOCK,
                               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                               pool_orm, err) &&
             create_test_image(*vulkan, pool_w, kPageStore, 1, 1,
                               VK_FORMAT_R8G8B8A8_UNORM,
@@ -3805,6 +3805,32 @@ int main() {
                 }
             }
 
+            {
+                QuadFixture many;
+                // Geometry is deliberately beyond the 2048-triangle POM seed
+                // limit. Late triangles own the sampled atlas region; exact
+                // dilation/ties and all output channels use a linear GPU oracle.
+                for (uint32_t i=0;i<1100;++i) {
+                    const float x = float(1099-i)*2.f;
+                    many.add_quad(v3(x,0,0),v3(1,0,0),v3(0,0,1),1.f,v3(0,1,0),i%2?kMatA:kMatB);
+                }
+                many.atlas = fix_a.atlas;
+                many.atlas.charts[0].tri_count = 2200;
+                many.atlas.tri_order.resize(2200);
+                for (uint32_t i=0;i<2200;++i) many.atlas.tri_order[i]=i;
+                many.finalize(0x718001);
+                compositor->set_weight_mode(vt::VtCompositor::WeightMode::kTriangleMaterial);
+                auto request = make_request(many,0,12);
+                PageData linear, accelerated;
+                request.linear_resolve = true;
+                CHECK(run_fill(&request,1) && read_slot(12,linear), "resolve BVH: independent linear GPU reference");
+                request.linear_resolve = false; request.physical_slot = 13;
+                CHECK(run_fill(&request,1) && read_slot(13,accelerated) &&
+                    linear.albedo==accelerated.albedo && linear.normal==accelerated.normal &&
+                    linear.orm==accelerated.orm && linear.aux==accelerated.aux && linear.height==accelerated.height,
+                    "resolve BVH: complete output matches linear search beyond seed limit, including gutters/ties");
+            }
+
             // A complete procedural source bypasses Wang input images, even
             // when its fallback material has a detail slot. Its height is in
             // metres; the slope below has an analytic normal at every mip.
@@ -3887,6 +3913,88 @@ int main() {
                               height_error <= 1.f / 65535.f,
                           "composed height: R16 page and its decode match the analytic ramp at both mips");
                 }
+                {
+                    // Partial fills retain the destination's previous bytes,
+                    // then reproduce all five channels across many ring wraps.
+                    auto prior = make_request(fix_a2, 0, 2);
+                    PageData old, actual;
+                    CHECK(run_fill(&prior, 1) && read_slot(2, old), "sliced fill: previous page established");
+                    auto sliced = make_request(direct, 0, 2);
+                    bool done = false, pending = false;
+                    sliced.out_filled = &done; sliced.out_pending = &pending;
+                    sliced.work_rows = 7;
+                    CHECK(run_fill(&sliced, 1) && !done && pending && read_slot(2, actual) &&
+                        actual.albedo == old.albedo && actual.normal == old.normal && actual.orm == old.orm &&
+                        actual.aux == old.aux && actual.height == old.height,
+                        "sliced fill: a partial page is unpublished");
+                    // Supersede the partial page with another mip/revision.
+                    // Every old row must be discarded before publication.
+                    sliced.mip = 1; sliced.content_revision = 2;
+                    uint32_t calls = 0;
+                    while (!done && calls < 140) {
+                        pending = false;
+                        sliced.work_rows = calls % 2 ? 3 : 7;
+                        CHECK(run_fill(&sliced, 1), "sliced fill: bounded submission");
+                        CHECK(done || pending, "sliced fill: every slice reports progress or completion");
+                        ++calls;
+                    }
+                    CHECK(done && calls > vt::VtCompositor::kMaxBatchesInFlight && read_slot(2, actual) &&
+                        actual.albedo == pages[1].albedo && actual.normal == pages[1].normal &&
+                        actual.orm == pages[1].orm && actual.aux == pages[1].aux && actual.height == pages[1].height,
+                        "sliced fill: cancelled rows and ring wraps preserve byte-identical complete output");
+                }
+                if (vulkan->ray_tracing_available()) {
+                    // Compare the actual AO shader's packed R16 page against
+                    // a whole-page bake. Zero-initialized storage exposes lost
+                    // rows and a mistakenly repeated per-slice clear.
+                    auto enricher = vt::VtEnricher::create(*vulkan,VK_NULL_HANDLE,err);
+                    CHECK(enricher != nullptr, "sliced AO: native producer created");
+                    matter::VkBufferResource factors[2];
+                    bool buffers_ok = true;
+                    const size_t bytes = size_t(kPageStore)*kPageStore*2;
+                    for (auto& factor : factors) {
+                        buffers_ok &= matter::create_buffer(*vulkan,bytes,
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            0,factor,err) && matter::map_buffer(factor,err);
+                        if (factor.mapped) std::memset(factor.mapped,0,bytes);
+                    }
+                    CHECK(buffers_ok, "sliced AO: aligned output buffers created");
+                    if (enricher && buffers_ok) {
+                        auto sampled_pool = pool; sampled_pool.sampled_view[vt::kVtChannelOrm] = pool_orm.view;
+                        CHECK(tc.begin(err),err.c_str());
+                        cmd_transition(tc.cmd,pool_orm.image,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,1,1);
+                        CHECK(tc.submit(err),err.c_str());
+                        vt::VtEnrichRequest request;
+                        request.variant_hash = direct.variant_hash; request.atlas = &direct.atlas;
+                        request.part_context = &direct.ctx; request.pool = &sampled_pool;
+                        bool recorded = false; request.out_enriched = &recorded;
+                        request.occlusion_buffer = factors[0].buffer; request.occlusion_address = factors[0].address;
+                        CHECK(tc.begin(err),err.c_str()); enricher->enrich(tc.cmd,&request,1);
+                        CHECK(tc.submit(err) && recorded, "sliced AO: whole-page reference recorded");
+                        request.occlusion_buffer = factors[1].buffer; request.occlusion_address = factors[1].address;
+                        enricher->invalidate_part(direct.variant_hash);
+                        request.row_count = 3; recorded = false;
+                        CHECK(tc.begin(err),err.c_str()); enricher->enrich(tc.cmd,&request,1);
+                        CHECK(tc.submit(err) && !recorded,
+                            "sliced AO: a cold acceleration build defers row zero without publication");
+                        for (uint32_t row=0;row<kPageStore;row+=3) {
+                            request.row_begin = row; request.row_count = std::min(3u,kPageStore-row);
+                            ++request.frame_index; recorded = false;
+                            CHECK(tc.begin(err),err.c_str()); enricher->enrich(tc.cmd,&request,1);
+                            CHECK(tc.submit(err) && recorded, "sliced AO: requested rows recorded across ring wraps");
+                        }
+                        CHECK(std::memcmp(factors[0].mapped,factors[1].mapped,bytes)==0,
+                            "sliced AO: all packed factor rows match a whole-page bake byte for byte");
+                        const auto* values = static_cast<const uint16_t*>(factors[1].mapped);
+                        CHECK(std::all_of(values,values+kPageStore*kPageStore,[](uint16_t v){return v!=0;}),
+                            "sliced AO: every output row was written");
+                        CHECK(tc.begin(err),err.c_str());
+                        cmd_transition(tc.cmd,pool_orm.image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL,1,1);
+                        CHECK(tc.submit(err),err.c_str());
+                    }
+                }
                 auto regenerate = make_request(direct, 0, 2);
                 CHECK(draw_geometry[0].lifetime == draw_geometry[1].lifetime &&
                           draw_geometry[0].gpu.charts == draw_geometry[1].gpu.charts &&
@@ -3917,7 +4025,7 @@ int main() {
                 CHECK(retired_geometry.expired() &&
                           pinned_memory.geometries == released_memory.geometries + 1 &&
                           pinned_memory.geometry_gpu_bytes == released_memory.geometry_gpu_bytes +
-                              sizeof(vt::GpuChart) + 2 * sizeof(vt::GpuTriGeometry),
+                              sizeof(vt::GpuChart) + 2 * sizeof(vt::GpuTriGeometry) + sizeof(vt::VtResolveChart),
                       "draw geometry: census includes page-only ownership and frees it after the last reader");
                 // Editing the same surface identity must replace source metadata
                 // as well as its scalar operations, without retaining the slope.

@@ -2,8 +2,9 @@
 // vt_composite.comp — WP-D tier-1 chart-page compositor (chart-space virtual
 // texturing, spec Phase 2b).
 //
-// One dispatch per requested page: 17x17 workgroups of 8x8 cover the full
-// 136^2 physical page (128 payload + 4-texel border on every side). Per
+// Row dispatches cover the 136^2 physical page (128 payload + 4-texel border
+// on every side). row_begin selects the first row; each workgroup is one
+// horizontal warp so bounded slices retain full lane utilization. Per
 // texel:
 //   1. Map the physical texel to its virtual-atlas texel at the request's
 //      mip, then to finest-mip coordinates (texel centers).
@@ -46,7 +47,7 @@ layout(buffer_reference,std430,buffer_reference_align=16) buffer VtExportPoints 
 #include "vt_chart_types.glsl"
 #include "vt_normal_frame.glsl"
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 // MUST equal vt::VtCompositor::kMaxDetailSlots (vt_compositor.h).
 #define VT_MAX_SLOTS 8
@@ -105,7 +106,7 @@ layout(set = 1, binding = 7, rgba8) uniform writeonly image2DArray outOrm;
 layout(set = 1, binding = 8, rgba8) uniform writeonly image2DArray outAux;
 layout(set = 1, binding = 10, r16) uniform writeonly image2DArray outHeight;
 
-layout(push_constant) uniform Push { uint req_index; } pc;
+layout(push_constant) uniform Push { uint req_index; uint row_begin; } pc;
 
 // Shared chart resolve (needs charts[]/tris[]/cand_charts[] declared above).
 #define VT_RESOLVE_TRIANGLE_TYPE GpuTriGeometry
@@ -383,7 +384,7 @@ bool vt_near_surface_crease(VtSurfacePoint sp, float relief) {
 }
 
 void main() {
-    uvec2 t = gl_GlobalInvocationID.xy;
+    uvec2 t = gl_GlobalInvocationID.xy + uvec2(0, pc.row_begin);
     if (t.x >= uint(VT_PAGE_STORE) || t.y >= uint(VT_PAGE_STORE)) return;
     GpuFillRequest req = requests[pc.req_index];
     int out_layer = int(req.a.w);
@@ -408,7 +409,7 @@ void main() {
         sp.nrm=req.material_normal.xyz;
         sp.plane_uv=uv*vec2(length(req.material_du.xyz),length(req.material_dv.xyz));
         sp.footprint_m=max(length(req.material_du.xyz)/float(size.x),length(req.material_dv.xyz)/float(size.y));
-    } else sp=vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y);
+    } else sp=vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y, req.canonical.zw);
 
     if(req.periodic.w==1u) {
         // Residency proved a single mapped chart and matching carrier. Keep

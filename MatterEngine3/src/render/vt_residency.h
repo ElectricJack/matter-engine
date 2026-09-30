@@ -1,5 +1,7 @@
 #pragma once
 #include "vt_feedback_format.h"
+#include "vt_work_budget.h"
+#include "matter/vt_budgets.h"
 
 // Chart-space virtual texturing — residency runtime (WP-E, contract C2).
 //
@@ -1195,7 +1197,10 @@ class VtResidency {
         return max_tail_fills_per_frame_;
     }
     uint32_t recorded_fill_count() const { return recorded_fill_count_; }
-    void observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills);
+    void observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills, uint32_t rows = 0);
+    void observe_gpu_enrich_ms(float ms, uint32_t rows) { enrich_work_budget_.observe(ms, rows); }
+    uint32_t recorded_fill_rows() const { return recorded_fill_rows_; }
+    uint32_t recorded_enrich_rows() const { return recorded_enrich_rows_; }
 
     // TAIL GATE query for the draw side (see the header note): true once this
     // transported slot's variant is live AND its tail fill is guaranteed
@@ -1536,7 +1541,9 @@ class VtResidency {
     uint32_t feedback_raster_w_ = 0, feedback_raster_h_ = 0;
     uint32_t pool_pages_ = 0;
     uint32_t max_fills_per_frame_ = 8;
-    float fill_budget_ms_ = 12.0f;
+    float fill_budget_ms_ = 4.0f;
+    VtGpuWorkBudget fill_work_budget_, enrich_work_budget_;
+    uint32_t recorded_fill_rows_ = 0, recorded_enrich_rows_ = 0;
     float estimated_fill_ms_ = 12.0f;
     uint32_t recorded_fill_count_ = 0;
     // Dedicated tail-fill budget (MATTER_VT_TAIL_FILLS_PER_FRAME): a
@@ -1597,6 +1604,7 @@ class VtResidency {
         uint32_t preassigned_slot = 0xFFFFFFFFu;
         uint64_t owner_generation = 0;
         uint64_t content_revision = 0;
+        bool continuation = false;
     };
     std::vector<PendingFill> queue_;
     std::map<uint64_t, size_t> queued_keys_;   // dedup
@@ -1617,6 +1625,11 @@ class VtResidency {
         VtPageKey page{};
         uint32_t slot = 0;
         uint64_t requested_frame = 0;
+        std::shared_ptr<VtOcclusionPages::Page> factor;
+        std::shared_ptr<const VtPartSnapshot> inputs;
+        uint64_t generation = 0, revision = 0;
+        uint32_t rows = 0;
+        matter::VtEnrichSettings settings{};
     };
     std::vector<PendingEnrich> enrich_queue_;
     std::map<uint32_t, size_t> enrich_queued_slot_;   // slot -> queue index
@@ -1651,6 +1664,8 @@ class VtResidency {
     // the hard env ceiling on MATTER_VT_FILLS_PER_FRAME so it never allocates.
     static constexpr uint32_t kMaxFillFlags = 64;
     bool fill_flags_[kMaxFillFlags]{};
+    bool fill_pending_[kMaxFillFlags]{};
+    uint32_t fill_work_rows_[kMaxFillFlags]{};
     VtPageHeight fill_heights_[kMaxFillFlags]{};
     VtDrawGeometry fill_geometries_[kMaxFillFlags]{};
     VtMaterialPixelKey fill_material_keys_[kMaxFillFlags]{};

@@ -38,6 +38,7 @@
 // depend on where an instance was placed.
 
 #include "vt_enrich.h"
+#include "vt_resolve_bvh.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -322,6 +323,7 @@ struct VtEnricher::Impl {
     struct VariantEntry {
         matter::VkBufferResource charts;
         matter::VkBufferResource tris;
+        matter::VkBufferResource resolve_bvh;
         matter::VkBufferResource as_vertices;
         matter::VkBufferResource as_indices;
         matter::VkBufferResource as_instances;
@@ -1020,9 +1022,21 @@ VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
                 static_cast<size_t>(charts_bytes));
     std::memcpy(entry.tris.mapped, scratch_tris.data(),
                 static_cast<size_t>(tris_bytes));
+    std::vector<VtResolveChart> resolve_charts;
+    std::vector<VtResolveNode> resolve_nodes;
+    if (!vt_build_resolve_bvh(scratch_charts,scratch_tris,resolve_charts,resolve_nodes))
+        return fail("resolve bounds", "invalid chart triangle range");
+    const size_t table_bytes = resolve_charts.size()*sizeof(VtResolveChart);
+    const size_t node_bytes = resolve_nodes.size()*sizeof(VtResolveNode);
+    if (!matter::create_buffer(*vulkan,table_bytes+node_bytes,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,0,entry.resolve_bvh,err) ||
+        !matter::map_buffer(entry.resolve_bvh,err)) return fail("resolve bounds buffer",err);
+    std::memcpy(entry.resolve_bvh.mapped,resolve_charts.data(),table_bytes);
+    if (node_bytes) std::memcpy(static_cast<uint8_t*>(entry.resolve_bvh.mapped)+table_bytes,resolve_nodes.data(),node_bytes);
     if (!build_acceleration_structures(entry, ctx, err))
         return fail("acceleration structures", err);
-    entry.bytes += charts_bytes + tris_bytes;
+    entry.bytes += charts_bytes + tris_bytes + entry.resolve_bvh.size;
     entry.last_used = frame_index;
 
     VkDescriptorSetAllocateInfo alloc{
@@ -1255,6 +1269,9 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         if(req.occlusion_address && (!req.occlusion_buffer || (req.occlusion_address&15u) || (req.occlusion_offset&3u))) {
             ++stats_.requests_skipped;continue;
         }
+        if (req.row_begin >= kPageStore || !req.row_count || req.row_count > kPageStore - req.row_begin) {
+            ++stats_.requests_skipped; continue;
+        }
         // Enforce the single-ORM-image invariant the write-back barriers
         // above depend on. Checked here, before anything in the batch state
         // is mutated, so a skip costs nothing.
@@ -1314,28 +1331,37 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         g.c[0] = sx;
         g.c[1] = sy;
         g.c[2] = layer;
-        g.c[3] = 0;
+        g.c[3] = req.row_begin;
         g.d[0] = settings.strength;
         g.d[1] = settings.cap_texels;
         g.d[2] = settings.cap_meters;
         g.d[3] = settings.min_ao;
         g.e[0]=uint32_t(req.occlusion_address);g.e[1]=uint32_t(req.occlusion_address>>32);
-        g.e[2]=g.e[3]=0;
+        g.e[2]=uint32_t(entry->resolve_bvh.address);g.e[3]=uint32_t(entry->resolve_bvh.address>>32);
         orm_image = pool->image[kVtChannelOrm];
         orm_layers = pool->layer_count ? pool->layer_count : 1u;
         im.bind_pool_orm(pool->sampled_view[kVtChannelOrm]);
         recs.push_back(Rec{entry, orm_image, orm_layers, rec_index, layer,
                            static_cast<int32_t>(sx), static_cast<int32_t>(sy),&req});
-        // Each invocation atomically ORs its own R16 half into a zeroed word.
-        // Disjoint bits make the packed result independent of invocation order.
-        if(req.occlusion_address)
-            vkCmdFillBuffer(cmd,req.occlusion_buffer,req.occlusion_offset,kPageStore*kPageStore*2,0);
     }
     if (recs.empty()) return;
 
     // 1. Acceleration structures whose builds have not been recorded yet.
     for (Impl::VariantEntry* entry : pending_builds)
         im.record_as_build(cmd, *entry);
+    // Build and trace occupy separate frames on the incremental path. The
+    // caller retains the private factor and retries row zero, still invisible.
+    if (count == 1 && batch[0].occlusion_address && batch[0].row_count < kPageStore && !pending_builds.empty())
+        return;
+
+    // Clear only when row zero will actually trace. A build-only frame must
+    // not clear the same factor again on its retry without a transfer dependency.
+    // Each invocation ORs disjoint R16 halves into the zeroed packed words.
+    for (const Rec& rec : recs) {
+        const auto& req = *rec.request;
+        if (req.occlusion_address && req.row_begin == 0)
+            vkCmdFillBuffer(cmd, req.occlusion_buffer, req.occlusion_offset, kPageStore*kPageStore*2, 0);
+    }
 
     // 2. This batch's compute writes must wait for the previous batch in this
     //    ring slot (its encode reads / block-buffer copies).
@@ -1359,7 +1385,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                                 im.enrich_pl, 0, 2, sets, 0, nullptr);
         vkCmdPushConstants(cmd, im.enrich_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4,
                            &rec.req_index);
-        vkCmdDispatch(cmd, (kPageStore + 7) / 8, (kPageStore + 7) / 8, 1);
+        vkCmdDispatch(cmd, (kPageStore + 31) / 32, rec.request->row_count, 1);
     }
 
     cmd_memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1423,7 +1449,9 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     cmd_memory_barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     for(const Rec& rec:recs)if(rec.request->occlusion_address) {
-        ++stats_.pages_enriched;rec.request->mark_enriched();
+        if (rec.request->row_begin + rec.request->row_count == kPageStore)
+            ++stats_.pages_enriched;
+        rec.request->mark_enriched();
     }
 
     stats_.as_cached = static_cast<uint32_t>(im.variants.size());

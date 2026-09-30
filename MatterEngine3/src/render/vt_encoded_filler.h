@@ -52,6 +52,7 @@ public:
         current_inputs_ = inputs_();
     }
     void begin_preparation_frame() override { producer_->begin_preparation_frame(); }
+    bool supports_incremental_fill() const override { return producer_->supports_incremental_fill(); }
     PageReadiness probe_page(const VtFillRequest& request) override {
         if (!frame_ready_ || !current_inputs_.valid() || !request.part_snapshot || request.export_points)
             return PageReadiness::NeedsPreparation;

@@ -393,6 +393,16 @@ struct VtFillRequest {
     // assumes success exactly as it did before — so an older filler keeps
     // working, at the cost of the old hazard.
     bool* out_filled = nullptr;
+    // Bounded production may retain private scratch across calls. Pending
+    // requests keep their queue age and priority without publishing any bytes.
+    bool* out_pending = nullptr;
+    uint32_t work_rows = 0; // 0: complete synchronous page; otherwise a slice
+    uint32_t* out_work_rows = nullptr;
+    bool linear_resolve = false; // exact linear reference for GPU comparisons
+    void mark_pending(uint32_t rows = 0) const {
+        if (out_pending) *out_pending = true;
+        if (out_work_rows) *out_work_rows = rows ? rows : work_rows;
+    }
 
     // Residency publication identity. A producer records into isolated scratch
     // storage; residency checks these generations before copying to a resident
@@ -463,6 +473,7 @@ struct VtFillRequest {
 class VtPageFiller {
   public:
     virtual ~VtPageFiller() = default;
+    virtual bool supports_incremental_fill() const { return false; }
     // Called only after the caller's fence retired this frame slot's previous
     // submission. Cache producers may now consume readbacks and recycle staging.
     virtual void begin_residency_frame(uint64_t, uint32_t) {}
@@ -540,6 +551,9 @@ struct VtEnrichRequest {
     VkDeviceSize occlusion_offset = 0;
     VkDeviceAddress occlusion_address = 0;
     bool* out_enriched = nullptr;
+    // A separate factor producer reports a recorded slice through out_enriched.
+    // The caller retains its lease/cursor and publishes only after all rows.
+    uint32_t row_begin = 0, row_count = kVtPageStride;
     void mark_enriched() const {if(out_enriched)*out_enriched=true;}
 
     VtPreparationKey preparation_key() const {
@@ -570,8 +584,11 @@ class VtPageEnricher {
   public:
     virtual ~VtPageEnricher() = default;
     // Legacy producers still refine private ORM. A separate-factor producer
-    // must call mark_enriched only after recording a complete factor page.
+    // must call mark_enriched only after recording the requested factor rows.
+    // The default request covers a complete page; incremental callers retain
+    // the private factor until all rows have been recorded.
     virtual bool supports_separate_occlusion() const {return false;}
+    virtual bool supports_incremental_enrichment() const {return false;}
     // Record enrichment for `count` requests into `cmd`. Deterministic given
     // identical inputs (no time, no random, no frame index in the bake); must
     // not submit or wait. See vt_enrich.h for the pool-layout contract.

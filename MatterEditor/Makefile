@@ -701,7 +701,12 @@ build/windows/vt_compositor_tests.exe: \
         $(ME3_DIR)/tests/vt_compositor_tests.cpp \
         ../libs/MeshChartingLib/src/mesh_charting.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
+        $(ME3_DIR)/src/render/vt_enrich.cpp \
+        $(ME3_DIR)/src/props/props.cpp \
+        $(ME3_DIR)/src/util/json_doc.cpp \
         $(ME3_DIR)/src/render/vt_compositor.h \
+        $(ME3_DIR)/src/render/vt_enrich.h \
+        $(ME3_DIR)/src/render/vt_resolve_bvh.h \
         $(ME3_DIR)/src/render/vt_types.h \
         $(ME3_DIR)/src/render/vt_surface_tape.h \
         $(ME3_DIR)/src/render/chart_atlas.h \
@@ -717,6 +722,9 @@ build/windows/vt_compositor_tests.exe: \
 	    $(VT_PAGE_STORE_SRC) $(VT_PAGE_MEMORY_OBJ) -I../libs/AssetStoreLib/include \
 	    ../libs/MeshChartingLib/src/mesh_charting.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
+	    $(ME3_DIR)/src/render/vt_enrich.cpp \
+	    $(ME3_DIR)/src/props/props.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp \
 	    $(ME3_DIR)/src/terrain_field.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \

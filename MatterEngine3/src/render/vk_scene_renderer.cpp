@@ -8224,8 +8224,11 @@ void VkSceneRenderer::vt_record_pre_pass(VkCommandBuffer command_buffer) {
                      error.c_str());
         std::fflush(stderr);
     }
-    if (timing_frame)
+    if (timing_frame) {
         timing_frame->vt_recorded_fills = vt_->recorded_fill_count();
+        timing_frame->vt_fill_rows = vt_->recorded_fill_rows();
+        timing_frame->vt_enrich_rows = vt_->recorded_enrich_rows();
+    }
     vt_cpu_pre_pass_ms_ += std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - vt_cpu_start).count();
 }
@@ -16248,7 +16251,9 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                     gpu_sample_valid_mask_ |= 1u << z;
                     gpu_smoothed_ms_[z] = gpu_smoothed_ms_[z] * 0.9f + ms * 0.1f;
                     if (z == kGpuZoneVtFill && vt_)
-                        vt_->observe_gpu_fill_ms(ms, selected.vt_recorded_fills);
+                        vt_->observe_gpu_fill_ms(ms, selected.vt_recorded_fills, selected.vt_fill_rows);
+                    if (z == kGpuZoneVtEnrich && vt_)
+                        vt_->observe_gpu_enrich_ms(ms, selected.vt_enrich_rows);
                 }
             }
         }

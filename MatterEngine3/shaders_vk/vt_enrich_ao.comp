@@ -6,10 +6,9 @@
 // vt_enrich_ao.comp — WP-H tier-2 hemisphere AO page enrichment (chart-space
 // virtual texturing, spec Phase 6).
 //
-// One dispatch per already-filled page (or resident tail): 17x17 workgroups of
-// 8x8 cover the full 136^2 physical page store (128 payload + 4-texel border on
-// every side — border texels are enriched too, so a bilinear fetch at a page
-// edge does not step from occluded to unoccluded content). Per texel:
+// Dispatches cover bounded rows of an already-filled page (or resident tail),
+// using 32x1 workgroups. All 136^2 texels are eventually written, including
+// the 4-texel border, before the private factor publishes. Per texel:
 //
 //   1. Resolve the owning surface point with vt_chart_resolve.glsl — the SAME
 //      code vt_composite.comp used to bake the page this pass modifies. That
@@ -71,7 +70,7 @@
 // be treated as a pure function of its inputs like every other cached artifact
 // in the engine.
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 #include "vt_chart_types.glsl"
 
@@ -91,7 +90,7 @@ layout(set = 0, binding = 2) uniform accelerationStructureEXT variant_tlas;
 struct GpuEnrichRequest {
     uvec4 a;   // x page_x, y page_y, z mip, w out_layer (intermediate)
     uvec4 b;   // x cand_offset, y cand_count, z sample_count, w seed
-    uvec4 c;   // x slot_origin_x, y slot_origin_y, z pool_layer, w unused
+    uvec4 c;   // x slot_origin_x, y slot_origin_y, z pool_layer, w first row
     vec4  d;   // x strength, y cap_texels, z cap_meters, w min_ao
     uvec4 e;   // optional packed R16 factor BDA, reserved
 };
@@ -176,7 +175,7 @@ bool occludeQuery(vec3 P, vec3 dir, float maxRayDist) {
 }
 
 void main() {
-    uvec2 t = gl_GlobalInvocationID.xy;
+    uvec2 t = gl_GlobalInvocationID.xy + uvec2(0, requests[pc.req_index].c.w);
     if (t.x >= uint(VT_PAGE_STORE) || t.y >= uint(VT_PAGE_STORE)) return;
     GpuEnrichRequest req = requests[pc.req_index];
     ivec3 store_at = ivec3(ivec2(t), int(req.a.w));
@@ -191,7 +190,7 @@ void main() {
 
     uint mip = req.a.z;
     VtSurfacePoint sp =
-        vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y);
+        vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y, req.e.zw);
     if (!sp.found || sp.footprint_m <= 0.0) {
         vt_write_enrichment(req,t,store_at,base);
         return;
