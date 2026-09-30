@@ -221,6 +221,20 @@ trace, screenshot or elapsed rendering time exists. The driver wait log is
 `/tmp/clear-ridge9-final-after300-driver.log`; the output directory retains
 launch recipe/provenance, not a measured result.
 
+Claim epoch 3 retried the remaining capture on September 30, approximately
+00:46–00:52 PDT, after verifying the published checkpoint and all four retained
+native Vulkan pass logs. The restored final binary has the SHA-256 above and
+was launched through `EDITOR_NAME=editor-gi-final.exe` into
+`C:/tmp/clear-ridge9-epoch3-final-after300`. The idle gate again recorded
+21,589 MiB throughout, with 79–92% GPU utilization at spot checks and an active
+`qwen3.8:27b` worker. No editor log, perf JSON, trace or screenshot was created.
+The worker requested a coordinated GPU window from the project supervisor and
+dashboard through aq; no response arrived before stopping only its pending
+capture and screenshot monitor. This repeat provides no new performance or
+quality result. Its wait log is
+`/tmp/clear-ridge9-epoch3-after300-driver.log`. An exclusive window coordinated
+across projects is still required before another acceptance retry.
+
 Code and the native checks are preserved, but the attempt closes with a
 transient resource failure because late timing and scene visual acceptance
 remain open. Added raygen stages increase pipeline inventory; cold pipeline
