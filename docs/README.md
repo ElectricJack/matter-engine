@@ -142,6 +142,10 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [High-density geometry performance decision](findings/hdgeo-performance-pass-2026-09-30.md)
+  compares historical baseline and three current static/VG repeats at both
+  warmups; recommends the static default and retains VG as opt-in development,
+  with pacing, coverage, visual parity and VT budget gates still open.
 - [StreamMountain GI attribution and specialization](findings/streammountain-gi-attribution-2026-09-29.md)
   identifies diffuse as the dominant GI lane, records shader specialization
   and the POM-off secondary-hit skip, and compares native captures with the

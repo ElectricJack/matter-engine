@@ -1,0 +1,35 @@
+{
+  "source_head": "7e65df70ee9d23de71cd2fb02783f03b60d40fcd",
+  "implementation_commit": "46cb22669",
+  "baseline_source": "3bafe0495456602f1472f468a50b28272d984b97",
+  "baseline": "historical six captures; supervisor authorized reuse; shared-host load 8.7\u201316.5",
+  "width": 1920,
+  "height": 1080,
+  "sample_seconds": 20,
+  "runs_per_setup_and_warmup": 3,
+  "paged_gpu_mb": 3072,
+  "vt_pool_mb": 2048,
+  "paged_cache_only": true,
+  "commands": [
+    "PAGED_TERRAIN=0 PAGED_CACHE_ONLY=1 VARIANTS=pom_off RUNS=3 WARMUP=45 tools/streammountain_attribution.sh C:/tmp/clear-ridge10-20260930/static-w45",
+    "PAGED_TERRAIN=1 PAGED_CACHE_ONLY=1 VARIANTS=pom_off RUNS=3 WARMUP=45 tools/streammountain_attribution.sh C:/tmp/clear-ridge10-20260930/vg-w45",
+    "PAGED_TERRAIN=0 PAGED_CACHE_ONLY=1 VARIANTS=pom_off RUNS=3 WARMUP=300 tools/streammountain_attribution.sh C:/tmp/clear-ridge10-20260930/static-w300",
+    "PAGED_TERRAIN=1 PAGED_CACHE_ONLY=1 VARIANTS=pom_off RUNS=3 WARMUP=300 tools/streammountain_attribution.sh C:/tmp/clear-ridge10-20260930/vg-w300"
+  ],
+  "inherited_driver_overrides": {
+    "WIDTH": null,
+    "HEIGHT": null,
+    "SAMPLE": null,
+    "GPU_IDLE_MIB": null,
+    "RUN_TIMEOUT": null,
+    "GBUFFER_WORKLOAD": null,
+    "LIGHTING_DETAIL": null,
+    "GI_SPECIALIZE": null,
+    "PIPELINE_STATS": null,
+    "EDITOR_NAME": null,
+    "PAGED_GPU_MB": null,
+    "PAGED_VT_MB": null
+  },
+  "current_task": "clear-ridge.10",
+  "claim_epoch": 1
+}

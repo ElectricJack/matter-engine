@@ -1,0 +1,22 @@
+{
+  "static-w45-r1.png": {
+    "source": "/mnt/c/tmp/clear-ridge10-20260930/static-w45/pom_off_r1.warmup.png",
+    "marker": "captured",
+    "sha256": "eb674ba3256ec031a60b66d7bc14dec2704ac7483b8ff0451be1d96670bbc735"
+  },
+  "vg-w45-r1.png": {
+    "source": "/mnt/c/tmp/clear-ridge10-20260930/vg-w45/pom_off_r1.warmup.png",
+    "marker": "captured",
+    "sha256": "3360e6fb27f59d76953be8966a4c8d25492f2a7a6eed31e0f3d66530264d8ea5"
+  },
+  "static-w300-r2.png": {
+    "source": "/mnt/c/tmp/clear-ridge10-20260930/static-w300/pom_off_r2.warmup.png",
+    "marker": "captured",
+    "sha256": "28ee4d81228c5beb96372b64853c8c37258a0ef7e7c308c05e15417c430cbc86"
+  },
+  "vg-w300-r2.png": {
+    "source": "/mnt/c/tmp/clear-ridge10-20260930/vg-w300/pom_off_r2.warmup.png",
+    "marker": "captured",
+    "sha256": "eb1a67439e349794d0d1b8af197949be4ad882c01ae7a93fab26830a593c6fc8"
+  }
+}

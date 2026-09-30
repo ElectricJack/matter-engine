@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "review_id": "rev-wise-falcon",
+  "vault_path": "projects/matter-engine-cpp/specs/2026-09-30-streammountain-high-density-performance-static-default-vg-op.md",
+  "revision": 1,
+  "gate_id": "gate-27af101b27d4",
+  "content_sha256": "9e61732cc8eba74bafec38abd822301d7f748b5dc45fe093db358634ba3dbf81"
+}
