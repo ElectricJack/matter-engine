@@ -64,6 +64,12 @@ static void page_dependency_checks() {
         }
         CHECK(geometry::page_sets_intersect(left,right)==((a&b)!=0),
               "sorted page dependencies match exhaustive subset oracle with duplicates");
+        CHECK(geometry::cut_publication_changed(left,right,{},false)==((a&b)!=0),
+              "unrelated partial roots do not invalidate displayed geometry");
+        CHECK(geometry::cut_publication_changed(left,{},right,false)==((a&b)!=0),
+              "pending hierarchy dependencies invalidate the displayed cut too");
+        CHECK(geometry::cut_publication_changed(left,{}, {},true)==(a!=0),
+              "first complete root coverage leaves source fallback on publication");
     }
 }
 static void visibility_priority_checks(asset_store::PageCache& cache) {

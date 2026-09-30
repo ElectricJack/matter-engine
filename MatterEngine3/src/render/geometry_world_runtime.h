@@ -17,6 +17,7 @@ struct GeometryPagingProfile {
     GeometryPagingTiming worker_queue, cache_open, cache_refresh, page_read, decode;
     GeometryPagingTiming completion_wait, prepared_wait, upload_cpu, ready_wait, end_to_end, update;
     GeometryPagingTiming instance_setup, cpu_cut, snapshot, hierarchy_pack, cut_upload;
+    uint64_t cut_reused=0, cut_updated=0, refined_groups=0, coarsened_groups=0;
     GeometryPagingTiming hierarchy_worker;
     uint64_t hierarchy_failures = 0;
     GeometryPagingTiming scene_worker;
