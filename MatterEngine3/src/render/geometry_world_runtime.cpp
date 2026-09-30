@@ -270,17 +270,20 @@ struct GeometryWorldRuntime::Impl {
     void invalidate_published_pages() {
         if (published_pages.empty()) return;
         PROFILE_SCOPE("geometry.invalidate_published");
-        invalidate_scene();
+        bool scene_changed=false;
         std::sort(published_pages.begin(), published_pages.end());
         for (auto& entry : assets) {
             auto& asset = entry.second;
-            if (!asset.snapshot_valid && !asset.hierarchy_pending) continue;
             // Include the displayed hierarchy and the pending replacement's
             // frontier, including missing children and shared-page owners.
-            const bool affected = geometry::page_sets_intersect(published_pages,asset.pending_pages) ||
-                geometry::page_sets_intersect(published_pages,asset.dependency_pages);
-            if (affected) invalidate(asset);
+            const bool affected = geometry::cut_publication_changed(published_pages,
+                asset.dependency_pages,asset.pending_pages,!asset.snapshot && residency.ready(asset.lease));
+            if (affected) {
+                scene_changed=true;
+                if(asset.snapshot_valid || asset.hierarchy_pending) invalidate(asset);
+            }
         }
+        if(scene_changed) invalidate_scene();
         published_pages.clear();
     }
     void collect(VkSceneRenderer& renderer) {
