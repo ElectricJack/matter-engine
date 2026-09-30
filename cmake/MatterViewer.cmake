@@ -437,7 +437,7 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     # One ctest per smoke mode that the PowerShell fault gate
     # (MatterEditor/tools/smoke_vulkan_faults.ps1) does not run.
-    foreach(mode geometry-pages vt-queue vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas water-field-nort)
+    foreach(mode geometry-pages vt-queue vt-normal-frame vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas water-field-nort)
         string(REPLACE "-" "_" mode_name "${mode}")
         add_test(NAME smoke_${mode_name} COMMAND vulkan_smoke_tests)
         set_tests_properties(smoke_${mode_name} PROPERTIES LABELS vulkan
@@ -445,6 +445,7 @@ if(BUILD_TESTING)
             PASS_REGULAR_EXPRESSION "ALL PASS" FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
     endforeach()
+    set_tests_properties(smoke_vt_normal_frame PROPERTIES TIMEOUT 120)
 
     add_test(NAME vulkan_scene_oracle_tests
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

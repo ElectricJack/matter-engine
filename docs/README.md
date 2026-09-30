@@ -142,6 +142,9 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [VT normal-frame readiness](findings/vt-normal-frame-readiness-2026-09-29.md)
+  reproduces the unchanged smoke failure and verifies bounded residency waits
+  with the original raster/RT normal oracles and parity thresholds.
 - [VT memory density](findings/vt-memory-density-2026-09-14.md)
   measures reserved capacity, occupied pages, chart padding and triangle coverage
   in native terrain/building captures; identifies packing and coarse-tail costs.

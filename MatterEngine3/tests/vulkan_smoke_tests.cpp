@@ -8292,12 +8292,25 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
             camera.target = rotate({0, 0, -1});
             camera.up = rotate({0, 1, 0});
             CHECK(viewer::build_frame_matrices(camera, width, height, matrices, error), error.c_str());
-            // The window presents every frame; poll events while the user
-            // watches the fixture rotate. No hidden/offscreen launch.
-            for (int i = 0; i < 12; ++i) {
+            // Production fills are sliced into at most two of the page's
+            // 680 work tiles per frame. Wait for actual residency, including
+            // feedback retirement, instead of sampling the fallback after a
+            // fixed twelve frames. The window keeps presenting during the wait.
+            uint32_t stable = 0;
+            uint32_t settle_frames = 0;
+            for (; settle_frames < 4u * vt::kVtPageTiles && stable < 5u;
+                 ++settle_frames) {
                 glfwPollEvents();
                 frame_with_probe(false, {}, {}, 0, 0);
+                const auto stats = renderer.vt_stats();
+                stable = stats.fills_total && !stats.queue_depth &&
+                    !stats.dirty_pages && !stats.fills_last_frame ? stable + 1u : 0u;
             }
+            const auto settled = renderer.vt_stats();
+            std::printf("vt-normal-frame readiness: frames=%u stable=%u fills=%llu queue=%u dirty=%u\n",
+                settle_frames, stable, static_cast<unsigned long long>(settled.fills_total),
+                settled.queue_depth, settled.dirty_pages);
+            CHECK(stable == 5u, "normal-frame: page generation settles before sampling");
             viewer::VkRasterPixel pixel{};
             CHECK(renderer.readback_raster_pixel(140, 100, pixel, error), error.c_str());
             frame_with_probe(true, {0,0,0}, rotate({-.4f,0,-2}), 0, 0);
