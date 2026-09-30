@@ -1,14 +1,16 @@
 # StreamMountain GI attribution and shader specialization — 2026-09-29
 
 `clear-ridge.9`, queue row 1.14. Resumed captures span September 29–30.
-The shader fix and early before/after are complete; final late timing and
-StreamMountain visual acceptance remain blocked by shared-GPU occupancy.
+The shader fix, early/late before/after and default-camera visual check are
+complete. Claim epoch 4 captured the final late sample during the coordinated
+GPU window on September 30; earlier attempts were blocked by shared-GPU occupancy.
 Diffuse is the dominant GI lane: 12.02 ms versus 0.53 ms for combined
 reflection/transmission in the early reference, and 18.90 versus 0.75 ms
 in the late reference. It accounts for about 96% of the aggregate GI median.
-The final early diffuse median falls to 11.39 ms (−5.2%). This is a modest
-shader-execution improvement; the much larger gains since task 1 belong
-primarily to intervening work.
+The final early/late diffuse medians fall to 11.39/18.28 ms (−5.2%/−3.3%).
+This is a modest shader-execution improvement; the much larger gains since
+task 1 belong primarily to intervening work. Whole-frame tails and hitch
+counts do not improve consistently.
 
 ## Change and output contract
 
@@ -84,8 +86,8 @@ LIGHTING_DETAIL=1 GI_SPECIALIZE=0 VARIANTS=pom_off RUNS=1 WARMUP=300 \
 # Final binary, after both shader changes.
 LIGHTING_DETAIL=1 GI_SPECIALIZE=1 VARIANTS=pom_off RUNS=1 WARMUP=45 \
   tools/streammountain_attribution.sh C:/tmp/clear-ridge9-final-after45
-LIGHTING_DETAIL=1 GI_SPECIALIZE=1 VARIANTS=pom_off RUNS=1 WARMUP=300 \
-  tools/streammountain_attribution.sh C:/tmp/clear-ridge9-final-after300
+LIGHTING_DETAIL=1 GI_SPECIALIZE=1 EDITOR_NAME=editor-gi-final.exe VARIANTS=pom_off RUNS=1 WARMUP=300 \
+  tools/streammountain_attribution.sh C:/tmp/clear-ridge9-epoch4-final-after300
 ```
 
 The late reference command above was run before rebuilding the final editor;
@@ -104,14 +106,14 @@ frame intervals, not GPU total time.
 | 45 s reference | 536 | 36.26 / 40.77 / 59.24 | 36.54 / 93.27 / 215.12 | 3 | 0 |
 | 45 s final | 563 | 34.81 / 45.84 / 53.07 | 34.67 / 85.76 / 126.13 | 1 | 0 |
 | 300 s reference | 327 | 61.11 / 66.05 / 83.25 | 61.23 / 70.34 / 130.28 | 2 | 0 |
-| 300 s final | not sampled | unavailable | unavailable | unavailable | unavailable |
+| 300 s final | 326 | 59.82 / 79.43 / 95.57 | 59.80 / 141.01 / 197.45 | 4 | 0 |
 
 | Warmup / binary | Diffuse median / p99 | Reflection/transmission median / p99 | Aggregate GI median / p99 | G-buffer median / p99 | VT p99 |
 |---|---|---|---|---|---|
 | 45 s reference | 12.02 / 13.39 | 0.53 / 0.58 | 12.54 / 13.96 | 19.04 / 20.33 | 2.30 |
 | 45 s final | 11.39 / 11.70 | 0.51 / 0.53 | 11.91 / 12.22 | 18.35 / 20.22 | 3.65 |
 | 300 s reference | 18.90 / 19.16 | 0.75 / 0.76 | 19.65 / 19.91 | 32.62 / 35.49 | 7.70 |
-| 300 s final | unavailable | unavailable | unavailable | unavailable | unavailable |
+| 300 s final | 18.28 / 18.75 | 0.76 / 0.77 | 19.05 / 19.51 | 32.73 / 35.99 | 8.41 |
 
 The early final diffuse median is 0.63 ms lower (−5.2%), aggregate GI
 0.63 ms lower (−5.0%), and GPU total 1.45 ms lower (−4.0%). GPU p99 rises
@@ -121,9 +123,14 @@ The early reference/final scans average 1,723/1,713 RT instances and 198/190
 sector-LOD instances; static uploads in the sample are 5/8 and peak GPU memory
 12,529/12,501 MiB. Streaming continues after the stability gate and GPU clocks
 are not locked. Even the G-buffer changes despite no new raster changes here.
-The final late editor never launched, so its population and result are
-unavailable. The reference averages 2,349 RT and 295 sector-LOD instances,
-with two static uploads and 15,201 MiB peak GPU memory.
+The late reference/final average 2,349/2,478 RT and 295/318 sector-LOD
+instances; static uploads in the sample are 2/7 and peak GPU memory
+15,201/15,436 MiB. The final late diffuse median is 0.62 ms lower (−3.3%),
+aggregate GI 0.60 ms lower (−3.1%) and GPU total 1.29 ms lower (−2.1%).
+GPU p99/max rise from 66.05/83.25 to 79.43/95.57 ms and intervals over
+100 ms rise from 2/327 to 4/326. The larger final streamed population and
+continuing uploads prevent a fixed-workload causal estimate. Neither sample
+has an interval over 1 s; neither demonstrates elimination of all hitches.
 
 A provisional early specialization-only capture (before the POM-off skip),
 `C:/tmp/clear-ridge9-specialize-after45`, measured diffuse 11.02 ms, GI 11.52 ms,
@@ -140,12 +147,12 @@ The POM-off task-1 baseline is `3bafe049`; its three-run figures are in
 
 | Metric | Task 1, 45 s | Task 1, 300 s | Final, 45 s | Final, 300 s |
 |---|---|---|---|---|
-| GPU total medians | 227.50–248.29 | 402.11–454.17 | 34.81 | unavailable |
-| GPU total p99 = max (task 1) | 394.12–594.33 | 433.52–811.37 | 45.84 / 53.07 | unavailable |
-| Interval median / p99 / max | 233.23 / 3807.05 / 3939.87 | 409.49 / 922.18 / 1061.75 | 34.67 / 85.76 / 126.13 | unavailable |
-| Intervals >100 ms | 161/172 | 138/141 | 1/563 | unavailable |
-| Intervals >1 s | 6/172 | 1/141 | 0/563 | unavailable |
-| Aggregate GI medians | 54.28–55.76 | 80.34–102.22 | 11.91 | unavailable |
+| GPU total medians | 227.50–248.29 | 402.11–454.17 | 34.81 | 59.82 |
+| GPU total p99 = max (task 1) | 394.12–594.33 | 433.52–811.37 | 45.84 / 53.07 | 79.43 / 95.57 |
+| Interval median / p99 / max | 233.23 / 3807.05 / 3939.87 | 409.49 / 922.18 / 1061.75 | 34.67 / 85.76 / 126.13 | 59.80 / 141.01 / 197.45 |
+| Intervals >100 ms | 161/172 | 138/141 | 1/563 | 4/326 |
+| Intervals >1 s | 6/172 | 1/141 | 0/563 | 0/326 |
+| Aggregate GI medians | 54.28–55.76 | 80.34–102.22 | 11.91 | 19.05 |
 
 This historical comparison includes changes to geometry, raster and VT work,
 different streamed populations and different profiling boundaries. It is
@@ -190,13 +197,21 @@ env WSLENV=MATTER_GPU_LIGHTING_DETAIL_TIMERS:MATTER_VK_SMOKE_MODE \
   MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe
 ```
 
-The late reference has a default-camera screenshot requested 180 s into
-the 300 s warmup, outside the timed sample: `warmup.png` plus its completion
-sentinel. It shows a dark blue landscape, dense foreground rocks/trees and
-pre-existing rectangular horizon/sky artifacts. The final late monitor never
-reached warmup and captured no image. No matching scene visual acceptance is
-claimed. The fixture parity checks give controlled signal evidence but do
-not cover every camera or replace the missing scene comparison.
+Reference and final default-camera screenshots were requested 180 s into
+the 300 s warmup, outside the timed samples. Both `warmup.png.done` markers
+contain `captured`. Images are in `C:/tmp/clear-ridge9-specialize-before300`
+and `C:/tmp/clear-ridge9-epoch4-final-after300`. Inspection finds no apparent
+lighting, material or detail regression in the shared foreground rocks/trees;
+the final has more far-left terrain loaded. The dark blue landscape and
+pre-existing rectangular horizon/sky artifacts remain. This accepts the
+tested view, not every camera or the existing scene defects.
+
+`visual-comparison.json` records image differences on 8-bit RGB: the lower
+half (rows 540–1079) has mean absolute channel error 0.475/255, p99 maximum
+channel error 10 and 1.13% of pixels exceeding 8 levels. Whole-image mean
+error is 3.421/255, with differences concentrated at the changed horizon.
+These streamed screenshots are not a pixel-equality oracle; the native
+fixed-frame raw-signal checks above provide controlled estimator evidence.
 
 `shader_source_tests` exits 9 at its unchanged line-88 source-string assertion
 for `if (instance.water_pad0 != 0u) return;`. This is the recorded failure in
@@ -206,7 +221,7 @@ was changed to weaken that check. `bash -n tools/streammountain_attribution.sh`
 and `git diff --check` pass; invalid `GI_SPECIALIZE` is rejected with exit 2.
 Build/test logs are `/tmp/clear-ridge9-final-*.log`.
 
-## Resource blocker and remaining acceptance
+## Prior resource blocker and completed late acceptance
 
 The initial task attempt could not pass the idle-GPU gate while Qwen held
 16.7–21.7 GiB. It closed with an instrumentation checkpoint and no cost claim.
@@ -216,8 +231,8 @@ then waited about 30 minutes at the same gate, September 30 approximately
 00:03–00:33 PDT. Qwen occupied about 21.6 GiB and repeatedly renewed its lease;
 no Windows editor was running. Supervisor and dashboard notifications were
 queued through aq. The worker stopped only its waiting capture and image
-monitor; other processes were left running. No final-late performance JSON,
-trace, screenshot or elapsed rendering time exists. The driver wait log is
+monitor; other processes were left running. That attempt produced no final-late
+performance JSON, trace, screenshot or elapsed rendering time. Its driver wait log is
 `/tmp/clear-ridge9-final-after300-driver.log`; the output directory retains
 launch recipe/provenance, not a measured result.
 
@@ -233,13 +248,27 @@ dashboard through aq; no response arrived before stopping only its pending
 capture and screenshot monitor. This repeat provides no new performance or
 quality result. Its wait log is
 `/tmp/clear-ridge9-epoch3-after300-driver.log`. An exclusive window coordinated
-across projects is still required before another acceptance retry.
+across projects was required for the final acceptance retry.
 
-Code and the native checks are preserved, but the attempt closes with a
-transient resource failure because late timing and scene visual acceptance
-remain open. Added raygen stages increase pipeline inventory; cold pipeline
-compilation was not benchmarked. The early measured gain does not prove the
-late gain, eliminate all hitches, or reach the epic's whole-frame target.
+Claim epoch 4 completed the final late capture on September 30, approximately
+02:03–02:17 PDT, after checking the preserved final executable's checksum.
+The GPU was at 909 MiB / 0% utilization before launch. The supervisor secured
+a four-hour window by disabling competing OpenCode/Ollama launches and
+preserving the idle worker's work. The driver and screenshot monitor both
+exited 0; the perf JSON confirms POM off, 1920×1080, effective RT and zero
+validation errors. Launch-to-exit elapsed time was 839.40 s, versus 639.03 s
+for the late reference; these totals include scene preparation and teardown,
+not just rendering. Artifacts are `C:/tmp/clear-ridge9-epoch4-final-after300`,
+with driver/monitor logs at `/tmp/clear-ridge9-epoch4-after300-driver.log` and
+`/tmp/clear-ridge9-epoch4-monitor.log`.
+
+No implementation changed in epoch 4 and no native suite was rerun. The four
+retained final native pass logs were inspected; their checks apply to the
+unchanged source and verified executable. The task's split, cost reduction,
+before/after reporting, tested-view quality check and queue update are complete.
+Added raygen stages increase pipeline inventory; cold pipeline compilation
+was not isolated or benchmarked. The measured GI improvement does not eliminate
+all hitches or reach the epic's 16.7 ms whole-frame target.
 
 The final binary is also preserved outside the recyclable slot as
 `C:/tmp/clear-ridge9-final-after45/editor-final.exe`; the early reference is
@@ -247,7 +276,7 @@ The final binary is also preserved outside the recyclable slot as
 reference remains in its directory above. All three checksums are recorded
 in `C:/tmp/clear-ridge9-final-after45/checkpoint-binaries.sha256`.
 
-With an idle GPU window, restore the final executable to
+To reproduce with an idle GPU window, restore the final executable to
 `MatterEditor/build/windows-msvc/editor-gi-final.exe` (or rebuild `46cb2266`),
 then run the final 300 s command into a fresh directory with
 `EDITOR_NAME=editor-gi-final.exe`. At 180 s after the log reports the 300 s
@@ -255,6 +284,6 @@ warmup has started, append `stats gi-visual` and
 `shot_now C:/tmp/<fresh-directory>/warmup.png` to its command file and verify
 `warmup.png.done` contains `captured`. Compare against the retained late
 reference, report GPU median/p99/max, >100 ms/>1 s interval counts and
-population variation, inspect matching images, then update this document
-and queue row 1.14. Repeat native tests only if implementation changes or a
-new concern warrants it; the recorded final checks already pass.
+population variation, and inspect matching images. Repeat native tests only if
+implementation changes or a new concern warrants it; the recorded final checks
+already pass.
