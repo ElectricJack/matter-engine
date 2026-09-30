@@ -2992,6 +2992,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
         timing_written[zone] |= end ? 2u : 1u;
     };
     stats_.fills_last_frame = 0;
+    stats_.enrich_last_frame = 0;
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.evictions_total = slots_.evictions();
@@ -3000,6 +3001,16 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
     stats_.lru_scan_ns = slots_.lru_scan_ns();
 
     queue_dirty_pages();
+    // When even the minimum-progress rows exceed the combined targets, pace
+    // fill and AO on alternate frames. Both queues still advance, without
+    // adding their individually expensive slices to the same GPU frame.
+    const bool pace_pair = filler_ && filler_->supports_incremental_fill() &&
+        enricher_ && enricher_->supports_incremental_enrichment() && max_enrich_per_frame_ &&
+        !queue_.empty() && !enrich_queue_.empty() &&
+        !page_fills_paused_for_test_ && !input_update_pending_ &&
+        fill_work_budget_.pair_exceeds_budget(enrich_work_budget_);
+    const bool defer_enrich = pace_pair && (frame_index_ & 1u);
+    const bool defer_fill = pace_pair && !defer_enrich;
     // --- WP-H: tier-2 enrichment, BEFORE this frame's fills ---------------
     // Ordering matters twice over. (1) It runs while the pool is still in its
     // shader-read layout, which is what the enricher samples the page's current
@@ -3011,7 +3022,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
     {
         PROFILE_SCOPE("vt.enrich");
         stamp(matter::kGpuTimingVtEnrich, false);
-        drain_enrich(cmd);
+        if (!defer_enrich) drain_enrich(cmd);
         PROFILE_COUNT("vt.enrich_rows", recorded_enrich_rows_);
         stamp(matter::kGpuTimingVtEnrich, true);
     }
@@ -3105,7 +3116,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
     // Advance staging lifetime even when demand vanished and no fill remains.
     // Otherwise abandoned partial uploads can keep their CPU/GPU leases idle.
     if (filler_) filler_->begin_preparation_frame();
-    if (!queue_.empty() && filler_ && !page_fills_paused_for_test_ && !input_update_pending_) {
+    if (!queue_.empty() && filler_ && !defer_fill && !page_fills_paused_for_test_ && !input_update_pending_) {
         PROFILE_SCOPE("vt.fill_select");
         // Reserve the shared batch ceiling for mandatory coverage first.
         // Separate per-class counters alone are insufficient: a detail budget

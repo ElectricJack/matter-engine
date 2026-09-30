@@ -726,11 +726,16 @@ inline void run_slice_publication(matter::VulkanDevice& vulkan) {
     CHECK(frames.next(residency,9) && factor_probe->starts.size()==1 &&
           residency.stats().occlusion_pages==0 && residency.stats().enrich_total==0,
           "sliced AO: first factor slice stays unpublished");
-    CHECK(frames.next(residency,10) && factor_probe->starts.back()==4 &&
+    CHECK(frames.next(residency,10) && factor_probe->starts.back()==2 &&
           factor_probe->addresses[0]==factor_probe->addresses[1] && residency.stats().occlusion_pages==0,
           "sliced AO: next frame retains private factor and cursor");
     residency.invalidate_owners({owners[0]});
-    for (uint64_t frame=11;frame<160 && residency.stats().enrich_total<2;++frame)
+    residency.observe_gpu_fill_ms(12,1,1); residency.observe_gpu_enrich_ms(12,1);
+    CHECK(frames.next(residency,11) && residency.recorded_fill_rows()==1 && residency.recorded_enrich_rows()==0,
+          "sliced pair budget: an expensive fill advances while AO waits");
+    CHECK(frames.next(residency,12) && residency.recorded_fill_rows()==0 && residency.recorded_enrich_rows()==1,
+          "sliced pair budget: the next frame advances AO while fill waits");
+    for (uint64_t frame=13;frame<360 && residency.stats().enrich_total<2;++frame)
         CHECK(frames.next(residency,frame), "sliced AO: cancellation and completion frames submitted");
     CHECK(residency.stats().enrich_total==2 && residency.stats().occlusion_pages==2 &&
           residency.stats().enrich_queue_depth==0,
