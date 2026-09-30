@@ -13772,6 +13772,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 paging.visible.assets,paging.visible.unready_assets,
                 (unsigned long long)paging.visible.roots,(unsigned long long)paging.visible.ready_roots);
             timing("cpu_cut",paging.cpu_cut);timing("snapshot",paging.snapshot);
+            MATTER_LOGI("geometry", "paging_cut reused=%llu updated=%llu refined=%llu coarsened=%llu",
+                (unsigned long long)paging.cut_reused, (unsigned long long)paging.cut_updated,
+                (unsigned long long)paging.refined_groups, (unsigned long long)paging.coarsened_groups);
             timing("hierarchy_worker",paging.hierarchy_worker);timing("scene_worker",paging.scene_worker);
             MATTER_LOGI("geometry","paging_scene submitted=%llu published=%llu discarded=%llu reused=%llu pending=%u",
                 (unsigned long long)paging.scene_submitted,(unsigned long long)paging.scene_published,

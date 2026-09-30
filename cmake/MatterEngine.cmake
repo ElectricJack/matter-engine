@@ -347,6 +347,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/async_stage_pipeline_tests.cpp)
     matter_add_engine_cpu_test(geometry_hierarchy_tests
         MatterEngine3/tests/geometry_hierarchy_tests.cpp)
+    matter_add_engine_cpu_test(geometry_cut_tests
+        MatterEngine3/tests/geometry_cut_tests.cpp)
     add_executable(dense_terrain_diagnostic EXCLUDE_FROM_ALL MatterEngine3/tests/dense_terrain_diagnostic.cpp)
     target_link_libraries(dense_terrain_diagnostic PRIVATE matter_engine_headless)
     matter_engine_include_directories(dense_terrain_diagnostic PRIVATE)
