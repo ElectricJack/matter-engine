@@ -184,4 +184,4 @@ foreach(retopo IN ITEMS ON OFF)
     endif()
 endforeach()
 
-message(STATUS "viewer graph preserves 47-source editor, isolated 159+21 headless, and coherent 207/208-source viewer boundaries")
+message(STATUS "viewer graph preserves 47-source editor, isolated 168+21 headless, and coherent 216/217-source viewer boundaries")
