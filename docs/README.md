@@ -147,6 +147,9 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [Static-default integration candidate validation](findings/static-default-candidate-validation-2026-09-30.md)
+  records the merged main/VG candidate, restored population, native checks,
+  and serial captures, with loaded-coverage and visual-parity limits.
 - [VG integration provenance and rock population](findings/vg-integration-provenance-and-rock-population-2026-09-30.md)
   pins the main/VG/clear-ridge heads, distinguishes the three-rock pilot from
   the 1,283-rock stress site, and inventories the improvements and main-only

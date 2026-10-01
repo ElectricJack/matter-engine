@@ -66,8 +66,10 @@ def reduce_run(path, setup, warmup, repeat):
     # stdout/stderr diagnostic writers can interleave inside a printf line.
     # Preserve their raw logs; validate phase and duration tokens separately,
     # alongside the retained launch recipe, rather than altering a capture.
-    assert 'warming for' in log and f'{warmup:.3f} seconds' in log
-    assert 'perf: sampling' in log and '20.000 seconds' in log and 'perf: wrote ' in log
+    warmup_token = re.search(r'warming for (\d+(?:\.\d+)?)', log)
+    sample_token = re.search(r'perf: sampling for (\d+(?:\.\d+)?)', log)
+    assert warmup_token and float(warmup_token[1]) == warmup
+    assert sample_token and float(sample_token[1]) == 20 and 'perf: wrote ' in log
     assert len(data['frame_times_ms']) == data['frames']
     frames = data['frame_times_ms']
     hist = []
@@ -98,7 +100,7 @@ def reduce_run(path, setup, warmup, repeat):
         for key, value in re.findall(r'(\w+)=(\d+)(?![\d/])', line):
             memory_peaks[key] = max(memory_peaks.get(key, 0), int(value))
     cache_outcomes = {outcome: len(re.findall(r'terrain_cache .*?outcome='+outcome+r'\b', log))
-                      for outcome in ['hit', 'cold', 'miss', 'failed']}
+                      for outcome in ['hit', 'cold', 'missing', 'miss', 'failed']}
     return dict(setup=setup, warmup_seconds=warmup, repeat=repeat, perf_path=str(path),
                 frames=data['frames'], frame_times_ms=frames, interval=distribution(frames),
                 over_100_ms=sum(x > 100 for x in frames), over_1_s=sum(x > 1000 for x in frames),

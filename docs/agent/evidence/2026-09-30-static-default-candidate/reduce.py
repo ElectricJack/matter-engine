@@ -9,6 +9,7 @@ import re
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root', default='/mnt/c/tmp/quick-meadow68-4-20260930')
+parser.add_argument('--partial', action='store_true', help='Validate completed runs only; not final acceptance')
 args = parser.parse_args()
 root = Path(args.root)
 repo = Path(__file__).resolve().parents[4]
@@ -26,9 +27,17 @@ for recorded in protocol['runs']:
     assert (folder / 'git_sha.txt').read_text().strip() == protocol['source_sha']
     assert (folder / 'editor_sha256.txt').read_text().split()[0] == protocol['editor_sha256']
     log = (folder / 'pom_off.log').read_text(errors='replace')
-    run['scene_census_lines'] = [line for line in log.splitlines()
-                               if line.startswith(('STATS,candidate-view,', 'STATSVT,candidate-view,'))]
-    assert len(run['scene_census_lines']) == 2
+    # stderr can interrupt stdout inside its CSV record, including its first
+    # letter. Remove only known complete diagnostics in memory;
+    # retain the original log and require all 28 numeric STATS fields. The
+    # TATS spelling occurs when the initial S precedes the stderr VT record.
+    clean = re.sub(r'\[part-store\] part [0-9a-f]{16} produced no LOD geometry\n', '', log)
+    clean = re.sub(r'\[vk\] static upload frame bytes=\d+ pending_parts=\d+ publish=\d+(?:\.\d+)? ms\n', '', clean)
+    stats = re.findall(r'(?:STATS|TATS),candidate-view,((?:-?\d+(?:\.\d+)?,){27}-?\d+(?:\.\d+)?)\n', clean)
+    vt = re.findall(r'STATSVT,candidate-view,[^\n]+', clean)
+    assert len(stats) == len(vt) == 1, (len(stats), len(vt))
+    run['scene_census_lines'] = ['STATS,candidate-view,' + stats[0], vt[0]]
+    run['scene_census_interleaved'] = any(line not in log for line in run['scene_census_lines'])
     values = run['scene_census_lines'][0].split(',')
     run['scene_at_screenshot_request'] = dict(instances_active=int(values[6]),
                                             raster_batches=int(values[7]),
@@ -48,12 +57,13 @@ for recorded in protocol['runs']:
         sha256=hashlib.sha256((folder / 'view.png').read_bytes()).hexdigest(),
         delay_from_warmup_marker_seconds=recorded['shot_delay_from_warmup_marker_seconds'])
     runs.append(run)
-assert {(r['setup'], r['warmup_seconds']) for r in runs} == {
-    (s, w) for s in ('static', 'vg') for w in (45, 300)}
-summary = dict(protocol=protocol, authored_detailed_rock_placements=3,
+if not args.partial:
+    assert len(runs) == 4 and {(r['setup'], r['warmup_seconds']) for r in runs} == {
+        (s, w) for s in ('static', 'vg') for w in (45, 300)}
+summary = dict(complete=not args.partial, protocol=protocol, authored_detailed_rock_placements=3,
                authored_detailed_rock_assets=3, cube_resolution=128,
                placed_source_triangles=589824, runs=runs)
-(root / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+(root / ('partial-summary.json' if args.partial else 'summary.json')).write_text(json.dumps(summary, indent=2) + '\n')
 print('| path / warmup | frames | cadence median / p99 / max ms | >100 ms | >1 s | GPU median / p99 / max ms |')
 print('|---|---:|---|---:|---:|---|')
 for r in runs:
