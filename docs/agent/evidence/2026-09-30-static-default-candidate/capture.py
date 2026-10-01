@@ -20,6 +20,12 @@ binary = hashlib.sha256(exe.read_bytes()).hexdigest()
 protocol = dict(source_sha=source, editor_sha256=binary, camera=dict(
     eye=[380, 90, 1600], target=[420, 55, 1420]), width=1920, height=1080,
     sample_seconds=20, runs=[])
+protocol['input_sha256'] = {
+    name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
+    for name in ('projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js',
+                 'projects/world_demo/scenes/streaming/StreamMountain/props.json',
+                 'projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js',
+                 'projects/world_demo/shared-lib/mountain_geometry_site.js')}
 (root / 'editor-candidate.exe').write_bytes(exe.read_bytes())
 for warmup in (45, 300):
     for setup in ('static', 'vg'):
@@ -41,6 +47,8 @@ for warmup in (45, 300):
             captured = False
             warmup_seen_at = None
             while process.poll() is None:
+                with (root / 'host-load.csv').open('a') as load_log:
+                    load_log.write(f'{time.time()},{out.name},' + Path('/proc/loadavg').read_text())
                 log_path = out / 'pom_off.log'
                 try:
                     text = log_path.read_text(errors='replace')
