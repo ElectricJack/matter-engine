@@ -1,6 +1,6 @@
 # Wavefront MTL exported by MatterEngine3
 # part: CastleStone
-# resolved_hash: 8e3a0967ba2d2dc4
+# resolved_hash: 730a3217c9a13581
 # colour keys (Kd, Ke) are sRGB-encoded; Pr/Pm/map_Ka are linear
 # Kd is white because map_Kd carries the colour; see the base_albedo comment on each material
 
