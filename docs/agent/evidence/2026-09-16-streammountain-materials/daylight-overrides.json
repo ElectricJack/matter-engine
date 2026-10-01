@@ -1,0 +1,22 @@
+{
+  "review_only": {
+    "exposure_ev": 0,
+    "sun_elevation_deg": 50,
+    "sun_tint": [
+      1,
+      1,
+      1
+    ],
+    "day_ambient_multiplier": 1
+  },
+  "restored_after_capture": {
+    "exposure_ev": -0.74000001,
+    "sun_elevation_deg": 24.8899994,
+    "sun_tint": [
+      0.950980365,
+      0.758480906,
+      0.587370217
+    ],
+    "day_ambient_multiplier": 0.219999999
+  }
+}

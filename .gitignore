@@ -170,3 +170,7 @@ MatterEditor/vulkan_device_fault.log
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# MSVC static-library debug databases and root-level Vulkan device-fault logs are build/run artifacts.
+*.pdb
+/vulkan_device_fault*.log

@@ -1,0 +1,16 @@
+{
+  "editor_exit": 1,
+  "accepted_validation": false,
+  "reason": "sparse voxel G-buffer feedback format mismatch (R16 versus R32)",
+  "terrain_jobs_ms": {
+    "ForestFloor": 3309.7,
+    "AlpineRockDetail": 1902.7,
+    "ScreeDetail": 2082.1,
+    "AlpineSnowDetail": 1583.6,
+    "AlpineMeadowDetail": 2087.1
+  },
+  "terrain_jobs_total_ms": 10965.199999999999,
+  "job_scope": "warm cached source preparation/upload; not cold bake or steady frame time",
+  "scene_bake_job_ms": 46673.1,
+  "overview_sha256": "ac81125f5fded5af9c763f030b118c64b41f8d018b5692f5576f9f23f3eb0c06"
+}

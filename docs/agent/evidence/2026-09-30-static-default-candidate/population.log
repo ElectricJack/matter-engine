@@ -1,0 +1,3 @@
+before 563945f01: 1283 site placements / 19 assets; 64m site=1283 natural=466, 128m site=1283 natural=651, 256m site=1283 natural=1044, 512m site=1283 natural=4182
+after worktree: 3 site placements / 3 assets; 64m site=3 natural=466, 128m site=3 natural=651, 256m site=3 natural=1044, 512m site=3 natural=4182
+PASS: only the detailed-rock inspection site changed

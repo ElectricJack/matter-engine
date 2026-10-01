@@ -134,6 +134,12 @@ struct AgentPayload {
 // deterministically ordered page of the authored entities and baked roots in
 // the current world. Ordering and paging live in scene_inventory.h; the
 // handler only snapshots the live sources.
+struct AssetExport {
+    MT_COMMAND_NAME("asset.export");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
 struct SceneListObjects {
     MT_COMMAND_NAME("scene.list_objects");
     using Result = matter::evt::CommandResult<AgentPayload>;
@@ -286,6 +292,19 @@ struct ViewFocus {
     using Result = matter::evt::CommandResult<AgentPayload>;
     bool has_object = false;
     agent::ObjectIdentity object;
+};
+
+// Set a complete calibrated pinhole camera. A complete replacement prevents
+// an agent from mixing fresh intrinsics with an old pose by omission.
+struct ViewSetCamera {
+    MT_COMMAND_NAME("view.set_camera");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::CameraDesc camera;
+};
+
+struct RenderResetTemporal {
+    MT_COMMAND_NAME("render.reset_temporal");
+    using Result = matter::evt::CommandResult<AgentPayload>;
 };
 
 // --- typed regeneration job control (regen_jobs.h) --------------------------

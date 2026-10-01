@@ -105,7 +105,7 @@ void tests() {
 
     host.set_shared_lib_roots({(fixture.original / "projects/world_demo/shared-lib").string(),
                                (fixture.original / "MatterEngine3/shared-lib").string()});
-    const auto source = read(fixture.original / "projects/world_demo/objects/CastleStoneSource.js");
+    const auto source = read(fixture.original / "projects/world_demo/objects/castle/materials/CastleStoneSource.js");
     CHECK(!source.empty(), "actual eight-recipe source exists (run from repo root)");
     std::set<uint64_t> identities, fields;
     for (unsigned seed = 0; seed < 8 && !source.empty(); ++seed) {

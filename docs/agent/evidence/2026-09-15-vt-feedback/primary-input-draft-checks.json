@@ -1,0 +1,70 @@
+{
+  "status": "draft preparation only; not applied, built or run",
+  "checked_utc": "2026-09-15T14:55:41.780815+00:00",
+  "evaluation_pid": 46124,
+  "previous_goal_turn": "progress: rendering implementation/verification and user evaluation launch",
+  "this_turn": "progress: primary RT dependency audit and concrete production/regression patches; evaluation process confirmed live",
+  "evaluation_source_manifest": "draw-bindings-final-source.json",
+  "evaluation_source_changes": [],
+  "patch_checks": [
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-draft/primary-input-production.patch"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-draft/primary-input-regression.patch"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-draft/primary-input-production.patch",
+      "sha256": "73dd965df07b8b0bdf676f1976eec977e3c07ea19a7ffc1df71919fae57ba44f",
+      "bytes": 18629
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-draft/primary-input-regression.patch",
+      "sha256": "cd663895ba8ff6b2596c217f412ecdf7d1e27a1556df7c2857b1726a37dc0925",
+      "bytes": 3925
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-draft/primary-input-production-source.json",
+      "sha256": "6b9c7613a6f81906fd0c8b1e8453f9aea11f3f05bb4564dab22b72932c2177dc",
+      "bytes": 1822
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-draft/primary-input-regression-source.json",
+      "sha256": "24c734237412818d473414c3ae02a669a6fddadca21cb6cfd52a59d34265546a",
+      "bytes": 286
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-draft/prepare_production.py",
+      "sha256": "254d14c6e0b6dd262a90b4bd8efe77ce585867c20c5f52ce324a4a514300894f",
+      "bytes": 10464
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-draft/prepare_regression.py",
+      "sha256": "af64afd52482980eeedece04362d06a6f985537eba9864b660bf5715886d4985",
+      "bytes": 4486
+    }
+  ],
+  "full_vt_acceptance": false,
+  "final_fingerprint_changes": [],
+  "final_checked_utc": "2026-09-15T14:57:46.592760+00:00",
+  "native_validation_deferred": "User evaluation editor PID 46124 confirmed live and responsive; no competing builds or GPU tests.",
+  "evaluated_editor_replaced": false
+}

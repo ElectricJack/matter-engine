@@ -1,0 +1,14 @@
+{
+  "source_count": 1020,
+  "source_changes": [],
+  "latest_binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe": true,
+    "MatterEditor/build/windows-msvc/editor.exe": true
+  },
+  "gallery_v4_to_latest_changes": [
+    "MatterEngine3/tests/part_surface_provider_tests.cpp"
+  ],
+  "editor_processes": [],
+  "limits": "Gallery v4 uses the v3 build. The only subsequent source change is the corrected native provider test fixture; the renderer and authored runtime sources are unchanged. Earlier analytic GPU checks are preserved under v1/v2; v3 changed placement and flattening, validated by the complete flattening suite and actual gallery.",
+  "passed": true
+}

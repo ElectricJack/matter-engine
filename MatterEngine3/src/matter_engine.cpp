@@ -1,3 +1,4 @@
+#include "asset_export.h"
 // MatterEngine3/src/matter_engine.cpp
 //
 // THE ENGINE FACADE. Everything MatterEditor can ask the engine to do arrives
@@ -137,6 +138,7 @@
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
 #ifdef MATTER_VULKAN_VIEWER
 #include "matter/vulkan_device.h"
+#include "impostor_bake.h"
 #include "hydrology/hydrology_artifact.h"
 #include "render/gpu_meshing/water_scene_part.h"
 #include "render/water_mesh_animation_playback.h"
@@ -144,9 +146,16 @@
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/vertex_cache_order.h"
+#include "render/impostor_mips.h"
+#include "render/geometry_world_runtime.h"
+#include "geometry/geometry_options.h"
+#include "render/chart_static_surface.h"
+#include "render/vt_surface_topology.h"
 #include "render/vk_lighting_controls.h"
 #include "render/matrix_math.h"
 #include "render/vt_surface_tape.h"  // P2: field-lane scan + f16 lane values
+#include "render/vt_world_receivers.h"
 #include "render/visibility_hash.h"  // M4: the id-buffer bitmask's one hash
 #endif
 // Headless builds (no MATTER_VULKAN_VIEWER) still compile the streaming
@@ -416,6 +425,41 @@ static uint32_t vt_compute_chart_lanes(const VtSurfaceClassifier& classifier,
     return scan.count;
 }
 
+// Runtime-generated surfaces have no PartStore record. Keep their immutable
+// chart geometry through recipe edits and replace only classified inputs.
+static std::shared_ptr<const vt::VtPartSnapshot> vt_classify_surface_snapshot(
+    const vt::VtPartSnapshot& source, const VtSurfaceClassifier& classifier) {
+    auto context = source.context;
+    context.surface_weights = nullptr;
+    context.surface_materials = nullptr;
+    context.surface_material_count = 0;
+    context.surface_tape_hash = 0;
+    context.surface_tape_text = nullptr;
+    context.surface_lanes = nullptr;
+    context.surface_lane_count = 0;
+    context.surface_world_anchored = classifier.world_anchored ? 1u : 0u;
+    std::memcpy(context.surface_local_to_world, classifier.local_to_world,
+                sizeof(context.surface_local_to_world));
+    std::vector<uint8_t> weights;
+    std::vector<uint32_t> materials;
+    std::vector<uint16_t> lanes;
+    if (classifier.tape && classifier.tape->material_count()) {
+        vt_classify_chart_vertices(classifier, context.positions, context.normals,
+                                   context.vertex_count, weights);
+        for (uint32_t k = 0; k < classifier.tape->material_count(); ++k)
+            materials.push_back(static_cast<uint32_t>(classifier.tape->material_handle(k)));
+        context.surface_weights = weights.data();
+        context.surface_materials = materials.data();
+        context.surface_material_count = static_cast<uint32_t>(materials.size());
+        context.surface_tape_hash = classifier.tape_hash;
+        context.surface_tape_text = classifier.tape->program().text().c_str();
+        context.surface_lane_count = vt_compute_chart_lanes(
+            classifier, context.positions, context.vertex_count, lanes);
+        context.surface_lanes = lanes.empty() ? nullptr : lanes.data();
+    }
+    return source.with_surface(context);
+}
+
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash,
                         const viewer::LoadedPart& loaded,
@@ -431,7 +475,8 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
 bool build_vulkan_part(uint64_t part_hash, const viewer::LoadedPart& loaded,
                        int force_lod, const VtSurfaceClassifier* surface,
                        viewer::VkScenePart& part,
-                       viewer::SurfaceClassCache* out_cache = nullptr);
+                       viewer::SurfaceClassCache* out_cache = nullptr,
+                       bool reuse_prepared_surface = false);
 bool register_vulkan_part(viewer::VkSceneRenderer& renderer, uint64_t part_hash,
                           const viewer::VkScenePart& part, bool& drawable,
                           std::string& error);
@@ -894,6 +939,17 @@ struct WorldSession::Impl {
     std::atomic<float> water_animation_time_seconds{0.0f};
     viewer::WaterDiagnosticSettings vk_water_diagnostic_settings{};
     viewer::VulkanInstanceCache vk_instance_cache;
+    std::vector<viewer::VkSceneInstance> vk_ordinary_instances;
+    viewer::GeometryWorldRuntime vk_geometry_pages;
+    std::vector<viewer::VkSceneInstance> vk_geometry_instances;
+    bool vk_geometry_pages_enabled = geometry::pages_requested();
+    uint64_t vk_geometry_temporal_revision = UINT64_MAX;
+    std::map<uint64_t,vt::VtWorldReceiverFrame> vk_world_receiver_frames;
+    uint64_t vk_receiver_state_version=UINT64_MAX, vk_receiver_tape_hash=UINT64_MAX;
+    uint64_t vk_receiver_expansion=UINT64_MAX;
+    std::vector<std::pair<uint64_t,std::shared_ptr<const viewer::SharedSurfaceAssembly>>> vk_shared_catalog_owners;
+    bool vk_shared_has_instances=false,vk_shared_catalog_dirty=true;
+    std::vector<viewer::SparseSharedObject> vk_shared_surface_objects,vk_shared_shadow_objects;
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
     uint64_t vk_temporal_token = 0;
@@ -1467,6 +1523,7 @@ struct WorldSession::Impl {
     // Phase C Task 6: execute one camera-driven refine step.
     // Called by worker_loop in the pop_wait timeout path when refine_ctrl is live.
     void execute_refine_step();
+    void publish_refinement_status();
     // Execute one Runtime-coordinator streaming step on the existing worker.
     void execute_sector_stream_step();
     // Phase C Task 9: install world-kind field, set world binding on host_baker,
@@ -1499,6 +1556,7 @@ struct WorldSession::Impl {
     // never changed.
     void schedule_vt_surface_reclassify();
     void service_vt_rung_requests();
+    void sync_vt_world_receivers();
     // Phase C Task 9: drain sector evictions — release resources for evicted sectors.
     // Called on the worker thread (within a gpu_jobs.run_blocking context or inline).
     struct SectorEntry;
@@ -1648,6 +1706,8 @@ struct WorldSession::Impl {
     // Tile count from the most-recent RefineController::build() (used in emitted events).
     // Worker thread only.
     size_t refine_tile_count = 0;
+    mutable std::mutex refinement_status_mutex;
+    std::vector<uint64_t> pending_refinement_hashes;
 
     // World-kind field runtime (owned; lives for the session generation).
     // Null for closed-world sessions or before install completes.
@@ -1661,6 +1721,7 @@ struct WorldSession::Impl {
     // classifier) and — via the hash — VT page invalidation on tape edits.
     std::unique_ptr<terrain_field::SurfaceRuntime> world_surface;
     uint64_t world_surface_hash = 0;
+    std::set<uint64_t> world_surface_receivers;
     // habitat() tape: the world's ecology as data, read per scatter candidate
     // through the habitatAt verb. Null when the world declares none.
     std::unique_ptr<terrain_field::SurfaceRuntime> world_habitat;
@@ -1769,6 +1830,9 @@ struct WorldSession::Impl {
         // The manifest entry is kept rather than recomputed, so unparking is a
         // pure hand-off with no chance of the two constructions drifting.
         bool parked = false;
+        // Source-VT geometry cannot replace existing coverage until its pinned
+        // texture tail is usable. Kept separate from geometric overlap holds.
+        bool material_pending = false;
         std::chrono::steady_clock::time_point parked_at{};
         viewer::WorldManifestEntry pending_instance{};
         // ---- seam welding (volumetric-sectors M0-WP3a) ----------------------
@@ -1838,8 +1902,9 @@ struct WorldSession::Impl {
     static int sector_level_of(int rung) {
         return matter_stream::variant_level(rung);
     }
-    // Do these two tiles cover any common ground? Distinct levels only: two
-    // tiles at the SAME level are either the same tile or disjoint.
+    // Do these two tiles cover any common ground? Same-level variants can
+    // replace the same cube when its scatter tier changes. They need the same
+    // atomic geometry/material handoff as a split or merge.
     //
     // OCTREE containment as of volumetric-sectors M1, not quadtree: all THREE
     // coordinates are shifted and compared. The two-axis version was correct
@@ -1853,7 +1918,7 @@ struct WorldSession::Impl {
     static bool sector_footprints_overlap(const SectorKey& a,
                                           const SectorKey& b) {
         const int la = sector_level_of(a.rung), lb = sector_level_of(b.rung);
-        if (la == lb) return false;
+        if (la == lb) return a.tx == b.tx && a.ty == b.ty && a.tz == b.tz;
         // The finer tile lies inside the coarser one iff shifting its
         // coordinates up by the level difference lands on the coarser tile.
         const int sh = (la < lb) ? (lb - la) : (la - lb);
@@ -1863,7 +1928,7 @@ struct WorldSession::Impl {
                (fine.ty >> sh) == coarse.ty &&
                (fine.tz >> sh) == coarse.tz;
     }
-    // Is some VISIBLE entry at another level still sitting on this footprint?
+    // Is another VISIBLE entry still sitting on this footprint?
     // Parked entries do not block -- if they did, a parent parked behind its
     // children and children parked behind their parent would deadlock each
     // other into permanent invisibility.
@@ -2104,13 +2169,15 @@ struct WorldSession::Impl {
     // the welder's side lookups work in both tiling modes: a WeldSide IS a rung,
     // and a record that disagrees is a different lattice.
     const seam::SectorBoundary* drawn_boundary_with_rung(
-            int64_t tx, int64_t ty, int64_t tz, int mesher_rung) const {
+            int64_t tx, int64_t ty, int64_t tz, int mesher_rung,
+            uint64_t* owner = nullptr) const {
         const auto it = sector_tile_index.find(TileXYZ{tx, ty, tz});
         if (it == sector_tile_index.end()) return nullptr;
         for (int rung : it->second) {
             const SectorEntry* e = drawn_entry(SectorKey{tx, ty, tz, rung});
             if (!e || !e->boundary) continue;
             if (e->boundary->rung != mesher_rung) continue;
+            if (owner) *owner = e->part_hash;
             return e->boundary.get();
         }
         return nullptr;
@@ -2263,6 +2330,10 @@ struct WorldSession::Impl {
     struct WeldRecord {
         seam::WeldMesh  mesh;
         seam::WeldStats stats;
+        // Exact drawn sectors consulted by the strip, including diagonals at
+        // tile corners. Used to authorize material traversal, not to key the
+        // geometry: scatter-only republication can replace these part hashes.
+        std::vector<uint64_t> surface_sectors;
         // Diagnostics that weld_face cannot report because it does not know
         // what a tile is. See SeamWeldStatus for what each one means.
         int fine_sides_expected = 0;
@@ -2346,6 +2417,20 @@ struct WorldSession::Impl {
     //   * it makes a hash collision with a real baked part DETECTABLE rather
     //     than silent -- see weld_part_hash().
     std::unordered_set<uint64_t> weld_parts;
+#ifdef MATTER_VULKAN_VIEWER
+    // Welds are runtime geometry, absent from PartStore. Retain their chart
+    // inputs until the matching draw transaction retires the part.
+    std::unordered_map<uint64_t, std::shared_ptr<const vt::VtPartSnapshot>> weld_vt_sources;
+    vt::VtSurfaceTopology vt_surface_topology;
+    std::map<uint64_t, std::vector<uint64_t>> vt_weld_sectors;
+    std::map<uint64_t, std::set<uint64_t>> vt_sector_welds;
+    uint64_t vt_surface_topology_revision = 0, vt_surface_selection_revision = 0;
+    bool vt_surface_connections_published = false;
+    static constexpr uint64_t kTerrainSurfaceDomain = 0x7465727261696e01ull;
+    void refresh_vt_surface_faces(const SectorKey& key);
+    void set_weld_vt_neighbors(uint64_t weld, const std::vector<uint64_t>& sectors);
+    void sync_vt_surface_connections();
+#endif
     // Reused across weld_face calls: one call per contiguous run of anchor
     // points, so a fresh mesh per call would be pure allocator churn.
     seam::WeldMesh seam_scratch;
@@ -2491,6 +2576,7 @@ struct WorldSession::Impl {
     // world's surfaces() tape; see the definition for why a weld needs it.
     static bool build_weld_part(uint64_t part_hash, const seam::WeldMesh& mesh,
                                 const VtSurfaceClassifier* surface,
+                                float texels_per_meter,
                                 viewer::VkScenePart& out);
     // Register `rec`'s geometry and stage its instance into `txn`. Leaves the
     // record undrawn (and both attempted flags clear) on any failure.
@@ -2645,6 +2731,8 @@ struct WorldSession::Impl {
     // This is S_0 -- the LEVEL 0 tile size -- and stays the grid pitch the
     // rings and bands are authored against.
     float world_sector_size = 16.0f;
+    // Immutable during streaming, installed with the other world constants.
+    float world_terrain_texels_per_meter = 16.0f;
     // Nested sector LOD (docs/terrain-nested-sector-lod-2026-08-08.md): the
     // streamer hands out tiles at level L, whose size is S_0 << L, and L rides
     // the packed variant as 5 - terrain_lod. With nesting OFF every request is
@@ -2669,6 +2757,9 @@ struct WorldSession::Impl {
 
     // Cached sector source text (WorldSector.js read once at install_world time).
     std::string world_sector_source;
+    // Identity-only host: request hashing is thread-safe and never evaluates JS.
+    // Replaced with the installed source after sector workers are quiesced.
+    std::shared_ptr<script_host::ScriptHost> world_sector_identity_host;
 
     // True once the first streaming cycle has completed with no remaining holes.
     // Reset on BakeAll/Reload/regenerate. Used to emit BakeFinished for world-kind.
@@ -3096,6 +3187,7 @@ void WorldSession::Impl::bake_pool_loop() {
             --bake_pool_active;
         }
         bake_pool_idle_cv.notify_all();
+        commands.wake_idle(); // Refill nearest-first work as soon as an executor is free.
     }
 }
 
@@ -3178,8 +3270,8 @@ void WorldSession::Impl::worker_loop() {
     };
     // Phase C Task 6: refine loop.
     // After a bake finishes (bake_active = false) and a RefineController is live,
-    // the worker uses pop_wait(50ms) instead of pop() so it can service one refine
-    // step per timeout slot.  Commands always win: a bake/reload command cancels and
+    // the worker uses pop_wait(50ms) instead of pop() for idle refine service.
+    // Sector completions wake active streaming immediately, without polling.  Commands always win: a bake/reload command cancels and
     // rebuilds the refine controller.
     //
     // Invariant: a refine step never runs while a command is pending or a bake is in
@@ -3194,7 +3286,8 @@ void WorldSession::Impl::worker_loop() {
         {
             matter_async::Command cmd;
             bool timed_out = false;
-            bool got_cmd = commands.pop_wait(cmd, /*ms=*/50, timed_out);
+            int idle_wait_ms = 50;
+            bool got_cmd = commands.pop_wait(cmd, idle_wait_ms, timed_out);
 
             if (!got_cmd && !timed_out) {
                 // Shutdown + drained. Detach was invalidated by the app thread;
@@ -3203,6 +3296,7 @@ void WorldSession::Impl::worker_loop() {
                 refine_ctrl.reset();
                 refine_provider.reset();
                 refine_pending_upgrades_.clear();
+                publish_refinement_status();
                 clear_streaming_once(/*restore_on_failure=*/false);
                 return;
             }
@@ -3218,6 +3312,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
+                    publish_refinement_status();
                     clear_streaming_once(/*restore_on_failure=*/false);
                     return;
                 }
@@ -3227,6 +3322,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
+                    publish_refinement_status();
                     if (!clear_streaming_once(/*restore_on_failure=*/true)) {
                         continue;
                     }
@@ -3293,8 +3389,8 @@ void WorldSession::Impl::worker_loop() {
             streaming::detail::run_idle_worker_step_noexcept(
                 this,
                 [](void* opaque) {
-                    static_cast<WorldSession::Impl*>(opaque)
-                        ->execute_sector_stream_step();
+                    auto& self = *static_cast<WorldSession::Impl*>(opaque);
+                    self.execute_sector_stream_step();
                 },
                 this,
                 [](void* opaque,
@@ -3310,7 +3406,10 @@ void WorldSession::Impl::worker_loop() {
                     event.message = message;
                     self.emit_bake(std::move(event));
                 });
-            if (refine_ctrl) execute_refine_step();
+            if (refine_ctrl) {
+                execute_refine_step();
+                publish_refinement_status();
+            }
             continue;
         }
 
@@ -3462,6 +3561,21 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                    (control.cancelled && control.cancelled());
         };
         return vk_scene->project_solid_face(job, result, stats, error, guarded);
+    };
+    cfg.surface_control.cancelled = [token] { return token && token->is_cancelled(); };
+    cfg.vk_face_material_bake = [this, token](const gpu_meshing::FaceMaterialJob& job,
+        gpu_meshing::FaceMaterialPatch& result, gpu_meshing::FaceStats& stats,
+        gpu_meshing::Error& error, const gpu_meshing::BuildControl& control) {
+        if (!vk_scene) { error={gpu_meshing::ErrorCode::Unavailable,"face material renderer not active"};return false; }
+        auto guarded=control;
+        guarded.cancelled=[token,control]{return (token && token->is_cancelled()) ||
+            (control.cancelled && control.cancelled());};
+        return vk_scene->bake_face_material(job,result,stats,error,guarded);
+    };
+    cfg.publish_part_surface = [this](std::shared_ptr<const part_surface::Prepared> surface,
+                                       std::string& error) {
+        if (!vk_scene) {error="finite source renderer not active";return false;}
+        return vk_scene->publish_part_surface(std::move(surface),error);
     };
     cfg.vk_particle_visual_bake = [this](
         const gpu_meshing::ParticleJob& job,
@@ -4617,12 +4731,30 @@ void WorldSession::Impl::publish_pipeline(
         connected.store(false, std::memory_order_release);
 
 #ifdef MATTER_VULKAN_VIEWER
-        if (vk_scene) vk_scene->reset();
+        if (vk_scene) { vk_geometry_pages.reset(*vk_scene); vk_scene->reset(); }
+        vk_geometry_instances.clear(); vk_geometry_temporal_revision = UINT64_MAX;
+        vk_ordinary_instances.clear();vk_shared_catalog_owners.clear();vk_shared_has_instances=false;
+        vk_shared_surface_objects.clear();vk_shared_shadow_objects.clear();vk_shared_catalog_dirty=true;
         vk_instance_cache.invalidate();
+        vk_world_receiver_frames.clear();
+        vk_receiver_state_version=vk_receiver_tape_hash=vk_receiver_expansion=UINT64_MAX;
         vk_temporal.invalidate();
 #endif
 
         reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root);
+#ifdef MATTER_VULKAN_VIEWER
+        reset_out->new_store->set_geometry_pages_enabled(vk_geometry_pages_enabled &&
+            engine->render_device && (engine->render_device->ray_tracing_available() ||
+            (std::getenv("MATTER_GEOMETRY_RASTER_ONLY") &&
+             std::string(std::getenv("MATTER_GEOMETRY_RASTER_ONLY")) == "1")));
+        if (const char* module = reset_out->new_store->geometry_pages_enabled()
+                ? std::getenv("MATTER_GEOMETRY_MODULE") : nullptr) {
+            std::set<uint64_t> hashes;
+            { std::lock_guard<std::mutex> lock(draw_override_mutex);
+              for (const auto& entry : draw_catalog_staged) if (entry.second == module) hashes.insert(entry.first); }
+            reset_out->new_store->set_geometry_page_filter(std::move(hashes));
+        }
+#endif
         // W3: thread the optional per-rung bake observer (null in production;
         // re-applied at the publish_pipeline call sites too, since PartStore
         // is replaced wholesale on every GL reset job).
@@ -5190,6 +5322,7 @@ void WorldSession::Impl::publish_pipeline(
 
         refine_tile_count = new_ctrl->tile_count();
         refine_ctrl = std::move(new_ctrl);
+        publish_refinement_status();
         MATTER_LOGI("refine", "controller built: %zu tiles\n", refine_tile_count);
     }
 
@@ -5199,6 +5332,7 @@ void WorldSession::Impl::publish_pipeline(
     // closed-world sessions: world_field == null → skip.
     if (p.provider_ref && !is_cancelled() && world_field) {
         refine_ctrl.reset();   // world sessions don't use refine
+        publish_refinement_status();
 
         // Scale default rings to the world's sector size.
         // Rung is a pure SCATTER DETAIL TIER, not a mesh resolution: WorldSector
@@ -5219,6 +5353,24 @@ void WorldSession::Impl::publish_pipeline(
 }
 
 // ---------------------------------------------------------------------------
+// WorldSession::Impl::execute_refine_step
+// Publish only value-owned hashes across the worker/app boundary. The controller
+// itself remains worker-affine; capture queries never race its tile records.
+void WorldSession::Impl::publish_refinement_status() {
+    std::vector<uint64_t> pending;
+    if (refine_ctrl) {
+        pending.reserve(refine_ctrl->tile_count());
+        for (uint32_t i = 0; i < refine_ctrl->tile_count(); ++i) {
+            const auto& tile = refine_ctrl->tile_at(i);
+            if (tile.placed && tile.coarse_hash != 0 &&
+                tile.state != matter_refine::TileRecord::State::Full)
+                pending.push_back(tile.coarse_hash);
+        }
+    }
+    std::lock_guard<std::mutex> lock(refinement_status_mutex);
+    pending_refinement_hashes.swap(pending);
+}
+
 // WorldSession::Impl::execute_refine_step
 // Phase C Task 6: one camera-driven refine step. Called by worker_loop in the
 // pop_wait timeout slot when refine_ctrl is live and no command is pending.
@@ -5504,6 +5656,7 @@ bool WorldSession::Impl::install_world(
     const uint64_t previous_surface_hash = world_surface_hash;
     world_surface.reset();
     world_surface_hash = 0;
+    world_surface_receivers.clear();
     if (!r.surface_program.empty()) {
         terrain_field::SurfaceProgram sprog;
         if (!terrain_field::SurfaceProgram::parse(r.surface_program, sprog,
@@ -5584,6 +5737,7 @@ bool WorldSession::Impl::install_world(
             true, provider->world_settings(),
             legacy_settings);
     world_sector_size = runtime_profile.sector_size;
+    world_terrain_texels_per_meter = provider->world_settings().terrain_texels_per_meter;
     world_nested_sectors = runtime_profile.nested_sectors;
     // AND-ed with nesting rather than copied. This profile comes straight from
     // the world's authored settings, NOT through make_streaming_profile, so it
@@ -5851,6 +6005,8 @@ bool WorldSession::Impl::install_world(
         }
         std::ostringstream ss; ss << in.rdbuf();
         world_sector_source = ss.str();
+        world_sector_identity_host = std::make_shared<script_host::ScriptHost>();
+        world_sector_identity_host->set_shared_lib_roots(provider->shared_lib_roots());
     }
 
     // 8. Asset install: eval_requires on WorldSector to discover its child variants,
@@ -5903,6 +6059,8 @@ bool WorldSession::Impl::install_world(
     std::map<uint64_t, std::string> draw_catalog;
     std::vector<std::string> visiting;                     // DFS stack for cycle guard
     bool install_cancelled = false;
+    bool surface_receiver_error = false;
+    bool surface_asset_error = false;
 
     std::function<bool(const std::string&, const std::string&, uint64_t&)> install_variant =
         [&](const std::string& module, const std::string& params_json,
@@ -5957,7 +6115,11 @@ bool WorldSession::Impl::install_world(
             }
             kid_hashes.push_back(kh);
             kid_modules.push_back(kid.module_specifier);
-            kid_params.push_back(kid.params_json);
+            // The placement binding keys doubles with %.17g, as does the
+            // ordinary graph installer. eval_requires emits JS JSON's shorter
+            // decimals; normalize before building this native lookup table.
+            kid_params.push_back(part_graph::params_to_json(
+                part_graph::params_from_json(kid.params_json)));
         }
         visiting.pop_back();
 
@@ -5965,9 +6127,28 @@ bool WorldSession::Impl::install_world(
                                           kid_hashes.empty() ? nullptr : kid_hashes.data(),
                                           kid_hashes.size());
 
+        const auto& receivers=provider->world_settings().surface_receiver_modules;
+        if(std::find(receivers.begin(),receivers.end(),module)!=receivers.end()) {
+            script_host::EvaluatedFiniteSurface finite;script_host::EvaluatedDirectSurface direct;
+            script_host::BakeError surface_error;
+            if(!world_surface || (world_surface->program().source.version!=1 && world_surface->program().source.version!=2) ||
+               !host.evaluate_part_surface(source,params_json,direct,finite,surface_error) || finite.present || direct.present) {
+                err="streaming.surfaceReceivers: "+module+
+                    " requires a world direct source and an ordinary mesh without a part-local surface";
+                surface_receiver_error=true;
+                return false;
+            }
+            world_surface_receivers.insert(hash);
+        }
+
         // Bake via the host_baker directly (world-kind manifests have no graph
         // roots for asset schemas, so the provider's bake_plan can't be used).
-        if (!provider->host_baker().cached(hash)) {
+        const bool geometry_profile = std::getenv("MATTER_GEOMETRY_PAGES_PROFILE") != nullptr;
+        const auto asset_install_start = std::chrono::steady_clock::now();
+        const bool asset_cached = provider->host_baker().cached(hash);
+        if (geometry_profile) MATTER_LOGI("geometry", "asset prepare %s %016llx cached=%d\n",
+            module.c_str(), static_cast<unsigned long long>(hash), asset_cached ? 1 : 0);
+        if (!asset_cached) {
             provider->host_baker().set_baking_module(module);
             if (!provider->host_baker().bake(source,
                     part_graph::params_from_json(params_json),
@@ -5994,7 +6175,21 @@ bool WorldSession::Impl::install_world(
                 kid_hashes, hash);
         }
 
+        // Streaming assets bypass LocalProvider's ordinary graph walk. A disk
+        // geometry hit still needs its immutable local material prepared and
+        // published before the renderer sees this owner. Reuse the same service
+        // as graph assets, including GPU-thread publication and lifetime control.
+        const part_graph::BakeInputs material_inputs{module,source,
+            part_graph::params_from_json(params_json),kid_hashes,kid_modules,kid_params};
+        if (!provider->ensure_part_surface(hash,material_inputs,err)) {
+            err="install_world: material preparation for "+module+": "+err;
+            surface_asset_error=true;
+            return false;
+        }
+
         installed[key] = hash;
+        if (geometry_profile) MATTER_LOGI("geometry", "asset ready %s %.1f ms\n", module.c_str(),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-asset_install_start).count());
         draw_catalog[hash] = module;
         out_hash = hash;
         return true;
@@ -6003,6 +6198,7 @@ bool WorldSession::Impl::install_world(
     for (const auto& child : children) {
         uint64_t child_hash = 0;
         if (!install_variant(child.module_specifier, child.params_json, child_hash)) {
+            if(surface_receiver_error || surface_asset_error)return false;
             if (install_cancelled) {
                 err = "install_world: cancelled during asset install";
                 return false;
@@ -6011,7 +6207,13 @@ bool WorldSession::Impl::install_world(
         }
         sector_child_hashes.push_back(child_hash);
         sector_child_modules.push_back(child.module_specifier);
-        sector_child_params.push_back(child.params_json);
+        sector_child_params.push_back(part_graph::params_to_json(
+            part_graph::params_from_json(child.params_json)));
+    }
+    for(const auto& module:provider->world_settings().surface_receiver_modules) {
+        const bool found=std::any_of(draw_catalog.begin(),draw_catalog.end(),
+            [&](const auto& entry){return entry.second==module;});
+        if(!found) {err="streaming.surfaceReceivers: module is not installed by WorldSector.requires(): "+module;return false;}
     }
 
     // Flatten every top-level variant so PartStore loads it as ONE flat
@@ -6024,6 +6226,12 @@ bool WorldSession::Impl::install_world(
         std::set<uint64_t> flattened;
         for (uint64_t h : sector_child_hashes) {
             if (!flattened.insert(h).second) continue;
+            // A targeted geometry-page demo compiles its own hierarchy. Avoid
+            // also cooking an unused complete legacy flatten/LOD ladder.
+            const char* geometry_module = std::getenv("MATTER_GEOMETRY_MODULE");
+            const char* geometry_mode = std::getenv("MATTER_GEOMETRY_PAGES");
+            if (geometry_mode && std::string(geometry_mode) == "1" && geometry_module &&
+                draw_catalog[h] == geometry_module) continue;
             if (token && token->is_cancelled()) {
                 err = "install_world: cancelled during asset flatten";
                 return false;
@@ -6200,6 +6408,8 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
                         static_cast<float>(kv.first.tx) * key_size;
                     classifier.local_to_world[11] =
                         static_cast<float>(kv.first.tz) * key_size;
+                    if(world_volumetric_sectors)
+                        classifier.local_to_world[7]=static_cast<float>(kv.first.ty)*key_size;
                     for (uint32_t k = 0; k < world_surface->material_count();
                          ++k)
                         materials.push_back(static_cast<uint32_t>(
@@ -6232,11 +6442,32 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
                         &rung_lanes, lane_count))
                     ++updated;
             }
+            for (auto& kv : weld_vt_sources) {
+                VtSurfaceClassifier classifier;
+                classifier.tape = world_surface.get();
+                classifier.field = world_field.get();
+                classifier.tape_hash = world_surface_hash;
+                classifier.world_anchored = true;
+                std::memcpy(classifier.local_to_world, kv.second->context.surface_local_to_world,
+                            sizeof(kv.second->context.surface_local_to_world));
+                auto next = vt_classify_surface_snapshot(*kv.second, classifier);
+                const auto& surface = *next->surface;
+                std::vector<std::vector<uint8_t>> rung_weights{surface.weights};
+                std::vector<std::vector<uint16_t>> rung_lanes{surface.lanes};
+                // Also replace the retained inputs for a currently unregistered
+                // rung, so later demand cannot resurrect the previous recipe.
+                kv.second = std::move(next);
+                if (vk_scene->update_vt_part_surface(kv.first, rung_weights,
+                        surface.materials, surface.tape_hash,
+                        surface.has_tape_text ? surface.tape_text.c_str() : nullptr,
+                        &rung_lanes, surface.lane_count))
+                    ++updated;
+            }
             vk_scene->end_vt_surface_update();
             if (updated != 0) {
                 MATTER_LOGI("vt",
                         "surfaces() tape change reclassified %u resident "
-                        "sector variants (hash=%016llx)\n",
+                        "sector/weld variants (hash=%016llx)\n",
                         updated, (unsigned long long)world_surface_hash);
             }
         } catch (...) {
@@ -6250,6 +6481,78 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
 }
 
 // ---------------------------------------------------------------------------
+// Opted-in ordinary receivers use the same world source as terrain. Resolve
+// physical child placements from all resident roots, before draw filtering.
+// Page updates are scoped to selected variants and retain immutable geometry.
+void WorldSession::Impl::sync_vt_world_receivers() {
+#ifdef MATTER_VULKAN_VIEWER
+    if(!vk_scene || !store) return;
+    if(world_surface_receivers.empty() && vk_world_receiver_frames.empty()) return;
+    const uint64_t expansion=vk_instance_cache.expansion_count();
+    if(vk_receiver_state_version==state.version() && vk_receiver_tape_hash==world_surface_hash &&
+       vk_receiver_expansion==expansion) return;
+    std::map<uint64_t,vt::VtWorldReceiverFrame> next;
+    bool complete=true;
+    if(world_surface) for(const auto& entry:state.entries()) {
+        const auto* root=store->find(entry.part_hash);
+        if(!root) {if(!weld_parts.count(entry.part_hash))complete=false;continue;}
+        if(root->expansion.empty()) {
+            if(world_surface_receivers.count(entry.part_hash))
+                next[entry.part_hash].add(entry.transform);
+        } else for(const auto& node:root->expansion) {
+            if(world_surface_receivers.count(node.part_hash))
+                next[node.part_hash].add(entry.transform,node.rel_transform);
+        }
+    }
+    // An unresolved root could carry another placement of the same variant.
+    // Keep original asset shading until we can establish a unique frame.
+    if(!complete) next.clear();
+    std::set<uint64_t> changed;
+    for(const auto& p:vk_world_receiver_frames)changed.insert(p.first);
+    for(const auto& p:next)changed.insert(p.first);
+    vk_scene->begin_vt_surface_update();
+    for(uint64_t hash:changed) {
+        const auto found=next.find(hash);
+        const auto* loaded=store->find(hash);
+        if(!loaded)continue;
+        const bool bind=world_surface && found!=next.end() && found->second.supported() &&
+                        !loaded->shared_surface && !loaded->animation_asset;
+        std::vector<std::vector<uint8_t>> weights(loaded->lod_mesh_data.size());
+        std::vector<std::vector<uint16_t>> lanes(loaded->lod_mesh_data.size());
+        std::vector<uint32_t> materials;uint32_t lane_count=0;
+        VtSurfaceClassifier classifier;
+        if(bind) {
+            classifier.tape=world_surface.get();classifier.field=world_field.get();
+            classifier.tape_hash=world_surface_hash;classifier.world_anchored=true;
+            std::memcpy(classifier.local_to_world,found->second.local_to_world.data(),16*sizeof(float));
+            for(uint32_t i=0;i<world_surface->material_count();++i)
+                materials.push_back(uint32_t(world_surface->material_handle(i)));
+            for(size_t rung=0;rung<loaded->lod_mesh_data.size();++rung) {
+                const auto& mesh=loaded->lod_mesh_data[rung];
+                if(mesh.vertex_count<=0)continue;
+                vt_classify_chart_vertices(classifier,mesh.vertices.data(),
+                    mesh.normals.empty()?nullptr:mesh.normals.data(),uint32_t(mesh.vertex_count),weights[rung]);
+                lane_count=vt_compute_chart_lanes(classifier,mesh.vertices.data(),
+                    uint32_t(mesh.vertex_count),lanes[rung]);
+            }
+        } else if(found!=next.end()) {
+            const auto old=vk_world_receiver_frames.find(hash);
+            if(old==vk_world_receiver_frames.end() || old->second.references!=found->second.references ||
+               old->second.local_to_world!=found->second.local_to_world)
+                MATTER_LOGI("vt","world receiver %016llx has %u placements or an unsupported transform/representation; retaining asset materials\n",
+                    (unsigned long long)hash,found->second.references);
+        }
+        vk_scene->update_vt_part_surface(hash,weights,materials,bind?world_surface_hash:0,
+            bind?world_surface->program().text().c_str():nullptr,&lanes,lane_count,
+            bind?classifier.local_to_world:nullptr,bind?1u:0u);
+    }
+    vk_scene->end_vt_surface_update();
+    vk_world_receiver_frames=std::move(next);
+    vk_receiver_state_version=complete?state.version():UINT64_MAX;
+    vk_receiver_tape_hash=world_surface_hash;vk_receiver_expansion=expansion;
+#endif
+}
+
 // WorldSession::Impl::service_vt_rung_requests (demand-driven VT)
 // The renderer's per-frame demand pass surfaced (part, rung) variants that
 // are wanted on screen but not registered. Rebuild each one's atlas and
@@ -6263,6 +6566,8 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
 void WorldSession::Impl::service_vt_rung_requests() {
 #ifdef MATTER_VULKAN_VIEWER
     if (!vk_scene || !store) return;
+    sync_vt_world_receivers();
+    sync_vt_surface_connections();
     std::vector<viewer::VtRungRequest> requests;
     vk_scene->take_vt_rung_requests(requests);
     if (requests.empty()) return;
@@ -6277,22 +6582,27 @@ void WorldSession::Impl::service_vt_rung_requests() {
         material_table.assign(
             static_cast<size_t>(material_count) * MATERIAL_FLOATS_PER_DEF,
             0.0f);
-        MaterialRegistryPackForGPU(material_table.data());
+        MaterialRegistryPackForGPU(material_table.data(), static_cast<int>(material_table.size() / MATERIAL_FLOATS_PER_DEF));
     }
     std::unordered_map<uint64_t, uint32_t> refs_by_hash;
     refs_by_hash.reserve(state.entries().size());
     for (const auto& e : state.entries()) ++refs_by_hash[e.part_hash];
-    std::unordered_map<uint64_t, std::pair<float, float>> sector_by_hash;
+    std::unordered_map<uint64_t, std::array<float,3>> sector_by_hash;
     if (world_surface) {
         sector_by_hash.reserve(sector_map.size());
         for (const auto& kv : sector_map) {
             if (!kv.second.resident || kv.second.part_hash == 0) continue;
+            // A prewarmed parked sector is already a real placement. Include
+            // its pending instance or classification would switch from local
+            // to world anchoring when it finally becomes visible.
+            if (kv.second.parked) ++refs_by_hash[kv.second.part_hash];
             const float key_size = sector_size_for(kv.first.rung);
             sector_by_hash.emplace(
                 kv.second.part_hash,
-                std::make_pair(
+                std::array<float,3>{
                     static_cast<float>(kv.first.tx) * key_size,
-                    static_cast<float>(kv.first.tz) * key_size));
+                    world_volumetric_sectors?static_cast<float>(kv.first.ty)*key_size:0.f,
+                    static_cast<float>(kv.first.tz) * key_size});
         }
     }
 
@@ -6330,6 +6640,33 @@ void WorldSession::Impl::service_vt_rung_requests() {
                 request_budget_ms) {
             vt_requests_deferred += requests.size() - serviced;
             break;
+        }
+        const auto weld = weld_vt_sources.find(request.part_hash);
+        if (weld != weld_vt_sources.end()) {
+            if (request.rung != 0) continue;
+            // A pending edit may be serviced before its reclassification job.
+            // Match the ordinary sector path's current-recipe guarantee.
+            if (weld->second->context.surface_tape_hash !=
+                (world_surface ? world_surface_hash : 0)) {
+                VtSurfaceClassifier classifier;
+                classifier.tape = world_surface.get();
+                classifier.field = world_field.get();
+                classifier.tape_hash = world_surface_hash;
+                classifier.world_anchored = true;
+                std::memcpy(classifier.local_to_world, weld->second->context.surface_local_to_world,
+                            sizeof(weld->second->context.surface_local_to_world));
+                weld->second = vt_classify_surface_snapshot(*weld->second, classifier);
+            }
+            auto context = weld->second->context;
+            context.material_table = material_table.empty() ? nullptr : material_table.data();
+            context.material_count = static_cast<uint32_t>(material_count);
+            context.material_stride = MATERIAL_FLOATS_PER_DEF;
+            const auto reg_t0 = std::chrono::steady_clock::now();
+            vk_scene->register_vt_rung(request.part_hash, 0, *context.atlas, context);
+            vt_register_us += static_cast<uint64_t>(std::chrono::duration_cast<
+                std::chrono::microseconds>(std::chrono::steady_clock::now() - reg_t0).count());
+            ++serviced;
+            continue;
         }
         // find(), not get_or_load(): a miss here would decode a .part off disk
         // on the app thread inside the draw region. The demand pass re-asks.
@@ -6376,7 +6713,10 @@ void WorldSession::Impl::service_vt_rung_requests() {
         lanes.clear();
         if (world_surface && world_surface->material_count() > 0) {
             const auto sector = sector_by_hash.find(request.part_hash);
-            if (sector != sector_by_hash.end()) {
+            const auto receiver=vk_world_receiver_frames.find(request.part_hash);
+            const bool selected=receiver!=vk_world_receiver_frames.end() && receiver->second.supported() &&
+                                !loaded->shared_surface && !loaded->animation_asset;
+            if (sector != sector_by_hash.end() || selected) {
                 VtSurfaceClassifier classifier;
                 classifier.tape = world_surface.get();
                 classifier.field = world_field.get();
@@ -6385,8 +6725,14 @@ void WorldSession::Impl::service_vt_rung_requests() {
                 classifier.world_anchored =
                     terrain_field::surface_variant_world_anchored(
                         refs == refs_by_hash.end() ? 0u : refs->second);
-                classifier.local_to_world[3] = sector->second.first;
-                classifier.local_to_world[11] = sector->second.second;
+                if(selected) {
+                    classifier.world_anchored=true;
+                    std::memcpy(classifier.local_to_world,receiver->second.local_to_world.data(),16*sizeof(float));
+                } else {
+                    classifier.local_to_world[3] = sector->second[0];
+                    classifier.local_to_world[7] = sector->second[1];
+                    classifier.local_to_world[11] = sector->second[2];
+                }
                 // Prefer the bake worker's cache. build_vulkan_part already
                 // classified THIS rung's vertices -- same array, same
                 // classifier -- so recomputing here was 19.6 ms of app-thread
@@ -6395,7 +6741,7 @@ void WorldSession::Impl::service_vt_rung_requests() {
                 // (non-streamed part, prebuild disabled) or stale (tape edited
                 // since), so this is a speed path, never a correctness one.
                 const viewer::SurfaceClassCache& cache = loaded->surface_cache;
-                const bool cached = cache.valid_for(
+                const bool cached = !selected && cache.valid_for(
                     request.rung, world_surface_hash,
                     static_cast<size_t>(mesh.vertex_count)) &&
                     cache.material_count == world_surface->material_count();
@@ -6483,6 +6829,17 @@ bool WorldSession::Impl::release_sector_entry(
     SectorEntry& entry,
     std::string& err,
     viewer::WorldDelta* batch) noexcept {
+    static const bool log_lifecycle = std::getenv("MATTER_STREAM_PARK_PROFILE") != nullptr;
+    if (log_lifecycle) {
+        const auto& sector = entry.request.sector;
+        MATTER_LOGI("stream.retire",
+            "part=%016llx sector=(%lld,%lld,%lld) rung=%d issuance=%llu drawn=%u parked=%u",
+            static_cast<unsigned long long>(entry.part_hash),
+            static_cast<long long>(sector.tx), static_cast<long long>(sector.ty),
+            static_cast<long long>(sector.tz), sector.rung,
+            static_cast<unsigned long long>(entry.request.issuance),
+            unsigned(entry.resources.world_state_attempted), unsigned(entry.parked));
+    }
     bool ok = true;
     try {
         if (cfg.test_fault_hook) cfg.test_fault_hook(-2);
@@ -6752,11 +7109,10 @@ uint32_t WorldSession::Impl::weld_instance_id(const WeldPairKey& pair,
 // of a plane, with no ladder to descend because it exists precisely at the
 // resolution boundary the ladder already produced.
 //
-// TEXTURING (§4.2): welds do not enter the chart/VT pipeline. lod_charts and
-// vt_deferred_rung_mask stay empty/zero, chart_rung stays UINT32_MAX, so the
-// renderer takes the legacy flat-material path. The band is one voxel wide and
-// sits exactly where the LOD ladder has already dropped fidelity; §4.2 says
-// revisit only if a captured A/B shows it.
+// The strip participates in chart VT at the finer neighbor's physical density.
+// Its chart and recipe inputs are retained in weld_vt_sources; demand registration
+// uses the ordinary residency/compositor path. Chart failure keeps the existing
+// flat-material fallback and leaves the geometry unchanged.
 //
 // Defined only for the viewer build: without MATTER_VULKAN_VIEWER, VkScenePart
 // is a forward declaration (see the include block at the top) and there is no
@@ -6775,9 +7131,9 @@ uint32_t WorldSession::Impl::weld_instance_id(const WeldPairKey& pair,
 // field and would otherwise "render as if the surfaces() classification did not
 // exist (the uniform tan far field)".
 //
-// A weld is permanently such a rung -- `chart_rung` stays UINT32_MAX below, so
-// it has no VT slot ever -- and it was the one geometry on screen that still
-// skipped the override. Measured on StreamMountain at a settled pose: 2987
+// A weld awaiting VT pages must also use that fallback. Before the override
+// it was the one geometry on screen that skipped classification. Measured on
+// StreamMountain at a settled pose: 2987
 // pixels where the weld's albedo read [100,80,57] (untextured rock) against the
 // [129,116,103] the tape gives the snow around it, and 0.38-0.52 of the
 // neighbouring luminance at every sun azimuth and elevation. That is the defect
@@ -6792,6 +7148,7 @@ uint32_t WorldSession::Impl::weld_instance_id(const WeldPairKey& pair,
 bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
                                          const seam::WeldMesh& mesh,
                                          const VtSurfaceClassifier* surface,
+                                         float texels_per_meter,
                                          viewer::VkScenePart& out) {
     out = viewer::VkScenePart{};
     out.part_hash = part_hash;
@@ -6836,17 +7193,41 @@ bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
     }
     if (out.vertices.empty() || out.indices.size() % 3 != 0) return false;
 
+    viewer::VkSceneCluster cluster;
+    cluster.aabb_min = {mn[0], mn[1], mn[2]};
+    cluster.aabb_max = {mx[0], mx[1], mx[2]};
+    const float dx = mx[0] - mn[0], dy = mx[1] - mn[1], dz = mx[2] - mn[2];
+    cluster.radius =
+        std::max(0.001f, 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz));
+    // One step, with the existing chartless fallback if chart preparation fails.
+    cluster.lods.push_back({0u, (uint32_t)out.indices.size(), 0.0f,
+                            UINT32_MAX});
+    out.clusters.push_back(std::move(cluster));
+    {
+        PROFILE_SCOPE("stream.weld.vt_chart");
+        std::string chart_error;
+        if (viewer::chart_static_surface(out, texels_per_meter, chart_error)) {
+            out.vt_deferred_rung_mask = 1u;
+        } else {
+            MATTER_LOGW("seam", "weld %016llx uses material fallback: %s",
+                        (unsigned long long)part_hash, chart_error.c_str());
+        }
+    }
+
     // ---- the surfaces() argmax override (see the note above this function) --
     //
     // Deliberately a straight transcription of build_vulkan_part's legacy-parity
     // block rather than a shared helper: that one walks LoadedPart rungs and
-    // reuses a chart rung's weights when it has them, and a weld has neither.
+    // reuses the PartStore classification cache; a runtime weld has no such cache.
     // What must stay in step is the RULE -- argmax over the weight columns,
     // all-zero columns keep the baked material, `surface.w = 1` -- and that is
     // small enough to state twice and check by reading.
     if (surface && surface->tape && surface->tape->material_count() > 0) {
         const uint32_t columns = surface->tape->material_count();
         out.surface_tape_hash = surface->tape_hash;
+        out.surface_tape_text = surface->tape->program().text();
+        auto* chart_mesh = out.lod_chart_meshes.empty() ? nullptr : &out.lod_chart_meshes[0];
+        if (chart_mesh) chart_mesh->surface_weights.assign(out.vertices.size() * columns, 0);
         out.surface_materials.reserve(columns);
         for (uint32_t k = 0; k < columns; ++k)
             out.surface_materials.push_back(
@@ -6862,6 +7243,12 @@ bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
                                                        : nullptr,
                 verts, weights);
             if (weights.size() != (size_t)verts * columns) continue;
+            // The weld is already triangle soup, so chart corner expansion
+            // preserves these bucket offsets. Reuse fallback classification
+            // for VT instead of evaluating the world field a second time.
+            if (chart_mesh)
+                std::copy(weights.begin(), weights.end(), chart_mesh->surface_weights.begin() +
+                          static_cast<size_t>(bucket_first_vertex[bi]) * columns);
             for (uint32_t v = 0; v < verts; ++v) {
                 const uint8_t* w = weights.data() + (size_t)v * columns;
                 uint32_t best = 0, best_weight = 0, total = 0;
@@ -6878,19 +7265,12 @@ bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
                 vertex.surface.w = 1.0f;
             }
         }
+        if (chart_mesh)
+            chart_mesh->surface_lane_count = vt_compute_chart_lanes(
+                *surface, chart_mesh->positions.data(), chart_mesh->vertex_count,
+                chart_mesh->surface_lanes);
     }
 
-    viewer::VkSceneCluster cluster;
-    cluster.aabb_min = {mn[0], mn[1], mn[2]};
-    cluster.aabb_max = {mx[0], mx[1], mx[2]};
-    const float dx = mx[0] - mn[0], dy = mx[1] - mn[1], dz = mx[2] - mn[2];
-    cluster.radius =
-        std::max(0.001f, 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz));
-    // One ladder step: cull.comp's selection loop can only land on 0, so the
-    // threshold is inert. chart_rung stays UINT32_MAX -- "no VT for this step".
-    cluster.lods.push_back({0u, (uint32_t)out.indices.size(), 0.0f,
-                            UINT32_MAX});
-    out.clusters.push_back(std::move(cluster));
     return true;
 }
 #endif  // MATTER_VULKAN_VIEWER
@@ -6979,7 +7359,16 @@ bool WorldSession::Impl::publish_weld_draw(const WeldPairKey& pair,
         weld_surface_ptr = &weld_surface;
     }
     viewer::VkScenePart part;
-    if (!build_weld_part(hash, rec.mesh, weld_surface_ptr, part)) return false;
+    // Match the fine tile's nested density (S0 / Sfine), as PartStore does
+    // for terrain. The strip has one rung at this fixed coarse/fine boundary.
+    const float weld_density = std::ldexp(world_terrain_texels_per_meter,
+                                         -std::max(0, pair.level - 1));
+    if (!build_weld_part(hash, rec.mesh, weld_surface_ptr, weld_density, part)) return false;
+    part.surface_world_anchored = 1;
+    part.surface_local_to_world[3] = static_cast<float>(rec.mesh.origin_x);
+    part.surface_local_to_world[7] = static_cast<float>(rec.mesh.origin_y);
+    part.surface_local_to_world[11] = static_cast<float>(rec.mesh.origin_z);
+    auto vt_source = viewer::capture_static_surface(part);
     const uint32_t id = weld_instance_id(pair, hash);
     // Non-zero and out of the authored counters' range by construction (the
     // 0x80000000 fold). Asserted rather than assumed because a zero stable_id
@@ -7018,6 +7407,10 @@ bool WorldSession::Impl::publish_weld_draw(const WeldPairKey& pair,
         return false;
     }
     weld_parts.insert(hash);
+    if (vt_source) {
+        weld_vt_sources[hash] = std::move(vt_source);
+        set_weld_vt_neighbors(hash, rec.surface_sectors);
+    }
     ++seam_counters.parts_registered;
     rec.part_hash = hash;
     rec.instance_id = id;
@@ -7078,6 +7471,8 @@ void WorldSession::Impl::finish_weld_txn(WeldTxn& txn) {
 #ifdef MATTER_VULKAN_VIEWER
     for (uint64_t hash : txn.retired_parts) {
         weld_parts.erase(hash);
+        weld_vt_sources.erase(hash);
+        set_weld_vt_neighbors(hash, {});
         if (vk_scene) vk_scene->release_part(hash);
         ++seam_counters.parts_released;
     }
@@ -7107,9 +7502,114 @@ void WorldSession::Impl::release_all_weld_draws_noexcept() noexcept {
         if (!weld_parts.empty() && vk_scene) vk_instance_cache.invalidate();
     } catch (...) {
     }
+    weld_vt_sources.clear();
+    vt_weld_sectors.clear();
+    vt_sector_welds.clear();
+    vt_surface_topology.clear();
+    vt_surface_topology_revision = vt_surface_selection_revision = 0;
 #endif
     weld_parts.clear();
 }
+
+#ifdef MATTER_VULKAN_VIEWER
+void WorldSession::Impl::refresh_vt_surface_faces(const SectorKey& key) {
+    const int level = sector_level_of(key.rung);
+    const auto refresh = [&](const SectorKey& tile, int face) {
+        const vt::VtSurfaceTopology::Region region{1, uint64_t(tile.tx), uint64_t(tile.ty),
+            uint64_t(tile.tz), uint64_t(level), uint64_t(face)};
+        std::vector<vt::VtSurfacePartPair> pairs;
+        const auto* a = drawn_tile_entry(tile.tx, tile.ty, tile.tz, level);
+        FaceNeighbourSpan span;
+        if (a && a->part_hash && face_neighbour_span(tile, face, level, span)) {
+            const auto* b = drawn_tile_entry(span.lo[0], span.lo[1], span.lo[2], level);
+            if (b && b->part_hash && b->part_hash != a->part_hash)
+                pairs.push_back({a->part_hash, b->part_hash, kTerrainSurfaceDomain});
+        }
+        std::string error;
+        if (!vt_surface_topology.replace(region, pairs, error)) {
+            vt_surface_topology.erase(region);
+            MATTER_LOGW("vt-surface-links", "%s", error.c_str());
+        }
+    };
+    // Equal-level ownership only. The separate weld publication authorizes
+    // cross-level routes using the exact source records it consulted.
+    for (int i = 0; i < seam_face_count(); ++i) {
+        const int face = kSeamFaces[i];
+        refresh(key, face);
+        FaceNeighbourSpan span;
+        if (face_neighbour_span(key, face, level, span))
+            refresh(SectorKey{span.lo[0], span.lo[1], span.lo[2], key.rung},
+                    seam::face_opposite(face));
+    }
+}
+
+void WorldSession::Impl::set_weld_vt_neighbors(uint64_t weld, const std::vector<uint64_t>& sectors) {
+    const auto previous = vt_weld_sectors.find(weld);
+    if (previous != vt_weld_sectors.end() && previous->second == sectors) return;
+    std::set<uint64_t> dirty{weld};
+    if (previous != vt_weld_sectors.end()) {
+        for (uint64_t sector : previous->second) {
+            const auto found = vt_sector_welds.find(sector);
+            if (found == vt_sector_welds.end()) continue;
+            dirty.insert(found->second.begin(), found->second.end());
+            found->second.erase(weld);
+            if (found->second.empty()) vt_sector_welds.erase(found);
+        }
+        vt_weld_sectors.erase(previous);
+    }
+    if (!sectors.empty()) {
+        vt_weld_sectors[weld] = sectors;
+        for (uint64_t sector : sectors) {
+            auto& sharing = vt_sector_welds[sector];
+            sharing.insert(weld);
+            dirty.insert(sharing.begin(), sharing.end());
+        }
+    }
+    for (uint64_t owner : dirty) {
+        const vt::VtSurfaceTopology::Region region{2, owner, 0, 0, 0, 0};
+        const auto found = vt_weld_sectors.find(owner);
+        if (found == vt_weld_sectors.end()) { vt_surface_topology.erase(region); continue; }
+        std::set<uint64_t> targets;
+        for (uint64_t sector : found->second) {
+            targets.insert(sector);
+            const auto sharing = vt_sector_welds.find(sector);
+            if (sharing != vt_sector_welds.end()) targets.insert(sharing->second.begin(), sharing->second.end());
+        }
+        targets.erase(owner);
+        std::vector<vt::VtSurfacePartPair> pairs;
+        pairs.reserve(targets.size());
+        for (uint64_t target : targets) if (target)
+            pairs.push_back({owner, target, kTerrainSurfaceDomain});
+        std::string error;
+        if (!vt_surface_topology.replace(region, pairs, error)) {
+            vt_surface_topology.erase(region);
+            MATTER_LOGW("vt-surface-links", "%s", error.c_str());
+        }
+    }
+}
+
+void WorldSession::Impl::sync_vt_surface_connections() {
+    if (!vk_scene) return;
+    const uint64_t topology = vt_surface_topology.revision();
+    const uint64_t selection = vk_scene->vt_surface_selection_revision();
+    if (topology == vt_surface_topology_revision && selection == vt_surface_selection_revision) return;
+    PROFILE_SCOPE("vt.surface_neighbors");
+    auto pairs = vt_surface_topology.selected_pairs([&](uint64_t part, uint32_t& rung) {
+        return vk_scene->vt_surface_selected_rung(part, rung);
+    });
+    if (!pairs.empty() || vt_surface_connections_published) {
+        std::string error;
+        if (!vk_scene->set_vt_surface_connections(pairs, error)) {
+            MATTER_LOGW("vt-surface-links", "terrain connection publication: %s", error.c_str());
+            return;
+        }
+    }
+    vt_surface_connections_published = !pairs.empty();
+    vt_surface_topology_revision = topology;
+    vt_surface_selection_revision = selection;
+    PROFILE_COUNT("vt.surface_pairs", double(pairs.size()));
+}
+#endif
 
 // Rebuild the cross-level welds along one tile's faces.
 //
@@ -7126,7 +7626,7 @@ void WorldSession::Impl::release_all_weld_draws_noexcept() noexcept {
 //       `restrict_levels` invariant admits exactly one coarser neighbour per
 //       face, and the coarse side of a pair is where the pool is keyed.
 //
-// That is <= 8 pairs, four lookups each, INDEPENDENT OF WORLD SIZE. The bound
+// That is <= 8 pairs for columns or 12 for tiled Y, INDEPENDENT OF WORLD SIZE. The bound
 // is the whole point: a per-publish sweep of sector_map here would be the next
 // issues/bfb5f13e cascade, next to a sector_blocked_by_visible that is already
 // O(sector_map) and already a hitch suspect.
@@ -7156,6 +7656,9 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key) {
 void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
                                            WeldTxn& txn) {
     matter_async::assert_gl_thread("stream.rebuild_welds");
+#ifdef MATTER_VULKAN_VIEWER
+    refresh_vt_surface_faces(key);
+#endif
     if (!seam_welds_enabled) return;
     PROFILE_SCOPE("stream.weld");
 
@@ -7181,12 +7684,13 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
         }
     }
 
-    WeldPairKey pairs[8];
+    constexpr int max_pairs = 2 * int(sizeof(kSeamFaces) / sizeof(kSeamFaces[0]));
+    WeldPairKey pairs[max_pairs];
     int pair_count = 0;
     const auto push_pair = [&](const WeldPairKey& p) {
         for (int i = 0; i < pair_count; ++i)
             if (pairs[i] == p) return;
-        if (pair_count < 8) pairs[pair_count++] = p;
+        if (pair_count < max_pairs) pairs[pair_count++] = p;
     };
 
     const int level = sector_level_of(key.rung);
@@ -7331,6 +7835,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     const int     clevel = pair.level;
     const int     flevel = clevel - 1;
     const int     fface  = seam::face_opposite(cface);
+    std::set<uint64_t> surface_sectors{centry->part_hash};
 
     // ---- the input fingerprint (see WeldRecord::input_fingerprint) ----------
     //
@@ -7376,8 +7881,9 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         // record at another rung is a different lattice. This is also what
         // makes the lookup mode-independent -- under the uniform grid the
         // neighbour shares the tile coordinate and only the rung separates it.
+        uint64_t fine_owner = 0;
         const seam::SectorBoundary* fb =
-            drawn_boundary_with_rung(ftx, fty, ftz, frung);
+            drawn_boundary_with_rung(ftx, fty, ftz, frung, &fine_owner);
         if (!fb) {
             const SectorEntry* drawn_here = drawn_tile_entry(
                 ftx, fty, ftz,
@@ -7390,6 +7896,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         // coarse one, so the shared plane is `2 * coarse_plane` in fine
         // indices; a mismatch means these two records do not touch.
         if (fb->faces[fface].plane != cfr.plane * 2) continue;
+        surface_sectors.insert(fine_owner);
         mix_record(ftx, fty, ftz, *fb, fface);
         fine_tiles[fine_count++] = fb;
     }
@@ -7462,11 +7969,15 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
             t[a_axis] = ta;
             t[b_axis] = tb;
             const int64_t tx = t[0], ty = t[1], tz = t[2];
+            uint64_t sector_owner = 0;
             const seam::SectorBoundary* sb =
-                drawn_boundary_with_rung(tx, ty, tz, c.rung);
+                drawn_boundary_with_rung(tx, ty, tz, c.rung, &sector_owner);
             if (sb) {
                 const seam::FaceRecord& fr = sb->faces[c.face];
-                if (fr.cell_layer == c.cell_layer) c.memo_rec = &fr;
+                if (fr.cell_layer == c.cell_layer) {
+                    c.memo_rec = &fr;
+                    surface_sectors.insert(sector_owner);
+                }
                 mix_record(tx, ty, tz, *sb, c.face);
             } else {
                 // A tile the closure reached and did not find is as much an
@@ -7641,6 +8152,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     }
     rec.coarse_null_lookups = cctx.nulls;
     rec.input_fingerprint   = fingerprint;
+    rec.surface_sectors.assign(surface_sectors.begin(), surface_sectors.end());
 
     // Nothing crossed this plane: keep the pool to pairs that actually carry
     // something, so its size is a usable measure of the seam surface.
@@ -7708,6 +8220,11 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         // describe the LOOKUP, which can change (a fine sibling parked) while
         // the emitted band does not.
         WeldRecord& live = existing->second;
+        live.surface_sectors = std::move(rec.surface_sectors);
+#ifdef MATTER_VULKAN_VIEWER
+        if (weld_vt_sources.count(live.part_hash))
+            set_weld_vt_neighbors(live.part_hash, live.surface_sectors);
+#endif
         live.stats = rec.stats;
         live.fine_sides_expected = rec.fine_sides_expected;
         live.fine_sides_drawn = rec.fine_sides_drawn;
@@ -7993,6 +8510,12 @@ void WorldSession::Impl::unpark_ready_sectors() {
         std::vector<SectorKey> shown_keys;
         for (auto& [key, entry] : sector_map) {
             if (!entry.parked) continue;
+#ifdef MATTER_VULKAN_VIEWER
+            if (entry.material_pending) {
+                if (!vk_scene || !vk_scene->vt_part_coverage_ready(entry.part_hash)) continue;
+                entry.material_pending = false;
+            }
+#endif
             // The safety valve. A park is an optimisation against a cosmetic
             // artifact; a park that never releases is a permanent hole, which
             // is worse. If this ever fires, the overlap it was avoiding is the
@@ -8063,6 +8586,9 @@ void WorldSession::Impl::unpark_ready_sectors() {
         // reads to decide whether a removal is owed, and an exception out of
         // apply must not leave an entry that is drawn but believed invisible.
         for (SectorEntry* e : shown) {
+#ifdef MATTER_VULKAN_VIEWER
+            if (vk_scene) vk_scene->set_vt_part_prewarm(e->part_hash, false);
+#endif
             e->parked = false;
             e->resources.world_state_attempted = true;
             --parked_sectors;
@@ -8204,6 +8730,17 @@ bool WorldSession::Impl::apply_sector_evictions(
     };
     const auto now = std::chrono::steady_clock::now();
     uint64_t evictions_deferred = 0;
+#ifdef MATTER_VULKAN_VIEWER
+    // Snapshot only pending replacement footprints once per batch; do not scan
+    // the whole resident world separately for every old sector being retired.
+    std::vector<SectorKey> material_waiting;
+    if (mode == DeferMode::Allow && parked_sectors > 0) {
+        for (const auto& [key, entry] : sector_map)
+            if (entry.parked && entry.material_pending &&
+                (!vk_scene || !vk_scene->vt_part_coverage_ready(entry.part_hash)))
+                material_waiting.push_back(key);
+    }
+#endif
 
     const auto process = [&](const streaming::detail::TaggedEviction& eviction,
                              std::chrono::steady_clock::time_point since,
@@ -8219,6 +8756,32 @@ bool WorldSession::Impl::apply_sector_evictions(
 
         // ---- the merge-coverage hold (see the function comment) -------------
         const SectorEntry& candidate = found->second;
+#ifdef MATTER_VULKAN_VIEWER
+        // The streamer acknowledges CPU/GPU geometry publication before VT
+        // preparation finishes. Keep the old drawn cover while any overlapping
+        // replacement still lacks a usable tail. This hold is independent of
+        // seam welding, and flush/rollback still release unconditionally.
+        if (!material_waiting.empty() && !candidate.parked &&
+            candidate.resources.world_state_attempted) {
+            bool waiting_for_material = false;
+            for (const auto& replacement_key : material_waiting) {
+                if (!sector_footprints_overlap(key, replacement_key)) continue;
+                waiting_for_material = true;
+                break;
+            }
+            if (waiting_for_material) {
+                const auto known = std::find_if(deferred_evictions.begin(), deferred_evictions.end(),
+                    [&](const DeferredEviction& held) { return eviction_key(held.eviction) == key; });
+                if (known == deferred_evictions.end()) {
+                    deferred_evictions.push_back(DeferredEviction{eviction, since});
+                    ++deferred_sector_evictions;
+                    ++evictions_deferred;
+                }
+                PROFILE_COUNT("stream.material_coverage_holds", 1);
+                return;
+            }
+        }
+#endif
         SectorKey ancestor{};
         if (may_defer &&
             // (b) drawn
@@ -8409,6 +8972,8 @@ WorldSession::Impl::reserve_publication_completion(
 
 void WorldSession::Impl::reset_publication_completion_locked(
     PublicationCompletion& completion) noexcept {
+    const bool released_work = completion.state != PublicationCompletionState::Reserved &&
+        completion.state != PublicationCompletionState::Free;
     publication_completion_capacity.release(completion.index);
     completion.provider_ref.reset();
     completion.state = PublicationCompletionState::Free;
@@ -8420,6 +8985,7 @@ void WorldSession::Impl::reset_publication_completion_locked(
     completion.acknowledge_pending = false;
     completion.acknowledge_complete = false;
     completion.acknowledge_value = false;
+    if(released_work)commands.wake_idle();
 }
 
 void WorldSession::Impl::release_reserved_publication_completion(
@@ -8931,6 +9497,7 @@ void WorldSession::Impl::bake_and_stage_sector(
 
         script_host::ScriptHost bake_host;
         bake_host.set_shared_lib_roots(provider_ref->shared_lib_roots());
+        provider_ref->bind_solid_source_baker(bake_host);
 
         // MATTER_STREAM_BAKE_PROFILE: per-sector bake wall time on the
         // worker. Coarse heightfield sectors emit a handful of triangles, so
@@ -8939,11 +9506,70 @@ void WorldSession::Impl::bake_and_stage_sector(
         // MATTER_STREAM_PUBLISH_PROFILE) says which side to chase.
         const bool bake_prof =
             std::getenv("MATTER_STREAM_BAKE_PROFILE") != nullptr;
-        const auto bake_t0 = std::chrono::steady_clock::now();
 
+        std::shared_ptr<viewer::PartStore::StagedPart> prepared_load;
+        std::string prepared_policy;
+        const char* prepared_switch = std::getenv("MATTER_PREPARED_SECTOR_CACHE");
+        const bool prepared_enabled = store && store->geometry_pages_enabled() && sector_child_hashes.empty() &&
+            std::getenv("MATTER_GEOMETRY_TERRAIN") && std::string(std::getenv("MATTER_GEOMETRY_TERRAIN"))=="1" &&
+            (!prepared_switch || std::string(prepared_switch)!="0");
+        const auto prepared_start = std::chrono::steady_clock::now();
+        uint64_t prepared_hash = 0;
+        if (prepared_enabled) {
+            // resolve_hash uses the same canonical parameters and transitive
+            // JS dependency fold as bake_source, without calling build().
+            const char* identity_switch=std::getenv("MATTER_PREPARED_IDENTITY_CACHE");
+            const bool identity_enabled=identity_switch && std::string(identity_switch)=="1";
+            const uint64_t identity_request=identity_enabled && world_sector_identity_host ? world_sector_identity_host->resolve_request_hash(
+                world_sector_source,sector_params,sector_child_hashes.data(),sector_child_hashes.size()) : 0;
+            prepared_hash=identity_request ? store->prepared_identity_lookup(identity_request) : 0;
+            const bool identity_hit=prepared_hash!=0;
+            if(!prepared_hash) prepared_hash = bake_host.resolve_hash(world_sector_source, sector_params,
+                sector_child_hashes.data(), sector_child_hashes.size());
+            const char* identity_cook=std::getenv("MATTER_PREPARED_IDENTITY_COOK");
+            if(identity_request && prepared_hash && !identity_hit && identity_cook && std::string(identity_cook)=="1") {
+                std::string identity_error;
+                if(!store->prepared_identity_remember(identity_request,prepared_hash,identity_error))
+                    MATTER_LOGW("geometry","prepared identity commit failed: %s",identity_error.c_str());
+            }
+            const double prepared_identity_ms = std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-prepared_start).count();
+            prepared_policy = "terrain-v3-packed512-z1/prepared-2";
+            const auto add = [&](auto v) { prepared_policy.append(reinterpret_cast<const char*>(&v), sizeof(v)); };
+            add(world_profile.sector_size); add(world_profile.y_min); add(world_profile.y_max);
+            add(world_surface_hash); add(world_terrain_texels_per_meter);
+            for (const char* name : {"MATTER_STREAM_FIRST_RUNG", "MATTER_VT_UNIFY", "MATTER_LOD_CASCADE", "MATTER_GEOMETRY_RASTER_ONLY"}) {
+                // RT registration does not change prepared terrain geometry or
+                // chart UVs. Reuse the existing paged (raster=1) cache identity.
+                const char* terrain_pages = std::getenv("MATTER_GEOMETRY_TERRAIN");
+                const char* value = std::string(name) == "MATTER_GEOMETRY_RASTER_ONLY" &&
+                    terrain_pages && std::string(terrain_pages) == "1"
+                    ? "1" : std::getenv(name);
+                prepared_policy += name; prepared_policy += '=';
+                if (value) prepared_policy += value; prepared_policy += ';';
+            }
+            std::string prepared_error;
+            if (prepared_hash) {
+                auto candidate = store->load_prepared_sector(prepared_hash, prepared_policy, prepared_error);
+                if (candidate.ok) prepared_load = std::make_shared<viewer::PartStore::StagedPart>(std::move(candidate));
+            }
+            if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+                MATTER_LOGI("geometry", "prepared_sector hash=%016llx outcome=%s ms=%.3f reason=%s",
+                    (unsigned long long)prepared_hash, prepared_load ? "hit" : "miss",
+                    std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-prepared_start).count(), prepared_error.c_str());
+            if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+                MATTER_LOGI("geometry", "prepared_identity hash=%016llx ms=%.3f source=%s request=%016llx",
+                    (unsigned long long)prepared_hash, prepared_identity_ms,identity_hit?"manifest":"resolved",
+                    (unsigned long long)identity_request);
+        }
         script_host::BakeResult br;
+        const auto bake_t0 = std::chrono::steady_clock::now();
         try {
-            br = bake_host.bake_source(
+            if (prepared_load) br.resolved_hash = prepared_hash;
+            else if (prepared_enabled && std::getenv("MATTER_PREPARED_SECTOR_CACHE_ONLY") &&
+                     std::string(std::getenv("MATTER_PREPARED_SECTOR_CACHE_ONLY"))=="1") {
+                br.error.ok = false; br.error.message = "prepared sector cache miss; generation forbidden";
+            } else br = bake_host.bake_source(
                 world_sector_source, sector_params, opts,
                 sector_child_hashes.data(), sector_child_hashes.size(),
                 sector_child_modules.data(), sector_child_params.data());
@@ -9102,8 +9728,8 @@ void WorldSession::Impl::bake_and_stage_sector(
         // S_0, so the chart-density policy can tell what LEVEL this tile is
         // from the ratio of the two. Equal in uniform mode.
         warp_anchor.base_sector_size = world_sector_size;
-        std::shared_ptr<viewer::PartStore::StagedPart> staged_load;
-        if (stage_from_memory && br.geometry) {
+        std::shared_ptr<viewer::PartStore::StagedPart> staged_load = prepared_load;
+        if (!staged_load && stage_from_memory && br.geometry) {
             // terrain_sector=true: this is the streamed sector part, which is
             // what the error-bounded terrain ladder exists for. Asserted here
             // rather than sniffed from the mesh -- the skirt fringe that used
@@ -9114,7 +9740,8 @@ void WorldSession::Impl::bake_and_stage_sector(
             auto from_memory = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_from_bake(sector_hash, *br.geometry,
                                        sector_first_rung,
-                                       /*terrain_sector=*/true, warp_anchor));
+                                       /*terrain_sector=*/true, warp_anchor,
+                                       world_terrain_texels_per_meter));
             // ok=false means stage_from_bake could not vouch for equivalence
             // with the artifact; fall through to the decode rather than
             // publishing something it is unsure about.
@@ -9132,7 +9759,8 @@ void WorldSession::Impl::bake_and_stage_sector(
             PROFILE_SCOPE("bake.stageload");
             staged_load = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_load(sector_hash, sector_first_rung,
-                                  /*terrain_sector=*/true, warp_anchor));
+                                  /*terrain_sector=*/true, warp_anchor,
+                                  world_terrain_texels_per_meter));
         }
         stream_task_stage_us.fetch_add(
             (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
@@ -9162,7 +9790,8 @@ void WorldSession::Impl::bake_and_stage_sector(
             // mismatch on every sector outside the inner ring.
             const viewer::PartStore::StagedPart reference =
                 store->stage_load(sector_hash, sector_first_rung,
-                                  /*terrain_sector=*/true, warp_anchor);
+                                  /*terrain_sector=*/true, warp_anchor,
+                                  world_terrain_texels_per_meter);
             std::string difference;
             const bool same = viewer::staged_parts_equal(
                 *staged_load, reference, &difference);
@@ -9186,6 +9815,8 @@ void WorldSession::Impl::bake_and_stage_sector(
         // is done with it, and this task still has the prebuild and the job post
         // ahead of it. With a dozen executors in flight that is worth reclaiming
         // here rather than at the end of the iteration.
+        const bool prepared_can_write = prepared_enabled && !prepared_load && prepared_hash == sector_hash &&
+            br.geometry && br.geometry->emitters.empty();
         br.geometry.reset();
 
         // Also convert the staged part into the renderer's VkScenePart HERE,
@@ -9267,7 +9898,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             auto built = std::make_shared<viewer::VkScenePart>();
             if (build_vulkan_part(sector_hash, staged_load->lp,
                                   /*force_lod=*/-1, surface_ptr, *built,
-                                  &staged_load->lp.surface_cache)) {
+                                  &staged_load->lp.surface_cache, bool(prepared_load))) {
                 prebuilt_part = std::move(built);
             }
         }
@@ -9276,6 +9907,13 @@ void WorldSession::Impl::bake_and_stage_sector(
                 std::chrono::steady_clock::now() - prebuild_t0).count(),
             std::memory_order_relaxed);
 #endif
+        if (prepared_can_write && staged_load && staged_load->ok) {
+            std::string cache_error;
+            const bool saved = store->save_prepared_sector(*staged_load, prepared_policy, cache_error);
+            if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+                MATTER_LOGI("geometry", "prepared_sector_write hash=%016llx saved=%u reason=%s",
+                    (unsigned long long)sector_hash, unsigned(saved), cache_error.c_str());
+        }
         try {
             matter_async::GpuJob publish_job;
             publish_job.name = "stream.publish";
@@ -9546,11 +10184,21 @@ void WorldSession::Impl::bake_and_stage_sector(
                     // coverage qualifier that keeps its failure mode a park
                     // rather than a hole (see its definition).
                     published.pending_instance = instance;
+                    const bool covered_by_visible = world_nested_sectors &&
+                        sector_blocked_by_visible(key);
+#ifdef MATTER_VULKAN_VIEWER
+                    // Only hold replacements. Uncovered initial terrain must
+                    // enter the scene normally: an entirely empty scene uses
+                    // the clear-only render path and cannot drive VT fills.
+                    published.material_pending = covered_by_visible &&
+                        loaded->geometry_source_vt && !loaded->lod_charts.empty() &&
+                        !loaded->lod_charts.front().charts.empty();
+#endif
                     const bool level_hold =
                         world_nested_sectors && sector_level_hold(key);
                     if (level_hold) ++seam_counters.level_holds;
                     const bool park = world_nested_sectors &&
-                                      (sector_blocked_by_visible(key) ||
+                                      (covered_by_visible ||
                                        level_hold);
                     if (park) {
                         published.parked = true;
@@ -9711,6 +10359,8 @@ void WorldSession::Impl::bake_and_stage_sector(
                         }
                     }
                     t_vulkan = pub_split();
+                    if (published.material_pending && vk_scene)
+                        vk_scene->set_vt_part_prewarm(sector_hash, true);
                     pub_vulkan.stop();
                     PROFILE_SCOPE_NAMED(pub_cache, "publish.cache");
                     // A publish only ADDS a sector; nothing is released or
@@ -10283,6 +10933,21 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
                    (control.cancelled && control.cancelled());
         };
         return vk_scene->project_solid_face(job, result, stats, error, guarded);
+    };
+    cfg.surface_control.cancelled = [token] { return token && token->is_cancelled(); };
+    cfg.vk_face_material_bake = [this, token](const gpu_meshing::FaceMaterialJob& job,
+        gpu_meshing::FaceMaterialPatch& result, gpu_meshing::FaceStats& stats,
+        gpu_meshing::Error& error, const gpu_meshing::BuildControl& control) {
+        if (!vk_scene) { error={gpu_meshing::ErrorCode::Unavailable,"face material renderer not active"};return false; }
+        auto guarded=control;
+        guarded.cancelled=[token,control]{return (token && token->is_cancelled()) ||
+            (control.cancelled && control.cancelled());};
+        return vk_scene->bake_face_material(job,result,stats,error,guarded);
+    };
+    cfg.publish_part_surface = [this](std::shared_ptr<const part_surface::Prepared> surface,
+                                       std::string& error) {
+        if (!vk_scene) {error="finite source renderer not active";return false;}
+        return vk_scene->publish_part_surface(std::move(surface),error);
     };
     cfg.vk_particle_visual_bake = [this](
         const gpu_meshing::ParticleJob& job,
@@ -11628,7 +12293,7 @@ struct VulkanDiagnosticMaterialOverride {
 
         packed_registry.resize(static_cast<size_t>(material_count) *
                                MATERIAL_FLOATS_PER_DEF);
-        MaterialRegistryPackForGPU(packed_registry.data());
+        MaterialRegistryPackForGPU(packed_registry.data(), static_cast<int>(packed_registry.size() / MATERIAL_FLOATS_PER_DEF));
         const float packed_slot = packed_registry[
             static_cast<size_t>(selected_material) * MATERIAL_FLOATS_PER_DEF +
             11];
@@ -11654,7 +12319,7 @@ struct VulkanDiagnosticMaterialOverride {
     ~VulkanDiagnosticMaterialOverride() {
         if (material_id < 0) return;
         MaterialRegistrySetGroundTilesetSlot(material_id, prior_packed_slot);
-        MaterialRegistryPackForGPU(packed_registry.data());
+        MaterialRegistryPackForGPU(packed_registry.data(), static_cast<int>(packed_registry.size() / MATERIAL_FLOATS_PER_DEF));
         const float restored = packed_registry[
             static_cast<size_t>(material_id) * MATERIAL_FLOATS_PER_DEF + 11];
         if (restored == static_cast<float>(prior_packed_slot)) {
@@ -11754,11 +12419,15 @@ bool build_vulkan_part(uint64_t part_hash,
                               int force_lod,
                               const VtSurfaceClassifier* surface,
                               viewer::VkScenePart& part,
-                              viewer::SurfaceClassCache* out_cache) {
+                              viewer::SurfaceClassCache* out_cache,
+                              bool reuse_prepared_surface) {
     if (loaded.lod_mesh_data.empty()) return false;
     const auto build_t0 = std::chrono::steady_clock::now();
     g_pub_vertexloop_ms = 0.0;
     part.part_hash = part_hash;
+    const char* raster_pages_env = std::getenv("MATTER_GEOMETRY_RASTER_ONLY");
+    part.geometry_raster_only = loaded.geometry_pages && raster_pages_env &&
+        std::string(raster_pages_env) == "1";
     const int material_count = MaterialRegistryCount();
     VulkanDiagnosticMaterialOverride diagnostic_override(material_count);
     std::vector<uint32_t> mesh_offsets(loaded.lod_mesh_data.size(), UINT32_MAX);
@@ -11864,7 +12533,13 @@ bool build_vulkan_part(uint64_t part_hash,
         // Append indices rebased by this mesh's vertex offset within the part.
         // Index VALUES become part-local: already include mesh_offsets[mi].
         mesh_index_offsets[mi] = static_cast<uint32_t>(part.indices.size());
-        for (uint32_t idx : mesh.indices)
+        // Each loaded mesh is one complete cluster/rung draw span. Only the
+        // GPU copy changes order: CPU bake/chart meshes retain their identity.
+        // BLAS construction and hit decoding both consume this same GPU index
+        // buffer, so primitive IDs still address the triangle actually built.
+        std::vector<uint32_t> ordered = mesh.indices;
+        viewer::optimize_vertex_cache_order(ordered, mesh.vertex_count);
+        for (uint32_t idx : ordered)
             part.indices.push_back(mesh_offsets[mi] + idx);
     }
     if (part.vertices.empty()) return false;
@@ -11881,6 +12556,41 @@ bool build_vulkan_part(uint64_t part_hash,
         out.ordinal = imp.ordinal;
         out.atlas = imp.data.atlas;
         part.impostors.push_back(std::move(out));
+    }
+    // Filtering a dense sector's impostors takes seconds. Pack the filtered
+    // upload on the build worker so publication only assigns atlas slots and
+    // stages bytes. Keep malformed atlases for the renderer's normal error path.
+    if (!part.impostors.empty() && std::all_of(part.impostors.begin(),
+            part.impostors.end(), [](const auto& imp) {
+                return imp.atlas.size() == impostor::atlas_bytes();
+            })) {
+        const uint32_t edge = impostor::layer_px();
+        size_t bytes_per_impostor = 0;
+        for (uint32_t mip_edge = edge;
+             mip_edge / impostor::kGridDim >= 4;
+             mip_edge /= 2) {
+            bytes_per_impostor += size_t(mip_edge) * mip_edge * 8;
+            if (mip_edge / impostor::kGridDim == 4) break;
+        }
+        part.impostor_upload_bytes.reserve(bytes_per_impostor *
+                                           part.impostors.size());
+        for (auto& imp : part.impostors) {
+            const auto mips = impostor::filtered_mips(imp.atlas, edge);
+            for (const auto& mip : mips) {
+                viewer::VkScenePartImpostor::UploadMip upload;
+                upload.edge = mip.edge;
+                upload.shade_offset = part.impostor_upload_bytes.size();
+                part.impostor_upload_bytes.insert(
+                    part.impostor_upload_bytes.end(), mip.shade.begin(),
+                    mip.shade.end());
+                upload.tint_offset = part.impostor_upload_bytes.size();
+                part.impostor_upload_bytes.insert(
+                    part.impostor_upload_bytes.end(), mip.tint.begin(),
+                    mip.tint.end());
+                imp.upload_mips.push_back(upload);
+            }
+            std::vector<uint8_t>().swap(imp.atlas);
+        }
     }
 
     // WP-E (chart-space VT): hand the renderer the per-rung chart tables the
@@ -11914,6 +12624,16 @@ bool build_vulkan_part(uint64_t part_hash,
                 std::memcpy(part.surface_local_to_world,
                             surface->local_to_world,
                             sizeof(part.surface_local_to_world));
+            }
+            bool reuse_classification = false;
+            if (reuse_prepared_surface && classify && out_cache) {
+                const auto scan = vt::vt_scan_surface_lanes(surface->tape->program());
+                const uint32_t fields = surface->world_anchored && !scan.overflow ? scan.count : 0;
+                reuse_classification = out_cache->complete_for(surface->tape_hash,
+                    static_cast<uint32_t>(part.surface_materials.size()), fields, loaded.lod_mesh_data);
+                if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+                    MATTER_LOGI("geometry", "prepared_surface hash=%016llx reuse=%u",
+                        (unsigned long long)part_hash, unsigned(reuse_classification));
             }
             // Demand-driven VT (default): declare the registrable rungs and
             // ship NO payload — no chart-table copy, no per-rung mesh copies,
@@ -11981,7 +12701,7 @@ bool build_vulkan_part(uint64_t part_hash,
                         static_cast<size_t>(material_count) *
                             MATERIAL_FLOATS_PER_DEF,
                         0.0f);
-                    MaterialRegistryPackForGPU(part.chart_material_table.data());
+                    MaterialRegistryPackForGPU(part.chart_material_table.data(), static_cast<int>(part.chart_material_table.size() / MATERIAL_FLOATS_PER_DEF));
                 }
                 for (size_t mi = 0;
                      mi < loaded.lod_mesh_data.size() &&
@@ -12002,7 +12722,11 @@ bool build_vulkan_part(uint64_t part_hash,
                     out.dominant_material =
                         mesh.material_ids.empty() ? UINT32_MAX
                                                   : mesh.material_ids.front();
-                    if (classify) {
+                    if (reuse_classification) {
+                        out.surface_weights = out_cache->weights[mi];
+                        out.surface_lanes = out_cache->lanes[mi];
+                        out.surface_lane_count = out_cache->lane_count;
+                    } else if (classify) {
                         const auto cls_t0 = std::chrono::steady_clock::now();
                         vt_classify_chart_vertices(
                             *surface, out.positions.data(),
@@ -12043,7 +12767,7 @@ bool build_vulkan_part(uint64_t part_hash,
                 // die with it, which forced the app thread's VT registration to
                 // classify the identical vertex array a second time. Park them
                 // on the caller's cache instead: same work, kept.
-                if (out_cache) {
+                if (out_cache && !reuse_classification) {
                     out_cache->tape_hash = surface->tape_hash;
                     out_cache->material_count = columns;
                     out_cache->weights.assign(loaded.lod_mesh_data.size(), {});
@@ -12058,7 +12782,9 @@ bool build_vulkan_part(uint64_t part_hash,
                     // chartless rung (permanently legacy) gets a scratch
                     // classification just for this override.
                     const std::vector<uint8_t>* weights = nullptr;
-                    if (mi < part.lod_chart_meshes.size() &&
+                    if (reuse_classification) {
+                        weights = &out_cache->weights[mi];
+                    } else if (mi < part.lod_chart_meshes.size() &&
                         !part.lod_chart_meshes[mi].surface_weights.empty()) {
                         weights = &part.lod_chart_meshes[mi].surface_weights;
                     } else {
@@ -12079,7 +12805,7 @@ bool build_vulkan_part(uint64_t part_hash,
                     // only for the GPU tape -- but this is the one place that
                     // already holds this rung's vertices on a worker thread, so
                     // computing them here is what takes them off the app thread.
-                    if (out_cache) {
+                    if (out_cache && !reuse_classification) {
                         const auto lane_t0 = std::chrono::steady_clock::now();
                         const uint32_t lane_count = vt_compute_chart_lanes(
                             *surface, mesh.vertices.data(),
@@ -12184,6 +12910,37 @@ bool build_vulkan_part(uint64_t part_hash,
         if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
     }
     if (part.clusters.empty()) return false;
+    // Stream prebuild runs on a worker. Derive the RT material sets here so
+    // ensure_part does not scan and sort millions of indices on the render
+    // thread while publishing a dense sector.
+    {
+        std::unordered_set<uint32_t> materials;
+        for (const auto& vertex : part.vertices)
+            if (vertex.material_index != UINT32_MAX)
+                materials.insert(vertex.material_index);
+        part.rt_material_ids.assign(materials.begin(), materials.end());
+        std::sort(part.rt_material_ids.begin(), part.rt_material_ids.end());
+        for (const auto& cluster : part.clusters) {
+            for (const auto& lod : cluster.lods) {
+                if (lod.first_index > part.indices.size() ||
+                    lod.index_count > part.indices.size() - lod.first_index)
+                    return false;
+                std::unordered_set<uint32_t> lod_materials;
+                for (uint32_t i = 0; i < lod.index_count; ++i) {
+                    const uint32_t vertex_index =
+                        part.indices[lod.first_index + i];
+                    if (vertex_index >= part.vertices.size()) return false;
+                    const uint32_t material =
+                        part.vertices[vertex_index].material_index;
+                    if (material != UINT32_MAX) lod_materials.insert(material);
+                }
+                auto& ids = part.rt_lod_material_ids.emplace_back();
+                ids.assign(lod_materials.begin(), lod_materials.end());
+                std::sort(ids.begin(), ids.end());
+            }
+        }
+        part.rt_material_ids_prepared = true;
+    }
     return true;
 }
 
@@ -12325,6 +13082,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
     impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
     impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
+    impl_->vk_scene->set_forest_history_reset(opts.vulkan_forest_history_reset);
     // render.fog is a LIVE group precisely because this runs every frame: the
     // authored fog is not baked into anything, it is re-handed to the renderer
     // here on each call. An editor override therefore lands on the next frame
@@ -12335,23 +13093,22 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         opts.cloud_shadows);
     impl_->vk_scene->set_tileset_pom_settings(opts.vulkan_tileset_pom);
     impl_->vk_scene->set_vt_near_band_settings(opts.vulkan_vt_near_band);
-    const int material_count = MaterialRegistryCount();
-    std::vector<MaterialGpuRecord> material_records(
-        static_cast<size_t>(material_count));
-    MaterialRegistryPackRtForGPU(material_records.data());
+    std::array<MaterialGpuRecord, MATERIAL_MAX_TOTAL> material_records;
+    const size_t material_count = static_cast<size_t>(MaterialRegistryPackRtForGPU(
+        material_records.data(), MATERIAL_MAX_TOTAL));
     if (impl_->vk_material_records.empty()) {
-        impl_->vk_material_records = material_records;
+        impl_->vk_material_records.assign(material_records.begin(), material_records.begin() + material_count);
         impl_->vk_material_shading_revision = 1;
         impl_->vk_material_geometry_revision = 1;
-    } else if (impl_->vk_material_records.size() != material_records.size() ||
+    } else if (impl_->vk_material_records.size() != material_count ||
                std::memcmp(impl_->vk_material_records.data(),
                            material_records.data(),
-                           material_records.size() *
+                           material_count *
                                sizeof(MaterialGpuRecord)) != 0) {
         bool geometry_changed =
-            impl_->vk_material_records.size() != material_records.size();
+            impl_->vk_material_records.size() != material_count;
         const size_t common_count = std::min(
-            impl_->vk_material_records.size(), material_records.size());
+            impl_->vk_material_records.size(), material_count);
         for (size_t index = 0; index < common_count; ++index) {
             geometry_changed |=
                 (impl_->vk_material_records[index].flags_misc[0] &
@@ -12359,7 +13116,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 (material_records[index].flags_misc[0] &
                  MATERIAL_ALPHA_TESTED);
         }
-        impl_->vk_material_records = material_records;
+        impl_->vk_material_records.assign(material_records.begin(), material_records.begin() + material_count);
         ++impl_->vk_material_shading_revision;
         if (geometry_changed) ++impl_->vk_material_geometry_revision;
     }
@@ -12385,6 +13142,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     if (!viewer::build_frame_matrices(cam, internal_extent.width,
                                       internal_extent.height, unjittered, err))
         return false;
+    {
+        matter_stream::StreamingView view; view.valid=true;
+        std::memcpy(view.planes, unjittered.frustum_planes, sizeof(view.planes));
+        auto& coordinator=impl_->ecs_runtime.streaming_coordinator();
+        const auto revision=coordinator.submit_view(coordinator.intended_owner(), view);
+        impl_->vk_scene->set_geometry_view_revision(opts.freeze_cull_camera ? 0 : revision);
+    }
     const auto begin_temporal =
         [&](const std::vector<viewer::TemporalInstance>& temporal_instances)
             -> const viewer::TemporalFrame& {
@@ -12465,7 +13229,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // into the "off critical path" remainder. Named scopes stop at the exact
     // span boundary; an early return unwinds them via the dtor.
     PROFILE_SCOPE_NAMED(z_resolve, "resolve");
-    const auto resolved = resolver.resolve(impl_->state, impl_->lods, camera_pos);
+    const auto& resolved = resolver.resolve(impl_->state, impl_->lods, camera_pos);
     z_resolve.stop();
     const auto resolve_end = std::chrono::steady_clock::now();
 
@@ -12588,6 +13352,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             const viewer::LoadedPart* root =
                 impl_->store->get_or_load(source.part_hash);
             if (!root) continue;
+            if(root->shared_surface) {
+                viewer::VkSceneInstance marker;marker.part_hash=source.part_hash;
+                marker.instance_id=viewer::temporal_instance_id(source.stable_id,source.part_hash,0);
+                std::memcpy(marker.object_to_world.m,source.transform,sizeof(marker.object_to_world.m));
+                marker.ray_traced=false;expanded={marker};
+                rebuilt.push_back(marker);impl_->vk_instance_cache.store_source(source,expanded);continue;
+            }
             if (force_lod_changed) impl_->vk_scene->release_part(source.part_hash);
             // A load returning null is a transient condition -- the part may
             // become available on a later frame. Such an expansion is left
@@ -12613,7 +13384,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     if (!loaded) { complete = false; continue; }
                     if (force_lod_changed) impl_->vk_scene->release_part(node.part_hash);
                     bool drawable = false;
-                    if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
+                    if(loaded->shared_surface) drawable=true;
+                    else if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
                                             *loaded, drawable, err,
                                             opts.force_lod)) return false;
                     if (!drawable) continue;
@@ -12657,8 +13429,56 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         }
         impl_->vk_instance_cache.store(resolved, std::move(rebuilt));
         impl_->vk_instance_cache.prune_sources(resolved);
+        auto owners=impl_->store->shared_surface_catalog();
+        if(owners!=impl_->vk_shared_catalog_owners) {
+            impl_->vk_shared_catalog_owners=std::move(owners);impl_->vk_shared_catalog_dirty=true;
+            auto& surfaces=impl_->vk_shared_surface_objects;auto& shadows=impl_->vk_shared_shadow_objects;
+            surfaces.clear();shadows.clear();
+            for(const auto& [hash,assembly]:impl_->vk_shared_catalog_owners) {
+                surfaces.emplace_back();shadows.emplace_back();surfaces.back().use_part_materials=true;
+                for(const auto& part:assembly->parts) {
+                    viewer::SparseVoxelBatch surface;surface.surface=&part.mesh->surface;
+                    viewer::SparseVoxelBatch shadow;shadow.asset=&part.mesh->shadow;
+                    uint32_t token=1;
+                    for(const auto& pose:part.instances) {
+                        viewer::SparseVoxelInstance instance{pose,part.mesh->material_index,token++,part.mesh->roughness};
+                        surface.instances.push_back(instance);shadow.instances.push_back(instance);
+                    }
+                    surfaces.back().parts.push_back(std::move(surface));shadows.back().parts.push_back(std::move(shadow));
+                }
+            }
+        }
+        std::map<uint64_t,size_t> shared_indices;
+        for(size_t i=0;i<impl_->vk_shared_catalog_owners.size();++i) shared_indices[impl_->vk_shared_catalog_owners[i].first]=i;
+        std::vector<std::vector<viewer::SparseVoxelInstance>> placements(shared_indices.size());
+        impl_->vk_ordinary_instances.clear();size_t shared_count=0;
+        for(const auto& instance:impl_->vk_instance_cache.instances()) {
+            const auto found=shared_indices.find(instance.part_hash);
+            if(found==shared_indices.end()) {impl_->vk_ordinary_instances.push_back(instance);continue;}
+            const auto& mesh=impl_->vk_shared_catalog_owners[found->second].second->parts.front().mesh;
+            placements[found->second].push_back({instance.object_to_world,mesh->material_index,
+                viewer::vulkan_history_token(instance.instance_id),mesh->roughness});++shared_count;
+        }
+        bool published=true;
+        if(shared_count) {
+            if(!impl_->vk_shared_has_instances || impl_->vk_shared_catalog_dirty) {
+                for(size_t i=0;i<placements.size();++i) {
+                    impl_->vk_shared_surface_objects[i].instances=placements[i];
+                    impl_->vk_shared_shadow_objects[i].instances=placements[i];
+                }
+                published=impl_->vk_scene->set_shared_surface_forest(
+                    impl_->vk_shared_surface_objects,impl_->vk_shared_shadow_objects,err);
+                if(published) impl_->vk_shared_catalog_dirty=false;
+            } else published=impl_->vk_scene->set_shared_surface_forest_placements(placements,err);
+        } else if(impl_->vk_shared_has_instances) published=impl_->vk_scene->set_shared_surface_forest({}, {},err);
+        if(!published) {impl_->vk_instance_cache.invalidate_expansion();return false;}
+        if(shared_count || impl_->vk_shared_has_instances)
+            MATTER_LOGI("shared-surface","streamed roots=%zu assemblies=%zu primary_bytes=%llu shadow_bytes=%llu\n",
+                shared_count,placements.size(),(unsigned long long)impl_->vk_scene->sparse_primary_gpu_bytes(),
+                (unsigned long long)impl_->vk_scene->sparse_shadow_gpu_bytes());
+        impl_->vk_shared_has_instances=shared_count!=0;
     }
-    const auto& cached_instances = impl_->vk_instance_cache.instances();
+    const auto& cached_instances = impl_->vk_ordinary_instances;
     std::vector<viewer::VkSceneInstance> acceptance_instances;
     const std::vector<viewer::VkSceneInstance>* instance_view =
         &cached_instances;
@@ -12925,8 +13745,95 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     false);
         }
     }
+    if (impl_->vk_geometry_pages_enabled && impl_->store->geometry_pages_enabled()) {
+        PROFILE_SCOPE("geometry.update");
+        if (!impl_->vk_geometry_pages.update(*impl_->store, *impl_->vk_scene,
+                *impl_->engine->render_device, frame, cam, budget, *instance_view,
+                impl_->vk_geometry_instances, err)) return false;
+        instance_view = &impl_->vk_geometry_instances;
+        if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE") && frame.serial % 120 == 0) {
+            const auto metrics = impl_->vk_geometry_pages.stats();
+            const auto blas = impl_->vk_scene->blas_cache_stats();
+            const auto paging = impl_->vk_geometry_pages.take_profile();
+            const auto timing = [](const char* name, const viewer::GeometryPagingTiming& t) {
+                MATTER_LOGI("geometry", "paging_stage name=%s count=%llu total_ms=%.3f mean_ms=%.3f max_ms=%.3f",
+                    name,(unsigned long long)t.count,t.total_ms,t.count?t.total_ms/t.count:0.,t.max_ms);
+            };
+            timing("update_cpu",paging.update);timing("worker_queue",paging.worker_queue);
+            timing("admission_cpu",paging.admission);timing("dispatch_cpu",paging.dispatch);
+            timing("reprioritize_cpu",paging.reprioritize);
+            timing("feedback_cpu",paging.feedback);timing("collect_cpu",paging.collect_cpu);
+            timing("accept_cpu",paging.accept_cpu);timing("upload_loop_cpu",paging.upload_loop_cpu);
+            timing("publish_cpu",paging.publish_cpu);timing("scene_check_cpu",paging.scene_check);
+            MATTER_LOGI("geometry", "paging_admission rejected=%llu deferred=%llu hierarchy_failures=%llu",
+                (unsigned long long)paging.admission_rejections, (unsigned long long)paging.admission_deferred,
+                (unsigned long long)paging.hierarchy_failures);
+            MATTER_LOGI("geometry", "paging_coverage rejected_assets=%u unready_assets=%u source_fallbacks=%u visible_assets=%u visible_unready=%u visible_roots=%llu visible_ready_roots=%llu",
+                paging.rejected_assets,paging.unready_assets,paging.source_fallbacks,
+                paging.visible.assets,paging.visible.unready_assets,
+                (unsigned long long)paging.visible.roots,(unsigned long long)paging.visible.ready_roots);
+            timing("cpu_cut",paging.cpu_cut);timing("snapshot",paging.snapshot);
+            MATTER_LOGI("geometry", "paging_cut reused=%llu updated=%llu refined=%llu coarsened=%llu",
+                (unsigned long long)paging.cut_reused, (unsigned long long)paging.cut_updated,
+                (unsigned long long)paging.refined_groups, (unsigned long long)paging.coarsened_groups);
+            timing("hierarchy_worker",paging.hierarchy_worker);timing("scene_worker",paging.scene_worker);
+            MATTER_LOGI("geometry","paging_scene submitted=%llu published=%llu discarded=%llu reused=%llu pending=%u",
+                (unsigned long long)paging.scene_submitted,(unsigned long long)paging.scene_published,
+                (unsigned long long)paging.scene_discarded,(unsigned long long)paging.scene_reused,unsigned(paging.scene_pending));
+            timing("instance_setup",paging.instance_setup);timing("hierarchy_pack",paging.hierarchy_pack);timing("cut_upload_cpu",paging.cut_upload);
+            timing("cache_open",paging.cache_open);timing("index_refresh",paging.cache_refresh);
+            timing("page_read_batch",paging.page_read);timing("decode_page",paging.decode);
+            timing("completion_queue",paging.completion_wait);timing("prepared_queue",paging.prepared_wait);
+            timing("upload_cpu",paging.upload_cpu);timing("render_ready_wait",paging.ready_wait);
+            timing("request_to_publish",paging.end_to_end);
+            MATTER_LOGI("geometry", "paging_bank capacity=%llu occupied=%llu largest_free=%llu backing_allocations=%llu",
+                (unsigned long long)paging.bank_capacity,(unsigned long long)paging.bank_occupied,
+                (unsigned long long)paging.bank_largest_free,(unsigned long long)paging.bank_backing_allocations);
+            MATTER_LOGI("geometry", "paging_io requests=%llu hits=%llu reads=%llu bytes=%llu cpu_payload_bytes=%llu prefetched=%llu",
+                (unsigned long long)paging.read_requests,(unsigned long long)paging.cache_hits,
+                (unsigned long long)paging.disk_reads,(unsigned long long)paging.disk_bytes,(unsigned long long)paging.cpu_payload_bytes,(unsigned long long)paging.prefetched_pages);
+            MATTER_LOGI("geometry", "paging_queue reads=%u decode_queue=%u completions=%u prepared=%u uploads=%u published=%llu reservation_stalls=%llu upload_limit_frames=%llu cpu_deferrals=%llu budget_deferred=%llu failures=%llu watchdogs=%llu gpu_stalls=%llu scratch_stalls=%llu evictions=%llu visible_dispatched=%llu background_dispatched=%llu visible_uploaded=%llu background_uploaded=%llu",
+                paging.queued_reads,paging.queued_prepare,paging.completed_reads,paging.prepared_pages,paging.pending_uploads,
+                (unsigned long long)paging.published,(unsigned long long)paging.reservation_stalls,
+                (unsigned long long)paging.upload_limit_frames,(unsigned long long)paging.cpu_budget_deferrals,
+                (unsigned long long)paging.budget_deferred,
+                (unsigned long long)paging.read_failures,(unsigned long long)paging.watchdogs,
+                (unsigned long long)paging.gpu_budget_stalls,(unsigned long long)paging.scratch_budget_stalls,
+                (unsigned long long)paging.evictions,
+                (unsigned long long)paging.visible_dispatched,(unsigned long long)paging.background_dispatched,
+                (unsigned long long)paging.visible_uploaded,(unsigned long long)paging.background_uploaded);
+            MATTER_LOGI("geometry", "BLAS cache restored=%llu miss=%llu captured=%llu rejected=%llu",
+                (unsigned long long)blas[0], (unsigned long long)blas[1],
+                (unsigned long long)blas[2], (unsigned long long)blas[3]);
+            MATTER_LOGI("geometry", "pages assets=%u pages=%u inflight=%u gpu=%llu scratch=%llu bindings=%zu stale=%llu\n",
+                metrics.assets, metrics.pages, metrics.inflight,
+                static_cast<unsigned long long>(metrics.gpu_bytes),
+                static_cast<unsigned long long>(metrics.scratch_bytes), instance_view->size(),
+                static_cast<unsigned long long>(metrics.stale_completions));
+            const auto memory = matter::gpu_memory_stats();
+            const auto static_buffers = impl_->vk_scene->static_buffer_memory();
+            const auto vt = impl_->vk_scene->vt_stats();
+            MATTER_LOGI("geometry", "vram tracked_device_local=%llu tracked_host_visible=%llu vt_pool=%llu vt_indirection=%llu vt_occlusion=%llu vt_pages=%u/%u vt_pinned=%u vt_evictions=%llu vt_lru_scans=%llu vt_lru_scan_ns=%llu geometry_reserved=%llu geometry_budget=%llu static_clusters=%llu static_vertices=%llu static_indices=%llu static_device_local=%llu static_host_visible=%llu",
+                (unsigned long long)memory.device_local_bytes,
+                (unsigned long long)memory.host_visible_bytes,
+                (unsigned long long)vt.pool_bytes,
+                (unsigned long long)vt.indirection_capacity_bytes,
+                (unsigned long long)vt.occlusion_allocated_bytes,
+                vt.pool_used, vt.pool_capacity, vt.pool_pinned,
+                (unsigned long long)vt.evictions_total,
+                (unsigned long long)vt.lru_scan_count,
+                (unsigned long long)vt.lru_scan_ns,
+                (unsigned long long)metrics.gpu_bytes,
+                (unsigned long long)metrics.gpu_budget,
+                (unsigned long long)static_buffers.clusters,
+                (unsigned long long)static_buffers.vertices,
+                (unsigned long long)static_buffers.indices,
+                (unsigned long long)static_buffers.device_local,
+                (unsigned long long)static_buffers.host_visible);
+        }
+    }
     const auto& instances = *instance_view;
-    if (instances.empty()) {
+    if (instances.empty() && !impl_->vk_shared_has_instances) {
         impl_->stats.instances_resolved = 0;
         const bool rt_available =
             impl_->engine->render_device->ray_tracing_available();
@@ -12969,6 +13876,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         PROFILE_SCOPE("build.temporal_mirror");
         PROFILE_COUNT("build.instances", instances.size());
         if (impl_->vk_temporal_instances_expansion != expansion ||
+            impl_->vk_geometry_temporal_revision != impl_->vk_geometry_pages.revision() ||
             impl_->vk_temporal_instances.size() != instances.size()) {
             PROFILE_COUNT("build.mirror_rebuilds", 1);
             instance_span_rebuilt = true;
@@ -12980,6 +13888,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                      instances[index].object_to_world});
             }
             impl_->vk_temporal_instances_expansion = expansion;
+            impl_->vk_geometry_temporal_revision = impl_->vk_geometry_pages.revision();
         }
     }
     const std::vector<viewer::TemporalInstance>& temporal_instances =
@@ -13014,7 +13923,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 ? viewer::vulkan_history_token(inst.instance_id)
                 : 0u;
             if (token != 0)
-                impl_->pick_token_to_part_hash.emplace(token, inst.part_hash);
+                impl_->pick_token_to_part_hash.emplace(token, impl_->vk_geometry_pages.source_part(inst.instance_id, inst.part_hash));
+        }
+        for(const auto& inst:impl_->vk_instance_cache.instances()) {
+            const auto* part=impl_->store->find(inst.part_hash);
+            if(part && part->shared_surface)
+                impl_->pick_token_to_part_hash.emplace(viewer::vulkan_history_token(inst.instance_id),inst.part_hash);
         }
     }
     // Dynamic entity bridge: reconcile ECS entities with renderer slots.
@@ -13400,6 +14314,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.clusters_culled = cull_stats.frustum_culled;
     impl_->stats.occlusion_culled = cull_stats.occlusion_culled;
     impl_->stats.draw_batches = cull_stats.batches;
+    impl_->stats.descriptors_written =
+        impl_->vk_scene->frame_descriptors_written();
     impl_->stats.resident_impostors =
         impl_->vk_scene->resident_impostor_count();
     const viewer::VkSceneUploadCounters upload_counters =
@@ -13435,16 +14351,41 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->stats.vt_variants = vt_stats.variants;
         impl_->stats.vt_max_variants = vt_stats.max_variants;
         impl_->stats.vt_pool_used = vt_stats.pool_used;
+        impl_->stats.vt_material_pages = vt_stats.material_pages;
+        impl_->stats.vt_shared_material_references = vt_stats.shared_material_references;
+        impl_->stats.vt_coverage_only_pages = vt_stats.coverage_only_pages;
+        impl_->stats.vt_occlusion_pages = vt_stats.occlusion_pages;
+        impl_->stats.vt_occlusion_retained_pages = vt_stats.occlusion_retained_pages;
+        impl_->stats.vt_occlusion_allocated_bytes = vt_stats.occlusion_allocated_bytes;
+        impl_->stats.vt_enrich_deferred_total = vt_stats.enrich_deferred_total;
         impl_->stats.vt_pool_capacity = vt_stats.pool_capacity;
+        impl_->stats.vt_replacement_reserve_pages = vt_stats.replacement_reserve_pages;
+        impl_->stats.vt_dirty_pages = vt_stats.dirty_pages;
+        impl_->stats.vt_fills_stale_total = vt_stats.fills_stale_total;
         impl_->stats.vt_pool_pinned = vt_stats.pool_pinned;
         impl_->stats.vt_fills_last_frame = vt_stats.fills_last_frame;
         impl_->stats.vt_requests_last_frame = vt_stats.requests_last_frame;
         impl_->stats.vt_queue_depth = vt_stats.queue_depth;
+        impl_->stats.vt_mandatory_queue_depth = vt_stats.mandatory_queue_depth;
+        impl_->stats.vt_detail_queue_depth = vt_stats.detail_queue_depth;
+        impl_->stats.vt_oldest_mandatory_age_frames = vt_stats.oldest_mandatory_age_frames;
+        impl_->stats.vt_oldest_detail_age_frames = vt_stats.oldest_detail_age_frames;
         impl_->stats.vt_rejected_variants = vt_stats.rejected_variants;
         impl_->stats.vt_shared_refs_total = vt_stats.shared_refs_total;
         impl_->stats.vt_finer_rebuilds_total = vt_stats.finer_rebuilds_total;
         impl_->stats.vt_fills_total = vt_stats.fills_total;
         impl_->stats.vt_evictions_total = vt_stats.evictions_total;
+        impl_->stats.vt_invalidations_total = vt_stats.invalidations_total;
+        impl_->stats.vt_pages_dropped_total = vt_stats.pages_dropped_total;
+        impl_->stats.vt_fills_failed_total = vt_stats.fills_failed_total;
+        impl_->stats.vt_requests_dropped_total = vt_stats.requests_dropped_total;
+        impl_->stats.vt_enrich_total = vt_stats.enrich_total;
+        impl_->stats.vt_enrich_queue_depth = vt_stats.enrich_queue_depth;
+        impl_->stats.vt_cpu_frame_serial = vt_stats.cpu_frame_serial;
+        impl_->stats.vt_cpu_demand_ms = vt_stats.cpu_demand_ms;
+        impl_->stats.vt_cpu_begin_ms = vt_stats.cpu_begin_ms;
+        impl_->stats.vt_cpu_pre_pass_ms = vt_stats.cpu_pre_pass_ms;
+        impl_->stats.vt_cpu_post_pass_ms = vt_stats.cpu_post_pass_ms;
         impl_->stats.vt_pool_bytes = vt_stats.pool_bytes;
         impl_->stats.vt_mesh_bytes = vt_stats.mesh_bytes;
         impl_->stats.vt_mesh_budget_bytes = vt_stats.mesh_budget_bytes;
@@ -13604,7 +14545,10 @@ bool WorldSession::resolved_atmosphere_status(
 }
 
 void WorldSession::request_atmosphere_history_reset() {
-    if (impl_) impl_->vk_atmosphere_history_reset_pending = true;
+    if (impl_) {
+        impl_->vk_atmosphere_history_reset_pending = true;
+        if (impl_->vk_scene) impl_->vk_scene->request_dlss_history_reset();
+    }
 }
 
 bool WorldSession::readback_swapchain_rgba8(
@@ -13615,6 +14559,59 @@ bool WorldSession::readback_swapchain_rgba8(
     }
     return impl_->engine->render_device->readback_swapchain_rgba8(frame, rgba,
                                                                   err);
+}
+
+bool WorldSession::queue_evaluation_channels(const VulkanFrame& frame,
+                                              std::string& err) {
+    if (!impl_ || !impl_->vk_scene) {
+        err = "evaluation channels require an active Vulkan scene";
+        return false;
+    }
+    return impl_->vk_scene->queue_evaluation_channels(frame, err);
+}
+
+bool WorldSession::finish_evaluation_channels(
+    uint64_t frame_serial, bool frame_completed,
+    EvaluationChannels& channels, std::string& err) {
+    if (!impl_ || !impl_->vk_scene) {
+        err = "evaluation channels require an active Vulkan scene";
+        return false;
+    }
+    if (!frame_completed) {
+        impl_->vk_scene->abandon_evaluation_channels();
+        err = "evaluation frame did not complete";
+        return false;
+    }
+    return impl_->vk_scene->finish_evaluation_channels(
+        frame_serial, channels, err);
+}
+
+bool WorldSession::evaluation_detail_report(
+    const EvaluationChannels& channels, uint32_t desired_max_lod,
+    bool require_rt, VisibleDetailReport& report, std::string& err) {
+    if (!impl_ || !impl_->vk_scene) {
+        err = "visible detail requires an active Vulkan scene";
+        return false;
+    }
+    if (!impl_->vk_scene->evaluation_detail_report(
+            channels, desired_max_lod, require_rt, report, err)) return false;
+    for (EvaluationObjectIdentity& identity : report.identities) {
+        const auto scene_pick = impl_->dynamic_bridge.resolve_pick(
+            identity.frame_token);
+        if (scene_pick.kind == matter::scene::ScenePickKind::DynamicEntity) {
+            identity.dynamic_entity = true;
+            identity.entity_id = scene_pick.scene_entity_id.value;
+            identity.entity_generation = scene_pick.scene_entity_id.generation;
+            identity.resolved = true;
+        } else {
+            const auto found = impl_->pick_token_to_part_hash.find(
+                identity.frame_token);
+            identity.resolved = found != impl_->pick_token_to_part_hash.end() &&
+                found->second == identity.part_hash;
+        }
+        if (!identity.resolved) ++report.unmatched_tokens;
+    }
+    return true;
 }
 #endif
 
@@ -13636,6 +14633,24 @@ bool WorldSession::render(const CameraDesc&, const VulkanFrame&,
 
 bool WorldSession::readback_swapchain_rgba8(
     const VulkanFrame&, std::vector<uint8_t>&, std::string& err) {
+    err = "this MatterEngine3 build does not include Vulkan viewer support";
+    return false;
+}
+
+bool WorldSession::queue_evaluation_channels(const VulkanFrame&, std::string& err) {
+    err = "this MatterEngine3 build does not include Vulkan viewer support";
+    return false;
+}
+
+bool WorldSession::finish_evaluation_channels(
+    uint64_t, bool, EvaluationChannels&, std::string& err) {
+    err = "this MatterEngine3 build does not include Vulkan viewer support";
+    return false;
+}
+
+bool WorldSession::evaluation_detail_report(
+    const EvaluationChannels&, uint32_t, bool,
+    VisibleDetailReport&, std::string& err) {
     err = "this MatterEngine3 build does not include Vulkan viewer support";
     return false;
 }
@@ -13821,6 +14836,11 @@ AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {
     std::lock_guard<std::mutex> lock(impl_->streaming_status_mutex);
     return impl_->streaming_status_copy;
+}
+
+std::vector<uint64_t> WorldSession::pending_refinement_parts() const {
+    std::lock_guard<std::mutex> lock(impl_->refinement_status_mutex);
+    return impl_->pending_refinement_hashes;
 }
 
 // Aggregate the live seam-weld pool plus the session's cumulative seam counters.
@@ -14143,6 +15163,91 @@ void WorldSession::submit_overlay_lines(const float*, uint32_t) {}
 // the part is not resident (or a clusterless part has no bound radius either),
 // never "not on disk". A clusterless part falls back to a cube of its bound
 // radius, which is conservative rather than tight.
+bool WorldSession::export_asset(uint64_t part_hash,uint32_t lod,const std::string& directory,
+    AssetExportReceipt& out,std::string& error) {
+#ifndef MATTER_VULKAN_VIEWER
+    (void)part_hash;(void)lod;(void)directory;(void)out;
+    error="asset material export requires the Vulkan editor";return false;
+#else
+    try {
+        if(!impl_->connected || !impl_->store || !impl_->vk_scene || impl_->bake_active.load() || !gpu_jobs_idle()) {
+            error="asset export requires a completed bake and idle publication queue";return false;
+        }
+        if(directory.empty() || std::filesystem::exists(std::filesystem::u8path(directory))) {
+            error="choose a new export directory; existing destinations are never overwritten";return false;
+        }
+        if(lod>15){error="export LOD must be between 0 and 15";return false;}
+        struct Placement {const viewer::LoadedPart* part;uint64_t hash;uint32_t level;std::array<float,16> transform;};
+        std::vector<Placement> placements;std::set<uint64_t> path;uint32_t nodes=0;
+        const std::array<float,16> identity={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+        const auto fail=[](const char* why){throw std::runtime_error(why);};
+        std::function<void(uint64_t,const std::array<float,16>&,uint32_t)> visit;
+        visit=[&](uint64_t hash,const std::array<float,16>& transform,uint32_t depth){
+            if(++nodes>4096 || depth>8 || !path.insert(hash).second)fail("asset hierarchy exceeds limits or contains a cycle");
+            const auto* part=impl_->store->find(hash);if(!part)fail("a child asset is not resident; bake/load the complete asset first");
+            if(part->animation_asset || !part->rigid_lod_mesh_data.empty() || part->shared_surface || !part->flat_refs.empty())
+                fail("export requires static mesh parts; animation, voxel assemblies and LOD-dependent child cutovers are unsupported");
+            if(!part->lod_mesh_data.empty()){
+                const uint32_t levels=uint32_t(part->lod_blas.size());
+                if(!levels)fail("asset has no complete mesh LOD table");
+                if(depth==0 && lod>=levels)fail("requested asset LOD is unavailable");
+                const uint32_t level=std::min(lod,levels-1);
+                if(level>=part->lod_mesh_data.size() || level>=part->lod_charts.size() ||
+                    part->lod_charts[level].charts.empty())fail("requested LOD has no exportable surface charts");
+                for(const auto& imp:part->impostors)if(imp.mesh_index==level)fail("billboard impostors are not mesh export LODs");
+                placements.push_back({part,hash,level,transform});
+            }
+            for(const auto& child:part->children){
+                std::array<float,16> next{};
+                for(int r=0;r<4;++r)for(int c=0;c<4;++c)for(int k=0;k<4;++k)next[r*4+c]+=transform[r*4+k]*child.transform[k*4+c];
+                visit(child.child_resolved_hash,next,depth+1);
+            }
+            path.erase(hash);
+        };
+        visit(part_hash,identity,0);
+        if(placements.empty())fail("asset contains no exportable triangles");
+        asset_export::Asset asset;asset.source_hash=part_hash;asset.lod=lod;
+        struct Cached {uint64_t hash;uint32_t lod,material;std::array<float,16> transform;size_t mesh;};
+        std::vector<Cached> cache;uint64_t texture_pixels=0,vertices=0;
+        std::vector<float> material_table;const int material_count=MaterialRegistryCount();
+        if(material_count>0){material_table.resize(size_t(material_count)*MATERIAL_FLOATS_PER_DEF);MaterialRegistryPackForGPU(material_table.data(), static_cast<int>(material_table.size() / MATERIAL_FLOATS_PER_DEF));}
+        for(const auto& item:placements){
+            const auto& input=item.part->lod_mesh_data[item.level];const auto& atlas=item.part->lod_charts[item.level];
+            vertices+=input.indices.size();if(vertices>4000000)fail("asset export exceeds four million triangle corners");
+            const auto cached=std::find_if(cache.begin(),cache.end(),[&](const Cached& c){
+                if(c.hash!=item.hash || c.lod!=item.level)return false;
+                for(int i:{0,1,2,4,5,6,8,9,10})if(c.transform[i]!=item.transform[i])return false;
+                return true;
+            });
+            if(cached!=cache.end()){
+                auto mesh=asset.meshes[cached->mesh];
+                for(auto& v:mesh.vertices)for(int k=0;k<3;++k)v.position[k]+=item.transform[k*4+3]-cached->transform[k*4+3];
+                asset.meshes.push_back(std::move(mesh));continue;
+            }
+            texture_pixels+=uint64_t(atlas.atlas_w)*atlas.atlas_h;
+            if(texture_pixels>16u*1024u*1024u)fail("asset export exceeds 16 million unique material texels; choose an explicitly lower-density bake");
+            if(!item.part->surface_cache.weights.empty())fail("world-field terrain export requires a sector material snapshot; export a static asset instead");
+            vt::VtPartContext context;context.variant_hash=item.hash;context.rung=item.level;context.rung_count=uint32_t(item.part->lod_charts.size());
+            context.positions=input.vertices.data();context.normals=input.normals.empty()?nullptr:input.normals.data();
+            context.surface_uvs=input.surface_uvs.empty()?nullptr:input.surface_uvs.data();context.tint_rgba=input.colors.empty()?nullptr:input.colors.data();
+            context.material_ids=input.material_ids.empty()?nullptr:input.material_ids.data();context.indices=input.indices.data();
+            context.vertex_count=uint32_t(input.vertex_count);context.triangle_count=uint32_t(input.indices.size()/3);
+            context.dominant_material=input.material_ids.empty()?0:input.material_ids.front();
+            context.material_table=material_table.empty()?nullptr:material_table.data();context.material_count=uint32_t(material_count);context.material_stride=MATERIAL_FLOATS_PER_DEF;
+            asset_export::Mesh mesh;asset_export::Material material;
+            if(!impl_->vk_scene->export_part_material(atlas,context,item.transform.data(),input.baked_ao,mesh,material,error))return false;
+            mesh.material=uint32_t(asset.materials.size());cache.push_back({item.hash,item.level,mesh.material,item.transform,asset.meshes.size()});
+            asset.meshes.push_back(std::move(mesh));asset.materials.push_back(std::move(material));
+        }
+        asset_export::Receipt receipt;
+        if(!asset_export::write(asset,directory,receipt,error))return false;
+        AssetExportReceipt result;result.directory=std::filesystem::absolute(std::filesystem::u8path(directory)).u8string();
+        result.source_hash=part_hash;result.lod=lod;result.triangles=receipt.triangles;result.vertices=receipt.vertices;
+        result.materials=uint32_t(asset.materials.size());result.files=std::move(receipt.files);out=std::move(result);error.clear();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+#endif
+}
+
 bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
     if (!impl_->store) return false;
     const auto* lp = impl_->store->find(part_hash);

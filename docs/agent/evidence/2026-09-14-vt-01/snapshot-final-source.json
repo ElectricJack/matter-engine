@@ -1,0 +1,197 @@
+{
+  "stage": "candidate publication, batch input snapshots, surface-weight idle removal; native builds and focused correctness pass; performance acceptance open",
+  "sha256": {
+    "MatterEditor/src/vt_trace.h": "7c0ac76530380de425210315453c894634c871eb877c395eca92d6cfb15de585",
+    "MatterEngine3/include/matter/world_session.h": "e7f9fccfdabcb32bfd8f2efb6d046ac656acd892388b9f032c7ba35f49943de5",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "2f68aba2fce56875179cb74d0b97868f1e8ed63d78271b80f4805cd5fba1dfcf",
+    "MatterEngine3/src/matter_engine.cpp": "d294f80f13a42f419c382d3e7fca5b988a016deb22e0985605547cd49fe72d49",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "8fc8d26ff64c8a6c0e379619ee514bf08cdb91d6f1d4227201e3231b3a387c6e",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "6fa364f6be5e91eae48c8e6ae34755e9b385ecbd666677898d0d27a741e1cef1",
+    "MatterEngine3/src/render/vt_chart_gpu.h": "c1ec0b8d5ec3a33db17f77446a6960af94d8078b84199fa5e6328d78ff4897a0",
+    "MatterEngine3/src/render/vt_compositor.cpp": "176fac37a3b5b4025c1ea274a753e0ad32067be80513d94e25ce49fba6aed96d",
+    "MatterEngine3/src/render/vt_compositor.h": "e137b80acacaa1e63dce52a5f181cc2a84d744a3250bf008e05ad350d764deca",
+    "MatterEngine3/src/render/vt_density.h": "fcd9275f66858f033d4c0777a4e937aba74b5e8f5edad6eb63a5946ae79ee4e9",
+    "MatterEngine3/src/render/vt_enrich.cpp": "68c03d34916f33920c2a166a65ecd6284bb68270396c6fa39e2fb1f31ceadf72",
+    "MatterEngine3/src/render/vt_enrich.h": "01fc85779c4f067821026f8e9a71ce33224a31872a6590becc43b9863c636ade",
+    "MatterEngine3/src/render/vt_residency.cpp": "5919b26e40fab62106984f04ae7bef8fe2f80eeb351c790b4c31b42ef4a02369",
+    "MatterEngine3/src/render/vt_residency.h": "5efd01508e653b7f0282e75800d09e14c0987a2583c74c506ad6df00745f09da",
+    "MatterEngine3/src/render/vt_types.h": "8698e6ecebf677bf6fb20be089412746f84537b6e1441b889570906fc8044e57",
+    "MatterEngine3/tests/vt_compositor_tests.cpp": "c3bea51b4bf7f6014fb37a4279e589be7aeb21dd7a512b1adfe39d886e7d6cee",
+    "MatterEngine3/tests/vt_queue_tests.h": "de9f7076990299b68c85e321bb7d330cd7a93bde5934638002c7a6fc82d4a98a",
+    "MatterEngine3/tests/vt_residency_tests.cpp": "20869ff5197eb5d60a32cff768ccee8c55797443b311e3766a0e966e2a2d1adb",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "335dc58b384e43a0cb3e3388a8f00f5f25275cd72489fb23dee0e55f3c1256fd",
+    "tools/tests/test_vt_acceptance.py": "a5a06e370d0cc20adc5454f722c0f6d4b642e8e8ce95037c97650791f3cc1be4",
+    "tools/tests/test_vt_density.py": "985e61b9297e941efbd177236350786be6b703991c5b5159aaa0d085d9021fa2",
+    "tools/vt_acceptance.py": "01ea2a9a5f3fe0f8abba35a62631974e512b57a0980af0611721d145599b784a",
+    "tools/vt_density.py": "de77bf75d37d8e5fc719a50ff2bb35b2fb47edd736ddb0aa6e42d9e6b96ed5b9"
+  },
+  "executables": {
+    "MatterEditor/build/windows-msvc/editor.exe": "c661d1ed8a143deaea92b38bea87c6e26c09675f055342033169acd794781101",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe": "16bf27fefcc847b7be95f3b769cc39b5ccd35b92bce9cdb45732aaeb54747e92",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "326a6e537562f6e9693b30c8b09e55e3406955db9fe3015700f5a63b573bd9f8",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "dd197783f15864d9122daf307960d7c5eae5854d91069fbbee1d33a68db6f68d"
+  },
+  "checks": [
+    {
+      "name": "vt-queue",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 1.26,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt-queue.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "vt",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 1.821,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "vt-surfaces",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt-surfaces\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 2.034,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt-surfaces.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "vt-enrich",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 1.742,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt-enrich.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "vt-normal-frame",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt-normal-frame\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 4.641,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt-normal-frame.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "surface-parallax",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 5.302,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-surface-parallax.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "build-cpu",
+      "command": [
+        "./tools/build-windows-from-wsl.sh",
+        "RelWithDebInfo",
+        "vt_residency_tests"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 7.611,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-build-cpu.log"
+    },
+    {
+      "name": "cpu",
+      "command": [
+        "/mnt/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe",
+        "--test-dir",
+        "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/cmake/windows-msvc/relwithdebinfo",
+        "-R",
+        "^vt_residency_tests$",
+        "--output-on-failure",
+        "--no-tests=error"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 0.21,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-cpu.log"
+    },
+    {
+      "name": "build-editor",
+      "command": [
+        "./tools/build-windows-from-wsl.sh",
+        "RelWithDebInfo",
+        "editor"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 24.654,
+      "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-build-editor.log"
+    }
+  ],
+  "additional_checks": [
+    {
+      "command": [
+        "./tools/build-windows-from-wsl.sh",
+        "RelWithDebInfo",
+        "vt_compositor_tests"
+      ],
+      "exit": 0,
+      "log": "build-vt-input-surface-snapshot.log"
+    },
+    {
+      "command": [
+        "./tools/build-windows-from-wsl.sh",
+        "RelWithDebInfo",
+        "vulkan_smoke_tests"
+      ],
+      "exit": 0,
+      "log": "build-vt-snapshot-smoke.log"
+    },
+    {
+      "command": "PowerShell native vt_compositor_tests.exe with MATTER_VK_VALIDATION=1 (validation requested directly by fixture too)",
+      "exit": 0,
+      "log": "vt-input-surface-snapshot.log"
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tools/tests",
+        "-p",
+        "test_vt_*.py",
+        "-v"
+      ],
+      "exit": 0,
+      "log": "vt-candidate-analyzer-final-tests.log"
+    }
+  ]
+}

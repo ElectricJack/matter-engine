@@ -1,0 +1,15 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 151.58255500299856,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [
+    "Large corner rejected: finite source binding count outside 1..4096 (interleaved stdout/stderr printed ake error)."
+  ],
+  "vt_stats": [],
+  "images": {},
+  "passed": false,
+  "notes": [
+    "Capture closed with WM_CLOSE after material admission failed; no source edits during execution."
+  ]
+}

@@ -248,7 +248,7 @@ private:
 
 namespace part_graph {
 
-// Reads .js modules from a SEARCH PATH of object roots, most-specific first,
+// Reads .js modules recursively from object tiers, most-specific first,
 // and evaluates `static requires` via the host's top-level eval (no build()).
 //
 // First match wins: with roots {scenes/<S>/objects, <project>/objects}, a
@@ -259,7 +259,7 @@ namespace part_graph {
 class FileModuleResolver : public ModuleResolver {
 public:
     // Single-root convenience: the flat layout, and every test/tool that has
-    // exactly one object directory.
+    // exactly one object tier (possibly containing grouping folders).
     FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir);
     FileModuleResolver(script_host::ScriptHost& host, std::vector<std::string> roots);
     bool load_source(const std::string& module, std::string& source_out) override;
@@ -363,6 +363,9 @@ public:
     // set_world). Null (default) means bake_source's observer hooks are
     // skipped — production installs never call this setter.
     void set_bake_observer(BakeObserver* observer) { observer_ = observer; }
+
+    // The host this baker evaluates through; tests read its work counters.
+    const script_host::ScriptHost& host() const { return host_; }
 
 private:
     script_host::ScriptHost& host_;

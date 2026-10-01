@@ -1,0 +1,16 @@
+{
+  "terrain-pom-status-v1": {
+    "hit_green": 773265,
+    "path_red": 2158,
+    "initial_orange": 1732,
+    "limit_blue": 6424
+  },
+  "terrain-connected-pom-v6": {
+    "hit_green": 774507,
+    "path_red": 1287,
+    "initial_orange": 520,
+    "limit_blue": 7265
+  },
+  "classification": "8-bit RGB: dominant channel >200; other channels <40; orange R>200, 80<G<170, B<40.",
+  "scope": "Diagnostic pixels only. Does not prove visual/performance acceptance or isolate all engine changes between builds."
+}

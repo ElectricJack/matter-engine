@@ -3,6 +3,8 @@
 #include "part_bundle.h"   // M4: the part body is the REP0 section
 #include "part_render_policy.h"
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -11,14 +13,18 @@
 #include <fstream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "render/lod_distance.h"
 #include "render/part_store.h"
+#include "geometry/geometry_options.h"
+#include "render/prepared_sector_cache.h"
 #include "render/raster_cull.h"
 #include "part_asset_v2.h"
 #include "lod_select.h"
 #include "lod_bake.h"
+#include "script_host.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "animation/anim_asset.h"
@@ -29,6 +35,259 @@ static int g_failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("  FAIL: %s\n", msg); ++g_failures; } \
 } while(0)
+
+static void setenv_compat(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+static void unsetenv_compat(const char* name) {
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+struct ScopedEnvironmentOverride {
+    const char* name;
+    bool had_value;
+    std::string saved;
+    ScopedEnvironmentOverride(const char* key, const char* value)
+        : name(key), had_value(std::getenv(key) != nullptr),
+          saved(had_value ? std::getenv(key) : "") {
+        if (value) setenv_compat(name, value);
+        else unsetenv_compat(name);
+    }
+    ~ScopedEnvironmentOverride() {
+        if (had_value) setenv_compat(name, saved.c_str());
+        else unsetenv_compat(name);
+    }
+};
+
+static void test_partstore_construction_commits_no_banks(const std::filesystem::path& root) {
+    std::printf("[test_partstore_construction_commits_no_banks]\n");
+    const ScopedEnvironmentOverride unset("MATTER_PREPARED_SECTOR_CACHE", nullptr);
+    viewer::PartStore store((root / "lazy").string());
+    CHECK(!store.geometry_pages_enabled(), "PartStore defaults to static geometry");
+    CHECK(store.geometry_root_stats().bank.backing_allocations == 0,
+          "PartStore construction allocates no geometry root bank");
+    CHECK(!store.prepared_sector_cache_active(),
+          "PartStore does not commit a 128 MiB prepared-sector bank at construction");
+    store.set_geometry_pages_enabled(false);
+    CHECK(store.geometry_root_stats().bank.capacity == 0,
+          "disabled geometry reserves no root payload bytes");
+    CHECK(!store.prepared_sector_cache_active(), "disabled geometry leaves prepared cache inactive");
+    store.set_geometry_pages_enabled(true);
+    CHECK(store.geometry_root_stats().bank.capacity == 0,
+          "geometry opt-in defers root bank allocation until demand");
+    CHECK(store.prepared_sector_cache_active(), "geometry opt-in activates the prepared cache");
+
+    const ScopedEnvironmentOverride disabled("MATTER_PREPARED_SECTOR_CACHE", "0");
+    viewer::PartStore opted_out((root / "lazy-opt-out").string());
+    CHECK(!opted_out.prepared_sector_cache_active(), "environment opt-out leaves the prepared cache inactive");
+
+    const ScopedEnvironmentOverride enabled("MATTER_PREPARED_SECTOR_CACHE", "1");
+    viewer::PartStore opted_in((root / "lazy-opt-in").string());
+    CHECK(opted_in.prepared_sector_cache_active(), "environment opt-in activates the prepared cache");
+}
+
+static void test_geometry_startup_requires_exact_opt_in() {
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    const ScopedEnvironmentOverride profile("MATTER_GEOMETRY_PAGES_PROFILE", "1");
+    for (const char* value : std::array<const char*, 8>{nullptr, "0", "", "true", "01", "1 ", "2", "1"}) {
+        const ScopedEnvironmentOverride pages("MATTER_GEOMETRY_PAGES", value);
+        CHECK(geometry::pages_requested() == (value && std::strcmp(value, "1") == 0),
+              "only exact master opt-in enables geometry; terrain/profile cannot enable it");
+    }
+}
+
+static void test_prepared_sector_bank_failure_is_deferred() {
+    std::printf("[test_prepared_sector_bank_failure_is_deferred]\n");
+    try {
+        // A zero-sized bank is deterministically rejected by PageBank, without
+        // asking the allocator for an enormous block or depending on free RAM.
+        viewer::prepared_sector::Cache cache("unused-prepared-sector-bank", 2, 0);
+        std::string error;
+        CHECK(!cache.read("missing", error) && error.find("bank allocation") != std::string::npos,
+              "read reports bank allocation failure without throwing at construction");
+        error.clear();
+        CHECK(!cache.write("missing", {1, 2, 3}, error) && error.find("bank allocation") != std::string::npos,
+              "write retries initialization and reports bank allocation failure");
+    } catch (const std::exception&) {
+        CHECK(false, "prepared cache construction does not allocate banks or throw on bank failure");
+    }
+}
+
+static void test_prepared_sector_concurrent_first_use() {
+    namespace fs = std::filesystem;
+    std::printf("[test_prepared_sector_concurrent_first_use]\n");
+    const auto root = fs::temp_directory_path() / "me3_prepared_sector_lazy";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); }
+    } cleanup{root};
+    fs::remove_all(root);
+    const ScopedEnvironmentOverride disabled("MATTER_PREPARED_SECTOR_CACHE", "0");
+    viewer::PartStore store(root.string());
+    viewer::prepared_sector::Cache reader((root / "cache").string(), 4, 512u << 10);
+    {
+        viewer::prepared_sector::Cache writer((root / "cache").string(), 1, 512u << 10);
+        std::string error;
+        for (unsigned i = 0; i < 8; ++i)
+            CHECK(writer.write(std::to_string(i), std::vector<uint8_t>(4096, uint8_t(i)), error),
+                  "first write initializes banks and persists a prepared payload");
+    }
+    std::atomic<unsigned> ready{0}, failures{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> workers;
+    for (unsigned i = 0; i < 8; ++i) workers.emplace_back([&, i] {
+        ++ready;
+        while (!start.load()) std::this_thread::yield();
+        std::string error;
+        if (store.load_prepared_sector(i + 1, "lazy", error).ok || error != "missing") ++failures;
+        const auto page = reader.read(std::to_string(i), error);
+        const auto* row = page ? page->view.find(1) : nullptr;
+        if (!row || row->size != 4096 ||
+            !std::all_of(row->data, row->data + row->size, [i](uint8_t b) { return b == i; })) ++failures;
+    });
+    while (ready.load() != 8) std::this_thread::yield();
+    start = true;
+    for (auto& worker : workers) worker.join();
+    CHECK(failures.load() == 0, "concurrent first reads initialize owners and banks safely");
+    CHECK(store.prepared_sector_cache_active(), "explicit prepared load activates the cache on demand");
+}
+
+// An empty cache plus cache-only mode refuses terrain page compilation. The
+// retained static fallback must have a hard cap even for a dense source.
+static void test_terrain_page_failure_bounds_static_fallback() {
+    namespace fs = std::filesystem;
+    std::printf("[test_terrain_page_failure_bounds_static_fallback]\n");
+    const auto root = fs::temp_directory_path() / "me3_partstore_terrain_fallback";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); }
+    } cleanup{root};
+    fs::remove_all(root);
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    const ScopedEnvironmentOverride cache_only("MATTER_GEOMETRY_CACHE_ONLY", "1");
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+    options.retain_geometry = true;
+    fs::create_directories(root / "parts");
+    // 8,192 triangles over a 64 m tile exceed the 4,096-triangle fallback cap.
+    const std::string source =
+        "class Sector extends Part{static lodBudgets=[1];static noImpostor=true;"
+        "build(){this.fill(8);this.beginShape(0);"
+        "for(let z=0;z<64;++z)for(let x=0;x<64;++x){"
+        "const a=[x-32,0,z-32],b=[x-31,0,z-32],"
+        "c=[x-31,0,z-31],d=[x-32,0,z-31];"
+        "this.vertex(...a);this.vertex(...b);this.vertex(...c);"
+        "this.vertex(...a);this.vertex(...c);this.vertex(...d);}"
+        "this.endShape();}}";
+    const auto baked = host.bake_source(source, "{}", options);
+    CHECK(baked.error.ok && baked.geometry, "terrain fallback fixture bakes");
+    if (!baked.geometry) return;
+    viewer::PartStore store(options.parts_dir);
+    store.set_geometry_pages_enabled(true);
+    auto staged = store.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                       /*first_rung=*/0, /*terrain_sector=*/true);
+    CHECK(staged.ok, "terrain fallback fixture stages");
+    CHECK(!staged.lp.geometry_pages, "cache-only compile refuses pages");
+    CHECK(staged.lp.thresholds.size() == 1,
+          "sector retains only one static fallback rung when pages fail");
+    CHECK(!staged.lp.lod_mesh_data.empty() &&
+          staged.lp.lod_mesh_data.front().indices.size() <= 4096 * 3,
+          "terrain static fallback is bounded to 4,096 triangles");
+    if (!staged.lp.lod_charts.empty() && !staged.lp.lod_charts.front().charts.empty())
+        CHECK(staged.lp.lod_charts.front().tri_order.size() ==
+              staged.lp.lod_mesh_data.front().indices.size() / 3,
+              "bounded fallback chart order matches its triangles");
+    CHECK(store.commit_staged(std::move(staged)), "terrain fallback fixture commits");
+    store.release(baked.resolved_hash);
+    CHECK(store.blas().live_count() == 0,
+          "releasing a terrain fallback drops every BLAS reference");
+}
+
+static void test_terrain_page_success_keeps_static_fallback() {
+    namespace fs = std::filesystem;
+    std::printf("[test_terrain_page_success_keeps_static_fallback]\n");
+    const auto root = fs::temp_directory_path() / "me3_partstore_terrain_paged";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); }
+    } cleanup{root};
+    fs::remove_all(root);
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+    options.retain_geometry = true;
+    fs::create_directories(root / "parts");
+    const std::string source =
+        "class Sector extends Part{static lodBudgets=[1];static noImpostor=true;"
+        "build(){this.fill(8);this.beginShape(0);"
+        "for(let z=0;z<8;++z)for(let x=0;x<8;++x){"
+        "const a=[x*8-32,0,z*8-32],b=[x*8-24,0,z*8-32],"
+        "c=[x*8-24,0,z*8-24],d=[x*8-32,0,z*8-24];"
+        "this.vertex(...a);this.vertex(...b);this.vertex(...c);"
+        "this.vertex(...a);this.vertex(...c);this.vertex(...d);}"
+        "this.endShape();}}";
+    const auto baked = host.bake_source(source, "{}", options);
+    CHECK(baked.error.ok && baked.geometry, "paged terrain fixture bakes");
+    if (!baked.geometry) return;
+    {
+        viewer::PartStore ordinary(options.parts_dir);
+        auto static_part = ordinary.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                                   0, true);
+        CHECK(static_part.ok && !static_part.lp.geometry_pages && !static_part.lp.geometry_source_vt,
+              "terrain option alone keeps ordinary static source geometry");
+        CHECK(!static_part.lp.lod_mesh_data.empty() &&
+              static_part.lp.lod_mesh_data.front().indices.size() == 128 * 3,
+              "default terrain retains its full source mesh");
+        CHECK(ordinary.geometry_root_stats().bank.capacity == 0 &&
+              !fs::exists(root / "geometry-pages") && !ordinary.prepared_sector_cache_active(),
+              "static terrain stages without paging banks, disk cache or prepared owner");
+    }
+    viewer::PartStore store(options.parts_dir);
+    store.set_geometry_pages_enabled(true);
+    auto staged = store.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                       /*first_rung=*/0, /*terrain_sector=*/true);
+    CHECK(staged.ok && staged.lp.geometry_pages, "terrain pages compile and load");
+    CHECK(staged.lp.geometry_pages && !staged.lp.geometry_pages->root_refs.empty() &&
+          staged.lp.geometry_pages->roots.empty(),
+          "paged terrain retains root descriptors without pinning CPU payloads");
+    CHECK(staged.lp.geometry_source_vt, "paged terrain retains source VT mapping");
+    CHECK(staged.lp.thresholds.size() == 1 && staged.lp.lod_mesh_data.size() == 1,
+          "paged terrain retains one static fallback rung");
+    if (!staged.lp.lod_charts.empty() && !staged.lp.lod_charts.front().charts.empty())
+        CHECK(staged.lp.lod_charts.front().tri_order.size() ==
+              staged.lp.lod_mesh_data.front().indices.size() / 3,
+              "paged fallback chart order matches its triangles");
+    std::string prepared_error;
+    CHECK(store.save_prepared_sector(staged, "opt-in-test", prepared_error),
+          "paged terrain fixture saves a prepared archive");
+    {
+        viewer::PartStore disabled(options.parts_dir);
+        const auto rejected = disabled.load_prepared_sector(baked.resolved_hash, "opt-in-test", prepared_error);
+        CHECK(!rejected.ok && prepared_error.find("requires virtual geometry opt-in") != std::string::npos,
+              "disabled store refuses a warm prepared paged archive");
+        CHECK(disabled.geometry_root_stats().bank.capacity == 0 &&
+              disabled.geometry_root_stats().requests == 0,
+              "rejected prepared geometry performs no geometry root I/O or allocation");
+        auto static_part = disabled.stage_from_bake(baked.resolved_hash, *baked.geometry, 0, true);
+        CHECK(static_part.ok && !static_part.lp.geometry_pages,
+              "warm geometry cache cannot enable paging on the source path");
+    }
+    CHECK(store.commit_staged(std::move(staged)), "paged terrain fixture commits");
+    store.release(baked.resolved_hash);
+    CHECK(store.blas().live_count() == 0,
+          "releasing paged terrain drops every BLAS reference");
+}
 
 // M4: the part body is the bundle's REP0 section (see anim_bundle's
 // checksum_part). Reading the raw file would fold the bundle directory and
@@ -1200,7 +1459,125 @@ static void test_scoped_verified_bundle_reads() {
         "corrupt snapshot never weakens ordinary full checksum validation");
 }
 
+static void test_authored_vt_density() {
+    namespace fs=std::filesystem;
+    const auto root=fs::temp_directory_path()/"me3_partstore_vt_density";
+    struct Cleanup {fs::path path;~Cleanup(){std::error_code ec;fs::remove_all(path,ec);}} cleanup{root};
+    fs::create_directories(root/"parts");
+    constexpr uint64_t hash=0x0102030405060708ull;
+    const auto path=(root/part_asset::cache_path_resolved(hash)).string();
+    matter::PartRenderPolicy policy;
+    std::vector<uint8_t> bytes;
+    CHECK(matter::encode_part_render_policy(hash,policy,bytes),"density: legacy policy encodes");
+    const std::vector<uint8_t> expected={0x4d,0x52,0x54,0x50,2,0,0,0,8,7,6,5,4,3,2,1,1,0,0,0,0};
+    CHECK(bytes==expected,"density: default policy retains exact v2 bytes");
+    CHECK(publish_static_part_and_flat(root,hash),"density: canonical and clustered flat fixture");
+    const auto write_bytes=[&](const auto& value){return part_bundle::write_section(path,hash,
+        part_bundle::kSectionRenderPolicy,value.data(),value.size());};
+    for(uint8_t version:{uint8_t(1),uint8_t(2)}) {
+        auto legacy=expected;legacy[4]=version;
+        matter::PartRenderPolicy loaded;loaded.vt_texels_per_meter=256;
+        CHECK(write_bytes(legacy) && matter::load_part_render_policy(path,hash,0,loaded) &&
+              loaded.vt_texels_per_meter==0,"density: legacy versions reset to inherited density");
+    }
+    policy.vt_texels_per_meter=128;
+    CHECK(matter::encode_part_render_policy(hash,policy,bytes) && bytes.size()==25 && bytes[4]==3,
+          "density: authored value uses bounded v3 record");
+    matter::PartRenderPolicy decoded;
+    CHECK(write_bytes(bytes) && matter::load_part_render_policy(path,hash,0,decoded) &&
+          decoded.vt_texels_per_meter==128,"density: v3 round trip");
+    for(float value:{-1.f,0.f,.5f,2049.f,std::numeric_limits<float>::infinity(),
+                     std::numeric_limits<float>::quiet_NaN()}) {
+        auto malformed=bytes;uint32_t bits;std::memcpy(&bits,&value,4);
+        for(unsigned i=0;i<4;++i)malformed[21+i]=uint8_t(bits>>(8*i));
+        CHECK(write_bytes(malformed) && !matter::load_part_render_policy(path,hash,0,decoded) &&
+              decoded.vt_texels_per_meter==0,"density: malformed v3 value fails closed");
+        if(value!=0) {
+            auto invalid=policy;invalid.vt_texels_per_meter=value;std::vector<uint8_t> rejected;
+            CHECK(!matter::encode_part_render_policy(hash,invalid,rejected),"density: invalid writer input rejected");
+        }
+    }
+    auto truncated=bytes;truncated.pop_back();
+    CHECK(write_bytes(truncated) && !matter::load_part_render_policy(path,hash,0,decoded),
+          "density: truncated float rejected");
+    auto trailing=bytes;trailing.push_back(0);
+    CHECK(write_bytes(trailing) && !matter::load_part_render_policy(path,hash,0,decoded),
+          "density: trailing bytes rejected");
+    CHECK(write_bytes(bytes),"density: restore valid owner policy");
+    const char* inherited=std::getenv("MATTER_VT_PROP_TEXELS_PER_METER");
+    const bool had_environment=inherited!=nullptr;
+    const std::string saved_environment=inherited?inherited:"";
+    const auto set_density=[](const char* value){
+#ifdef _WIN32
+        _putenv_s("MATTER_VT_PROP_TEXELS_PER_METER",value?value:"");
+#else
+        if(value)setenv("MATTER_VT_PROP_TEXELS_PER_METER",value,1);
+        else unsetenv("MATTER_VT_PROP_TEXELS_PER_METER");
+#endif
+    };
+    const auto charts_have_density=[](const viewer::LoadedPart* part,float density){
+        if(!part)return false;
+        size_t count=0;
+        for(const auto& rung:part->lod_charts)for(const auto& chart:rung.charts){
+            ++count;if(chart.texels_per_meter!=density)return false;
+        }
+        return count>0;
+    };
+    set_density(nullptr);
+    {
+        viewer::PartStore flat(root.string());const auto* part=flat.get_or_load(hash);
+        CHECK(part && !part->clusters.empty() && charts_have_density(part,128),
+              "density: clustered flat charts use authored root policy");
+        viewer::PartStore staged(root.string());auto part_stage=staged.stage_load(hash);
+        CHECK(part_stage.ok && charts_have_density(&part_stage.lp,128),
+              "density: staged compositional charts use same authored policy");
+    }
+    for(const char* value:{"32","NaN","2049","garbage"}) {
+        set_density(value);viewer::PartStore store(root.string());
+        const auto* part=store.get_or_load(hash);
+        CHECK(charts_have_density(part,std::strcmp(value,"32")==0?32.f:128.f) &&
+              part->render_policy.vt_texels_per_meter==128,
+              "density: diagnostic override is validated and never mutates asset policy");
+    }
+    set_density(nullptr);
+    // Legacy v2 flat loader also regenerates charts from the canonical policy.
+    {
+        BLASManager source;TLASManager tlas(4);std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels lods;
+        CHECK(part_asset::load_v2(path,hash,source,tlas,kids,lods),"density: read canonical geometry");
+        if(lods.empty()){part_asset::LodLevel rung;rung.blas_indices={0};rung.screen_size_threshold=INFINITY;lods.push_back(rung);}
+        CHECK(part_asset::save_v2((root/part_asset::cache_path_flat(hash)).string(),source,tlas,nullptr,0,lods,hash),
+              "density: publish legacy flat fixture");
+        viewer::PartStore store(root.string());
+        CHECK(charts_have_density(store.get_or_load(hash),128),"density: legacy flat uses authored root policy");
+    }
+    // Composite ownership is explicit: merged triangles use the parent's
+    // local density; separately loaded child instances retain their own.
+    const uint64_t child_hash=hash+1;
+    CHECK(publish_static_part(root,child_hash),"density: child fixture");
+    auto child_policy=policy;child_policy.vt_texels_per_meter=256;
+    CHECK(matter::save_part_render_policy((root/part_asset::cache_path_resolved(child_hash)).string(),
+          child_hash,child_policy),"density: child policy");
+    policy.child_overrides={matter::RayTracingOverride::Inherit};
+    CHECK(publish_static_composite(root,hash,{child_instance(child_hash)},policy) && publish_flat(root,hash),
+          "density: parent fixture");
+    {
+        viewer::PartStore store(root.string());
+        CHECK(charts_have_density(store.get_or_load(hash),128) &&
+              charts_have_density(store.get_or_load(child_hash),256),"density: parent and child retain owner-local densities");
+    }
+    set_density(had_environment?saved_environment.c_str():nullptr);
+    std::printf("PARTSTORE_VT_DENSITY legacy=compatible clustered_legacy_staged=checked override=checked\n");
+}
+
 int main() {
+    test_geometry_startup_requires_exact_opt_in();
+    test_partstore_construction_commits_no_banks(std::filesystem::temp_directory_path());
+    test_prepared_sector_bank_failure_is_deferred();
+    test_prepared_sector_concurrent_first_use();
+    test_terrain_page_failure_bounds_static_fallback();
+    test_terrain_page_success_keeps_static_fallback();
+    test_authored_vt_density();
     test_scoped_verified_bundle_reads();
     test_singleton_flat_adopts_persisted_bvh();
     test_singleton_flat_reuses_exact_rungs();

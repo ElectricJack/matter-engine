@@ -384,7 +384,7 @@ git commit -m 'feat(editor): add authored character walking and FIFO diagnostics
 
 **Files:**
 
-- Modify `projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js` and `projects/world_demo/tests/river_float_lab_scene_tests.mjs`.
+- Modify `projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js` and `projects/world_demo/tests/river_float_lab_scene_tests.mjs`.
 - Create `MatterEngine3/tools/run_character_controller_acceptance.ps1`.
 - Create `MatterEngine3/tools/character_controller_acceptance.py` and `MatterEngine3/tools/tests/character_controller_acceptance_tests.py`.
 - Create `docs/findings/river-character-controller-integration-acceptance-2026-08-30.md` after actual runs.
@@ -478,7 +478,7 @@ The output path must be unused; if it already contains evidence, choose the next
 
 ```powershell
 git add -- MatterEngine3/tools/run_character_controller_acceptance.ps1 MatterEngine3/tools/character_controller_acceptance.py MatterEngine3/tools/tests/character_controller_acceptance_tests.py docs/findings/river-character-controller-integration-acceptance-2026-08-30.md
-git add -p -- projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js projects/world_demo/tests/river_float_lab_scene_tests.mjs ROADMAP.md
+git add -p -- projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js projects/world_demo/tests/river_float_lab_scene_tests.mjs ROADMAP.md
 git diff --cached --check
 git diff --cached --stat
 git commit -m 'test(character): validate RiverFloatLab controller integration'

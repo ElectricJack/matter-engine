@@ -1,0 +1,10 @@
+wait_event bake.finished 60
+render_path raster
+set render.gi.enabled false
+set render.pom.enabled false
+set render.cloud_shadows.enabled false
+wait_idle 3 10
+shot_now C:/tmp/matter-blas-mountain/terrain-scene-cache-v6/terrain.png
+cam 427 26 1465 421 24 1455
+shot_now C:/tmp/matter-blas-mountain/terrain-scene-cache-v6/moved.png
+cam 425 25 1465 419 23 1455

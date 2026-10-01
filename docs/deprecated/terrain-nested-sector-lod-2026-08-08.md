@@ -2,7 +2,7 @@
 
 Design note — 2026-08-08
 Scope: `MatterEngine3/src/sector_streamer.{h,cpp}`, `MatterEngine3/src/terrain_mesher.{h,cpp}`,
-the streaming half of `matter_engine.cpp`, and `projects/world_demo/objects/WorldSector.js`.
+the streaming half of `matter_engine.cpp`, and `projects/world_demo/objects/templates/WorldSector.js`.
 Documentation only; no code changed by this note. Implementation plan:
 `docs/superpowers/plans/2026-08-08-nested-sector-lod-migration.md`.
 

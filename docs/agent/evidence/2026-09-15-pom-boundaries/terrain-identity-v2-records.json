@@ -1,0 +1,845 @@
+[
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v2-0",
+      "command": "viewport.capture",
+      "args": {
+        "path": "D:/tmp/matter-vt/20260915-pom-boundaries/terrain-identity-v2.png"
+      },
+      "timeout_ms": 30000
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v2-0",
+      "command": "viewport.capture",
+      "ticket_id": "11",
+      "ok": true,
+      "code": "ok",
+      "message": "",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "275"
+        },
+        "view": {
+          "id": "275"
+        }
+      },
+      "result": {
+        "path": "D:/tmp/matter-vt/20260915-pom-boundaries/terrain-identity-v2.png",
+        "completion_marker": "D:/tmp/matter-vt/20260915-pom-boundaries/terrain-identity-v2.png.done",
+        "image": {
+          "format": "png",
+          "width": 1280,
+          "height": 800,
+          "framebuffer_origin": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        "viewport": {
+          "logical": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "image": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer_scale": {
+            "x": 1,
+            "y": 1
+          },
+          "production_view": true
+        },
+        "pick_mapping": {
+          "target_space": "viewport_local_logical_pixels",
+          "image_offset": {
+            "x": 0,
+            "y": 0
+          },
+          "divide_by": {
+            "x": 1,
+            "y": 1
+          },
+          "formula": "viewport_x = (image_x - image_offset.x) / divide_by.x; same for y"
+        },
+        "camera": {
+          "position": [
+            11,
+            4,
+            16
+          ],
+          "target": [
+            8,
+            2.5,
+            10
+          ],
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "vertical_fov_radians": 0.7853981852531433,
+          "near_plane": 0.10000000149011612,
+          "far_plane": 3871
+        },
+        "captured": {
+          "session": {
+            "id": "1",
+            "generation": "1"
+          },
+          "scene": {
+            "generation": "1",
+            "revision": "1",
+            "ready": true
+          },
+          "selection": {
+            "revision": "0"
+          },
+          "frame": {
+            "id": "275"
+          },
+          "view": {
+            "id": "275"
+          }
+        },
+        "presented": {
+          "id": "275",
+          "view_id": "275"
+        },
+        "annotations": {
+          "available": false,
+          "reason": "annotate_selection was not requested"
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v2-1",
+      "command": "viewport.pick",
+      "args": {
+        "x": 1040.0,
+        "y": 430.0
+      },
+      "timeout_ms": 30000,
+      "expect": {
+        "scene_revision": "1"
+      }
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v2-1",
+      "command": "viewport.pick",
+      "ticket_id": "12",
+      "ok": true,
+      "code": "ok",
+      "message": "",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "282"
+        },
+        "view": {
+          "id": "282"
+        }
+      },
+      "result": {
+        "viewport": {
+          "logical": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer_scale": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        "coordinate": {
+          "x": 1040,
+          "y": 430,
+          "space": "viewport_local_logical_pixels",
+          "framebuffer": {
+            "x": 1040,
+            "y": 430
+          }
+        },
+        "camera": {
+          "position": [
+            11,
+            4,
+            16
+          ],
+          "target": [
+            8,
+            2.5,
+            10
+          ],
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "vertical_fov_radians": 0.7853981852531433,
+          "near_plane": 0.10000000149011612,
+          "far_plane": 3871
+        },
+        "presented": {
+          "id": "282",
+          "view_id": "282"
+        },
+        "hit": true,
+        "object": {
+          "kind": "baked_root",
+          "id": "11208591491846638645"
+        },
+        "geometry": {
+          "source": "gpu_identity",
+          "world_position": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or world position"
+          },
+          "distance_meters": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or ray distance"
+          }
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v2-2",
+      "command": "viewport.pick",
+      "args": {
+        "x": 1140.0,
+        "y": 430.0
+      },
+      "timeout_ms": 30000,
+      "expect": {
+        "scene_revision": "1"
+      }
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v2-2",
+      "command": "viewport.pick",
+      "ticket_id": "13",
+      "ok": true,
+      "code": "ok",
+      "message": "",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "286"
+        },
+        "view": {
+          "id": "286"
+        }
+      },
+      "result": {
+        "viewport": {
+          "logical": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer_scale": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        "coordinate": {
+          "x": 1140,
+          "y": 430,
+          "space": "viewport_local_logical_pixels",
+          "framebuffer": {
+            "x": 1140,
+            "y": 430
+          }
+        },
+        "camera": {
+          "position": [
+            11,
+            4,
+            16
+          ],
+          "target": [
+            8,
+            2.5,
+            10
+          ],
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "vertical_fov_radians": 0.7853981852531433,
+          "near_plane": 0.10000000149011612,
+          "far_plane": 3871
+        },
+        "presented": {
+          "id": "286",
+          "view_id": "286"
+        },
+        "hit": true,
+        "object": {
+          "kind": "baked_root",
+          "id": "11208591491846638645"
+        },
+        "geometry": {
+          "source": "gpu_identity",
+          "world_position": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or world position"
+          },
+          "distance_meters": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or ray distance"
+          }
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v2-3",
+      "command": "viewport.pick",
+      "args": {
+        "x": 900.0,
+        "y": 400.0
+      },
+      "timeout_ms": 30000,
+      "expect": {
+        "scene_revision": "1"
+      }
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v2-3",
+      "command": "viewport.pick",
+      "ticket_id": "14",
+      "ok": true,
+      "code": "ok",
+      "message": "",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "289"
+        },
+        "view": {
+          "id": "289"
+        }
+      },
+      "result": {
+        "viewport": {
+          "logical": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer_scale": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        "coordinate": {
+          "x": 900,
+          "y": 400,
+          "space": "viewport_local_logical_pixels",
+          "framebuffer": {
+            "x": 900,
+            "y": 400
+          }
+        },
+        "camera": {
+          "position": [
+            11,
+            4,
+            16
+          ],
+          "target": [
+            8,
+            2.5,
+            10
+          ],
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "vertical_fov_radians": 0.7853981852531433,
+          "near_plane": 0.10000000149011612,
+          "far_plane": 3871
+        },
+        "presented": {
+          "id": "289",
+          "view_id": "289"
+        },
+        "hit": true,
+        "object": {
+          "kind": "baked_root",
+          "id": "11208591491846638645"
+        },
+        "geometry": {
+          "source": "gpu_identity",
+          "world_position": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or world position"
+          },
+          "distance_meters": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or ray distance"
+          }
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v2-4",
+      "command": "viewport.pick",
+      "args": {
+        "x": 500.0,
+        "y": 450.0
+      },
+      "timeout_ms": 30000,
+      "expect": {
+        "scene_revision": "1"
+      }
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v2-4",
+      "command": "viewport.pick",
+      "ticket_id": "15",
+      "ok": true,
+      "code": "ok",
+      "message": "",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "293"
+        },
+        "view": {
+          "id": "293"
+        }
+      },
+      "result": {
+        "viewport": {
+          "logical": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer_scale": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        "coordinate": {
+          "x": 500,
+          "y": 450,
+          "space": "viewport_local_logical_pixels",
+          "framebuffer": {
+            "x": 500,
+            "y": 450
+          }
+        },
+        "camera": {
+          "position": [
+            11,
+            4,
+            16
+          ],
+          "target": [
+            8,
+            2.5,
+            10
+          ],
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "vertical_fov_radians": 0.7853981852531433,
+          "near_plane": 0.10000000149011612,
+          "far_plane": 3871
+        },
+        "presented": {
+          "id": "293",
+          "view_id": "293"
+        },
+        "hit": true,
+        "object": {
+          "kind": "baked_root",
+          "id": "11208591491846638645"
+        },
+        "geometry": {
+          "source": "gpu_identity",
+          "world_position": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or world position"
+          },
+          "distance_meters": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or ray distance"
+          }
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v2-5",
+      "command": "viewport.pick",
+      "args": {
+        "x": 600.0,
+        "y": 720.0
+      },
+      "timeout_ms": 30000,
+      "expect": {
+        "scene_revision": "1"
+      }
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v2-5",
+      "command": "viewport.pick",
+      "ticket_id": "16",
+      "ok": true,
+      "code": "ok",
+      "message": "",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "297"
+        },
+        "view": {
+          "id": "297"
+        }
+      },
+      "result": {
+        "viewport": {
+          "logical": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800
+          },
+          "framebuffer_scale": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        "coordinate": {
+          "x": 600,
+          "y": 720,
+          "space": "viewport_local_logical_pixels",
+          "framebuffer": {
+            "x": 600,
+            "y": 720
+          }
+        },
+        "camera": {
+          "position": [
+            11,
+            4,
+            16
+          ],
+          "target": [
+            8,
+            2.5,
+            10
+          ],
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "vertical_fov_radians": 0.7853981852531433,
+          "near_plane": 0.10000000149011612,
+          "far_plane": 3871
+        },
+        "presented": {
+          "id": "297",
+          "view_id": "297"
+        },
+        "hit": true,
+        "object": {
+          "kind": "baked_root",
+          "id": "11208591491846638645"
+        },
+        "geometry": {
+          "source": "gpu_identity",
+          "world_position": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or world position"
+          },
+          "distance_meters": {
+            "available": false,
+            "reason": "GPU identity picking exposes no depth or ray distance"
+          }
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v2-6",
+      "command": "scene.list_objects",
+      "args": {
+        "limit": 200
+      },
+      "timeout_ms": 30000
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v2-6",
+      "command": "scene.list_objects",
+      "ticket_id": "17",
+      "ok": true,
+      "code": "ok",
+      "message": "",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "302"
+        },
+        "view": {
+          "id": "302"
+        }
+      },
+      "result": {
+        "scene_revision": "1",
+        "ordering": "kind_then_id",
+        "filter": {
+          "kinds": [
+            "entity",
+            "baked_root"
+          ],
+          "name_contains": null
+        },
+        "scene_counts": {
+          "entity": 0,
+          "baked_root": 0
+        },
+        "page": {
+          "offset": 0,
+          "limit": 200,
+          "returned": 0,
+          "total_matched": 0,
+          "has_more": false,
+          "next_offset": null
+        },
+        "objects": []
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 1,
+      "request_id": "terrain-identity-v2-7",
+      "command": "scene.get_object",
+      "args": {
+        "object": {
+          "kind": "baked_root",
+          "id": "11208591491846638645"
+        }
+      },
+      "timeout_ms": 30000
+    },
+    "response": {
+      "protocol": "matter-agent",
+      "version": 1,
+      "type": "result",
+      "request_id": "terrain-identity-v2-7",
+      "command": "scene.get_object",
+      "ticket_id": "18",
+      "ok": false,
+      "code": "not_found",
+      "message": "no such object at this scene revision",
+      "context": {
+        "session": {
+          "id": "1",
+          "generation": "1"
+        },
+        "scene": {
+          "generation": "1",
+          "revision": "1",
+          "ready": true
+        },
+        "selection": {
+          "revision": "0"
+        },
+        "frame": {
+          "id": "303"
+        },
+        "view": {
+          "id": "303"
+        }
+      },
+      "result": {
+        "scene_revision": "1",
+        "found": false,
+        "object": {
+          "kind": "baked_root",
+          "id": "11208591491846638645"
+        },
+        "kind": "baked_root",
+        "identity": {
+          "namespace": "baked_part_hash",
+          "source": "resolved_part_content_hash",
+          "stability": "content",
+          "classified_by": "part_graph_root",
+          "notes": "content address of the baked root, not a Flecs handle; a rebake that changes the part changes this id"
+        },
+        "reason": "no baked root with this content hash is in the current part graph"
+      }
+    }
+  }
+]

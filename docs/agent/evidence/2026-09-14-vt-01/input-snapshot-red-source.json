@@ -1,0 +1,9 @@
+{
+  "stage": "red material input snapshot fixture; shared material/params buffers and descriptors",
+  "sha256": {
+    "MatterEngine3/src/render/vt_compositor.cpp": "9c222595364432105a164d5ad97cba69ac8242a51e53105aaa94fb0c85565050",
+    "MatterEngine3/src/render/vt_compositor.h": "7bb45af791a86e2fbcc958faf246c577a21e2108378e2d690d34f678e42278b9",
+    "MatterEngine3/tests/vt_compositor_tests.cpp": "f9efe6439276760ec532350a09f17f83ef50671d99c4d8e6228592af329317d9",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "10b99c9d6f8de9c1d28c8d515ecbff57f2ce86d6f8af89e4e91055fc26fe8a42"
+  }
+}

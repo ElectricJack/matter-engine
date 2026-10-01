@@ -58,6 +58,12 @@ struct SimplifyOptions {
     //       Active regardless of whether CellBounds is supplied.
     //       (Approved MSL extension, 2026-07-02.)
     bool  lock_boundary = true;
+    // Cluster hierarchy mode: never collapse an edge touching a locked
+    // vertex. Ordinary locking only fixes the vertex position, and can add
+    // shortcut edges between border vertices shared by neighboring groups.
+    // Interior borders unlock after groups merge, so this does not freeze
+    // every finest-cluster edge throughout the hierarchy.
+    bool  preserve_locked_edges = false;
 };
 
 // Axis-aligned cell extent in cluster-local space. When supplied to

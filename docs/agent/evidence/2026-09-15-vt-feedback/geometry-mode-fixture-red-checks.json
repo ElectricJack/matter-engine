@@ -1,0 +1,27 @@
+[
+  {
+    "name": "geometry-mode-fixture-red-compositor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 16.01067852973938,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/geometry-mode-fixture-red-compositor-build.log"
+  },
+  {
+    "name": "geometry-mode-fixture-red-compositor-test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "elapsed_seconds": 1.719480037689209,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/geometry-mode-fixture-red-compositor-test.log",
+    "all_pass": false,
+    "zero_validation_errors": true
+  }
+]

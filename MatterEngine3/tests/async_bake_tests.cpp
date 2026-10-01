@@ -520,8 +520,9 @@ static bool test_completes_finished(const std::string& sandbox) {
 
     // Bake Lab (task 1.2): after BakeFinished, last_bake_trace returns the
     // stage-span tree. reset_cache above nuked .cache (resolve cache included),
-    // so this was a full bake: the root's children are exactly the execute_bake
-    // stages install, compose, publish, in order, and all spans are closed.
+    // so this was a full bake: after the resolve-cache preflight spans, the
+    // execute_bake stages are install, compose, publish, in order. All root
+    // spans must be closed.
     {
         bake_trace::Span trace;
         s->last_bake_trace(trace);
@@ -531,19 +532,29 @@ static bool test_completes_finished(const std::string& sandbox) {
         for (const auto& c : trace.children)
             printf("    span %s: %.1f..%.1f ms\n",
                    c.name ? c.name : "(null)", c.begin_ms, c.end_ms);
-        CHECK(trace.children.size() == 3,
-              "trace root has exactly 3 stage spans (install/compose/publish)");
-        if (trace.children.size() == 3) {
-            CHECK(std::strcmp(trace.children[0].name, bake_trace::kSpanInstall) == 0,
+        std::vector<const bake_trace::Span*> stages;
+        for (const auto& c : trace.children) {
+            if (c.name && std::strncmp(c.name, "resolve-cache.",
+                                       sizeof("resolve-cache.") - 1) == 0)
+                continue;
+            stages.push_back(&c);
+        }
+        CHECK(stages.size() == 3,
+              "trace root has exactly 3 bake stages (install/compose/publish)");
+        if (stages.size() == 3) {
+            CHECK(stages[0]->name &&
+                      std::strcmp(stages[0]->name, bake_trace::kSpanInstall) == 0,
                   "stage span 0 is \"install\"");
-            CHECK(std::strcmp(trace.children[1].name, bake_trace::kSpanCompose) == 0,
+            CHECK(stages[1]->name &&
+                      std::strcmp(stages[1]->name, bake_trace::kSpanCompose) == 0,
                   "stage span 1 is \"compose\"");
-            CHECK(std::strcmp(trace.children[2].name, bake_trace::kSpanPublish) == 0,
+            CHECK(stages[2]->name &&
+                      std::strcmp(stages[2]->name, bake_trace::kSpanPublish) == 0,
                   "stage span 2 is \"publish\"");
         }
         for (const auto& c : trace.children) {
-            CHECK(c.begin_ms >= 0.0, "stage span begin_ms >= 0");
-            CHECK(c.end_ms >= c.begin_ms, "stage span is closed (end >= begin)");
+            CHECK(c.begin_ms >= 0.0, "root span begin_ms >= 0");
+            CHECK(c.end_ms >= c.begin_ms, "root span is closed (end >= begin)");
         }
     }
 
@@ -1663,17 +1674,17 @@ static bool test_production_animated_gallery_binding() {
     const fs::path example_root = fs::absolute("../../projects/world_demo");
     std::error_code ec;
     fs::copy_file(
-        example_root / "scenes" / "AnimatedRigGallery" / "objects" / "AnimatedRigGallery.js",
+        example_root / "scenes" / "examples" / "AnimatedRigGallery" / "objects" / "AnimatedRigGallery.js",
         project_root / "objects" / "AnimatedRigGallery.js",
         fs::copy_options::overwrite_existing, ec);
     if (!ec)
         fs::copy_file(
-            example_root / "objects" / "Crate.js",
+            example_root / "objects" / "props" / "Crate.js",
             project_root / "objects" / "Crate.js",
             fs::copy_options::overwrite_existing, ec);
     if (!ec)
         fs::copy_file(
-            example_root / "scenes" / "AnimatedRigGallery" / "AnimatedRigGallery.js",
+            example_root / "scenes" / "examples" / "AnimatedRigGallery" / "AnimatedRigGallery.js",
             project_root / "worlds" / "AnimatedRigGallery.js",
             fs::copy_options::overwrite_existing, ec);
     std::string gallery_part_source;

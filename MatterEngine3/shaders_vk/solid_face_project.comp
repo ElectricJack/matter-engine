@@ -7,6 +7,7 @@ layout(std430,binding=2) readonly buffer Projection {
     vec4 interval; // height_min, height_max, hit epsilon, enable subtractive-base interval proof
     vec4 boundsMin; vec4 boundsMax;
     uvec4 projectionLimits; // width, height, march steps, refinement steps
+    uvec4 projectionRegion; // full-grid x/y offset, region width/height
 };
 struct Pixel { vec4 normalHeight; uvec4 status; }; // status: coverage, error, steps, reserved
 layout(std430,binding=3) writeonly buffer Pixels { Pixel pixels[]; };
@@ -18,7 +19,9 @@ bool baseProvesMiss(vec3 a, vec3 b) {
     vec3 extent3 = max(max(abs(a), abs(b)), abs(vec3(op.row0.w, op.row1.w, op.row2.w)));
     float extent = max(max(extent3.x, max(extent3.y, extent3.z)),
                        max(max(op.shape.x, op.shape.y), max(op.shape.z, op.shape.w)));
-    float pad = 32.0 * 1.1920928955078125e-7 * (1.0 + extent);
+    // Match the CPU proof's scale-relative floating-point bound. An absolute
+    // one-metre floor hides clear misses for centimetre-scale source details.
+    float pad = 32.0 * 1.1920928955078125e-7 * max(extent, 1e-6);
     vec3 x = vec3(dot(op.row0, vec4(a,1)), dot(op.row1, vec4(a,1)), dot(op.row2, vec4(a,1)));
     vec3 y = vec3(dot(op.row0, vec4(b,1)), dot(op.row1, vec4(b,1)), dot(op.row2, vec4(b,1)));
     vec3 lo = min(x,y)-pad, hi = max(x,y)+pad;
@@ -28,9 +31,10 @@ bool baseProvesMiss(vec3 a, vec3 b) {
 }
 void main() {
     uint i=gl_GlobalInvocationID.x;
-    if(i>=projectionLimits.x*projectionLimits.y)return;
+    if(i>=projectionRegion.z*projectionRegion.w)return;
     Pixel pixel;pixel.normalHeight=vec4(0);pixel.status=uvec4(0);
-    vec2 uv=rect.xy+(vec2(i%projectionLimits.x,i/projectionLimits.x)+.5)*rect.zw;
+    uvec2 pixelXY=projectionRegion.xy+uvec2(i%projectionRegion.z,i/projectionRegion.z);
+    vec2 uv=rect.xy+(vec2(pixelXY)+.5)*rect.zw;
     vec3 base=frameOrigin.xyz+frameU.xyz*uv.x+frameV.xyz*uv.y;
     float low=interval.x,high=interval.y;
     bool intersects=true;

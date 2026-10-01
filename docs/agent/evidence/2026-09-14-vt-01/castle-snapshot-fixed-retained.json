@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "trace": "/mnt/d/tmp/matter-vt/20260914-01/castle-snapshots-fixed/vt.jsonl",
+  "selected_rows": 605,
+  "distinct_active_vt_frames": 605,
+  "dropped_rows": 0,
+  "owner_frame_resets": 0,
+  "changed_frame_pairs": {
+    "variants": 0,
+    "fills_total": 0,
+    "evictions_total": 0,
+    "invalidations_total": 0,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "enrich_total": 0,
+    "resident_sectors": 0,
+    "vertex_uploads": 0,
+    "cluster_uploads": 0,
+    "fills_stale_total": 0
+  },
+  "queue_empty_throughout": true,
+  "replacement": {
+    "available": true,
+    "dirty_empty_throughout": true,
+    "max_dirty_pages": 0,
+    "reserve_pages": 64
+  },
+  "queue_classes": {
+    "available": true,
+    "max_mandatory_queue": 0,
+    "max_detail_queue": 0,
+    "max_oldest_mandatory_age_frames": 0,
+    "max_oldest_detail_age_frames": 0
+  },
+  "settled_interval_counter_gate": true,
+  "required_frames": 600,
+  "cpu_scope": "VT hooks plus registration; initial runtime creation and source loading separate",
+  "gpu_scope": "VT pre-pass plus feedback readback; shader feedback writes and sampling remain inside gbuffer",
+  "cpu_vt_hooks_and_registration": {
+    "samples": 605,
+    "p50_ms": 0.896400000026077,
+    "p95_ms": 1.482400000094995,
+    "p99_ms": 1.8176000000949948,
+    "max_ms": 4.4927000001899895
+  },
+  "gpu_vt": {
+    "samples": 605,
+    "p50_ms": 0.015295999124646187,
+    "p95_ms": 0.023103998973965645,
+    "p99_ms": 0.16598398983478546,
+    "max_ms": 1.1782400608062744
+  },
+  "gpu_vt_available": true,
+  "full_vt_acceptance": false,
+  "limits": [
+    "Counter stability does not prove image continuity or page identity.",
+    "Request-to-visible latency is not measured by this schema.",
+    "GPU VT time must be supplied by dedicated timestamps; null is unavailable.",
+    "The marked camera/quality settings require the capture manifest and images."
+  ]
+}

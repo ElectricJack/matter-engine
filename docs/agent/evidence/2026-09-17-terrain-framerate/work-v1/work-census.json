@@ -1,0 +1,255 @@
+{
+  "encoding": "round(log2(count+1)/24*255)",
+  "scope": "Visible surviving fragments only; excludes occluded fragments and diagnostic timings.",
+  "encoded_tolerance": "Rounding half-bin plus one additional byte step for the display/readback path; counts are bounded estimates.",
+  "views": {
+    "valley": {
+      "pixels": 2919024,
+      "work_pixels": 21968,
+      "work_pixel_fraction": 0.007525803145160848,
+      "counters": {
+        "seed_triangles": {
+          "pixels": 21945,
+          "total_range": [
+            185772,
+            208835
+          ],
+          "active_mean_range": [
+            8.456482155863073,
+            9.50632738528769
+          ],
+          "p95_active_range": [
+            23.0,
+            27.0
+          ],
+          "max_range": [
+            48,
+            57
+          ]
+        },
+        "seed_nodes": {
+          "pixels": 20652,
+          "total_range": [
+            340553,
+            395231
+          ],
+          "active_mean_range": [
+            15.502230517115805,
+            17.991214493809178
+          ],
+          "p95_active_range": [
+            25.0,
+            29.0
+          ],
+          "max_range": [
+            42,
+            50
+          ]
+        },
+        "projections": {
+          "pixels": 21945,
+          "total_range": [
+            3391721,
+            4102998
+          ],
+          "active_mean_range": [
+            154.39370903131828,
+            186.7715768390386
+          ],
+          "p95_active_range": [
+            578.0,
+            702.0
+          ],
+          "max_range": [
+            3367,
+            4095
+          ]
+        },
+        "locate_hops": {
+          "pixels": 21945,
+          "total_range": [
+            681103,
+            805005
+          ],
+          "active_mean_range": [
+            31.00432447195921,
+            36.644437363437724
+          ],
+          "p95_active_range": [
+            106.0,
+            128.0
+          ],
+          "max_range": [
+            578,
+            702
+          ]
+        },
+        "height_samples": {
+          "pixels": 21945,
+          "total_range": [
+            394043,
+            456143
+          ],
+          "active_mean_range": [
+            17.937135833940278,
+            20.76397487254188
+          ],
+          "p95_active_range": [
+            25.0,
+            29.0
+          ],
+          "max_range": [
+            120,
+            146
+          ]
+        },
+        "filter_taps": {
+          "pixels": 10581,
+          "total_range": [
+            286011,
+            341695
+          ],
+          "active_mean_range": [
+            13.019437363437728,
+            15.554215222141297
+          ],
+          "p95_active_range": [
+            81.0,
+            98.0
+          ],
+          "max_range": [
+            475,
+            577
+          ]
+        }
+      },
+      "seed_tests_without_locate_pixels": 0,
+      "seed_tests_without_height_sample_pixels": 0,
+      "views_aligned_projection_vs_locate": true
+    },
+    "cliff": {
+      "pixels": 2919024,
+      "work_pixels": 856425,
+      "work_pixel_fraction": 0.2933942989163501,
+      "counters": {
+        "seed_triangles": {
+          "pixels": 853884,
+          "total_range": [
+            8498519,
+            9631700
+          ],
+          "active_mean_range": [
+            9.923249554835508,
+            11.24640219517179
+          ],
+          "p95_active_range": [
+            23.0,
+            27.0
+          ],
+          "max_range": [
+            58,
+            70
+          ]
+        },
+        "seed_nodes": {
+          "pixels": 710606,
+          "total_range": [
+            11567571,
+            13449074
+          ],
+          "active_mean_range": [
+            13.506811454593223,
+            15.703738214087632
+          ],
+          "p95_active_range": [
+            30.0,
+            36.0
+          ],
+          "max_range": [
+            67,
+            80
+          ]
+        },
+        "projections": {
+          "pixels": 853884,
+          "total_range": [
+            106915703,
+            129208460
+          ],
+          "active_mean_range": [
+            124.83953994803981,
+            150.86955658697494
+          ],
+          "p95_active_range": [
+            391.0,
+            474.0
+          ],
+          "max_range": [
+            5675,
+            6901
+          ]
+        },
+        "locate_hops": {
+          "pixels": 849922,
+          "total_range": [
+            23149407,
+            27320620
+          ],
+          "active_mean_range": [
+            27.03027935896313,
+            31.900773564526958
+          ],
+          "p95_active_range": [
+            76.0,
+            92.0
+          ],
+          "max_range": [
+            617,
+            750
+          ]
+        },
+        "height_samples": {
+          "pixels": 849922,
+          "total_range": [
+            19240648,
+            22572936
+          ],
+          "active_mean_range": [
+            22.466238141109844,
+            26.357166126631054
+          ],
+          "p95_active_range": [
+            30.0,
+            36.0
+          ],
+          "max_range": [
+            120,
+            146
+          ]
+        },
+        "filter_taps": {
+          "pixels": 53717,
+          "total_range": [
+            3914096,
+            4720229
+          ],
+          "active_mean_range": [
+            4.570272936918002,
+            5.511549756254197
+          ],
+          "p95_active_range": [
+            26.0,
+            31.0
+          ],
+          "max_range": [
+            475,
+            577
+          ]
+        }
+      },
+      "seed_tests_without_locate_pixels": 3962,
+      "seed_tests_without_height_sample_pixels": 3962,
+      "views_aligned_projection_vs_locate": true
+    }
+  }
+}

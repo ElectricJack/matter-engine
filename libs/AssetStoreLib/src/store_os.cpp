@@ -7,7 +7,7 @@
  *
  * Conventions both halves share:
  *   - Failure is false / null / 0, with a description left in the
- *     process-global g_err that last_error() returns.
+ *     thread-local g_err that last_error() returns.
  *   - File and Lock are heap-allocated here and released by close() / unlock();
  *     passing null to either is a no-op.
  *   - read_at() and write_at() loop until the whole span has moved. A short or
@@ -53,11 +53,9 @@ struct Lock {
     HANDLE h = INVALID_HANDLE_VALUE;
 };
 
-/* One error string for the whole process, written by set_err() on the failing
- * path and read back by last_error(). Not thread-local: two threads failing at
- * once race, and the last writer wins, so callers must consume it immediately
- * after the call that failed. */
-static std::string g_err;
+/* Each reader worker retains its own failure detail; concurrent failures
+ * must not race on a shared std::string. */
+static thread_local std::string g_err;
 
 std::string last_error() { return g_err; }
 
@@ -263,6 +261,13 @@ Lock* lock_exclusive(const std::string& path, bool block) {
     }
 }
 
+Lock* lock_shared(const std::string& path) {
+    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) { set_err("lock_shared"); return nullptr; }
+    auto* lease = new Lock(); lease->h = h; return lease;
+}
+
 void unlock(Lock* l) {
     if (!l) return;
     if (l->h != INVALID_HANDLE_VALUE) CloseHandle(l->h);
@@ -282,7 +287,7 @@ struct Lock {
     std::string path;
 };
 
-static std::string g_err;
+static thread_local std::string g_err;
 
 std::string last_error() { return g_err; }
 
@@ -471,6 +476,13 @@ Lock* lock_exclusive(const std::string& path, bool block) {
     l->fd = fd;
     l->path = path;
     return l;
+}
+
+Lock* lock_shared(const std::string& path) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CREAT, 0666);
+    if (fd < 0) { set_err("lock_shared open"); return nullptr; }
+    if (flock(fd, LOCK_SH | LOCK_NB) != 0) { set_err("lock_shared"); ::close(fd); return nullptr; }
+    auto* lease = new Lock(); lease->fd = fd; return lease;
 }
 
 void unlock(Lock* l) {

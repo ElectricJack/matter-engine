@@ -1,0 +1,28 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 31.642860095002106,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,brick-shape-baseline-v2-middle,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=114/25600,pinned=1,queue=0,fills=114,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-baseline-v2-close,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=163/25600,pinned=1,queue=0,fills=163,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-baseline-v2-far,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=183/25600,pinned=1,queue=0,fills=183,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-baseline-v2-grazing,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-baseline-v2-rt,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-baseline-v2-albedo,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-baseline-v2-normals,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-baseline-v2-wireframe,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=204/25600,pinned=1,queue=0,fills=204,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "brick-shape-baseline-v2-middle.png": "6aca598d766acf3efdf395b3df4f65106ea0ae1b5c1463a53a09e7e1b1bdcb09",
+    "brick-shape-baseline-v2-close.png": "aec4a56f8a8705cf0ddbe28ad2eeb41c1332c4c7509c7ccd19e3ff595fe3bf8f",
+    "brick-shape-baseline-v2-far.png": "1df9920195b50cae06c14968888ea0f74ee553bd8fb2db1b7b0d13e18c35c745",
+    "brick-shape-baseline-v2-grazing.png": "bf60de90f4c7857b45c99f472e69bd79c21c629069cf3315b6b5471988f18395",
+    "brick-shape-baseline-v2-rt.png": "ae6b4744538b1f2647af0b488a0a578aa454f22cee08910c1c58df208e4c210e",
+    "brick-shape-baseline-v2-albedo.png": "6cffd5a0d609f602736cd214fdcf33c4af71f5517552a78c311cba37ce2d373c",
+    "brick-shape-baseline-v2-normals.png": "5853d701276f7c9b94f98bf2e687d99f2f336a17db254fd415dd573fbeb769a0",
+    "brick-shape-baseline-v2-wireframe.png": "a5be66c2ca31ef79feed07818f88a387e99cd6fb0e4847783b499db62a3511eb"
+  },
+  "passed": true
+}

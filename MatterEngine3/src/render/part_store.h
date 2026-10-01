@@ -19,7 +19,8 @@
 // engine's one selection rule lives in
 // MatterEngine3/src/render/lod_distance.h.
 //
-// Threading. PartStore holds no lock of its own; the split is by method.
+// Threading. Prepared-cache initialization and I/O synchronize internally;
+// resident part state is confined by method.
 //   - stage_load(), stage_from_bake(), and the private read_coherent_snapshot()
 //     / snapshot_from_baked() / stage_from_snapshot() touch NO shared state and
 //     are meant to run on a streaming worker while the app thread renders. This
@@ -55,6 +56,8 @@
 #include "animation/animation_asset_store.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include "part_render_policy.h"
+#include "shared_surface_asset.h"
+#include "geometry/geometry_asset.h"
 
 #include <cstdint>
 #include <functional>
@@ -120,6 +123,8 @@ struct BakedGeometry {
 } // namespace script_host
 
 namespace viewer {
+namespace prepared_sector { class Cache; }
+namespace prepared_identity { class Cache; }
 
 // A single drawable node in a part's precomputed expansion table.
 // Produced by build_expansion(); consumed by the GPU culler (Task 5+).
@@ -180,6 +185,21 @@ struct SurfaceClassCache {
     std::vector<std::vector<uint8_t>>  weights;
     std::vector<std::vector<uint16_t>> lanes;
 
+    // Only use after the caller validates the full prepared-sector identity
+    // (source, world field, placement and policy), not for arbitrary instances.
+    template<class Meshes>
+    bool complete_for(uint64_t hash, uint32_t columns, uint32_t fields,
+                      const Meshes& meshes) const {
+        if (!columns || tape_hash != hash || material_count != columns ||
+            lane_count != fields || weights.size() != meshes.size() || lanes.size() != meshes.size()) return false;
+        for (size_t i=0; i<meshes.size(); ++i) {
+            if (meshes[i].vertex_count < 0) return false;
+            const auto n=static_cast<size_t>(meshes[i].vertex_count);
+            if (weights[i].size()!=n*columns || lanes[i].size()!=n*fields) return false;
+        }
+        return true;
+    }
+
     bool valid_for(size_t rung, uint64_t hash, size_t vertex_count) const {
         return tape_hash == hash && material_count > 0 &&
                rung < weights.size() &&
@@ -212,7 +232,10 @@ struct SurfaceClassCache {
 // A part with an empty lod_blas is a pure assembler (it only places children).
 // That is a normal state, not a failure.
 struct LoadedPart {
+    std::shared_ptr<const geometry::CachedAsset> geometry_pages;
+    bool geometry_source_vt = false;
     matter::PartRenderPolicy render_policy;
+    std::shared_ptr<const SharedSurfaceAssembly> shared_surface;
     std::vector<BLASHandle> lod_blas;       // lod_blas[i] -> BLAS for LOD level i
     // Half the AABB diagonal, in part-local metres. The projected-size input
     // for LOD and the value the SectorResolver's part LOD table carries.
@@ -339,6 +362,7 @@ struct WarpAnchor {
 class PartStore {
 public:
     explicit PartStore(std::string cache_root);
+    ~PartStore();
 
     // True if the part is loaded in memory OR a .part exists on disk. Drives reconcile.
     // A miss in the resident map falls through to a ::stat of the scratch dir
@@ -369,6 +393,13 @@ public:
         double tail_ms   = 0.0;  // raster mesh data + cluster/chart tables
         double warp_ms   = 0.0;  // warp_field solve + per-rung evaluate
     };
+
+    uint64_t prepared_identity_lookup(uint64_t request);
+    bool prepared_identity_remember(uint64_t request, uint64_t resolved, std::string& error);
+    StagedPart load_prepared_sector(uint64_t hash, const std::string& policy, std::string& error);
+    bool save_prepared_sector(StagedPart& staged, const std::string& policy, std::string& error);
+    // Reports the cache owner, whose payload banks remain lazy until first I/O.
+    bool prepared_sector_cache_active() const;
 
     // Decode `part_hash` and bake its ladder WITHOUT touching any shared state.
     // Safe to call from a streaming worker while the app thread renders.
@@ -404,7 +435,8 @@ public:
 
     StagedPart stage_load(uint64_t part_hash, size_t first_rung = 0,
                           bool terrain_sector = false,
-                          const WarpAnchor& warp = WarpAnchor{});
+                          const WarpAnchor& warp = WarpAnchor{},
+                          float terrain_texels_per_meter = 16.0f);
 
     // Same result as stage_load(part_hash), assembled from the geometry the
     // bake that produced `part_hash` still holds in memory instead of from the
@@ -430,7 +462,8 @@ public:
                                const script_host::BakedGeometry& baked,
                                size_t first_rung = 0,
                                bool terrain_sector = false,
-                               const WarpAnchor& warp = WarpAnchor{});
+                               const WarpAnchor& warp = WarpAnchor{},
+                               float terrain_texels_per_meter = 16.0f);
 
     // Publish a staged part: adopt its BLAS entries into the shared manager,
     // remap its handles, insert it, and build its expansion. Bounded --
@@ -470,7 +503,19 @@ public:
     // give a part's registrations back.
     BLASManager& blas() { return blas_; }
     const std::string& cache_root() const { return cache_root_; }
+    // Configure before staging begins. Opt-in while native acceptance expands.
+    void set_geometry_pages_enabled(bool enabled);
+    bool geometry_pages_enabled() const { return geometry_pages_enabled_; }
+    asset_store::PageCacheStats geometry_root_stats() const { return geometry_roots_.stats(); }
+    void set_geometry_page_filter(std::set<uint64_t> hashes) {
+        geometry_filter_active_ = true; geometry_filter_ = std::move(hashes);
+    }
     size_t loaded_count() const { return loaded_.size(); }
+    std::vector<std::pair<uint64_t,std::shared_ptr<const SharedSurfaceAssembly>>> shared_surface_catalog() const {
+        std::vector<std::pair<uint64_t,std::shared_ptr<const SharedSurfaceAssembly>>> result;
+        for(const auto& [hash,part]:loaded_) if(part.shared_surface) result.push_back({hash,part.shared_surface});
+        return result;
+    }
     const matter::animation::AnimationAssetStore& animation_assets() const { return animation_assets_; }
 
     // Materialize each serialized rigid segment as an immutable complete Part.
@@ -531,7 +576,8 @@ private:
     // Load a bake-time flattened artifact (<hash>.flat.part) if present: uses its
     // stored LOD ladder directly (no re-bake) and leaves children empty. Returns
     // false when absent/unusable so get_or_load falls back to the compositional path.
-    bool load_flat(uint64_t part_hash, const std::string& artifact_root, LoadedPart& lp);
+    bool load_flat(uint64_t part_hash, const std::string& artifact_root,
+                   const matter::PartRenderPolicy& policy, LoadedPart& lp);
 
     // One coherent generation of a linked artifact, decoded into local storage.
     // Exactly the locals the coherent path of get_or_load used to declare inline.
@@ -574,16 +620,31 @@ private:
                                    const matter::animation::AnimAsset* animation_asset,
                                    size_t first_rung = 0,
                                    bool terrain_sector = false,
-                                   const WarpAnchor& warp = WarpAnchor{});
+                                   const WarpAnchor& warp = WarpAnchor{},
+                                   float terrain_texels_per_meter = 16.0f);
 
     // cache_root_ and scratch_dir_ are treated as immutable once configured —
     // the off-thread staging path reads them unlocked. loaded_ is a std::map on
     // purpose: every LoadedPart* this class hands out must survive later
     // insertions, and only erasing that key invalidates one.
+    StagedPart stage_geometry_cached(uint64_t part_hash);
+    bool flush_geometry_writer();
+    bool geometry_pages_enabled_ = false;
+    bool geometry_filter_active_ = false;
+    std::set<uint64_t> geometry_filter_;
+    bool geometry_pages_for(uint64_t hash) const {
+        return geometry_pages_enabled_ && (!geometry_filter_active_ || geometry_filter_.count(hash));
+    }
     std::string                       cache_root_;
+    geometry::RootCache               geometry_roots_;
+    prepared_sector::Cache& prepared_sectors();
+    mutable std::mutex               prepared_sectors_mutex_;
+    std::shared_ptr<prepared_sector::Cache> prepared_sectors_;
+    std::shared_ptr<prepared_identity::Cache> prepared_identities_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir
     BLASManager                       blas_;
     std::map<uint64_t, LoadedPart>    loaded_;
+    std::map<uint64_t,std::shared_ptr<const SharedSurfaceMesh>> shared_surface_meshes_;
     matter::animation::AnimationAssetStore animation_assets_;
     struct RigidSubpartSet {
         std::vector<uint64_t> hashes;

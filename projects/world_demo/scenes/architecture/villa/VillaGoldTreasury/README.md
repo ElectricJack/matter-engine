@@ -1,0 +1,1 @@
+Quilt Trader gold treasury. Native Matter ECS physics, seed 9162026. Geometry and simulation use 10x scale for thin coin contact accuracy; web export scales to metres. Two bullion stacks, six coin stacks and scattered drops settle on a static floor around the vessel. Capture final world transforms after play, preserve receipts, then export the three root meshes.

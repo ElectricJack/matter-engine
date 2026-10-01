@@ -1,0 +1,8 @@
+error: line 0: ID overflow. Try running compact-ids.
+error: line 0: ID overflow. Try running compact-ids.
+error: line 0: ID overflow. Try running compact-ids.
+error: line 0: ID overflow. Try running compact-ids.
+error: line 0: ID overflow. Try running compact-ids.
+error: line 0: ID overflow. Try running compact-ids.
+error: line 0: ID overflow. Try running compact-ids.
+error: line 0: ID overflow. Try running compact-ids.

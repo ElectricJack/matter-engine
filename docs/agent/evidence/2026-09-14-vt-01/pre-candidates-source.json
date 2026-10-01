@@ -1,0 +1,13 @@
+{
+  "previous_goal_turn": "progress: native density metrics and tested diagnostics completed; feedback profiling identifies V5 stages",
+  "stage": "before candidate-page publication changes",
+  "sha256": {
+    "MatterEngine3/src/render/vt_residency.cpp": "3a002cf1245f2ef53938d443c44b1488d320ff9696369041d57d95982b2c7db7",
+    "MatterEngine3/src/render/vt_residency.h": "a38851ec7e846c76fdaf0bfa56d9c4dad7025f45e5bf3d0ba56b6b4b1e37851f",
+    "MatterEngine3/src/render/vt_types.h": "7f86741b330bf02526be7507cd4fd0288787b55fe423ce0522905a9cc382a433",
+    "MatterEngine3/tests/vt_queue_tests.h": "91fb59915cb88a402da400498a8facb646184b4995bf90827d3e470b8edafbfb",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "7c6fb67b5f8d79831334363de7b9c4168a3c252750a75d04895234779cb1695e",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "a93f85e48355969a9e59f56973ebf81ec16dbf96800006000c777f28c6dd63f9",
+    "MatterEngine3/src/render/vt_compositor.cpp": "9c222595364432105a164d5ad97cba69ac8242a51e53105aaa94fb0c85565050"
+  }
+}

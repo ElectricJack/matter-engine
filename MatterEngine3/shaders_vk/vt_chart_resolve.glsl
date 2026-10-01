@@ -1,6 +1,12 @@
 #ifndef VT_CHART_RESOLVE_GLSL
 #define VT_CHART_RESOLVE_GLSL
 
+// Both stream layouts carry the same geometry prefix. Material evaluation
+// may use separate surface rows without changing how a page texel resolves.
+#ifndef VT_RESOLVE_TRIANGLE_TYPE
+#define VT_RESOLVE_TRIANGLE_TYPE GpuTri
+#endif
+
 // Chart-space virtual texturing — "which surface point owns this page texel?".
 //
 // The tier-1 compositor (vt_composite.comp) and the tier-2 hemisphere
@@ -66,9 +72,61 @@ float closest_tri_2d(vec2 q, vec2 a, vec2 b, vec2 c, out vec3 bary) {
     return best_d2;
 }
 
+// Exact nearest-point pruning in chart plane space. The table stores a byte
+// offset and count per chart; nodes retain original triangle order.
+struct VtResolveNode { vec4 bounds; uvec4 range; };
+layout(buffer_reference,std430,buffer_reference_align=16)
+readonly buffer VtResolveTable { uvec4 values[]; };
+layout(buffer_reference,std430,buffer_reference_align=16)
+readonly buffer VtResolveNodes { VtResolveNode values[]; };
+
+bool vt_resolve_triangle(vec2 q, uint index, inout float best_d2,
+                         inout uint best_tri, inout vec3 best_bary) {
+    VT_RESOLVE_TRIANGLE_TYPE tr = tris[index];
+    vec2 a=vec2(tr.p0.w,tr.n0.w), b=vec2(tr.p1.w,tr.n1.w), c=vec2(tr.p2.w,tr.n2.w);
+    vec2 lo=min(a,min(b,c)), hi=max(a,max(b,c));
+    vec2 dv=max(max(lo-q,q-hi),vec2(0.0));
+    if (dot(dv,dv)>=best_d2) return false;
+    vec3 bary;
+    float d2=closest_tri_2d(q,a,b,c,bary);
+    if (d2<best_d2) {
+        best_d2=d2;best_tri=index;best_bary=bary;
+        return d2<=0.0;
+    }
+    return false;
+}
+
+bool vt_resolve_chart(vec2 q, uint chart_id, GpuChart chart, uvec2 address,
+                      inout float best_d2, inout uint best_tri, inout vec3 best_bary) {
+    uvec4 tree=uvec4(0);
+    if (any(notEqual(address,uvec2(0)))) tree=VtResolveTable(address).values[chart_id];
+    if (tree.y>0u) {
+        uvec2 pointer=address;
+        pointer.x+=tree.x;pointer.y+=uint(pointer.x<address.x);
+        VtResolveNodes nodes=VtResolveNodes(pointer);
+        uint cursor=0u;
+        while (cursor<tree.y) {
+            VtResolveNode node=nodes.values[cursor];
+            // Reject malformed escape links rather than looping or reading OOB.
+            if (node.range.z<=cursor || node.range.z>tree.y) return false;
+            vec2 dv=max(max(node.bounds.xy-q,q-node.bounds.zw),vec2(0.0));
+            if (dot(dv,dv)>=best_d2) {cursor=node.range.z;continue;}
+            if (node.range.y==0u) {++cursor;continue;}
+            for (uint i=0u;i<node.range.y;++i)
+                if (vt_resolve_triangle(q,node.range.x+i,best_d2,best_tri,best_bary)) return true;
+            cursor=node.range.z;
+        }
+        return false;
+    }
+    for (uint i=0u;i<chart.tri_range.y;++i)
+        if (vt_resolve_triangle(q,chart.tri_range.x+i,best_d2,best_tri,best_bary)) return true;
+    return false;
+}
+
 // The resolved surface point behind one physical page texel.
 struct VtSurfacePoint {
     bool  found;
+    bool  inside;        // original triangle coverage, excluding dilation
     uint  chart;         // index into charts[]
     uint  tri;           // index into tris[]
     vec3  bary;
@@ -86,9 +144,10 @@ struct VtSurfacePoint {
 // Texels outside every triangle (gutters, borders, coarse-mip inter-chart
 // space) take the globally nearest triangle point — that IS the dilation fill.
 VtSurfacePoint vt_resolve_page_texel(uvec2 store_texel, uvec2 page, uint mip,
-                                     uint cand_offset, uint cand_count) {
+                                     uint cand_offset, uint cand_count, uvec2 resolve_bvh) {
     VtSurfacePoint sp;
     sp.found = false;
+    sp.inside = false;
     sp.chart = 0u;
     sp.tri = 0u;
     sp.bary = vec3(1.0, 0.0, 0.0);
@@ -117,31 +176,14 @@ VtSurfacePoint vt_resolve_page_texel(uvec2 store_texel, uvec2 page, uint mip,
         //   texel = rect + gutter + (dot(p, T/B) - dot(origin, T/B)) * tpm
         vec2 q = (fin - vec2(c.rect.xy) - float(VT_CHART_GUTTER)) / tpm
                + vec2(c.tangent_ou.w, c.bitangent_ov.w);
-        uint first = c.tri_range.x, count = c.tri_range.y;
-        for (uint ti = 0u; ti < count; ++ti) {
-            GpuTri tr = tris[first + ti];
-            vec2 a = vec2(tr.p0.w, tr.n0.w);
-            vec2 b = vec2(tr.p1.w, tr.n1.w);
-            vec2 cc = vec2(tr.p2.w, tr.n2.w);
-            // Cheap reject: plane-space bbox distance vs current best.
-            vec2 lo = min(a, min(b, cc)), hi = max(a, max(b, cc));
-            vec2 dv = max(max(lo - q, q - hi), vec2(0.0));
-            if (dot(dv, dv) >= best_d2) continue;
-            vec3 bary;
-            float d2 = closest_tri_2d(q, a, b, cc, bary);
-            if (d2 < best_d2) {
-                best_d2 = d2;
-                best_chart = chart_idx;
-                best_tri = first + ti;
-                best_bary = bary;
-                if (d2 <= 0.0) { inside = true; break; }
-            }
-        }
+        float before=best_d2;
+        inside=vt_resolve_chart(q,chart_idx,c,resolve_bvh,best_d2,best_tri,best_bary);
+        if (best_d2<before) best_chart=chart_idx;
     }
     if (best_chart == 0xFFFFFFFFu) return sp;
 
     GpuChart chart = charts[best_chart];
-    GpuTri tri = tris[best_tri];
+    VT_RESOLVE_TRIANGLE_TYPE tri = tris[best_tri];
     vec3 pos = best_bary.x * tri.p0.xyz + best_bary.y * tri.p1.xyz
              + best_bary.z * tri.p2.xyz;
     vec3 nrm = best_bary.x * tri.n0.xyz + best_bary.y * tri.n1.xyz
@@ -150,6 +192,12 @@ VtSurfacePoint vt_resolve_page_texel(uvec2 store_texel, uvec2 page, uint mip,
     nrm = (nlen > 1e-6) ? nrm / nlen : vec3(0.0, 1.0, 0.0);
 
     sp.found = true;
+    // Closest-point arithmetic may leave tiny nonzero distances on a shared
+    // triangle edge (notably with non-power-of-two chart density). Treat a
+    // sub-1/1024-texel distance as coverage; do not manufacture padded seams.
+    // This only classifies coverage and never changes the chosen point/chart.
+    float coverage_epsilon = (scale / chart.origin_tpm.w) / 1024.0;
+    sp.inside = inside || best_d2 <= coverage_epsilon * coverage_epsilon;
     sp.chart = best_chart;
     sp.tri = best_tri;
     sp.bary = best_bary;

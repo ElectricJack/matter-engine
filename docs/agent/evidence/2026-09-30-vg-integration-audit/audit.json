@@ -1,0 +1,480 @@
+{
+  "task": "quick-meadow-68.1",
+  "snapshot_date": "2026-09-30",
+  "heads": {
+    "main": "8aab2e54bbbffbb0f6044ec3bda36974e30b864b",
+    "vg": "6c70efe2e64dee7ff893ac892c38c2c994f03837",
+    "merge_base": "d753087d88417ab5b77cf77369c1e38e22cee6b9",
+    "stale_local_vg": "d006f20e91e4193d9b6e5a3dd2a165e2c3171143",
+    "final_implementation": "46cb226692e96e0edf66beee440a6dd4ab51fb9c"
+  },
+  "unique_commits": {
+    "main": 11,
+    "vg": 107,
+    "after_stale": 92
+  },
+  "branch_delta": {
+    "from_merge_base": "2567 files changed, 283503 insertions(+), 4308 deletions(-)",
+    "between_heads": "2607 files changed, 283499 insertions(+), 14282 deletions(-)",
+    "files_by_top_directory": {
+      ".claude": 1,
+      ".gitignore": 1,
+      "CLAUDE.md": 1,
+      "MatterEditor": 19,
+      "MatterEngine3": 304,
+      "ROADMAP.md": 1,
+      "cmake": 9,
+      "docs": 1804,
+      "libs": 33,
+      "projects": 376,
+      "tools": 18
+    },
+    "commits": [
+      "4795606c497434eb975530b8aae3a3278e520a40 libs: page cache, fixed banks, blob-store hardening, MSL/charting/profile updates",
+      "912ad0fb350efb3c8df3ff129c3b5ee2b457826b world_demo: reorganize scenes and objects into categorized folders with project_layout",
+      "4228d4c9d76e23ed6437160a3553e17101b4df1f world_demo: StreamMountain environment, conifer, clay brick, villa content and Node tests",
+      "c738c460b801d0ec67eef0c1609a671e458143e2 engine: shared surface DSL (.js.inc), script-host surface evaluation, world-definition fields",
+      "e9421a93fa05139879e994cabbbd817f13b24fa7 engine: sparse voxel forest bake, shared hierarchy, surface proxies and Vulkan paths",
+      "8cc8661fcaa68ce163261586b5309486563672fc engine: layered surface texturing - compositor preparation, face materials, finite stamps, periodic domains",
+      "44fd458bf7aa9db2e1938451460c4a19744b6588 engine: VT residency rewrite - snapshots, scratch publication, owner invalidation, GPU feedback, encoded cache, export",
+      "c1582748b60b3b27de436f567bb6f6c784af8e22 engine+editor: static asset export (OBJ/MTL/GLB/PNG maps) and asset.export command",
+      "adc37c2d9881bafbd18a25400cf80d7f4fdf23ce engine: virtualized geometry hierarchy, page residency, BLAS disk cache, prepared caches, streaming priority",
+      "4072dc776589b34f4e9ee822e45b656a8772bd5f renderer/facade/editor: integrate sparse voxels, VT feedback, geometry cut, BLAS cache, tileset banking",
+      "0b531a86b1f09e767df1c5562ce2f2e8c4951f5d build: register new sources, tests and shaders in CMake and Make; ignore pdb and fault logs",
+      "5a49788d0a1b813aec22c8522fc5e032e29ea7c9 docs: plans, specs, findings, agent docs and roadmap for the VG+VT push",
+      "85cc6fb0519ba466a3b70e0da7f11d3b340222cf docs: text-only evidence packs for the 2026-09-14..19 runs",
+      "a05405f8d22adf7a3a567f32f12eb885db9578ab docs: VG+VT prioritized work queue and performance-architecture findings",
+      "d006f20e91e4193d9b6e5a3dd2a165e2c3171143 docs: VG+VT stabilization and measurement implementation plan",
+      "5317044fef4a3149512c3fc203240bd44112700d docs: record vg-vt branch baseline before Tier 0 fixes",
+      "045f5555f38e452f92890ed73cc7c09c860ae1c8 fix(world_demo): keep shared-lib Villa and Kreuzenstein parts in project tier",
+      "07828b7f4f5c27d65b734d68f7dabf6bf4c94bff test(eval_world): register StreamMountain geometry rock material",
+      "60a5d166ba4b7208a36eeacb0b10d09050805659 Merge remote-tracking branch 'origin/aq/smart-torrent.25' into vg-vt-improvements",
+      "e3b181c8138475a76fce67189aba9845ce00af4e vt: a rejected compositor input push no longer latches the page-fill gate",
+      "6b6bf782e47e632c3c4162d5a8f1da52dba84992 layout: report duplicate scene/object names instead of throwing out of discovery",
+      "40444823825f415f3a5a71d9d643593462bce8d5 docs(world_demo): list the architecture/villa scene and shared-object folders",
+      "f2048e3c46cb82dd23ded4b8d85ce7517016480b async_bake: pop_wait resynchronises on mirror drift and re-checks its deadline per skip",
+      "c3790ff4b759ec2f3c442515fdd9a82fb2dcdc51 Merge commit '40444823825f415f3a5a71d9d643593462bce8d5' into HEAD",
+      "4456f2e17d2cd8116d571a61cd040376ecdf1e61 fix(provider): out-of-line ~LocalProvider to complete part_surface::SourceCache",
+      "5ed0dda4d61a2a4c9454f3357240a25c92b2e38e async_bake: honor cancellation budgets before draining the queue",
+      "cef73dac7a9f0f0583c9be75f3e703453c870681 Merge commit '4456f2e17d2cd8116d571a61cd040376ecdf1e61' into HEAD",
+      "3afd4f4e84cc5d5040a9d2c7fd55b16af7f28d0f Merge commit '5ed0dda4d61a2a4c9454f3357240a25c92b2e38e' into HEAD",
+      "dfa1d57c1d53742486f111da1aba1caa45a500f0 vt: never index queued_keys_ with at() after a conditional queue_page",
+      "20f52567c9f960f21271cd36732d25b6884521ce vt: retire every per-slot side table when a tail registration recycles a live page",
+      "a49c595f1261c3d80ac2ac2ca8ab61343bc10b35 vt: bind a shared zero buffer for empty preparation streams instead of a 0-byte VkBuffer",
+      "f0c65a4dc939cbab5d1b8b29fdc5a37ad9bb3dba part_store: restore the full LOD ladder when terrain geometry pages fail to compile",
+      "481e5a295ebfb33c846f09d250ec5e90481a28db geometry: worker-lane exceptions degrade the asset instead of terminating or failing the frame",
+      "5ecfe43a0441caa5da96c893e06f4998354a1357 geometry: recover pending worker state after a lost handoff",
+      "17e5b8b9140d4f4e1e98a6ef1b34d731dd072de2 geometry: re-requested failed pages recover, and republished pages retire their old renderer part",
+      "4a6c556b4026ed733f1182ec277121bfc2843b5f sparse voxel: readback_timings skips shadow-only snapshots that own a 2-query pool",
+      "1379801b1717861747fb3dacbebbda98a6d82f48 part_surface: refuse placements whose source index is out of range; document bind() aliasing",
+      "8a8ce619121b49541ed2cce42c32ac76dbbc84a5 make: track vt_parallax/vt_surface_walk/vt_seed_walk includes for the shaders that use them",
+      "b2f9cf0747967b2c6724361c998558370b68369d make: track water_surface.glsl and vt_noise.glsl for the stages that include them",
+      "e7b7902c4e88cb32c9a04d6bdf5d62f6797941b4 world_demo: terrain-only test follows the geometry-site contract; castle profile finds nested objects",
+      "528636f6da203f0996e24168a92c6bd94bd407da profile: name the five per-frame instance traversals and count instances scanned",
+      "78a5a994de66e8331ad0ae40d53696b263dd8e14 perf: p99/max per GPU zone and a frame-attribution table tool",
+      "a67034abde105df147134862c506613c635e2c75 findings: matched StreamMountain frame attribution (POM variants, CPU traversals, cold vs warm load)",
+      "18d8a4b51b126016b4e789d4e21672463a92e0c7 fix(geometry): bound terrain static fallback during paging",
+      "03536326157d4cb1e5f74e37e2ce2c343466a147 geometry: persistent cook writer with batched index commits; assets return from memory before commit",
+      "de26773d58fb642b5448ad343593585c81b19103 Merge commit '03536326157d4cb1e5f74e37e2ce2c343466a147' into HEAD",
+      "ba5f8d82b79ecdd69bff9b5bdc302bcad032f14e provider: install authored LOD plans once per hash instead of re-evaluating on every cached visit",
+      "d3b05d0e59d969601c72b1e88871ddda999c6375 test(bake): account for resolve-cache trace spans",
+      "bbbfb7693d8ba3f0c2ac1c29d30629466bf0ad34 part_store: allocate the prepared-sector bank on first use, not in every constructor",
+      "44de7f343eaaa3802da6ccbd5f8aec6f3cdfa9bf docs: propose bounded DASHR surface rendering experiment",
+      "ac007fcf90139785f12ffe5e3964689e92cc1ba0 Merge commit '44de7f343eaaa3802da6ccbd5f8aec6f3cdfa9bf' into HEAD",
+      "8431164b2299d8ef430dc61b65b6abd8af10f201 Merge commit 'bbbfb7693d8ba3f0c2ac1c29d30629466bf0ad34' into HEAD",
+      "35186eaa42007beedc0b585615ff08cc1dbd3606 renderer: skip the 432-sampler RT descriptor rewrite when the tileset bank is unchanged",
+      "732269b172585bbf019172204939ebc9a64cbf6e renderer: skip unchanged water field descriptor writes and profile descriptor updates",
+      "efeae95a4f503bf20db2b51cf5500f23f1c9c36e ctest: run the GPU suites and smoke modes that were built but never executed",
+      "33aa006c4028359b2949634f46d9c80a61d5b97f Merge commit 'efeae95a4f503bf20db2b51cf5500f23f1c9c36e' into HEAD",
+      "ebf84d74902f0baea00299802f85f1450d46c560 fix: give Vulkan smoke modes measured timeout headroom",
+      "72b32154076f61d33029c8a1c1a70386a03f9871 Merge vg-vt-improvements and reconcile Vulkan QA guidance",
+      "6fb8e3906b09cd02cd39217e858deaf07be946b9 docs: propose AI object script authoring and refinement pipeline",
+      "0e65edb15de9aa5e295dc6e335f46fd4d8dc655b docs: re-rank VG+VT Tier 1 from the StreamMountain attribution session",
+      "90c3688a5879037c49ac2840e48c20546bdd7146 docs: propose AI object-script authoring and refinement pipeline",
+      "a778af94fd15c5812620889e5ebf606cc72cd430 Merge commit '6fb8e3906b09cd02cd39217e858deaf07be946b9' into HEAD",
+      "1c102d5541ba9f86c1debb49f455da6cbbc42fd6 Merge commit '90c3688a5879037c49ac2840e48c20546bdd7146' into HEAD",
+      "7efe7d2e9a9547b2e808633eca608c4452f36ef9 Merge commit '0e65edb15de9aa5e295dc6e335f46fd4d8dc655b' into HEAD",
+      "352821489ba4a34645b018e5cd4217cacfd1b976 docs: synthesize photoreal object-script pipeline proposals",
+      "3135984530ffa84792341490cca08b480b86897d docs: revise DASHR proposal into a render-speed POM upgrade (review rev-prime-grove r2)",
+      "68ec80306fad3a56e15f2e6e3edf4be173e219a9 Merge commit '3135984530ffa84792341490cca08b480b86897d' into HEAD",
+      "3bafe0495456602f1472f468a50b28272d984b97 render: POM off by default; repeat-run hitch summary for StreamMountain captures",
+      "c9f0a4566428b6f9a3069b5caee4f5395441d2b1 docs: StreamMountain POM-off baseline for the clear-ridge pass",
+      "1b54a566fa60ca7c9e1bd48b2581c7351e7ea0e7 Profile POM-off G-buffer cost with diagnostic shader modes",
+      "5d597bcce98af46f9354b9f4256bbea71843c377 Stream terrain geometry roots through bounded runtime bank",
+      "0163b2eaa8bfd234878329c843a926a369cf3324 Record terrain root paging status in work queue",
+      "01af9ec14ee001814eccf1316938df86dc7fc1bf Validate referenced geometry bounds and record root paging audit",
+      "419f98b0179f1c19beb43921df7c5d075aa22ef1 Allow bounded geometry GPU budgets in terrain audits",
+      "38394acadd7925d2a2000001f22d46adbc79e17d Add calibrated evaluation captures and visible-detail readiness",
+      "f4fdbc71033a1330fd4dc0095ada4720733cb64f feat(object-eval): capture and score frozen rock candidates",
+      "fc124643fd0772d22efcc5f5afc4852454a11800 Record rebuilt terrain paging audit and cache limits",
+      "635d38b4f5fc322f88483d22ba7e499e8c96a537 Merge commit 'fc124643fd0772d22efcc5f5afc4852454a11800' into HEAD",
+      "0cb883ee2cafc245a016a3d38cd400d7a6947da8 Cap paged VT and geometry memory with consumer accounting",
+      "89ec5665819869ef68c212e593d1e7f88f11037f Record StreamMountain VRAM cap measurements and cache progress",
+      "a1aa05b8d2edd47aaa50214e555d758e03a9a77d Record warm geometry cache audit",
+      "1221750883c90f05391f82008808ee510e87eba5 Record completed StreamMountain cache preparation",
+      "d53508829aaa8c707f015d0cc54305453c890e6c Bound geometry paging work under VRAM pressure",
+      "8a7e72f2b830bd36c022d4d0217adcfa6fa6bfd2 Document bounded StreamMountain VRAM acceptance",
+      "c3cdbcf6bdfc9c20b694b26cf8cf4725d50419b1 Avoid full static rewrites during scene growth",
+      "71bf972ff2354ce66312dfcbaf8da806e4e94f4a Reduce static growth allocation and staging stalls",
+      "5c4f2d46fb6fa22e7e590dea1eb138fa0c5cc9bb Bound static triangle uploads across frames",
+      "df8b673b9e61a422b973270a93423ab7a20778f2 Record bounded static upload acceptance and remaining stalls",
+      "d6fe97de58bdad23dfe2eeb95e129bfa3fe11250 Investigate VT fill pacing and attribute remaining spikes",
+      "06d8923a8e35f7792ddec3058f1bcbd226c1c580 Bound VT composition and AO with resumable row slices",
+      "53e4d04ad5ba90f1fab5ed21927480e29b5191ff Pace expensive VT fill and AO pairs within their combined budget",
+      "f10ae70193842b81a57d00cae6c8a6eb40d6b7a2 Split VT producer slices into horizontal warp tiles",
+      "2f328bd646eb58d104658940ca1826a97890892c Record final VT slice timing and residency progress",
+      "4a1697e2db02fa0091761e2ec71d8d24644c91f0 perf(render): improve vertex reuse within GPU mesh draw ranges",
+      "794c029a2e5790cdfddd90f54e2cd08ab227154d docs: record G-buffer cache ordering measurements and limits",
+      "87815d886140b3aa88b4a8003c49a7498cbcde77 test(vt): wait for page readiness in normal-frame smoke",
+      "e51271afaf313bf287c5478e489358a4fbf43f2a perf(geometry): retain per-instance cuts and unchanged RT scenes",
+      "04961d500b11fcb7797f5e618e86e9c05ad41956 Merge commit '87815d886140b3aa88b4a8003c49a7498cbcde77' into HEAD",
+      "a621fe4a08fe2d027a0068c4833fbad5d3bebe7e perf(geometry): preserve scenes through unrelated root publication",
+      "a21ffaa8b2f3b491f99dfee915cec565ab86a06d docs: record persistent geometry cut measurements and limits",
+      "ff27365d58407481ca3a97eff4b60cdde9add8bf Merge commit 'a21ffaa8b2f3b491f99dfee915cec565ab86a06d' into HEAD",
+      "15753fbde04616d50b68cd2743957fca83d16734 perf(profiling): split equal-resolution GI signal timing",
+      "46cb226692e96e0edf66beee440a6dd4ab51fb9c perf(render): specialize GI lanes and skip disabled parallax work",
+      "dcb36800bb107709391de3afe259cde33a1c5a36 docs(render): record early GI savings and late capture blocker",
+      "fef25e75495115d0ca0006cf61078dda50c4eaf3 docs(render): record repeated GI acceptance resource blocker",
+      "7e65df70ee9d23de71cd2fb02783f03b60d40fcd docs(render): complete late GI timing and visual acceptance",
+      "6c70efe2e64dee7ff893ac892c38c2c994f03837 docs: record final high-density geometry performance decision"
+    ],
+    "main_only_commits": [
+      "9b417078540702b91a1d67245c6f2eefa727163c feat(export): OBJ+MTL+PBR-texture export layer for baked Parts",
+      "89282f8e933a6de7309970203567510d11526166 feat(gi): bake sun, sky and bounce lighting into per-instance lightmaps",
+      "471ab41743369a73a20be48e91ea1d34a307ef8f docs(gi): record the lightmap bake perf baseline; key the store on atlas layout",
+      "554be8eefebe6aee2fdeed4caa47eb0f4bccc737 feat(export): matter export obj CLI, World.exports DSL binding, golden gate",
+      "f77f2e18c264f9c12ce30c143fc246d13372b7ba fix(gi): review findings — emission, giBake() in buildEntities, seed, epsilon",
+      "52244a0581905d1b604e4e05be6f427bf3e53464 docs(export): document matter export obj, and cover UV/texel agreement",
+      "bc035d6aff79bfa7468c8cbc936fe1b3c08f20d6 feat(export): let a bare target name resolve as a module or a scene",
+      "135ac7cc7dbc04420d318a3f92fb33059d83ee15 fix(world_demo): move KreuzensteinBrick to the project objects/ tier",
+      "dca003eb3900e9c22744d23d89f3c1896e8f0d1b merge: integrate OBJ export with GI tooling",
+      "5a8b9c7ac895da26a1dc99d31f857338535d9c73 Merge remote-tracking branch 'origin/main' into aq/development-repair-d7cbce0d78a52195882a",
+      "8aab2e54bbbffbb0f6044ec3bda36974e30b864b chore: enable graft hooks at repo level"
+    ]
+  },
+  "prospective_merge": {
+    "delivered": false,
+    "exit_code": 1,
+    "tree": "0a8525faac226643bf948602b783746a6a3d8e53",
+    "conflicting_paths": [
+      "MatterEngine3/Makefile",
+      "MatterEngine3/tests/world_definition_tests.cpp",
+      "cmake/MatterEngine.cmake",
+      "cmake/MatterViewer.cmake",
+      "cmake/tests/viewer_graph_tests.cmake",
+      "projects/world_demo/objects/KreuzensteinBrick.js",
+      "projects/world_demo/scenes/castles/layouts/Kreuzenstein/README.md",
+      "projects/world_demo/tests/kreuzenstein_scene_tests.mjs"
+    ]
+  },
+  "clear_ridge_delivery_heads": [
+    {
+      "task": "clear-ridge.1",
+      "head": "c9f0a4566428b6f9a3069b5caee4f5395441d2b1",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.2",
+      "head": "1b54a566fa60ca7c9e1bd48b2581c7351e7ea0e7",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.3",
+      "head": "fc124643fd0772d22efcc5f5afc4852454a11800",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.4",
+      "head": "8a7e72f2b830bd36c022d4d0217adcfa6fa6bfd2",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.5",
+      "head": "df8b673b9e61a422b973270a93423ab7a20778f2",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.6",
+      "head": "2f328bd646eb58d104658940ca1826a97890892c",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.7",
+      "head": "794c029a2e5790cdfddd90f54e2cd08ab227154d",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.8",
+      "head": "a21ffaa8b2f3b491f99dfee915cec565ab86a06d",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.9",
+      "head": "7e65df70ee9d23de71cd2fb02783f03b60d40fcd",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    },
+    {
+      "task": "clear-ridge.10",
+      "head": "6c70efe2e64dee7ff893ac892c38c2c994f03837",
+      "ancestor_of_vg": true,
+      "ancestor_of_main": false
+    }
+  ],
+  "historical_pre_stress": {
+    "evidence": "docs/agent/evidence/2026-09-18-stream-mountain-geometry/README.md",
+    "git_commit_available": false,
+    "placements": 3,
+    "resolution": 96,
+    "source_triangles_per_rock": 110592,
+    "placed_source_triangles": 331776,
+    "source_sha256": "e9dc9ca4abdc3150bac9b0e50d865537919138f39e4d51ff294201f6b65baebb",
+    "exact_earlier_pose_source_available": false
+  },
+  "current_stress_site": {
+    "introduced_content_commit": "4228d4c9d76e23ed6437160a3553e17101b4df1f",
+    "scene_hookup_commit": "912ad0fb350efb3c8df3ff129c3b5ee2b457826b",
+    "placements": 1283,
+    "catalog_assets": 19,
+    "resolution": 128,
+    "source_triangles_per_rock": 196608,
+    "placed_source_triangles": 252248064,
+    "unique_source_triangles": 3735552,
+    "xz_bounds": {
+      "min": [
+        297.8333333333333,
+        1318.4411764705883
+      ],
+      "max": [
+        550.1470588235294,
+        1570.264705882353
+      ]
+    },
+    "ownership": {
+      "64": {
+        "xz_tiles": 25,
+        "placements": 1283
+      },
+      "128": {
+        "xz_tiles": 9,
+        "placements": 1283
+      },
+      "256": {
+        "xz_tiles": 4,
+        "placements": 1283
+      },
+      "512": {
+        "xz_tiles": 4,
+        "placements": 1283
+      }
+    },
+    "grid": {
+      "small": 1024,
+      "large": 256,
+      "spacing": 8,
+      "axis_count": 32,
+      "origin": [
+        300,
+        1320
+      ],
+      "small_jitter_width": 5,
+      "small_hash_salt": "0x71a3",
+      "large_hash_salt": "0x4b21",
+      "small_seeds": [
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115
+      ],
+      "large_seeds": [
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107
+      ],
+      "small_sizes": [
+        0.25,
+        0.5,
+        0.75,
+        1,
+        1.25,
+        1.5,
+        1.75,
+        2
+      ],
+      "large_sizes": [
+        3,
+        4.5,
+        6,
+        7.5
+      ]
+    },
+    "world_seed_dependency": false
+  },
+  "proposed_population_target": {
+    "status": "inferred from historical count and current three-record prefix; implementation follows separately",
+    "placements": 3,
+    "catalog_assets": 3,
+    "removed_grid_placements": 1280,
+    "resolution": 128,
+    "placed_source_triangles": 589824,
+    "focal_records": [
+      {
+        "x": 416,
+        "z": 1456,
+        "params": {
+          "seed": 0,
+          "shape": 0,
+          "size": 6,
+          "resolution": 128,
+          "material": 7
+        }
+      },
+      {
+        "x": 425,
+        "z": 1458,
+        "params": {
+          "seed": 1,
+          "shape": 2,
+          "size": 4,
+          "resolution": 128,
+          "material": 7
+        }
+      },
+      {
+        "x": 422,
+        "z": 1448,
+        "params": {
+          "seed": 2,
+          "shape": 1,
+          "size": 7,
+          "resolution": 128,
+          "material": 7
+        }
+      }
+    ],
+    "material_id_in_this_fixture": 7,
+    "material_in_production": "Mountain.GeometryRock"
+  },
+  "natural_scatter_control": {
+    "older_git_population": {
+      "rectangle": {
+        "min": [
+          256,
+          1280
+        ],
+        "max_exclusive": [
+          576,
+          1600
+        ]
+      },
+      "cells": 25,
+      "world_seed": 20260722,
+      "habitat": {
+        "altitude": 70,
+        "slope": 0.15,
+        "biome": "foothills",
+        "height_plane": "70 + 0.05*x - 0.025*z"
+      },
+      "forest": "suppressed",
+      "geometry_site": "excluded",
+      "scatter_rungs": {
+        "0": {
+          "placements": 1,
+          "sha256": "c4e2df6ed8e985e111e65705a00e925c0825097ca295bd0989cbeb2b7e11c6e6"
+        },
+        "1": {
+          "placements": 470,
+          "sha256": "90fd88e2de1b2cf894eacd013a503eaae8a11096ed0af4e4fde8ef9ad758fd72"
+        },
+        "2": {
+          "placements": 470,
+          "sha256": "90fd88e2de1b2cf894eacd013a503eaae8a11096ed0af4e4fde8ef9ad758fd72"
+        }
+      }
+    },
+    "current_population": {
+      "rectangle": {
+        "min": [
+          256,
+          1280
+        ],
+        "max_exclusive": [
+          576,
+          1600
+        ]
+      },
+      "cells": 25,
+      "world_seed": 20260722,
+      "habitat": {
+        "altitude": 70,
+        "slope": 0.15,
+        "biome": "foothills",
+        "height_plane": "70 + 0.05*x - 0.025*z"
+      },
+      "forest": "suppressed",
+      "geometry_site": "excluded",
+      "scatter_rungs": {
+        "0": {
+          "placements": 22,
+          "sha256": "7b419094101cc8fd66a0edc4c997e6b361ea7d8bdc9d1c5673179d37b09b998a"
+        },
+        "1": {
+          "placements": 206,
+          "sha256": "dbb98759f5143e72b085387a3834e1b3e5bdac4d050cadc6851a040b8dec4d85"
+        },
+        "2": {
+          "placements": 206,
+          "sha256": "dbb98759f5143e72b085387a3834e1b3e5bdac4d050cadc6851a040b8dec4d85"
+        }
+      }
+    },
+    "interpretation": "Different planners; do not treat these flat-fixture counts as real-world or pre-stress scene counts."
+  },
+  "current_saved_props": {
+    "version": 1,
+    "groups": {
+      "render.volumetrics": {
+        "enabled": true
+      },
+      "draw.overrides": {
+        "Rock/lod_bias": 2.27999997,
+        "Rock/hide": true
+      },
+      "render.pom": {
+        "enabled": false
+      },
+      "stream.lod": {
+        "scatter_rings": "159:2,624:1,20000:0",
+        "terrain_bands": "275:5,601:4,1009:3,1959:2,6014:1,20000:0",
+        "hysteresis": 512,
+        "max_inflight": 128
+      }
+    }
+  },
+  "source_sha256": {
+    "projects/world_demo/shared-lib/mountain_geometry_site.js": "be8302a1e51bbb5bc662532b8194eb3ea4514f96d6d355847e993a26350ce453",
+    "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js": "d25fab9657e4dca98cd7548f872604ede49f3aa9f14b58fe81bc2075811afd1e",
+    "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js": "abc0e025a202b5e9ef0e7f05211e4d752fc64fa00fedd3ef87fa70196164667c",
+    "projects/world_demo/scenes/streaming/StreamMountain/props.json": "c39d0e6837f9b62afaace9dcaed322a7481a171cf6b8d5a1c73dd4d1f3a68ffb",
+    "projects/world_demo/shared-lib/mountain_detail_rocks.js": "fb76939a1b7e167e7caa5fba16535a86b584739b2587399007e4bc238778c0ec",
+    "projects/world_demo/shared-lib/mountain_rock_scatter.js": "25e67212eb0d375a9a94947a4ed786827e3c41ec6cc0f1d1ad0cf1aa26b01823",
+    "projects/world_demo/shared-lib/mountain_forest.js": "e280ced9c0fee329c9b1f3b4ccc6d26dbe5de38b4f402a6e260385a33879851e"
+  }
+}

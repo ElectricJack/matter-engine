@@ -1,0 +1,134 @@
+{
+  "log_sha256": "e00e9095e5dea4874b8437b38f1a801e075fe66c3a1bea46cdc07e33c5981fe7",
+  "shots": [
+    {
+      "name": "move-raster-00.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-01.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-02.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-03.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-04.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-05.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-06.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-07.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-08.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-09.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-10.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-11.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-12.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-13.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-14.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-15.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-16.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-17.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-18.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-19.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "move-raster-20.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    }
+  ],
+  "missing_receipts": [],
+  "command_errors": [],
+  "passed": true
+}

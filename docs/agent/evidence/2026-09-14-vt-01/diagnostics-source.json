@@ -1,0 +1,24 @@
+{
+  "stage": "request-age and event diagnostics; native tests and castle diagnostic capture",
+  "sha256": {
+    "MatterEngine3/src/render/vt_residency.cpp": "eccb50e5634fb2c5c28cbe9ed255b57c619fac18f7c3b5b4fc55933f33bbb6fe",
+    "MatterEngine3/src/render/vt_residency.h": "a95063c68da063a64365ac68cc1a4ebff74c2b8db7c901b76dbd1b7c64816a63",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "a93f85e48355969a9e59f56973ebf81ec16dbf96800006000c777f28c6dd63f9",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "d052479458531ec704afefecadf84b728f109aec7d9d5ae046a0d5eee505938b",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "7c6fb67b5f8d79831334363de7b9c4168a3c252750a75d04895234779cb1695e",
+    "MatterEngine3/tests/vt_queue_tests.h": "91fb59915cb88a402da400498a8facb646184b4995bf90827d3e470b8edafbfb",
+    "MatterEngine3/src/render/vt_compositor.cpp": "9c222595364432105a164d5ad97cba69ac8242a51e53105aaa94fb0c85565050",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "2f68aba2fce56875179cb74d0b97868f1e8ed63d78271b80f4805cd5fba1dfcf",
+    "MatterEngine3/src/render/vt_chart_gpu.h": "c1ec0b8d5ec3a33db17f77446a6960af94d8078b84199fa5e6328d78ff4897a0",
+    "MatterEditor/src/vt_trace.h": "622d1cbbb421cba0d65c31cc59759b8f46815d22b886c844b5e078c86fea02cd",
+    "MatterEngine3/src/matter_engine.cpp": "b55e8fec626ab700723be59a53b64def8042e6c52cdcd71c0901c23744bd1293",
+    "MatterEngine3/include/matter/world_session.h": "14943afd48d6644ce43b228b23a96debafc00f7209c0e6d0eebd5a51939e126f",
+    "tools/vt_acceptance.py": "a5b3397f98d22c8a0190cc1a0cb09c018e1301ac0d0647feb41f382a9ad84128",
+    "tools/tests/test_vt_acceptance.py": "ee6892977450a8715515cf8a85d2926336de3ac7e53418695356d6aeebe61064"
+  },
+  "executables": {
+    "MatterEditor/build/windows-msvc/editor.exe": "84df0fb5d76ab3dc9aaa4301dc00029b6255233373f2a66753a0a3d6a6049f47",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "43382c99628f81d9a0843d4980736fbf1c0e3347ebe41e8ac17ff394d2b1bde4",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe": "c88700b3684202b89601cf2bae8936d10cb8af4b82c1a42cd138145ce9c30e93"
+  }
+}

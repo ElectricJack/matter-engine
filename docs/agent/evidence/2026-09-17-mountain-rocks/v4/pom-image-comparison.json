@@ -1,0 +1,45 @@
+{
+  "limits": "Fixed-camera PNG difference, not a depth oracle. Whole frame includes ground and sky. Native analytic tests separately validate POM depth and normals.",
+  "views": {
+    "overview": {
+      "raster": {
+        "fraction_pixels_over_1_byte": 0.00108984375,
+        "mean_absolute_byte_difference": 0.004283528645833333
+      },
+      "rt-": {
+        "fraction_pixels_over_1_byte": 0.0039267578125,
+        "mean_absolute_byte_difference": 0.0361533203125
+      }
+    },
+    "block": {
+      "raster": {
+        "fraction_pixels_over_1_byte": 0.016353515625,
+        "mean_absolute_byte_difference": 0.06471321614583334
+      },
+      "rt-": {
+        "fraction_pixels_over_1_byte": 0.0191044921875,
+        "mean_absolute_byte_difference": 0.12280729166666667
+      }
+    },
+    "slab": {
+      "raster": {
+        "fraction_pixels_over_1_byte": 0.0227587890625,
+        "mean_absolute_byte_difference": 0.091515625
+      },
+      "rt-": {
+        "fraction_pixels_over_1_byte": 0.0262998046875,
+        "mean_absolute_byte_difference": 0.17173470052083334
+      }
+    },
+    "weathered": {
+      "raster": {
+        "fraction_pixels_over_1_byte": 0.016998046875,
+        "mean_absolute_byte_difference": 0.06626171875
+      },
+      "rt-": {
+        "fraction_pixels_over_1_byte": 0.021314453125,
+        "mean_absolute_byte_difference": 0.142068359375
+      }
+    }
+  }
+}

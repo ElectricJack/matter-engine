@@ -1,0 +1,6 @@
+{
+  "traversal-v3-tests.json": "76d7d4633095742dd410e04201f9a7dffb7d3b393171940c06b97f5f93e815a3",
+  "traversal-v3-compositor.json": "90c7d2f03de33dd167c7f95b2697b867496d07ee2949b511c298de44347681c2",
+  "traversal-v3-build-manifest.json": "1d791bf1f82ad457c496d758dd412eff9e78f9edcb58e4611d729b178e7c4dd4",
+  "maze_capture": "../2026-09-15-brick-maze/connected-pom-v3-result.json"
+}

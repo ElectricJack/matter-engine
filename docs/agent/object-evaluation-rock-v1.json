@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "world": "ObjectEvalRock",
+  "expected_root_module": "Rock",
+  "expected_root_params": {"seed": 2, "size": 1, "detail": 1},
+  "source_paths": [
+    "projects/world_demo/scenes/terrain/ObjectEvalRock/ObjectEvalRock.js",
+    "projects/world_demo/objects/terrain/Rock.js",
+    "MatterEngine3/shared-lib/rng.js",
+    "MatterEngine3/shared-lib/vecmath.js"
+  ],
+  "model_write_paths": ["projects/world_demo/objects/terrain/Rock.js"],
+  "rig": {
+    "projection": {
+      "vertical_fov_radians": 0.78539816339,
+      "near_plane": 0.1,
+      "far_plane": 10241.0
+    },
+    "hold_frames": 90,
+    "views": [
+      {"name": "front", "pose": [2.5, 2.0, 4.0, 0, 0.35, 0]},
+      {"name": "back", "pose": [-2.5, 2.0, -4.0, 0, 0.35, 0]},
+      {"name": "side", "pose": [4.0, 2.0, -2.5, 0, 0.35, 0]},
+      {"name": "top", "pose": [2.0, 5.0, 1.0, 0, 0.35, 0]}
+    ]
+  }
+}

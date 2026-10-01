@@ -36,7 +36,7 @@ void main() {
         terminateRayEXT;
         return;
     }
-    RtMaterialGpu material = rt_materials[surface.material_index];
+    RtMaterialGpu material = rt_surface_material(surface);
     float opacity = clamp(material.metal_opacity_spec_coat.y, 0.0, 1.0);
     float alpha_cutoff = clamp(material.scattering_shape.z, 0.0, 1.0);
     if ((material.flags_misc.x & MATERIAL_ALPHA_TESTED) != 0u &&

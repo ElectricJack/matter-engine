@@ -2,13 +2,10 @@
 // Camera construction lives in frame_matrices; persisted float[16] transforms
 // enter here only at explicit CPU boundaries and keep their serialized layout.
 //
-// Header-only inline free functions, so the test binaries can link them
-// without pulling in the renderer. Today's only callers are
-// MatterEngine3/tests/partstore_tests.cpp — see the note at the bottom of this
-// file for what was deleted. The SHIPPING frustum and LOD decisions are made
-// on the GPU (shaders_vk/cull.comp) against the single LOD rule in
-// MatterEngine3/src/render/lod_distance.h; nothing here participates in a
-// production frame.
+// Header-only inline helpers shared by tests and geometry streaming priority.
+// GeometryWorldRuntime uses aabb_culled to prioritize the current view; it does
+// not use this helper to exclude draws. Shipping frustum/LOD draw decisions
+// remain on the GPU (shaders_vk/cull.comp) using lod_distance.h.
 //
 // Conventions: a `persisted_transform` is the serialized `float[16]` an
 // artifact or instance record stores, and it is the same row-major /

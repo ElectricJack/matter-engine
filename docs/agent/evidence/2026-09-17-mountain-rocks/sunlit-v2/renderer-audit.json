@@ -1,0 +1,200 @@
+{
+  "log_sha256": "aa07a774a222988a49b48ed783af92fd24c879f8a7292271342f855a39d20070",
+  "shots": [
+    {
+      "name": "size-0p5-near-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-0p5-near-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-0p5-near-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-0p5-near-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-0p5-grazing-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-0p5-grazing-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-0p5-grazing-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-0p5-grazing-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-2-near-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-2-near-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-2-near-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-2-near-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-2-grazing-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-2-grazing-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-2-grazing-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-2-grazing-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-8-near-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-8-near-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-8-near-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-8-near-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-8-grazing-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-8-grazing-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-8-grazing-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-8-grazing-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-32-near-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-32-near-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-32-near-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-32-near-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-32-grazing-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-32-grazing-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "size-32-grazing-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "size-32-grazing-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    }
+  ],
+  "missing_receipts": [],
+  "command_errors": [],
+  "passed": true
+}

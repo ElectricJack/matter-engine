@@ -77,7 +77,8 @@ int select_level(float size, const std::vector<float>& thr) {
 std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>>
 select_sector_lods_ex(const sector_grid::Sectors& sectors,
                       const PartLodTable& parts, const float3& cam,
-                      float min_projected_size, float pixel_budget) {
+                      float min_projected_size, float pixel_budget,
+                      const SectorParts* distinct_parts) {
     std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>> out;
     // Normalized switch distances for the part under consideration. Hoisted so
     // the per-instance loop below allocates at most once for the whole call.
@@ -92,9 +93,11 @@ select_sector_lods_ex(const sector_grid::Sectors& sectors,
             if (d < closest) closest = d;
         }
         if (closest < 1e-4f) closest = 1e-4f;
-        for (const auto& f : insts) {
-            auto pit = parts.find(f.resolved_hash);
-            if (pit == parts.end()) continue;
+        std::map<uint64_t, LodChoice> choices;
+        const auto choose_part = [&](uint64_t hash) {
+            if (choices.find(hash) != choices.end()) return;
+            auto pit = parts.find(hash);
+            if (pit == parts.end()) return;
             const PartLod& part = pit->second;
             const float reach = lod::reach(part.bound_radius, 1.0f, pixel_budget);
             int level;
@@ -113,8 +116,22 @@ select_sector_lods_ex(const sector_grid::Sectors& sectors,
                                         (int)switch_distances.size(),
                                         closest, reach);
             }
-            out[coord][f.resolved_hash] = {level, closest};
+            choices.emplace(hash, LodChoice{level, closest});
+        };
+        // The resolver caches distinct hashes with the world binning. This
+        // avoids a second pass of map lookups over millions of repeated leaves.
+        const std::vector<uint64_t>* hashes = nullptr;
+        if (distinct_parts) {
+            auto found = distinct_parts->find(coord);
+            if (found != distinct_parts->end()) hashes = &found->second;
         }
+        if (hashes) {
+            for (uint64_t hash : *hashes) choose_part(hash);
+        } else {
+            for (const auto& f : insts) choose_part(f.resolved_hash);
+        }
+        // Preserve the absent-sector result when no part has a known ladder.
+        if (!choices.empty()) out.emplace(coord, std::move(choices));
     }
     return out;
 }

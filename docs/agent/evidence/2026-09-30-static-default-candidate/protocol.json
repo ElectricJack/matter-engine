@@ -1,0 +1,111 @@
+{
+  "source_sha": "b387c15d81ff4d5b26a195b14f1afd6793b6ad6b",
+  "editor_sha256": "22bb85901df3a2313bf4966545686a8c47580937a64853f4d385bbe07b28671c",
+  "camera": {
+    "eye": [
+      380,
+      90,
+      1600
+    ],
+    "target": [
+      420,
+      55,
+      1420
+    ]
+  },
+  "width": 1920,
+  "height": 1080,
+  "sample_seconds": 20,
+  "runs": [
+    {
+      "setup": "static",
+      "warmup_seconds": 45,
+      "command": [
+        "tools/streammountain_attribution.sh",
+        "C:/tmp/quick-meadow68-4-20260930/static-w45"
+      ],
+      "overrides": {
+        "PAGED_TERRAIN": "0",
+        "PAGED_CACHE_ONLY": "0",
+        "VARIANTS": "pom_off",
+        "RUNS": "1",
+        "WARMUP": "45"
+      },
+      "started_at": 1790823492.2910185,
+      "shot_requested_at": 1790826328.2578719,
+      "shot_delay_from_warmup_marker_seconds": 20.092950299964286,
+      "exit_code": 0,
+      "finished_at": 1790826394.2239048,
+      "screenshot_captured": true
+    },
+    {
+      "setup": "vg",
+      "warmup_seconds": 45,
+      "command": [
+        "tools/streammountain_attribution.sh",
+        "C:/tmp/quick-meadow68-4-20260930/vg-w45"
+      ],
+      "overrides": {
+        "PAGED_TERRAIN": "1",
+        "PAGED_CACHE_ONLY": "0",
+        "VARIANTS": "pom_off",
+        "RUNS": "1",
+        "WARMUP": "45"
+      },
+      "started_at": 1790826394.240777,
+      "shot_requested_at": 1790826549.1229413,
+      "shot_delay_from_warmup_marker_seconds": 21.227080771001056,
+      "exit_code": 0,
+      "finished_at": 1790826666.3517528,
+      "screenshot_captured": true
+    },
+    {
+      "setup": "static",
+      "warmup_seconds": 300,
+      "command": [
+        "tools/streammountain_attribution.sh",
+        "C:/tmp/quick-meadow68-4-20260930/static-w300"
+      ],
+      "overrides": {
+        "PAGED_TERRAIN": "0",
+        "PAGED_CACHE_ONLY": "0",
+        "VARIANTS": "pom_off",
+        "RUNS": "1",
+        "WARMUP": "300"
+      },
+      "started_at": 1790826666.3666544,
+      "shot_requested_at": 1790826952.8092046,
+      "shot_delay_from_warmup_marker_seconds": 181.44094882300124,
+      "exit_code": 0,
+      "finished_at": 1790827131.8151166,
+      "screenshot_captured": true
+    },
+    {
+      "setup": "vg",
+      "warmup_seconds": 300,
+      "command": [
+        "tools/streammountain_attribution.sh",
+        "C:/tmp/quick-meadow68-4-20260930/vg-w300"
+      ],
+      "overrides": {
+        "PAGED_TERRAIN": "1",
+        "PAGED_CACHE_ONLY": "0",
+        "VARIANTS": "pom_off",
+        "RUNS": "1",
+        "WARMUP": "300"
+      },
+      "started_at": 1790827131.8272705,
+      "shot_requested_at": 1790827418.6476018,
+      "shot_delay_from_warmup_marker_seconds": 181.19154416496167,
+      "exit_code": 0,
+      "finished_at": 1790827693.7367172,
+      "screenshot_captured": true
+    }
+  ],
+  "input_sha256": {
+    "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js": "ee8339526dff2408e0683d0fcab818b85212882d7ed02d3e758c8b428f466eac",
+    "projects/world_demo/scenes/streaming/StreamMountain/props.json": "c39d0e6837f9b62afaace9dcaed322a7481a171cf6b8d5a1c73dd4d1f3a68ffb",
+    "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js": "8d59321476da2f54e11a30ed9c2b2ea2100a8161d66d76d3af93dd9ac2785d8d",
+    "projects/world_demo/shared-lib/mountain_geometry_site.js": "0bc4a490ee751a3e3d0597fbf3138ad7a641f5474a73fb76fceb096b7c22164f"
+  }
+}

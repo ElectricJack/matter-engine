@@ -1,0 +1,1 @@
+{"version":1,"groups":{"render.volumetrics":{"enabled":true},"draw.overrides":{"Rock/lod_bias":2.27999997,"Rock/hide":true},"render.pom":{"enabled":false},"stream.lod":{"scatter_rings":"159:2,624:1,20000:0","terrain_bands":"275:5,601:4,1009:3,1959:2,6014:1,20000:0","hysteresis":512,"max_inflight":128}}}

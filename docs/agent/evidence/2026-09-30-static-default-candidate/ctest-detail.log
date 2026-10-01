@@ -1,0 +1,1044 @@
+Start testing: Sep 30 19:22 Pacific Daylight Time
+----------------------------------------------------------
+12/188 Testing: vt_residency_tests
+12/188 Test: vt_residency_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+"vt_residency_tests" start time: Sep 30 19:22 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+vt residency tests complete
+ALL PASS
+<end of output>
+Test time =   0.45 sec
+----------------------------------------------------------
+Test Passed.
+"vt_residency_tests" end time: Sep 30 19:22 Pacific Daylight Time
+"vt_residency_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+40/188 Testing: geometry_hierarchy_tests
+40/188 Test: geometry_hierarchy_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/geometry_hierarchy_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"geometry_hierarchy_tests" start time: Sep 30 19:22 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+[geometry] bake batch commit failed: cannot create index tmp: open_rw (win32 error 5)
+[geometry] bake batch commit failed: cannot create index tmp: open_rw (win32 error 5)
+[geometry] bake batch commit failed: cannot create index tmp: open_rw (win32 error 5)
+Geometry proof: 288 source triangles, 17 groups, 48 coarse triangles, error <= 0.144025, compiler 40.176 ms
+Simplification: reduced=8, attribute_seams=0, changed_borders=0, no_reduction=0; root_border=48, root_result=1
+ALL PASS
+<end of output>
+Test time =   5.21 sec
+----------------------------------------------------------
+Test Passed.
+"geometry_hierarchy_tests" end time: Sep 30 19:22 Pacific Daylight Time
+"geometry_hierarchy_tests" time elapsed: 00:00:05
+----------------------------------------------------------
+
+41/188 Testing: geometry_cut_tests
+41/188 Test: geometry_cut_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/geometry_cut_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"geometry_cut_tests" start time: Sep 30 19:22 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+ALL PASS
+<end of output>
+Test time =   0.32 sec
+----------------------------------------------------------
+Test Passed.
+"geometry_cut_tests" end time: Sep 30 19:22 Pacific Daylight Time
+"geometry_cut_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+44/188 Testing: world_definition_tests
+44/188 Test: world_definition_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"world_definition_tests" start time: Sep 30 19:22 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+  shared-lib module references checked: 0
+  every shipped world loads: 72/72
+MOUNTAIN_ROCK_DENSITY shape=0 seed=0 reference_m=0.5 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part 41c2b071016a6a99 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=0 reference_m=0.5 triangles=240,172,80 stage_ms=17.802
+MOUNTAIN_ROCK_DENSITY shape=1 seed=0 reference_m=0.5 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part 9aeb337116113390 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=1 reference_m=0.5 triangles=228,176,60 stage_ms=19.014
+MOUNTAIN_ROCK_DENSITY shape=2 seed=0 reference_m=0.5 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part ada4278dcbdb2a13 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=2 reference_m=0.5 triangles=324,276,172 stage_ms=20.654
+MOUNTAIN_ROCK_DENSITY shape=0 seed=1 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=1 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=1 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=2 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=2 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=2 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=3 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=3 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=3 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=0 reference_m=2.0 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part 4a047caf07de5f25 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=0 reference_m=2.0 triangles=240,172,80 stage_ms=14.677
+MOUNTAIN_ROCK_DENSITY shape=1 seed=0 reference_m=2.0 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part c4b2e3391396cdd1 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=1 reference_m=2.0 triangles=228,176,60 stage_ms=12.971
+MOUNTAIN_ROCK_DENSITY shape=2 seed=0 reference_m=2.0 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part 92b56dfa53dd4f23 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=2 reference_m=2.0 triangles=324,276,174 stage_ms=20.942
+MOUNTAIN_ROCK_DENSITY shape=0 seed=1 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=1 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=1 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=2 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=2 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=2 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=3 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=3 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=3 reference_m=2.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=0 reference_m=32.0 finest_tpm=[171.000,171.000]
+[part-store] loaded v3 FLAT part 3eb2ef614af8b9cc (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=0 reference_m=32.0 triangles=240,172,80 stage_ms=14.696
+MOUNTAIN_ROCK_DENSITY shape=1 seed=0 reference_m=32.0 finest_tpm=[160.500,160.500]
+[part-store] loaded v3 FLAT part 3706dcd837152b65 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=1 reference_m=32.0 triangles=228,176,60 stage_ms=16.632
+MOUNTAIN_ROCK_DENSITY shape=2 seed=0 reference_m=32.0 finest_tpm=[189.000,189.000]
+[part-store] loaded v3 FLAT part 62cc13cd5a1cf17d (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=2 reference_m=32.0 triangles=324,276,174 stage_ms=24.933
+MOUNTAIN_ROCK_DENSITY shape=0 seed=1 reference_m=32.0 finest_tpm=[157.500,157.500]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=1 reference_m=32.0 finest_tpm=[166.500,166.500]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=1 reference_m=32.0 finest_tpm=[181.500,181.500]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=2 reference_m=32.0 finest_tpm=[171.000,171.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=2 reference_m=32.0 finest_tpm=[157.500,157.500]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=2 reference_m=32.0 finest_tpm=[175.500,175.500]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=3 reference_m=32.0 finest_tpm=[171.000,171.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=3 reference_m=32.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=3 reference_m=32.0 finest_tpm=[184.500,184.500]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=0 reference_m=8.0 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part d22ffec8164df58f (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=0 reference_m=8.0 triangles=240,172,80 stage_ms=16.960
+MOUNTAIN_ROCK_DENSITY shape=1 seed=0 reference_m=8.0 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part f9440294a1869573 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=1 reference_m=8.0 triangles=228,176,60 stage_ms=13.898
+MOUNTAIN_ROCK_DENSITY shape=2 seed=0 reference_m=8.0 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part 650bfab883dfac1b (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=2 reference_m=8.0 triangles=324,276,174 stage_ms=22.436
+MOUNTAIN_ROCK_DENSITY shape=0 seed=1 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=1 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=1 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=2 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=2 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=2 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=0 seed=3 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=3 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=2 seed=3 reference_m=8.0 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCKS prototypes=48 triangles=12592 bake_ms=7614.185 chart_stage_ms=120.664
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011174,-0.001904] production_height=[-0.011210,-0.001875]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010960,-0.002073] production_height=[-0.011005,-0.002121]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011003,-0.002207] production_height=[-0.011024,-0.002227]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010952,-0.002548] production_height=[-0.011008,-0.002599]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011345,-0.002256] production_height=[-0.011353,-0.002317]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011326,-0.002568] production_height=[-0.011287,-0.002553]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011155,-0.002135] production_height=[-0.011084,-0.002170]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010789,-0.001852] production_height=[-0.010796,-0.001895]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011210,-0.002268] production_height=[-0.011233,-0.002235]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011203,-0.002240] production_height=[-0.011140,-0.002230]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.012115,-0.002457] production_height=[-0.012120,-0.002414]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011271,-0.002449] production_height=[-0.011277,-0.002412]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011174,-0.001904] production_height=[-0.011210,-0.001875]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010960,-0.002073] production_height=[-0.011005,-0.002121]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011003,-0.002207] production_height=[-0.011024,-0.002227]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010952,-0.002548] production_height=[-0.011008,-0.002599]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011345,-0.002256] production_height=[-0.011353,-0.002317]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011326,-0.002568] production_height=[-0.011287,-0.002553]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011155,-0.002135] production_height=[-0.011084,-0.002170]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010789,-0.001852] production_height=[-0.010796,-0.001895]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011210,-0.002268] production_height=[-0.011233,-0.002235]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011203,-0.002240] production_height=[-0.011140,-0.002230]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.012115,-0.002457] production_height=[-0.012120,-0.002414]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011271,-0.002449] production_height=[-0.011277,-0.002412]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011174,-0.001904] production_height=[-0.011210,-0.001875]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010960,-0.002073] production_height=[-0.011005,-0.002121]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011003,-0.002207] production_height=[-0.011024,-0.002227]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010952,-0.002548] production_height=[-0.011008,-0.002599]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011345,-0.002256] production_height=[-0.011353,-0.002317]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011326,-0.002568] production_height=[-0.011287,-0.002553]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011155,-0.002135] production_height=[-0.011084,-0.002170]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010789,-0.001852] production_height=[-0.010796,-0.001895]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011210,-0.002268] production_height=[-0.011233,-0.002235]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011203,-0.002240] production_height=[-0.011140,-0.002230]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.012115,-0.002457] production_height=[-0.012120,-0.002414]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011271,-0.002449] production_height=[-0.011277,-0.002412]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011174,-0.001904] production_height=[-0.011210,-0.001875]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010960,-0.002073] production_height=[-0.011005,-0.002121]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011003,-0.002207] production_height=[-0.011024,-0.002227]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010952,-0.002548] production_height=[-0.011008,-0.002599]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011345,-0.002256] production_height=[-0.011353,-0.002317]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011326,-0.002568] production_height=[-0.011287,-0.002553]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011155,-0.002135] production_height=[-0.011084,-0.002170]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.010789,-0.001852] production_height=[-0.010796,-0.001895]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011210,-0.002268] production_height=[-0.011233,-0.002235]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011203,-0.002240] production_height=[-0.011140,-0.002230]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.012115,-0.002457] production_height=[-0.012120,-0.002414]
+MOUNTAIN_ROCK_MATERIAL ops=75 height=[-0.011271,-0.002449] production_height=[-0.011277,-0.002412]
+MOUNTAIN_CELLULAR searches=2 reused_features=3
+MOUNTAIN_CONTEXT max_ground_cliff_height_delta_m=0.024095
+MOUNTAIN_FILTER_MEAN near_color=0.094492 far_color=0.094613 near_height_m=-0.049203 far_height_m=-0.050000
+MOUNTAIN_MATERIAL ops=458 gpu_ops=458 detail_atlases=3 height=[-0.071521,-0.025862]
+MOUNTAIN_HEIGHT x=380.0 z=1600.0 y=18.24082
+MOUNTAIN_HEIGHT x=400.0 z=1450.0 y=18.80016
+MOUNTAIN_HEIGHT x=420.0 z=1420.0 y=20.40367
+MOUNTAIN_HEIGHT x=470.0 z=1300.0 y=22.38953
+MOUNTAIN_CLIFF_CAMERA 828.023 105.603 1659.507 832.000 104.603 1664.000
+CONTACT_MATERIAL gpu_ops=364 height=[-0.033019,-0.007957] max_deposit_m=0.006523
+[fog] C:\Users\webde\AppData\Local\Temp\matter-world-definition-386330815580800\LegacyMulWorld.js: volumetrics.fogDensityMul/fogFalloffMul/fogFloorOffset are deprecated and were folded into World.fog: density 0.2 -> 0.1, floor 4 -> 10, falloff 50 -> 150. Paste those values into World.fog and delete the volumetrics keys.
+[fog] C:\Users\webde\AppData\Local\Temp\matter-world-definition-386330836998300\LegacyLayerWorld.js: volumetrics.fogDensityMul/fogFalloffMul/fogFloorOffset are deprecated and were folded into World.fog: density 0.18 -> 0.0054, minHeight 140 -> 140, maxHeight 165 -> 226. Paste those values into World.fog and delete the volumetrics keys.
+ALL PASS
+<end of output>
+Test time = 286.27 sec
+----------------------------------------------------------
+Test Passed.
+"world_definition_tests" end time: Sep 30 19:27 Pacific Daylight Time
+"world_definition_tests" time elapsed: 00:04:46
+----------------------------------------------------------
+
+45/188 Testing: surface_field_tests
+45/188 Test: surface_field_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/surface_field_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"surface_field_tests" start time: Sep 30 19:27 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+CELLULAR3_ORACLE max_error=0.000000387 identities=1 outer_required=3
+ALL PASS
+<end of output>
+Test time =   0.22 sec
+----------------------------------------------------------
+Test Passed.
+"surface_field_tests" end time: Sep 30 19:27 Pacific Daylight Time
+"surface_field_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+47/188 Testing: sector_lod_tests
+47/188 Test: sector_lod_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/sector_lod_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"sector_lod_tests" start time: Sep 30 19:27 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+ALL PASS
+<end of output>
+Test time =   0.37 sec
+----------------------------------------------------------
+Test Passed.
+"sector_lod_tests" end time: Sep 30 19:27 Pacific Daylight Time
+"sector_lod_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+48/188 Testing: sector_bake_tests
+48/188 Test: sector_bake_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/sector_bake_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"sector_bake_tests" start time: Sep 30 19:27 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+  scatter bake hash: 4a3f64eb53dabb9c  path: C:\Users\webde\AppData\Local\Temp\me3_sector_bake_386334330706700/parts/4a3f64eb53dabb9c.bundle
+  nested tris: L0=3400 L1=2720 L2=2798 (lattice 32x32 at each)
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+  nested scatter: level-1 tile placed 41 children, its four level-0 cells 41
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+  vegetation gate: over 40 tiles -- band 3 planted 258, band 2 planted 0 and kept 1 landmark boulders
+Warning: No draw records to build TLAS from
+  habitatAt: verb matches the runtime at 4 probes x 3 channels
+== terrainVolume argument forwarding ==
+  terrainVolume(tx,tz,rung,mats): all four reach the binding, and the material array lands in the slot the mask vacated
+== candidatesInRect: native vs JS ==
+Warning: No draw records to build TLAS from
+  native == JS over 5 real rects (trees, grass, boulders, shrubs, off-origin)
+Warning: No draw records to build TLAS from
+== planCandidates: native fused vs native two-step ==
+Warning: No draw records to build TLAS from
+  planCandidates == candidatesInRect positions + habitatAt channels over 5 real rects
+Warning: No draw records to build TLAS from
+  planCandidates with no habitat tape: channelCount=0, does not fail
+Warning: No draw records to build TLAS from
+== script profile ==
+[script-profile] thread-ms summed across ALL bake workers (not wall time)
+  label                             calls      self ms     total ms   self%   us/call
+  t.beta                                1         20.0         20.0  100.0%  20002.10
+  t.alpha                               1          0.0         20.0    0.0%  20003.10
+  (sum of self)                                   20.0
+  [native __planCandidates] calls=6 candidates=8154 | grid+survives 5.4 ms | tape 0.0 ms | pack+typedarray 0.1 ms | native total 5.4 ms
+Warning: No draw records to build TLAS from
+[script-profile] thread-ms summed across ALL bake workers (not wall time)
+  label                             calls      self ms     total ms   self%   us/call
+  js.loop                               1         28.7         28.7  100.0%  28744.30
+  (sum of self)                                   28.7
+  [native __planCandidates] calls=6 candidates=8154 | grid+survives 5.4 ms | tape 0.0 ms | pack+typedarray 0.1 ms | native total 5.4 ms
+ALL PASS
+<end of output>
+Test time =   2.62 sec
+----------------------------------------------------------
+Test Passed.
+"sector_bake_tests" end time: Sep 30 19:27 Pacific Daylight Time
+"sector_bake_tests" time elapsed: 00:00:02
+----------------------------------------------------------
+
+49/188 Testing: gi_bake_tests
+49/188 Test: gi_bake_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/gi_bake_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"gi_bake_tests" start time: Sep 30 19:27 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+[gi] ground 256x168 covered=26240 rays=2758541 150ms | room 128x60 covered=3548 rays=715703 116ms
+[gi] court=(1.687 1.647 1.588) strip=1.312 deep=0.024 shadow=0.387 wall=0.043
+[gi] direct-only wall=0.006 deep=0.003
+[gi] vault charts=2 atlas=128x57
+[gi] seam deltas: n=12 max=0.0197 p95=0.0195 level=2.341 | interior: n=1164 median=0.0048 p95=0.0209
+ALL PASS
+<end of output>
+Test time =   1.28 sec
+----------------------------------------------------------
+Test Passed.
+"gi_bake_tests" end time: Sep 30 19:27 Pacific Daylight Time
+"gi_bake_tests" time elapsed: 00:00:01
+----------------------------------------------------------
+
+75/188 Testing: partstore_tests
+75/188 Test: partstore_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/partstore_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"partstore_tests" start time: Sep 30 19:27 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+[geometry] terrain 7ff44b886e03e4f6 paging failed: geometry cache directory absent
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0005136f1a700021 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0005136f1a700022 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0005136f1a700001 (2 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0005136f1a700001 (2 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] coherent load failed for 726e647262616421
+[part-store] loaded v3 FLAT part aaaaaaaa22222222 (1 LOD levels, 3 clusters, 1 refs, 0 impostors)
+[part-store] loaded v3 FLAT part cccccccc11111111 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] coherent load failed for a81a8a1a8a1a8a1a
+[part-store] coherent load failed for a813b813b813b813
+[part-store] loaded v3 FLAT part a815b815b815b815 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part f1a7000000000002 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] coherent load failed for f1a7000000000021
+[test_partstore_construction_commits_no_banks]
+[test_prepared_sector_bank_failure_is_deferred]
+[test_prepared_sector_concurrent_first_use]
+[test_terrain_page_failure_bounds_static_fallback]
+[test_terrain_page_success_keeps_static_fallback]
+PARTSTORE_VT_DENSITY legacy=compatible clustered_legacy_staged=checked override=checked
+=== test_partstore_segmented_loading ===
+  test_partstore_segmented_loading OK
+partstore_tests: ALL PASS
+<end of output>
+Test time =   2.14 sec
+----------------------------------------------------------
+Test Passed.
+"partstore_tests" end time: Sep 30 19:27 Pacific Daylight Time
+"partstore_tests" time elapsed: 00:00:02
+----------------------------------------------------------
+
+78/188 Testing: world_tracer_tests
+78/188 Test: world_tracer_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_tracer_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"world_tracer_tests" start time: Sep 30 19:27 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 1 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 2 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 3 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 4 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 5 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 6 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 7 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 8 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 9 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 10 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 11 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 12 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 13 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 14 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 15 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 16 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 17 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 18 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 19 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 20 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 21 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 22 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 23 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 24 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 25 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 26 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 27 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 28 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 29 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 30 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 31 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 32 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 33 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 34 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 35 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 36 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 37 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 38 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 39 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 40 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 41 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 42 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 43 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 44 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 45 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 46 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 47 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 48 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 49 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 50 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 51 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 52 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 53 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 54 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 55 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 56 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 57 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 58 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 59 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 60 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 61 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 62 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 63 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 64 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 65 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 66 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 67 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 68 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 69 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 70 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 71 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 72 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 73 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 74 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 75 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 76 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 77 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 78 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 79 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 80 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 81 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 82 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 83 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 84 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 85 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 86 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 87 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 88 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 89 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 90 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 91 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 92 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 93 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 94 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 95 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 96 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 97 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 98 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 99 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 100 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 101 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 102 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 103 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 104 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 105 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 106 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 107 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 108 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 109 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 110 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 111 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 112 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 113 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 114 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 115 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 116 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 117 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 118 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 119 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 120 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 121 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 122 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 123 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 124 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 125 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 126 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 127 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 128 (tried flat + compositional)
+missing parts: largest new request=45095 bytes; DrawRecord=144 bytes
+ALL PASS
+<end of output>
+Test time =   0.30 sec
+----------------------------------------------------------
+Test Passed.
+"world_tracer_tests" end time: Sep 30 19:27 Pacific Daylight Time
+"world_tracer_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+80/188 Testing: obj_export_tests
+80/188 Test: obj_export_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/obj_export_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"obj_export_tests" start time: Sep 30 19:27 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+All obj export tests passed
+ALL PASS
+<end of output>
+Test time =   0.38 sec
+----------------------------------------------------------
+Test Passed.
+"obj_export_tests" end time: Sep 30 19:27 Pacific Daylight Time
+"obj_export_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+81/188 Testing: obj_export_golden_tests
+81/188 Test: obj_export_golden_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/obj_export_golden_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"obj_export_golden_tests" start time: Sep 30 19:27 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+-- CastleStone
+FAIL: golden CastleStone: digest differs
+  the part's RESOLVED HASH changed (resolved_hash 8e3a0967ba2d2dc4 -> resolved_hash 730a3217c9a13581): the bake moved, not the
+  exporter. Regenerate with MATTER_EXPORT_GOLDEN_UPDATE=1 and review the
+  new digest.
+  line 2: want 'resolved_hash 8e3a0967ba2d2dc4' got 'resolved_hash 730a3217c9a13581'
+  line 6: want 'vertices 2977' got 'vertices 45506'
+  line 7: want 'triangles 3382' got 'triangles 54054'
+  line 8: want 'charts 24' got 'charts 223'
+  line 12: want 'material mat_8 8 3382' got 'material mat_8 8 54054'
+  line 13: want 'map albedo a75ebc4d79f7c7c2' got 'map albedo 0473d9caa5d6987e'
+  line 14: want 'map normal 2ada090620e8762a' got 'map normal 281757a9a9886a07'
+  line 15: want 'map roughness 9ce14626a3a068e4' got 'map roughness 2ced7296228f8a00'
+-- CastlePavingSlab
+FAIL: golden CastlePavingSlab: digest differs
+  the part's RESOLVED HASH changed (resolved_hash 6fc0e819cd769001 -> resolved_hash b57b33e2797b2792): the bake moved, not the
+  exporter. Regenerate with MATTER_EXPORT_GOLDEN_UPDATE=1 and review the
+  new digest.
+  line 2: want 'resolved_hash 6fc0e819cd769001' got 'resolved_hash b57b33e2797b2792'
+-- AlpineFlower
+FAIL: golden AlpineFlower: digest differs
+  the part's RESOLVED HASH changed (resolved_hash 9fd57fdb5699f695 -> resolved_hash 62dd2578800bd70e): the bake moved, not the
+  exporter. Regenerate with MATTER_EXPORT_GOLDEN_UPDATE=1 and review the
+  new digest.
+  line 2: want 'resolved_hash 9fd57fdb5699f695' got 'resolved_hash 62dd2578800bd70e'
+-- World.exports (DSL binding)
+3 FAILURE(S)
+<end of output>
+Test time =  26.27 sec
+----------------------------------------------------------
+Test Failed.
+"obj_export_golden_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"obj_export_golden_tests" time elapsed: 00:00:26
+----------------------------------------------------------
+
+82/188 Testing: eval_world_tests
+82/188 Test: eval_world_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/eval_world_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"eval_world_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+ordered layer fixture: 196 operations
+ProceduralBrickProof: 361 material operations
+ProceduralTerrainProof: 229 material operations
+ALL PASS
+<end of output>
+Test time =   0.90 sec
+----------------------------------------------------------
+Test Passed.
+"eval_world_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"eval_world_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+83/188 Testing: vertex_cache_order_tests
+83/188 Test: vertex_cache_order_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vertex_cache_order_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"vertex_cache_order_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+grid FIFO misses: 24413 -> 4599
+vertex_cache_order_tests: ALL PASS
+<end of output>
+Test time =   0.34 sec
+----------------------------------------------------------
+Test Passed.
+"vertex_cache_order_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"vertex_cache_order_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+92/188 Testing: terrain_field_tests
+92/188 Test: terrain_field_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/terrain_field_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"terrain_field_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+ALL PASS
+<end of output>
+Test time =   0.15 sec
+----------------------------------------------------------
+Test Passed.
+"terrain_field_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"terrain_field_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+93/188 Testing: terrain_mesher_tests
+93/188 Test: terrain_mesher_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/terrain_mesher_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"terrain_mesher_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+  nested L0/1 (voxel 2/4 m): nested 28/31 cols, step 0.5432 | uniform 28/31 cols, step 0.5432
+  nested L1/2 (voxel 4/8 m): nested 31/31 cols, step 1.8299 | uniform 31/31 cols, step 1.8299
+  nested L2/3 (voxel 8/16 m): nested 31/31 cols, step 2.9544 | uniform 31/31 cols, step 2.9544
+  nested L3/4 (voxel 16/32 m): nested 31/31 cols, step 5.2852 | uniform 31/31 cols, step 5.2852
+  nested L4/5 (voxel 32/64 m): nested 31/31 cols, step 4.6643 | uniform 31/31 cols, step 4.6643
+  nested vs uniform: worst mismatch ratio 1.0000 (level 0)
+  seam -x L0/1 (voxel 2/4 m): 26/31 rows gapped, worst run 1.750 m (0.88 fine voxels)
+  seam -x L1/2 (voxel 4/8 m): 31/31 rows gapped, worst run 4.000 m (1.00 fine voxels)
+  seam -x L2/3 (voxel 8/16 m): 31/31 rows gapped, worst run 7.000 m (0.88 fine voxels)
+  seam -x L3/4 (voxel 16/32 m): 31/31 rows gapped, worst run 14.000 m (0.88 fine voxels)
+  seam -x: worst uncovered run 1.00 fine voxels (level 1) -- open by construction until the welder runs
+  seam -z L0/1: 27/31 rows gapped, worst run 2.250 m (1.12 fine voxels)
+  seam -z L1/2: 30/31 rows gapped, worst run 4.000 m (1.00 fine voxels)
+  seam -z L2/3: 29/31 rows gapped, worst run 7.000 m (0.88 fine voxels)
+  nested corner: lower 31/31 cols step 1.8299, upper 29/31 cols step 1.4236
+  volumetric equal-rung seam: a=612 b=342 shared-row verts, 348 shared cells, worst x disagreement 3.81e-06 m
+  volumetric cross-rung plane: 481/1600 samples where the raw fine density equals the coarse interpolant, worst delta 1.0178
+  boundary flat: -x 8 verts (plane 24, layer 24), +x 8 verts (plane 32, layer 31)
+  boundary cell-box: 1522 entries, 0 outside their own cell, worst overshoot 0.000000 m
+  boundary determinism: 1410 verts across 6 faces, 0 differing bytes-wise
+  boundary equal-rung: A+x 158 verts, B-x 172 verts, 115 shared (a,b), 0 sign mismatches, worst vertex separation 4.016 m
+  boundary equal-rung: 43 cells only in A, 57 only in B (cells whose crossing is off the shared plane)
+  boundary 2:1: fine 409 verts (y cells 13..81 -> 6..40), coarse 399 verts (y cells 6..40); 409/409 land in the coarse z domain, 299 onto a coarse cell
+  M0-WP7 mesh identity: 6 configurations pinned bitwise against the pre-band build (mesh + boundary record)
+  M0-WP7 band extent: -x band 2606 tris spanning x-x0 in [-5.19, -0.00] m = [-2.59, -0.00] voxels; -z band 1690 tris
+  M2 tile-local Y: ty=1 (world y in [4,8)) surface at local y in [1.000, 1.000] -- world 5 means local 1
+  M2 vertical equal-rung: A+y 64 verts, B-y 68 verts, 55 shared (a,b), 0 sign mismatches, 9 only-A, 13 only-B
+  M2 bridge direction: upper tile reaches to local y -1.168 (-0.58 voxels below its origin); lower tile tops out at local y 63.648 (0.18 voxels below its top)
+  M2 determinism: 11808 tris, 1353 boundary verts, 2746 band tris; 0 differing record bytes
+  M2 -y band: 736 tris spanning y-y0 in [-5.19, -0.01] m = [-2.60, -0.00] voxels
+  M2 vertical 2:1: fine 68 verts, coarse 277 verts; 68/68 halve into the coarse tile's (x,z) cell box, 62 onto a coarse cell
+ALL PASS
+<end of output>
+Test time =   1.86 sec
+----------------------------------------------------------
+Test Passed.
+"terrain_mesher_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"terrain_mesher_tests" time elapsed: 00:00:01
+----------------------------------------------------------
+
+134/188 Testing: shader_source_tests
+134/188 Test: shader_source_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/shader_source_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/tests
+"shader_source_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Assertion failed: cull_shader.find("if (instance.water_pad0 != 0u) return;") != std::string::npos, file D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEngine3\tests\shader_source_tests.cpp, line 88
+<end of output>
+Test time =   0.43 sec
+----------------------------------------------------------
+Test Failed.
+"shader_source_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"shader_source_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+135/188 Testing: geometry_runtime_tests
+135/188 Test: geometry_runtime_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/geometry_runtime_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+"geometry_runtime_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+geometry_runtime_tests: ALL PASS
+<end of output>
+Test time =   0.52 sec
+----------------------------------------------------------
+Test Passed.
+"geometry_runtime_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"geometry_runtime_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+136/188 Testing: geometry_runtime_gpu_tests
+136/188 Test: geometry_runtime_gpu_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/geometry_runtime_tests.exe" "--gpu"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+"geometry_runtime_gpu_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=120x64
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+validation errors: 0
+geometry_runtime_tests: ALL PASS
+<end of output>
+Test time =   1.08 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[ALL PASS]
+"geometry_runtime_gpu_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"geometry_runtime_gpu_tests" time elapsed: 00:00:01
+----------------------------------------------------------
+
+139/188 Testing: geometry_pages_gpu_tests
+139/188 Test: geometry_pages_gpu_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+"geometry_pages_gpu_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+Geometry GPU traversal: 24 CPU/GPU comparisons, 31 unique nodes
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=31576 pending_parts=0 publish=0.06 ms
+[vk] static upload frame bytes=31576 pending_parts=0 publish=0.01 ms
+[vk] static upload frame bytes=31576 pending_parts=0 publish=0.02 ms
+[vk] static upload frame bytes=1515648 pending_parts=0 publish=0.35 ms
+[vk] static upload frame bytes=1515648 pending_parts=0 publish=0.61 ms
+[vk] static upload frame bytes=1515648 pending_parts=0 publish=0.53 ms
+[vk] static upload frame bytes=6488 pending_parts=0 publish=0.01 ms
+[vk] static upload frame bytes=4888 pending_parts=0 publish=0.01 ms
+[vk] static upload frame bytes=4888 pending_parts=0 publish=0.00 ms
+[vk] static upload frame bytes=4200 pending_parts=0 publish=0.01 ms
+[vk] static upload frame bytes=4200 pending_parts=0 publish=0.01 ms
+[vk] static upload frame bytes=31576 pending_parts=0 publish=0.01 ms
+BLAS cache: restored=97 miss=49 captured=49 rejected=0
+Geometry native root: source=512 coarse=64 depth-reference=0.0285305 depth-root=0.0284795
+Geometry native mixed cut: groups=3 cache-reads=7 retained-GPU-bytes=78680
+validation errors: 0
+ALL PASS
+<end of output>
+Test time =  17.96 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[ALL PASS]
+"geometry_pages_gpu_tests" end time: Sep 30 19:28 Pacific Daylight Time
+"geometry_pages_gpu_tests" time elapsed: 00:00:17
+----------------------------------------------------------
+
+143/188 Testing: vt_surface_material_tests
+143/188 Test: vt_surface_material_tests
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+"vt_surface_material_tests" start time: Sep 30 19:28 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] chart-space VT online: 256 page pool (41 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 1024 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (32 rays/texel, 2 pages/frame)
+[vk] slow part registration hash=0000000000007710 vertices=12 indices=18 clusters=1 prepared=0 ms=102.330 validate=0.003 vertex=0.025 impostor=0.000 index=0.007 rt=0.019 vt=102.271 tail=0.005
+vt-surfaces stats: fills=3 -> 6, invalidations=1, dropped=0
+[tileset] slot 0 'C:\Users\webde\AppData\Local\Temp/me3_vt_categorical_0.gtex': 8px x16 layers x4 mips -- core 0.0 MiB BC (was 0.0 MiB raw, 2.60x smaller)
+[tileset] slot 1 'C:\Users\webde\AppData\Local\Temp/me3_vt_categorical_1.gtex': 8px x16 layers x4 mips -- core 0.0 MiB BC (was 0.0 MiB raw, 2.60x smaller)
+categorical probe offset -0.0040 normal 0.007843 -0.000000 0.999512
+categorical probe offset -0.0020 normal 0.007843 -0.000000 0.999512
+categorical probe offset 0.0000 normal 0.007843 -0.000000 0.999512
+categorical probe offset 0.0020 normal 0.007843 -0.000000 0.999512
+categorical probe offset 0.0040 normal 0.007843 -0.000000 0.999512
+categorical probe offset -0.0040 normal 0.007843 -0.000000 0.999512
+categorical probe offset -0.0020 normal 0.007843 -0.000000 0.999512
+categorical probe offset 0.0000 normal 0.007843 -0.000000 0.999512
+categorical probe offset 0.0020 normal 0.007843 -0.000000 0.999512
+categorical probe offset 0.0040 normal 0.007843 -0.000000 0.999512
+categorical material boundary 0: normal delta 0.000000
+categorical material boundary 1: normal delta 0.000000
+categorical material boundary 2: normal delta 0.000000
+categorical material boundary 3: normal delta 0.000000
+categorical material boundary 4: normal delta 0.000000
+validation errors: 0
+ALL PASS
+<end of output>
+Test time = 314.21 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[ALL PASS]
+"vt_surface_material_tests" end time: Sep 30 19:33 Pacific Daylight Time
+"vt_surface_material_tests" time elapsed: 00:05:14
+----------------------------------------------------------
+
+149/188 Testing: smoke_vt_normal_frame
+149/188 Test: smoke_vt_normal_frame
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+"smoke_vt_normal_frame" start time: Sep 30 19:33 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[tileset] slot 0 'C:\Users\webde\AppData\Local\Temp/me3_vt_normal_frame.gtex': 8px x16 layers x4 mips -- core 0.0 MiB BC (was 0.0 MiB raw, 2.60x smaller)
+[vk] chart-space VT online: 256 page pool (41 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 1024 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (32 rays/texel, 2 pages/frame)
+[vk] static upload frame bytes=752 pending_parts=0 publish=0.03 ms
+vt-normal-frame interface: vertex=128 fragment=128 required=88 (local-position POM interface)
+vt-normal-frame readiness: frames=694 stable=5 fills=2 queue=0 dirty=0
+vt-normal-frame axis=yaw degrees=0 rasterCos=0.999811 rayCos=0.999998 parity=0.999814 normal=(0.3254 -0.1842 0.9272)
+vt-normal-frame readiness: frames=5 stable=5 fills=2 queue=0 dirty=0
+vt-normal-frame axis=yaw degrees=15 rasterCos=0.999817 rayCos=0.999998 parity=0.999819 normal=(0.5542 -0.1842 0.8115)
+vt-normal-frame readiness: frames=5 stable=5 fills=2 queue=0 dirty=0
+vt-normal-frame axis=yaw degrees=45 rasterCos=0.999774 rayCos=0.999998 parity=0.999776 normal=(0.8857 -0.1842 0.4255)
+vt-normal-frame readiness: frames=5 stable=5 fills=2 queue=0 dirty=0
+vt-normal-frame axis=yaw degrees=90 rasterCos=0.999811 rayCos=0.999998 parity=0.999814 normal=(0.9272 -0.1842 -0.3254)
+vt-normal-frame readiness: frames=5 stable=5 fills=2 queue=0 dirty=0
+vt-normal-frame axis=roll degrees=0 rasterCos=0.999811 rayCos=0.999998 parity=0.999814 normal=(0.3254 -0.1842 0.9272)
+vt-normal-frame readiness: frames=5 stable=5 fills=2 queue=0 dirty=0
+vt-normal-frame axis=roll degrees=15 rasterCos=0.999829 rayCos=0.999998 parity=0.999831 normal=(0.3621 -0.0938 0.9272)
+vt-normal-frame readiness: frames=5 stable=5 fills=2 queue=0 dirty=0
+vt-normal-frame axis=roll degrees=45 rasterCos=0.999796 rayCos=0.999998 parity=0.999798 normal=(0.3604 0.0998 0.9272)
+vt-normal-frame readiness: frames=5 stable=5 fills=2 queue=0 dirty=0
+vt-normal-frame axis=roll degrees=90 rasterCos=0.999811 rayCos=0.999998 parity=0.999814 normal=(0.1842 0.3254 0.9272)
+validation errors: 0
+ALL PASS
+<end of output>
+Test time =  95.92 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[ALL PASS]
+"smoke_vt_normal_frame" end time: Sep 30 19:35 Pacific Daylight Time
+"smoke_vt_normal_frame" time elapsed: 00:01:35
+----------------------------------------------------------
+
+162/188 Testing: viewer_graph_tests
+162/188 Test: viewer_graph_tests
+Command: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" "-NoProfile" "-ExecutionPolicy" "Bypass" "-File" "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/cmake/tests/viewer_graph_tests.ps1"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+"viewer_graph_tests" start time: Sep 30 19:35 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+-- viewer graph preserves 47-source editor, isolated 168+21 headless, and coherent 216/217-source viewer boundaries
+<end of output>
+Test time =  13.68 sec
+----------------------------------------------------------
+Test Passed.
+"viewer_graph_tests" end time: Sep 30 19:35 Pacific Daylight Time
+"viewer_graph_tests" time elapsed: 00:00:13
+----------------------------------------------------------
+
+End testing: Sep 30 19:35 Pacific Daylight Time
+
+compiler-policy =  13.68 sec*proc
+
+cpu = 330.02 sec*proc
+
+vulkan = 429.17 sec*proc

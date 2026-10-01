@@ -1,0 +1,21 @@
+{
+  "editor_exit": 0,
+  "validation_errors": 0,
+  "gpu_jobs_ms": {
+    "bake.reset": "37599.1",
+    "ConiferBarkDetail": "3573.4",
+    "ConiferBranchDetail": "1929.5",
+    "RedwoodBarkDetail": "1923.9",
+    "stream.publish": "301.1"
+  },
+  "timing_scope": "Diagnostic only: concurrent world-definition test ran during source preparation; streaming load differed from baseline.",
+  "files": {
+    "bake-trace.json": "eae7e24fb13591c236b62b7ca35ec5ec58290d34ad40ad7d7e4c4a012d454ea2",
+    "cmd.txt": "7b13596ef6d9a63dcc90cdf45a810668a903e2cbe87ad9d174d4d326af5dd33b",
+    "log.txt": "b9707e47970123e8729075a715d270ee5802e5b999dfd8a02c5bcf34433d871c",
+    "overview.png": "e20d9563a086fc621e6aafe3d0a7d7749cac0fc0d1b1c582dbaedfb92476604a",
+    "overview.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "settled.png": "96089acca79fcbc8b82cdf204e5393558ca3b417fd3eb181e8efbbe39d76aa8e",
+    "settled.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+  }
+}

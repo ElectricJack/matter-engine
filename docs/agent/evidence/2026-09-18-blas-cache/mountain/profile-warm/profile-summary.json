@@ -1,0 +1,90 @@
+{
+  "windows": 12,
+  "stages": {
+    "update_cpu": {
+      "count": 1428,
+      "total_ms": 41038.08,
+      "max_ms": 507.781,
+      "mean_ms": 28.738151260504203
+    },
+    "worker_queue": {
+      "count": 7263,
+      "total_ms": 168310.862,
+      "max_ms": 51.378,
+      "mean_ms": 23.173738400110146
+    },
+    "cache_open": {
+      "count": 1,
+      "total_ms": 0.737,
+      "max_ms": 0.737,
+      "mean_ms": 0.737
+    },
+    "index_refresh": {
+      "count": 916,
+      "total_ms": 199.201,
+      "max_ms": 1.329,
+      "mean_ms": 0.2174683406113537
+    },
+    "page_read_batch": {
+      "count": 916,
+      "total_ms": 401.23699999999997,
+      "max_ms": 2.575,
+      "mean_ms": 0.43803165938864624
+    },
+    "decode_page": {
+      "count": 7263,
+      "total_ms": 809.4810000000001,
+      "max_ms": 3.323,
+      "mean_ms": 0.1114527054935977
+    },
+    "completion_queue": {
+      "count": 7263,
+      "total_ms": 493246.225,
+      "max_ms": 576.0,
+      "mean_ms": 67.91218848960484
+    },
+    "prepared_queue": {
+      "count": 7263,
+      "total_ms": 748585.77,
+      "max_ms": 661.916,
+      "mean_ms": 103.06839735646427
+    },
+    "upload_cpu": {
+      "count": 7263,
+      "total_ms": 2379.023,
+      "max_ms": 430.784,
+      "mean_ms": 0.32755376566157235
+    },
+    "render_ready_wait": {
+      "count": 7263,
+      "total_ms": 1665810.236,
+      "max_ms": 2898.397,
+      "mean_ms": 229.3556706595071
+    },
+    "request_to_publish": {
+      "count": 7263,
+      "total_ms": 3087418.2499999995,
+      "max_ms": 3014.327,
+      "mean_ms": 425.0885653311303
+    }
+  },
+  "io": {
+    "requests": 7260,
+    "hits": 0,
+    "reads": 5827,
+    "bytes": 130424416,
+    "cpu_payload_peak": 130424416
+  },
+  "queues": {
+    "reads_sampled_peak": 16,
+    "completions_sampled_peak": 8,
+    "prepared_sampled_peak": 8,
+    "uploads_sampled_peak": 16,
+    "published": 7263,
+    "reservation_stalls": 0,
+    "upload_limit_frames": 821,
+    "cpu_deferrals": 0,
+    "failures": 0,
+    "watchdogs": 0
+  }
+}

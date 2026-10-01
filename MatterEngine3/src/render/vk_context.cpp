@@ -1430,14 +1430,17 @@ struct VulkanDevice::Impl {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.features.drawIndirectFirstInstance = VK_TRUE;
         features2.features.multiDrawIndirect = VK_TRUE;
+        features2.features.pipelineStatisticsQuery =
+            rt_features2.features.pipelineStatisticsQuery;
         // VK_POLYGON_MODE_LINE (the wireframe debug view) is invalid unless
         // this is enabled at logical-device creation. It is optional: devices
         // without it retain filled rendering and the editor reports the
         // wireframe control as unavailable rather than pretending it works.
         features2.features.fillModeNonSolid =
             wireframe_enabled ? VK_TRUE : VK_FALSE;
+        // R16_UNORM composed VT height also needs this on raster-only devices.
         features2.features.shaderStorageImageExtendedFormats =
-            ray_tracing_enabled ? VK_TRUE : VK_FALSE;
+            rt_features2.features.shaderStorageImageExtendedFormats;
         // Phase 1 tileset Vulkan port (Task 6): the ground tileset sampler
         // wants anisotropic filtering. Gate the enable on the earlier
         // rt_features2 query (vkGetPhysicalDeviceFeatures2 above) so we never
@@ -1457,6 +1460,24 @@ struct VulkanDevice::Impl {
         features2.features.fragmentStoresAndAtomics =
             rt_features2.features.fragmentStoresAndAtomics;
         features2.pNext = &features12;
+        // Driver-provided executable statistics are opt-in; this extension
+        // adds startup compilation work and is used only for diagnosis.
+        VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipeline_stats{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+        if (std::getenv("MATTER_VK_PIPELINE_STATS") &&
+            available_extensions.count(
+                VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
+            VkPhysicalDeviceFeatures2 stats_features{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            stats_features.pNext = &pipeline_stats;
+            vkGetPhysicalDeviceFeatures2(physical_device, &stats_features);
+            if (pipeline_stats.pipelineExecutableInfo) {
+                pipeline_stats.pNext = features2.pNext;
+                features2.pNext = &pipeline_stats;
+                extensions.push_back(
+                    VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+            }
+        }
 
         // MATTER_VK_ROBUSTNESS=1: turn every out-of-bounds buffer access into
         // a defined zero read instead of whatever the hardware does with an
@@ -2692,6 +2713,10 @@ struct VulkanDevice::Impl {
             resource->next = nullptr;
             delete resource;
         }
+        // Frame keep-alives may own raw Vulkan objects (for example BLAS
+        // serialization query pools), not just registered buffer controls.
+        // Drop them after the completion wait and before destroying the device.
+        for (FrameSlot& frame : frames) frame.retained.clear();
         if (device_lifetime)
             device_lifetime->destroy_registered_resources();
         for (FrameSlot& frame : frames) {

@@ -1,0 +1,26 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 37.83261995599605,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,clay-textured-v3-group,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB",
+    "STATSVT,clay-textured-v3-close,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=36/25600,pinned=1,queue=0,fills=36,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v3-grazing,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=50/25600,pinned=1,queue=0,fills=50,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v3-rt,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=50/25600,pinned=1,queue=0,fills=50,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v3-albedo,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=50/25600,pinned=1,queue=0,fills=50,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v3-normals,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=50/25600,pinned=1,queue=0,fills=50,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,clay-textured-v3-wireframe,active=1,variants=1/32768,rejected=0,mesh=3.6/3512.0 MiB,pool=80/25600,pinned=1,queue=0,fills=80,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "clay-textured-v3-group.png": "8c161d7232172dd7da7f8d40b37e2a1a826f9544af9f9ca6b7bd79fe3acaaece",
+    "clay-textured-v3-close.png": "a6b13b22c301443ac62574d972c3be855ca78fb0493d2883efe9920d5aa1f349",
+    "clay-textured-v3-grazing.png": "6dc640f8b15cfcb560ac2196148b44eaad902b803482003a27f4c6f53a0e9862",
+    "clay-textured-v3-rt.png": "45341f91f5f4e1eaad2d7d048caed406b5706c30248ae4ffef4a5f5250886ec0",
+    "clay-textured-v3-albedo.png": "58490d027dd20d8882a12f89c5987fa5b5f5b343f81aedf7c2f05224d5dfe22f",
+    "clay-textured-v3-normals.png": "cb5022ed857fb73e8f6fdcd4f6056aab13b21059ca8a9bf50953b73aaee9261c",
+    "clay-textured-v3-wireframe.png": "5e3465e2886acc5d2e23b1b12b81011db1b4d81161407bf2692e3146807bcd7c"
+  },
+  "passed": true
+}

@@ -194,7 +194,7 @@ int main() {
                            "before GPU");
             }
             const std::string source =
-                read("projects/world_demo/objects/CastleStoneSource.js");
+                read("projects/world_demo/objects/castle/materials/CastleStoneSource.js");
             HOST_CHECK(!source.empty(), "real CastleStoneSource consumer exists");
             for (float spacing : {.006f, .003f})
                 for (unsigned seed = 0; seed < 8; ++seed) {

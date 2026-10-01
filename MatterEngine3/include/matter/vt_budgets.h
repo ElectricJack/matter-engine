@@ -25,7 +25,7 @@
 // allocations that cannot change without recreating the renderer, which a WORLD
 // reload does not do. They are therefore ReadOnly here (displayed with their
 // env source, not editable), rather than RequiresReload, which would promise a
-// reload that does not in fact re-run init. The other four are re-read by
+// reload that does not in fact re-run init. The live fields are re-read by
 // VtResidency::begin_frame every frame, so editing them is genuinely live.
 //
 // USING IT. There is no instance to own or pass around: read through
@@ -59,6 +59,10 @@ struct VtResidencyBudgets {
     // many variants per frame and each renders legacy-flat until its single
     // tail page lands, so tails must never queue behind sharpening fills.
     uint32_t tail_fills_per_frame = 16;
+    // Independent GPU targets. Production pages advance in 32-texel slices priced
+    // by retired timestamps; one tile ensures progress. 0 restores whole pages.
+    float fill_budget_ms = 4.0f;
+    float enrich_budget_ms = 4.0f;
     // Tier-2 hemisphere-AO enrichments per frame; 0 keeps the enricher loaded
     // but drains nothing.
     uint32_t enrich_per_frame = 2;
@@ -74,7 +78,11 @@ struct VtResidencyBudgets {
     // whole array layers) and then fails when the layer count exceeds the
     // device's maxImageArrayLayers. 0 means "derive from pool_pages instead"
     // — the legacy path. Init-consumed: ReadOnly.
-    uint32_t pool_mb = 4096;
+    // StreamMountain's paged geometry needs a separate multi-GiB reservation.
+    // A 4 GiB pool left too little room for that cut and static scene buffers
+    // during streaming. Keep the fixed allocation at 2 GiB by default; the
+    // runtime already degrades through coarser pages when detail is evicted.
+    uint32_t pool_mb = 2048;
     // Physical page pool, in pages. When pool_mb is non-zero this is IGNORED
     // (init derives the page count from the MiB budget). When pool_mb is 0
     // this is the direct page count, rounded up to whole array layers.
@@ -95,8 +103,10 @@ struct VtResidencyBudgets {
     // requests START, never how long one takes — at least one is always
     // serviced, so the VT cannot stall. 0 restores service-everything.
     float request_budget_ms = 4.0f;
-    // Hard ceiling on the pending page-fill queue, applied after each frame's
-    // selection, keeping the highest-priority entries.
+    // Ceiling on pending feedback-driven detail requests, applied after each
+    // frame's selection, keeping the highest-priority detail entries. Required
+    // initial/refresh tails are coalesced separately by owner and protected
+    // from this cap; variant admission bounds their count.
     //
     // The queue used to be unbounded. Because drain_feedback re-derives the
     // wanted set from the feedback buffer EVERY frame, entries accumulated far
@@ -107,12 +117,10 @@ struct VtResidencyBudgets {
     // without bound with time flown -- 14.3 ms of a 35.3 ms frame by the last
     // capture.
     //
-    // Dropping is safe precisely because feedback regenerates: anything still
-    // visible is re-requested next frame. A dropped entry costs at most one
-    // frame of latency on a page that was tens of thousands of frames from
-    // being serviced anyway. Watch the vt.requests_dropped counter -- it should
-    // be non-zero (that is the cap working), but a value that dwarfs
-    // vt.feedback_requests means the cap is too tight for the working set.
+    // Visible missing detail returns through asynchronous feedback. This does
+    // not bound its latency under sustained overload; watch queue age as well
+    // as vt.requests_dropped. Mandatory tail refreshes cannot be regenerated
+    // by feedback and must never be discarded as ordinary detail.
     uint32_t queue_cap = 256;
 };
 
@@ -169,6 +177,15 @@ inline const props::Group& vt_residency_budgets_group() {
         prop(&VtResidencyBudgets::tail_fills_per_frame, "tail_fills_per_frame")
             .label("Tail fills / frame").range(1.0f, 64.0f)
             .env("MATTER_VT_TAIL_FILLS_PER_FRAME"),
+        prop(&VtResidencyBudgets::fill_budget_ms, "fill_budget_ms")
+            .label("Fill GPU budget").range(0.0f, 32.0f).units("ms")
+            .env("MATTER_VT_FILL_BUDGET_MS")
+            .doc("Shared tail/detail fill time target from retired GPU samples. "
+                 "Resumable producers admit 32-texel slices; 0 restores whole pages."),
+        prop(&VtResidencyBudgets::enrich_budget_ms, "enrich_budget_ms")
+            .label("AO GPU budget").range(0.0f, 32.0f).units("ms")
+            .env("MATTER_VT_ENRICH_BUDGET_MS")
+            .doc("Separate AO 32-texel slice target from retired GPU samples; 0 restores whole pages."),
         prop(&VtResidencyBudgets::enrich_per_frame, "enrich_per_frame")
             .label("Enrich / frame").range(0.0f, 16.0f)
             .env("MATTER_VT_ENRICH_PER_FRAME")
@@ -218,11 +235,10 @@ inline const props::Group& vt_residency_budgets_group() {
         prop(&VtResidencyBudgets::queue_cap, "queue_cap")
             .label("Fill queue cap").range(16.0f, 65536.0f).log()
             .env("MATTER_VT_QUEUE_CAP")
-            .doc("Ceiling on the pending page-fill queue, keeping the "
-                 "highest-priority entries. Feedback re-derives the wanted set "
-                 "every frame, so dropping the tail costs at most one frame of "
-                 "latency; without a cap the queue's per-frame sort grows "
-                 "without bound with time flown."));
+            .doc("Ceiling on pending feedback-driven detail requests, keeping "
+                 "the highest-priority entries. Visible missing detail returns "
+                 "through asynchronous feedback. Mandatory initial/refresh tails "
+                 "are protected separately and bounded by admitted variants."));
     return def.group();
 }
 

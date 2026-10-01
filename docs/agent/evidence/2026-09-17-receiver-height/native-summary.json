@@ -1,0 +1,96 @@
+{
+  "baseline": "mountain-facets-v1",
+  "candidate": "receiver-height-v2",
+  "changed_sources": [
+    "MatterEngine3/shaders_vk/vt_composite.comp",
+    "MatterEngine3/src/matter_engine.cpp",
+    "MatterEngine3/src/render/vt_compositor.cpp",
+    "MatterEngine3/src/render/vt_surface_tape.h",
+    "MatterEngine3/src/surface_base.js.inc",
+    "MatterEngine3/src/terrain_field.cpp",
+    "MatterEngine3/src/terrain_field.h",
+    "MatterEngine3/tests/eval_world_tests.cpp",
+    "MatterEngine3/tests/surface_field_tests.cpp",
+    "MatterEngine3/tests/vt_compositor_tests.cpp",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+    "MatterEngine3/tests/world_definition_tests.cpp",
+    "projects/world_demo/shared-lib/mountain_surface.js"
+  ],
+  "builds": [
+    [
+      "eval_world_tests",
+      0
+    ],
+    [
+      "world_definition_tests",
+      0
+    ],
+    [
+      "surface_field_tests",
+      0
+    ],
+    [
+      "vt_compositor_tests",
+      0
+    ],
+    [
+      "vulkan_smoke_tests",
+      0
+    ],
+    [
+      "matter_editor",
+      0
+    ]
+  ],
+  "checks": [
+    [
+      "surface",
+      true
+    ],
+    [
+      "eval",
+      true
+    ],
+    [
+      "mountain",
+      true
+    ],
+    [
+      "contact",
+      true
+    ],
+    [
+      "compositor",
+      true
+    ],
+    [
+      "vt-context-source",
+      true
+    ],
+    [
+      "vt-direct-source",
+      true
+    ],
+    [
+      "vt-composed-parallax",
+      true
+    ],
+    [
+      "vt-composed-seam",
+      true
+    ],
+    [
+      "vt-input-snapshot",
+      true
+    ],
+    [
+      "vt-queue",
+      true
+    ],
+    [
+      "vt-export",
+      true
+    ]
+  ],
+  "editor_sha256": "ced060ff290c6859b749863240d6f12434b71ea75c6440711ca1bba0b388fea6"
+}

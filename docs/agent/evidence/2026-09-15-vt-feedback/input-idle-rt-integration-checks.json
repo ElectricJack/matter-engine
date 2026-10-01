@@ -1,0 +1,21 @@
+[
+  {
+    "name": "rt",
+    "kind": "test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"rt\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "elapsed_seconds": 35.84409839900036,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/input-idle-rt-integration-test-rt.log",
+    "source_changes": [],
+    "failures": [
+      "FAIL: GPU temporal variance bounds reject radiance outlier"
+    ],
+    "validation_errors": []
+  }
+]

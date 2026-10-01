@@ -1,0 +1,113 @@
+{
+  "units": {
+    "zones": "milliseconds",
+    "counters": "count"
+  },
+  "scope": "512-frame profiler tail; descriptive stage attribution, no end-to-end acceptance claim",
+  "zones": {
+    "vt.collect": {
+      "samples": 512,
+      "p50": 0.004,
+      "p95": 0.005900000000000001,
+      "max": 0.0205
+    },
+    "vt.descriptors": {
+      "samples": 512,
+      "p50": 0.0327,
+      "p95": 0.048,
+      "max": 0.1817
+    },
+    "vt.drain_feedback": {
+      "samples": 512,
+      "p50": 0.4383,
+      "p95": 0.6493,
+      "max": 1.5524
+    },
+    "vt.enrich": {
+      "samples": 512,
+      "p50": 0.0007,
+      "p95": 0.0012,
+      "max": 0.0027
+    },
+    "vt.fb_dedup": {
+      "samples": 512,
+      "p50": 0.0799,
+      "p95": 0.1009,
+      "max": 0.1408
+    },
+    "vt.fb_queue": {
+      "samples": 512,
+      "p50": 0.21630000000000002,
+      "p95": 0.269,
+      "max": 1.3371
+    },
+    "vt.fb_scan": {
+      "samples": 512,
+      "p50": 0.0995,
+      "p95": 0.2102,
+      "max": 0.4687
+    },
+    "vt.feedback_target": {
+      "samples": 510,
+      "p50": 0.0006,
+      "p95": 0.0011,
+      "max": 0.0074
+    },
+    "vt.invalidations": {
+      "samples": 463,
+      "p50": 0.0001,
+      "p95": 0.0003,
+      "max": 0.0013
+    },
+    "vt.push_inputs": {
+      "samples": 512,
+      "p50": 0.0006,
+      "p95": 0.0012,
+      "max": 0.0181
+    },
+    "vt.residency_begin": {
+      "samples": 512,
+      "p50": 0.44530000000000003,
+      "p95": 0.6558999999999999,
+      "max": 1.5592000000000001
+    },
+    "vt.table_upload": {
+      "samples": 512,
+      "p50": 0.004200000000000001,
+      "p95": 0.0066,
+      "max": 0.0141
+    }
+  },
+  "counters": {
+    "vt.fb_hits_raw": {
+      "samples": 512,
+      "p50": 16780,
+      "p95": 16780,
+      "max": 16780
+    },
+    "vt.fb_hits_runlength": {
+      "samples": 512,
+      "p50": 2324,
+      "p95": 2354,
+      "max": 2397
+    },
+    "vt.fb_texels": {
+      "samples": 512,
+      "p50": 32400,
+      "p95": 32400,
+      "max": 32400
+    },
+    "vt.feedback_requests": {
+      "samples": 512,
+      "p50": 620,
+      "p95": 663,
+      "max": 701
+    },
+    "vt.variants": {
+      "samples": 512,
+      "p50": 79,
+      "p95": 79,
+      "max": 79
+    }
+  }
+}

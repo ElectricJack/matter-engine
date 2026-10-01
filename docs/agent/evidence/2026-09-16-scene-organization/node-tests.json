@@ -1,0 +1,211 @@
+[
+  {
+    "test": "projects/world_demo/tests/alpine_ecology_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/brick_wall_layout_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_collision_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_connector_kit_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_fast_bake_proof_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_finish_detail_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_frames_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_furnishing_light_clearance_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_furnishings_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_landing_transit_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_manifest_transit_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_masonry_scene_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_masonry_stock_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_masonry_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_paving_tests.mjs",
+    "returncode": 1
+  },
+  {
+    "test": "projects/world_demo/tests/castle_plan_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_primitives_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_ring_surface_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_broadphase_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_catalog_lazy_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_programs_integration_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_stock_budget_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_surface_connector_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_surface_masonry_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_surface_records_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_surface_structure_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_site_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_solid_source_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_stock_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_structure_catalog_tests.mjs",
+    "returncode": 0,
+    "rerun_log": "castle_structure_catalog_tests-recheck.log"
+  },
+  {
+    "test": "projects/world_demo/tests/castle_structure_collision_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_structure_support_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_structure_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_surface_furnishings_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_surface_paving_tests.mjs",
+    "returncode": 1
+  },
+  {
+    "test": "projects/world_demo/tests/castle_surface_shells_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_surface_spans_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_surface_structure_payload_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_surface_structure_transform_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_upgraded_scene_tests.mjs",
+    "returncode": 1
+  },
+  {
+    "test": "projects/world_demo/tests/castle_variants_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_wall_surfaces_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_wing_interiors_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/castle_wing_programs_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/clay_brick_wall_path_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/conifer_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/kreuzenstein_scene_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/mountain_forest_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/river_float_lab_scene_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/river_hydrology_scene_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/tests/wall_weathering_tests.mjs",
+    "returncode": 0
+  },
+  {
+    "test": "projects/world_demo/scenes/lighting/LocalLightRtGallery/fixture_tests.mjs",
+    "returncode": 0
+  }
+]

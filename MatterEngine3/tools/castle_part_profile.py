@@ -60,7 +60,7 @@ def main():
                'MatterEngine3/src/part_flatten.cpp', 'MatterEngine3/src/lod_bake.cpp',
                'MatterEngine3/tests/castle_part_bench.cpp', 'libs/MatterSurfaceLib/src/surface.c']
     sources += [str(p.relative_to(repo)) for p in (repo/'projects/world_demo').glob('**/castle*.js')]
-    sources += [str(p.relative_to(repo)) for p in (repo/'projects/world_demo/objects').glob('Castle*.js')]
+    sources += [str(p.relative_to(repo)) for p in (repo/'projects/world_demo/objects').rglob('Castle*.js')]
     provenance = dict(exe=str(args.exe.resolve()), exe_sha256=sha(args.exe),
         source_sha256={p: sha(repo/p) for p in sources if (repo/p).exists()},
         note='Source hashes describe the runner input tree; externally frozen binaries require their own build-source manifest.',

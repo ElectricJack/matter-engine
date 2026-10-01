@@ -1,4 +1,7 @@
 #pragma once
+#include "vt_feedback_format.h"
+#include "vt_work_budget.h"
+#include "matter/vt_budgets.h"
 
 // Chart-space virtual texturing — residency runtime (WP-E, contract C2).
 //
@@ -25,8 +28,8 @@
 //   mip_offset[m] = sum_{k < m} pw(k) * ph(k)
 //   entry(m, px, py) = table[mip_offset[m] + py * pw(m) + px]
 //
-// so a 512^2 atlas costs 16+4+1+1 = 22 entries (88 bytes) and the 8192^2
-// worst case costs 5462 (21.3 KiB) — not the fixed 64x128 = 32 KiB layer the
+// so a 512^2 atlas costs 16+4+1+1 = 22 entries (88 bytes) and the 16384^2
+// worst case costs 21846 (85.3 KiB) — not the fixed 64x128 = 32 KiB layer the
 // old image-array indirection burned per registration. The per-variant record
 // (VariantRecordGpu / vt_common.glsl's VtVariantRecord) carries the table's
 // word offset, the precomputed mip_offset prefix sums and the finest-mip page
@@ -69,26 +72,89 @@
 // catch).
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include <vulkan/vulkan.h>
 
 #include "chart_atlas.h"
+#include "vt_feedback.h"
 #include "vt_types.h"
+#include "vt_snapshot.h"
+#include "vt_surface_boundary.h"
+#include "vt_surface_connections.h"
+#include "vt_receiver_material.h"
+#include "vt_occlusion_pages.h"
+#include "vt_material_pages.h"
+#include "vt_material_read.h"
 
-namespace matter { class VulkanDevice; struct VulkanFrame; }
+namespace matter { class VulkanDevice; struct VulkanFrame; struct VkImageResource; }
 
 namespace vt {
 
-// 8192 -> 4096 -> ... -> 64 is 8 levels; the last is the resident tail.
-constexpr uint32_t kVtMaxMips = 8u;
+class VtResidency;
+struct VtModuleOwner;
+
+// Render-thread ownership of an independently resident immutable material.
+// Copies share one registration. The last copy releases it through the normal
+// GPU retirement horizon. A lease may safely outlive residency shutdown.
+class VtMaterialModule {
+public:
+    ~VtMaterialModule();
+    VtMaterialModule(const VtMaterialModule&) = delete;
+    VtMaterialModule& operator=(const VtMaterialModule&) = delete;
+    uint64_t content_hash() const { return hash_; }
+private:
+    friend class VtResidency;
+    VtMaterialModule() = default;
+    std::weak_ptr<VtModuleOwner> owner_;
+    uint64_t hash_ = 0, generation_ = 0;
+    uint32_t slot_ = 0;
+};
+using VtMaterialModuleLease = std::shared_ptr<const VtMaterialModule>;
+struct VtMaterialModuleBinding { uint32_t slot = 0, generation = 0; };
+
+struct VtMaterialReadPage {
+    uint32_t x = 0, y = 0, material_slot = UINT32_MAX;
+    VtPageHeight height;
+};
+// Explicit immutable page addresses for a composition read. Consumers do not
+// sample the mutable live page table, which may not yet reflect CPU updates.
+class VtMaterialRead {
+public:
+    const std::vector<VtMaterialReadPage>& pages() const { return pages_; }
+    const VtPeriodicDomain& domain() const { return inputs_->context.periodic; }
+    uint32_t mip() const { return mip_; }
+private:
+    friend class VtResidency;
+    VtMaterialRead() = default;
+    VtMaterialModuleLease module_;
+    std::shared_ptr<const VtPartSnapshot> inputs_;
+    std::shared_ptr<const VtInputSnapshot> snapshot_;
+    uint64_t revision_ = 0;
+    uint32_t mip_ = 0;
+    std::vector<VtMaterialReadPage> pages_;
+    std::vector<VtMaterialPages::Read> reads_;
+};
+using VtMaterialReadLease = std::shared_ptr<const VtMaterialRead>;
+enum class VtMaterialReadStatus { Ready, Pending, Invalid };
+
+enum class VtInvalidationReason : uint32_t {
+    Explicit = 0, MaterialInputs = 1, SourceInputs = 2,
+    MaterialAndSourceInputs = 3, Surface = 4, Geometry = 5,
+};
+
+// 16384 -> 8192 -> ... -> 64 is 9 levels; the last is the resident tail.
+constexpr uint32_t kVtMaxMips = 9u;
 // A vt slot index of 0 means "no VT" in the draw record, so slots are
 // transported as (variant slot + 1). kVtNoSlot is that sentinel.
 constexpr uint32_t kVtNoSlot = 0u;
@@ -99,9 +165,11 @@ constexpr uint32_t kVtNoSlot = 0u;
 // VtCompositor::kMaxBatchesInFlight = 8 frames (vk_scene_renderer.h,
 // vt_invalidate_retire_serial) — ride the same horizon.
 constexpr uint64_t kVtRetireHorizonFrames = 8u;
-// Worst-case indirection table, in entries: an 8192^2 atlas is 64x64 pages at
-// mip 0 and the stacked grids sum to 4096+1024+256+64+16+4+1+1.
-constexpr uint32_t kVtMaxTableWords = 5462u;
+// Worst-case indirection table: 128x128 pages, down to the 64-texel tail.
+constexpr uint32_t kVtMaxTableWords = 21846u;
+static_assert((chart_atlas::kVtMaxAtlasDim >> (kVtMaxMips - 1u)) <=
+              chart_atlas::kVtTailDim, "every atlas must reach its pinned tail");
+static_assert(kVtMaxMips <= 16u, "visible feedback reserves four mip bits");
 // VariantRung::tail_ready_serial value meaning "the pinned tail has never
 // been written" — see the tail gate below.
 constexpr uint64_t kVtTailNotReady = 0xFFFFFFFFFFFFFFFFull;
@@ -225,6 +293,8 @@ inline size_t vt_variant_mesh_bytes(const chart_atlas::ChartAtlasRung& atlas,
            (tape && context.surface_tape_text
                 ? std::strlen(context.surface_tape_text)
                 : 0) +
+           (context.finite_source_ids ? size_t(context.vertex_count)*sizeof(uint32_t) : 0) +
+           (context.finite_sources ? context.finite_sources->bytes() : 0) +
            atlas.charts.size() * sizeof(chart_atlas::ChartEntry) +
            atlas.tri_order.size() * sizeof(uint32_t);
 }
@@ -426,7 +496,9 @@ class VtIndirectionMap {
 class VtTableAllocator {
   public:
     static constexpr uint32_t kMinBlockWords = 16u;
-    static constexpr uint32_t kClassCount = 10u;   // 16 .. 8192 words
+    static constexpr uint32_t kClassCount = 12u;   // 16 .. 32768 words
+    static_assert((kMinBlockWords << (kClassCount - 1u)) >= kVtMaxTableWords,
+                  "largest virtual table must fit an allocator class");
 
     void reset(uint32_t capacity_words) {
         capacity_ = capacity_words;
@@ -599,6 +671,8 @@ class VtSlotPool {
         pinned_ = 0;
         evictions_ = 0;
         generation_ = 0;
+        lru_scan_count_ = 0;
+        lru_scan_ns_ = 0;
     }
 
     void set_debug(bool debug) { debug_ = debug; }
@@ -612,6 +686,8 @@ class VtSlotPool {
     uint32_t used() const { return used_; }
     uint32_t pinned() const { return pinned_; }
     uint64_t evictions() const { return evictions_; }
+    uint64_t lru_scan_count() const { return lru_scan_count_; }
+    uint64_t lru_scan_ns() const { return lru_scan_ns_; }
     uint32_t graveyard_slots() const {
         return static_cast<uint32_t>(graveyard_.size());
     }
@@ -717,6 +793,8 @@ class VtSlotPool {
     }
 
     bool pick_lru(uint64_t frame, uint32_t& out) const {
+        const auto start = std::chrono::steady_clock::now();
+        ++lru_scan_count_;
         bool found = false;
         uint32_t best = 0;
         uint64_t best_used = 0;
@@ -732,6 +810,9 @@ class VtSlotPool {
                 best_used = o.last_used;
             }
         }
+        lru_scan_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count());
         if (found) out = best;
         return found;
     }
@@ -743,17 +824,20 @@ class VtSlotPool {
     uint32_t used_ = 0;
     uint32_t pinned_ = 0;
     uint64_t evictions_ = 0;
+    mutable uint64_t lru_scan_count_ = 0;
+    mutable uint64_t lru_scan_ns_ = 0;
     uint64_t generation_ = 0;
     uint64_t protect_frames_ = 1;
     bool debug_ = false;
 };
 
 // ---------------------------------------------------------------------------
-// Feedback packing (must match vt_common.glsl's vt_write_feedback).
+// Feedback packing (must match vt_feedback.comp).
 // ---------------------------------------------------------------------------
-// One RGBA16_UINT texel per 8x8 screen block:
+// Two four-u16 requests per 8x8 screen block, in contiguous receiver/material
+// planes extracted from the full-resolution RGBA32_UINT visibility image:
 //   x = vt slot (variant index + 1, 0 = no request), y = page_x, z = page_y,
-//   w = mip. The 16-bit x channel is why MATTER_VT_MAX_VARIANTS tops out at
+//   w = mip. The 16-bit transported slot is why MATTER_VT_MAX_VARIANTS tops out at
 //   65534.
 struct VtFeedbackRequest {
     uint32_t layer = 0;   // variant slot index
@@ -815,17 +899,41 @@ class VtResidency {
         uint32_t max_variants = 0;      // MATTER_VT_MAX_VARIANTS (soft bound)
         uint64_t mesh_budget_bytes = 0; // MATTER_VT_MESH_BUDGET_MB, in bytes
         uint32_t pool_capacity = 0;
+        uint32_t replacement_reserve_pages = 0; // included in pool_capacity/bytes
+        uint32_t dirty_pages = 0; // durable resident work, independent of queue cap
+        uint64_t fills_stale_total = 0;
         uint32_t pool_used = 0;
+        uint32_t material_pages = 0; // unique color/normal/ORM/height allocations
+        uint32_t coverage_only_pages = 0; // receiver AUX/geometry without private material pixels
+        uint32_t occlusion_pages = 0; // published immutable receiver factors
+        uint32_t occlusion_retained_pages = 0; // includes earlier GPU readers and unpublished writes
+        uint64_t occlusion_allocated_bytes = 0; // driver allocations, including free space inside live slabs
+        uint64_t enrich_deferred_total = 0;
+        uint32_t module_variants = 0; // independent material owners, included in variants
+        uint64_t module_reuses_total = 0;
+        uint32_t shared_material_references = 0; // references saved by sharing
+        uint64_t surface_pairs_compiled_total = 0;
+        uint64_t surface_table_uploads_total = 0;
+        uint32_t surface_link_tables = 0;
+        uint64_t surface_link_table_bytes = 0; // live connection-table payload; same size on CPU/GPU
+        uint32_t material_read_pages = 0; // distinct material allocations held by composition reads
         uint32_t pool_pinned = 0;
         uint32_t fills_last_frame = 0;
         uint32_t requests_last_frame = 0;
         uint32_t queue_depth = 0;
+        // Sampled after frame selection/retries, once per record_frame.
+        uint32_t mandatory_queue_depth = 0;
+        uint32_t detail_queue_depth = 0;
+        uint64_t oldest_mandatory_age_frames = 0;
+        uint64_t oldest_detail_age_frames = 0;
         uint64_t fills_total = 0;
         uint64_t evictions_total = 0;
+        uint64_t lru_scan_count = 0;    // full-pool victim selections attempted
+        uint64_t lru_scan_ns = 0;       // cumulative CPU time inside pick_lru
         uint64_t pool_bytes = 0;
         uint64_t mesh_bytes = 0;        // CPU copies held for the filler
         uint32_t rejected_variants = 0; // fell back to legacy (budget/slots)
-        uint64_t invalidations_total = 0;  // invalidate_all_content() calls
+        uint64_t invalidations_total = 0;  // nonempty owner-invalidation batches
         uint64_t pages_dropped_total = 0;  // pages those calls dropped
         // Requests the filler dispatched but did not write (see the map-or-
         // rollback path in record_frame). Nonzero means pages are NOT going
@@ -857,6 +965,14 @@ class VtResidency {
         // Table uploads that missed this frame's staging window (they stay
         // queued; a persistent climb means the staging ring is undersized).
         uint64_t table_uploads_deferred_total = 0;
+        // Renderer hook timings, filled by VkSceneRenderer::vt_stats(). These
+        // are CPU wall times, including allocation/waits and command recording;
+        // they are not GPU timestamps. Direct residency users leave them zero.
+        uint64_t cpu_frame_serial = 0;
+        double cpu_demand_ms = 0;
+        double cpu_begin_ms = 0;
+        double cpu_pre_pass_ms = 0;
+        double cpu_post_pass_ms = 0;
     };
 
     VtResidency();
@@ -880,15 +996,33 @@ class VtResidency {
     VkSampler   pool_sampler() const { return pool_sampler_; }
     VkSampler   point_sampler() const { return point_sampler_; }
     VkBuffer    variant_buffer() const { return variant_buffer_.buffer; }
+    // One VtPageMetadata (80 bytes) per receiver page slot.
+    VkBuffer input_snapshot_buffer() const { return input_snapshot_buffer_.buffer; }
+    VkDeviceSize input_snapshot_buffer_size() const { return input_snapshot_buffer_.size; }
+    // changed_material_ids covers every effective draw/compositor input that
+    // differs from the preceding desired snapshot. Staging also dirties those
+    // dependencies; clean unaffected pages can reuse their bytes immediately.
+    // A table index cannot be reused while pages or retiring readers own it.
+    bool set_input_snapshot(std::shared_ptr<const VtInputSnapshot> snapshot,
+                            const std::vector<uint32_t>& changed_material_ids,
+                            VtInvalidationReason reason = VtInvalidationReason::MaterialInputs);
+    // Only residency-owned versions are returned. Frame descriptor captures
+    // must not perpetually keep one another's obsolete versions registered.
+    std::array<std::shared_ptr<const VtInputSnapshot>, kVtMaxInputSnapshots>
+        active_input_snapshots() const;
+    void set_input_update_pending(bool pending) { input_update_pending_ = pending; }
+    bool input_update_pending() const { return input_update_pending_; }
     VkDeviceSize variant_buffer_size() const { return variant_buffer_.size; }
-    VkImageView feedback_view() const { return feedback_.view; }
+    VkImageView feedback_view() const { return feedback_source_view_; }
     uint32_t    feedback_width() const { return feedback_w_; }
     uint32_t    feedback_height() const { return feedback_h_; }
 
     // Registers one (variant, rung). Returns the transport slot (index + 1),
     // or kVtNoSlot when the rung has no charts / the layout is unusable / no
     // variant slot or table block is free / the mesh budget is spent.
-    // Idempotent per (hash, rung).
+    // Idempotent per (hash, rung). A compatible finer mesh refreshes the same
+    // owner in place, preserving aliases and coverage. Peak old + staged CPU
+    // mesh bytes must fit the budget; rejection preserves the existing owner.
     //
     // LIFETIME: the chart table and every array `context` points at are COPIED
     // here. The caller may free its own storage the moment this returns; the
@@ -908,16 +1042,57 @@ class VtResidency {
     uint32_t register_variant(uint64_t variant_hash, uint32_t rung,
                               const chart_atlas::ChartAtlasRung& atlas,
                               const VtPartContext& context);
+    // Inputs come from vt_make_periodic_material. Failure preserves out. A new
+    // lease is a candidate: retain the previous published lease until this
+    // one's binding becomes nonzero. Never publish its unfilled tail.
+    bool acquire_material_module(const std::shared_ptr<const VtPartSnapshot>&,
+        VtMaterialModuleLease& out, std::string& error);
+    VtMaterialModuleBinding material_module_binding(const VtMaterialModuleLease&) const;
+    // Render-thread composition dependency admission. Bounds include all
+    // operator support in unwrapped normalized module coordinates. Missing or
+    // dirty exact-mip pages are queued; Pending never substitutes a coarse base.
+    // Invalid inputs are rejected. Both non-ready results clear out.
+    VtMaterialReadStatus acquire_material_read(const VtMaterialModuleLease&,
+        uint32_t mip, const VtMaterialReadBounds&, VtMaterialReadLease& out, std::string& error);
+    bool material_read_current(const VtMaterialReadLease&) const;
+    // Call immediately before recording each GPU use. Revalidates dependencies
+    // and extends pixel retention through the normal GPU reader horizon. The
+    // caller must separately arrange sampled-image layouts/barriers. This API
+    // records no commands and introduces no GPU submit, wait or texture copy.
+    bool retain_material_read(const VtMaterialReadLease&);
+    // Bind every chart in one immutable publication. Pending module tails and
+    // failures preserve displayed bindings. The descriptor retains its modules.
+    // Applies to the canonical parameterization owner (including rung aliases).
+    // Geometry/surface edits require rebinding; older pages retain their old
+    // mapping, while new unmatched pages use their complete finite fallback.
+    bool bind_receiver_materials(uint64_t variant_hash, uint32_t rung,
+        const std::vector<VtReceiverMaterialChart>&, std::string& error);
+
     // Releases every rung of the variant. The CPU mesh copies die immediately
     // (every recorded fill has already staged what it reads); the variant
     // slot, its GPU record, its indirection table block and its page slots age
     // in the graveyard for kVtRetireHorizonFrames so no in-flight frame's
     // draw records can resolve into recycled state (see the header note).
     void release_variant(uint64_t variant_hash);
-    // Per-rung release for the renderer's demand-driven working set: frees ONE
-    // (variant, rung) + its mesh copy, same graveyard discipline as above.
+    // Per-rung release drops one alias. The mesh/pages retire only after the
+    // last alias releases the owner, using the same graveyard discipline.
     void release_variant(uint64_t variant_hash, uint32_t rung);
     uint32_t slot_for(uint64_t variant_hash, uint32_t rung) const;
+    // Read-only admission/edit queries. Aliases spend no new layer; only a
+    // finer canonical mesh needs staged CPU capacity. Invalid slot -> UINT32_MAX.
+    uint32_t compatible_owner_slot(uint64_t variant_hash,
+        const chart_atlas::ChartAtlasRung& atlas) const;
+    uint32_t canonical_rung_for_slot(uint32_t slot) const;
+    // Only the current completed tail may admit new cross-owner connections.
+    // Returned leases retain the exact CPU/device geometry through replacement;
+    // callers must revalidate before publishing or recording a new use.
+    std::shared_ptr<const VtSurfaceBoundarySource> surface_boundary_source(uint32_t slot) const;
+    bool surface_boundary_source_current(const VtSurfaceBoundarySource&) const;
+    bool set_surface_connections(const std::vector<VtSurfaceConnectionPair>&,std::string& error);
+    // Only the POM surface walk consumes these cross-sector tables. Preserve
+    // requests while disabled so live re-enabling can publish current inputs.
+    void set_surface_walk_enabled(bool enabled) { surface_walk_enabled_ = enabled; }
+
 
     // WP-F: replace one registered (variant, rung)'s surfaces()-tape
     // classification in place (owned copies + repointed context fields).
@@ -926,25 +1101,37 @@ class VtResidency {
     // the TriEx materialId path. Returns false when the (hash, rung) is not
     // registered or the sizes disagree with the stored mesh.
     //
-    // CALLER CONTRACT: the device must be idle with respect to fills that
-    // borrow this variant's context (the renderer's vt-surface update path
-    // wait_idles first), and the caller must drop the filler's cached mesh
-    // buffers (VtCompositor::invalidate_part) plus resident page content
-    // (invalidate_all_content) afterwards — this method only swaps the CPU
-    // inputs.
+    // CALLER CONTRACT: render thread, outside fill/enrich recording. Supply
+    // weights/lanes for canonical_rung_for_slot(slot_for(hash, rung)), since
+    // an alias can share another rung's prepared mesh. This method refreshes
+    // that owner's surface preparation; the caller must dirty its resident
+    // content with invalidate_owners after completing an edit bracket.
+    // content_changed optionally distinguishes an accepted identical update
+    // from a changed input, so callers can avoid unnecessary invalidation.
     // P2 appends (all defaulted so older callers keep compiling): the
     // canonical tape text plus the per-vertex f16 field lanes for the GPU
     // interpreter (weight-seam mode 3). Null text keeps the rung on mode 2.
     // lanes must be vertex_count * lane_count halves when lane_count != 0.
     // The stored surface_tape_hash is SALTED with the weight-seam mode and
     // kVtBakeVersion (vt_page_content_salt) — the P2 content-key fold.
+    // Optional row-major float[12] receiver frame updates anchoring atomically
+    // with the source snapshot; null preserves the current frame.
     bool update_variant_surface(uint64_t variant_hash, uint32_t rung,
                                 const uint8_t* weights, size_t weight_bytes,
                                 const uint32_t* materials,
                                 uint32_t material_count, uint64_t tape_hash,
                                 const char* tape_text = nullptr,
                                 const uint16_t* lanes = nullptr,
-                                uint32_t lane_count = 0);
+                                uint32_t lane_count = 0,
+                                bool* content_changed = nullptr,
+                                const float* local_to_world = nullptr,
+                                uint32_t world_anchored = 0);
+    // Same edit-bracket/invalidate_owners contract as update_variant_surface.
+    // Catalogs are immutable/shared; selector IDs are copied into a new
+    // snapshot. Passing an empty catalog and zero IDs removes the binding.
+    bool update_variant_finite_sources(uint64_t variant_hash,uint32_t rung,
+        std::shared_ptr<const VtFiniteSources> sources,const uint32_t* ids,
+        size_t id_count,bool* content_changed=nullptr);
 
     // Declares every page currently in the pool stale, because what the
     // INSTALLED FILLER bakes from has changed (a detail tileset slot was
@@ -953,20 +1140,21 @@ class VtResidency {
     // in particular the pinned per-variant tails, which never expire — keep
     // the content they were baked from, forever.
     //
-    // Drops every resident unpinned page (its indirection entry falls back to
-    // the variant's tail, exactly as after an eviction) and returns its slot to
-    // the free pool, then re-queues every registered variant's tail for an
-    // IN-PLACE re-fill (PendingFill::preassigned_slot, so a tail rewrites the
-    // pinned slot every unmapped entry resolves to instead of burning a second
-    // one). Tails are queued above any feedback-derived priority: until a tail
-    // is re-filled it is what most of the variant reads.
-    //
-    // Fills are queued, not recorded: they execute in the next record_frame(),
-    // so the caller must have bound the new inputs before returning here (the
-    // renderer's push_vt_compositor_inputs() does, under its wait_idle — that
-    // wait_idle is also what makes the immediate slot release here legal).
-    // Returns the number of pages dropped.
+    // Keeps every resident page and marks it durably dirty. Candidates are
+    // produced in a bounded scratch reserve and copied to final slots only
+    // after successful recording and generation validation. Old content and
+    // readiness survive refusals; ordinary invalidation releases no page.
+    // Returns the number of resident DETAIL pages scheduled (tails excluded).
+    // Invalidation itself requires no idle wait; the caller still owns input
+    // resource lifetime and must bind compatible inputs before candidate work.
     uint32_t invalidate_all_content();
+    // Owner-scoped equivalents of invalidate_all_content. Transport slots are deduplicated and dead or
+    // absent owners are ignored. Material dependencies include scalar fallback
+    // IDs and surfaces() IDs even when that material is not loaded yet.
+    uint32_t invalidate_owners(const std::vector<uint32_t>& transport_slots,
+        VtInvalidationReason reason = VtInvalidationReason::Explicit);
+    uint32_t invalidate_material_content(const std::vector<uint32_t>& material_ids,
+        VtInvalidationReason reason = VtInvalidationReason::MaterialInputs);
 
     // ---- per-frame ----
     // Called once per frame before recording. `frame_slot` selects the
@@ -975,18 +1163,20 @@ class VtResidency {
     // here. Also collects the graveyards: anything freed at least
     // kVtRetireHorizonFrames ago becomes allocatable again.
     void begin_frame(uint64_t frame_index, uint32_t frame_slot);
-    // Ensures the feedback image matches the raster extent. Returns false only
-    // on a hard allocation failure (VT then degrades: feedback stops, tails
-    // still render).
-    bool ensure_feedback(uint32_t raster_width, uint32_t raster_height,
-                         std::string& error);
+    // Ensures paired readback matches the current kVtFeedbackFormat attachment.
+    // Invalid attachments and allocation failures return false (feedback stops,
+    // while resident tails still render).
+    bool ensure_feedback(const matter::VkImageResource& visible_feedback,
+                          std::string& error);
     // Records: pool/indirection transitions, bounded fills through the filler,
     // indirection + variant-table uploads. Call before the G-buffer pass.
-    bool record_frame(VkCommandBuffer cmd, std::string& error);
+    bool record_frame(VkCommandBuffer cmd, std::string& error,
+                      VkQueryPool timing_pool = VK_NULL_HANDLE,
+                      uint8_t* timing_written = nullptr);
     // Records the feedback readback copy. Call after the G-buffer pass.
-    void record_feedback_readback(VkCommandBuffer cmd);
+    void record_feedback_readback(VkCommandBuffer cmd,
+                                   matter::VkImageResource& visible_feedback);
     // Records the feedback clear. Call before the G-buffer pass.
-    void record_feedback_clear(VkCommandBuffer cmd);
 
     void set_filler(std::unique_ptr<VtPageFiller> filler);
     VtPageFiller* filler() const { return filler_.get(); }
@@ -1006,6 +1196,11 @@ class VtResidency {
     uint32_t max_tail_fills_per_frame() const {
         return max_tail_fills_per_frame_;
     }
+    uint32_t recorded_fill_count() const { return recorded_fill_count_; }
+    void observe_gpu_fill_ms(float vt_ms, uint32_t recorded_fills, uint32_t tiles = 0);
+    void observe_gpu_enrich_ms(float ms, uint32_t tiles) { enrich_work_budget_.observe(ms, tiles); }
+    uint32_t recorded_fill_tiles() const { return recorded_fill_tiles_; }
+    uint32_t recorded_enrich_tiles() const { return recorded_enrich_tiles_; }
 
     // TAIL GATE query for the draw side (see the header note): true once this
     // transported slot's variant is live AND its tail fill is guaranteed
@@ -1037,6 +1232,47 @@ class VtResidency {
     // slot table. This is deliberately non-dereferencing so a failure reports
     // the lifetime break before a driver-facing fill or enrichment can use it.
     bool context_storage_owned_for_test(uint32_t transport_slot) const;
+    // The address actually published in the draw-side variant record.
+    uint64_t surface_link_address_for_test(uint32_t slot) const {
+        if(!slot || slot>variant_records_.size())return 0;
+        const auto& record=variant_records_[slot-1];
+        return uint64_t(record.surface_links_low) | (uint64_t(record.surface_links_high)<<32);
+    }
+    // Validate indices before a forced refresh can dereference a stale queue
+    // lookup. Used by the production-queue lifetime regression fixture.
+    bool queued_requests_consistent_for_test() const;
+    // TEST SEAM: shrink one live owner's indirection RANGE to its finest
+    // mip_count mips, keeping its table size and generation, so pages it
+    // already owns (dirty, or in flight) fall outside it and a forced
+    // queue_page declines them. No shipped path narrows a live owner.
+    void narrow_indirection_for_test(uint32_t transport_slot, uint32_t mip_count) {
+        if (!transport_slot || transport_slot > variants_.size()) return;
+        VariantRung& v = variants_[transport_slot - 1u];
+        if (!v.live || mip_count == 0 || mip_count >= v.layout.mip_count) return;
+        VtVariantLayout narrow = v.layout;
+        narrow.mip_count = mip_count;
+        v.indirection.reset(narrow, v.tail_slot);
+    }
+    // Keep production feedback, dirtiness and rendering active while a test
+    // delays replacement work. Existing mappings must remain usable.
+    void pause_page_fills_for_test(bool paused) { page_fills_paused_for_test_ = paused; }
+    uint32_t resident_page_slot_for_test(uint32_t transport_slot, VtPageKey page) const {
+        if (!transport_slot || transport_slot > variants_.size()) return UINT32_MAX;
+        const auto& v = variants_[transport_slot - 1u];
+        if (!v.live || !v.indirection.is_mapped(page.mip, page.px, page.py)) return UINT32_MAX;
+        return v.indirection.resolve(page.mip, page.px, page.py).slot;
+    }
+    uint32_t material_page_slot_for_test(uint32_t receiver_page) const {
+        return receiver_page < slot_page_metadata_.size()
+            ? slot_page_metadata_[receiver_page].material_slot : UINT32_MAX;
+    }
+    bool coverage_only_page_for_test(uint32_t receiver_page) const {
+        return receiver_page<slot_page_metadata_.size() &&
+            (slot_page_metadata_[receiver_page].geometry.page_flags&kVtCoverageOnly)!=0;
+    }
+    uint64_t occlusion_address_for_test(uint32_t receiver_page) const {
+        return receiver_page<slot_page_metadata_.size()?slot_page_metadata_[receiver_page].occlusion_address:0;
+    }
 
   private:
     // One pool channel (or the feedback image): a layered 2D image plus the
@@ -1090,22 +1326,13 @@ class VtResidency {
         uint32_t alias_refs = 0;
         VtVariantLayout layout{};
         VtIndirectionMap indirection;
-        chart_atlas::ChartAtlasRung atlas;   // owned copy (borrowed by the filler)
-        // Owned copies of everything VtPartContext points at; `context` is
-        // repointed at these after the copy (see register_variant).
-        std::vector<float> positions, normals, surface_uvs, material_table;
-        std::vector<uint32_t> material_ids, indices;
-        std::vector<uint8_t> tint_rgba;
-        // WP-F: owned copies of the surfaces()-tape classification (see
-        // vt_types.h appends); replaced in place by update_variant_surface.
-        std::vector<uint8_t> surface_weights;
-        std::vector<uint32_t> surface_materials;
-        // P2: owned copies of the mode-3 payload (canonical tape text +
-        // per-vertex f16 field lanes); context repointed after adoption.
-        std::string surface_tape_text;
-        std::vector<uint16_t> surface_lanes;
+        // Immutable CPU inputs retained by any preparation jobs. Surface
+        // edits replace only their snapshot and continue sharing geometry.
+        std::shared_ptr<const VtPartSnapshot> inputs;
+        std::shared_ptr<const VtSurfaceBoundarySource> boundary_source;
+        std::shared_ptr<VtReceiverMaterialState> material_candidate, material_published;
+        std::vector<uint32_t> material_dependencies;
         size_t mesh_bytes = 0;
-        VtPartContext context{};
         uint32_t tail_slot = 0;
         bool tail_filled = false;
         bool live = false;
@@ -1122,6 +1349,7 @@ class VtResidency {
         uint32_t table_offset_words = 0;
         uint32_t table_block_words = 0;
         uint64_t table_generation = 0;
+        uint64_t content_revision = 1; // desired content; validated before candidate publication
         bool table_uploaded = false;
         // WP-H: the highest texels_per_meter over this rung's charts, i.e. the
         // SMALLEST page-texel size the rung has. Used to decide whether a page
@@ -1131,6 +1359,19 @@ class VtResidency {
         // shader's per-texel fade handles the coarser charts on a mixed page.
         float finest_texels_per_meter = 0.0f;
     };
+
+    static void copy_variant_mesh(VariantRung& target,
+        const chart_atlas::ChartAtlasRung& atlas, const VtPartContext& context);
+    static void swap_variant_mesh(VariantRung& a, VariantRung& b);
+    friend class VtMaterialModule;
+    uint32_t register_variant_impl(uint64_t, uint32_t,
+        const chart_atlas::ChartAtlasRung&, const VtPartContext&);
+    void release_material_module(const VtMaterialModule&);
+    void publish_receiver_materials();
+    void set_slot_material_mapping(uint32_t, std::shared_ptr<VtReceiverMaterialState>);
+    void retire_slot_material_mapping(uint32_t);
+    std::shared_ptr<VtModuleOwner> module_owner_;
+    std::map<uint64_t,std::weak_ptr<const VtMaterialModule>> modules_;
 
     bool create_pool_image(uint32_t channel, VkFormat format, uint32_t layers,
                            std::string& error);
@@ -1158,6 +1399,10 @@ class VtResidency {
                     uint32_t preassigned_slot = 0xFFFFFFFFu);
     void drain_feedback(uint32_t frame_slot);
     void refresh_indirection_stats();
+    void remove_material_dependencies(VariantRung& variant);
+    void rebuild_material_dependencies(VariantRung& variant);
+    void log_page_density() const;
+    void queue_dirty_pages();
 
     // ---- WP-H tier-2 bookkeeping ----------------------------------------
     // Tier state rides the PHYSICAL SLOT, not the virtual page: eviction and
@@ -1169,12 +1414,47 @@ class VtResidency {
     void slot_reset_tier(uint32_t slot);
     void queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot);
     void drain_enrich(VkCommandBuffer cmd);
+    void queue_resident_enrichment();
 
     matter::VulkanDevice* vulkan_ = nullptr;
     bool ready_ = false;
+    bool page_fills_paused_for_test_ = false;
+    bool input_update_pending_ = false;
+    std::shared_ptr<const VtInputSnapshot> input_snapshot_;
+    std::array<uint32_t, kVtMaxInputSnapshots> slot_input_counts_{};
+    std::weak_ptr<const VtInputSnapshot> input_snapshot_registry_[kVtMaxInputSnapshots];
+    struct RetiredInputSnapshot {
+        std::shared_ptr<const VtInputSnapshot> snapshot;
+        uint64_t retire_serial = 0;
+    };
+    RetiredInputSnapshot retired_input_snapshots_[kVtMaxInputSnapshots];
+    std::vector<std::shared_ptr<const VtInputSnapshot>> slot_input_snapshots_;
+    std::vector<std::shared_ptr<const void>> slot_geometry_lifetimes_;
+    std::unique_ptr<VtOcclusionPages> occlusion_pages_;
+    std::vector<std::shared_ptr<VtOcclusionPages::Page>> slot_occlusion_pages_;
+    std::vector<std::shared_ptr<VtReceiverMaterialState>> slot_material_mappings_;
+    std::vector<uint64_t> slot_content_revisions_;
+    struct RetiredGeometry {
+        std::shared_ptr<const void> lifetime;
+        uint64_t retire_serial = 0;
+    };
+    std::map<const void*, RetiredGeometry> retired_geometries_;
+    std::vector<VtPageMetadata> slot_page_metadata_;
+    uint32_t input_indices_dirty_begin_ = UINT32_MAX;
+    uint32_t input_indices_dirty_end_ = 0;
+    void retire_slot_input_snapshot(uint32_t slot);
+    void retire_slot_geometry(uint32_t slot);
+    void retire_slot_occlusion(uint32_t slot);
+    void retire_occlusion(std::shared_ptr<VtOcclusionPages::Page> page);
+    void set_slot_geometry(uint32_t slot, const VtDrawGeometry& geometry);
+    void set_slot_input_snapshot(uint32_t slot,
+                                std::shared_ptr<const VtInputSnapshot> snapshot);
+    void rebind_compatible_input_snapshots(const std::vector<uint32_t>& changed_material_ids);
+    void record_input_snapshot_indices(VkCommandBuffer cmd);
 
     PoolImage pool_[kVtChannelCount]{};
-    PoolImage feedback_{};
+    VkImageView feedback_source_view_ = VK_NULL_HANDLE;
+    std::shared_ptr<void> feedback_source_lifetime_;
     VkSampler pool_sampler_ = VK_NULL_HANDLE;
     VkSampler point_sampler_ = VK_NULL_HANDLE;
 
@@ -1187,20 +1467,29 @@ class VtResidency {
         uint32_t atlas_h = 0;
         uint32_t mip_count = 0;
         uint32_t flags = 0;            // bit0 = valid
-        uint32_t mip_offset[kVtMaxMips]{};   // word offsets inside the table
+        uint32_t mip_offset[8]{};   // original offsets: preserve following field offsets
         // --- buffer-indirection appends ---
         uint32_t table_offset = 0;     // word offset of the table in the SSBO
         uint32_t pages_w = 0;          // finest-mip page grid dims
         uint32_t pages_h = 0;
-        uint32_t generation = 0;       // low 32 bits of the table generation
-                                       // (debug correlation only; the shader
-                                       // never reads it)
+        uint32_t generation = 0;       // low 32 bits of the table generation;
+                                       // material-domain binding token as well
+                                       // as debug correlation. CPU retirement
+                                       // still owns slot/table lifetime.
+        // Append the ninth offset: table/pages/generation keep their old offsets.
+        uint32_t mip_offset_high[kVtMaxMips - 8]{};
+        uint32_t surface_links_low=0,surface_links_high=0;
     };
-    static_assert(sizeof(VariantRecordGpu) == 16 + kVtMaxMips * 4 + 16,
+    static_assert(sizeof(VariantRecordGpu) == 16 + kVtMaxMips * 4 + 24,
                   "VariantRecordGpu must stay tightly packed for std430");
 
     std::vector<VariantRecordGpu> variant_records_;
     bool variant_records_dirty_ = true;
+    std::vector<VtSurfaceConnectionPair> surface_connection_pairs_;
+    std::shared_ptr<VtSurfaceConnectionState> surface_connections_;
+    bool surface_connections_changed_=false;
+    bool surface_walk_enabled_=true;
+    void publish_surface_connections(std::string& error);
 
     // GPU buffers.
     struct Buffer {
@@ -1220,6 +1509,7 @@ class VtResidency {
                        std::string& error,
                        VkMemoryPropertyFlags preferred = 0);
     void destroy_buffer(Buffer& b);
+    Buffer input_snapshot_buffer_;
 
     Buffer variant_buffer_{};        // host-visible storage buffer
     // Device-local indirection SSBO + a per-frame-slot staging ring. The ring
@@ -1243,16 +1533,26 @@ class VtResidency {
     Buffer feedback_readback_[kFeedbackSlots]{};
     bool feedback_slot_written_[kFeedbackSlots]{};
 
+    struct FeedbackGpu;
+    std::unique_ptr<FeedbackGpu> feedback_gpu_;
+    bool ensure_feedback_pipeline(std::string& error);
+
     uint32_t feedback_w_ = 0, feedback_h_ = 0;
+    uint32_t feedback_raster_w_ = 0, feedback_raster_h_ = 0;
     uint32_t pool_pages_ = 0;
     uint32_t max_fills_per_frame_ = 8;
+    float fill_budget_ms_ = 4.0f;
+    VtGpuWorkBudget fill_work_budget_, enrich_work_budget_;
+    uint32_t recorded_fill_tiles_ = 0, recorded_enrich_tiles_ = 0;
+    float estimated_fill_ms_ = 12.0f;
+    uint32_t recorded_fill_count_ = 0;
     // Dedicated tail-fill budget (MATTER_VT_TAIL_FILLS_PER_FRAME): a
     // streaming burst registers many variants per frame, and every one of
     // them renders legacy-flat until its single tail page is filled — so
     // tails must never queue behind feedback-driven sharpening fills.
     uint32_t max_tail_fills_per_frame_ = 16;
-    // Ceiling on queue_, applied after each frame's selection. See
-    // VtResidencyBudgets::queue_cap for why dropping the tail is safe.
+    // Ceiling on feedback-driven requests after selection. Mandatory tails
+    // are separately bounded by live owners and never discarded by this cap.
     uint32_t max_queue_ = 256;
     bool activation_dirty_ = false;
     uint32_t max_variants_ = 0;
@@ -1260,10 +1560,13 @@ class VtResidency {
     size_t mesh_bytes_used_ = 0;
     bool warned_rejection_ = false;
     bool debug_generations_ = false;
+    bool event_log_ = false;
+    uint64_t density_frame_ = 0; // opt-in one-shot CPU diagnostic; zero disables
     uint64_t frame_index_ = 0;
     uint32_t frame_slot_ = 0;
 
     VtSlotPool slots_;
+    VtMaterialPages material_pages_;
     VtTableAllocator tables_;
     std::vector<VariantRung> variants_;      // indexed by variant slot; grows
                                              // lazily with the high-water mark
@@ -1287,6 +1590,7 @@ class VtResidency {
     // content-derived key those rung keys no longer exist in layer_of_ — the
     // whole-part release would have silently freed nothing.
     std::map<uint64_t, uint64_t> param_key_of_rung_;
+    std::map<uint32_t, std::set<uint32_t>> material_dependents_; // ID -> live owner layers
 
     // Pending fills, priority = mip distance from the currently mapped mip.
     struct PendingFill {
@@ -1294,14 +1598,22 @@ class VtResidency {
         VtPageKey page{};
         uint32_t priority = 0;
         uint64_t requested_frame = 0;
-        // The pinned tail already owns its slot (it is what every unmapped
-        // entry resolves to), so its fill must write THAT slot. Allocating a
-        // fresh one instead leaves the pinned slot holding undefined bytes and
-        // silently burns a page — UINT32_MAX means "allocate one".
+        // Pinned tail's FINAL slot. Production targets scratch; successful
+        // publication copies into this stable address. UINT32_MAX means a
+        // detail page (reuse its resident slot or acquire a new one).
         uint32_t preassigned_slot = 0xFFFFFFFFu;
+        uint64_t owner_generation = 0;
+        uint64_t content_revision = 0;
+        bool continuation = false;
     };
     std::vector<PendingFill> queue_;
     std::map<uint64_t, size_t> queued_keys_;   // dedup
+    // At most one durable replacement per occupied physical slot. Execution
+    // requests may be capacity-trimmed; this state survives until publication
+    // or the page/owner is explicitly evicted/released.
+    std::map<uint32_t, PendingFill> dirty_pages_;
+    void reindex_pending_fills();
+    void refresh_queue_stats();
 
     // WP-H: pages that tier-1 has filled and tier-2 has not run on yet.
     // Deduped by physical slot (a slot holds exactly one page), FIFO within a
@@ -1313,6 +1625,11 @@ class VtResidency {
         VtPageKey page{};
         uint32_t slot = 0;
         uint64_t requested_frame = 0;
+        std::shared_ptr<VtOcclusionPages::Page> factor;
+        std::shared_ptr<const VtPartSnapshot> inputs;
+        uint64_t generation = 0, revision = 0;
+        uint32_t tiles = 0;
+        matter::VtEnrichSettings settings{};
     };
     std::vector<PendingEnrich> enrich_queue_;
     std::map<uint32_t, size_t> enrich_queued_slot_;   // slot -> queue index
@@ -1333,6 +1650,12 @@ class VtResidency {
         VtPageKey page{};
         uint32_t slot = 0;
         bool preassigned = false;
+        uint64_t requested_frame = 0;
+        uint64_t owner_generation = 0;
+        uint64_t content_revision = 0;
+        uint64_t slot_generation = 0;
+        bool acquired = false;
+        uint64_t owner_key = 0;
     };
     std::vector<PendingMap> pending_map_;
     // Per-request success flags handed to the filler. A real bool array (not
@@ -1341,7 +1664,13 @@ class VtResidency {
     // the hard env ceiling on MATTER_VT_FILLS_PER_FRAME so it never allocates.
     static constexpr uint32_t kMaxFillFlags = 64;
     bool fill_flags_[kMaxFillFlags]{};
+    bool fill_pending_[kMaxFillFlags]{};
+    uint32_t fill_work_tiles_[kMaxFillFlags]{};
+    VtPageHeight fill_heights_[kMaxFillFlags]{};
+    VtDrawGeometry fill_geometries_[kMaxFillFlags]{};
+    VtMaterialPixelKey fill_material_keys_[kMaxFillFlags]{};
     std::vector<VtFeedbackRequest> injected_;
+    VtFeedbackKeys feedback_keys_;
     VtPoolBinding pool_binding_{};
     Stats stats_{};
 };

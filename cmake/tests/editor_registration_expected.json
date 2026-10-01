@@ -161,6 +161,7 @@
     "agent.commands",
     "agent.help",
     "agent.schema",
+    "asset.export",
     "fifo.budget",
     "fifo.character",
     "fifo.dlss",

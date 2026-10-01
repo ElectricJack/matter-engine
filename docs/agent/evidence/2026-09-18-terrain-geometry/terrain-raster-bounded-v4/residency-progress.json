@@ -1,0 +1,302 @@
+[
+  {
+    "seconds": 4.648611500000698,
+    "line": "[geometry] pages assets=6 pages=280 inflight=8 gpu=2025496 scratch=0 bindings=278 stale=0"
+  },
+  {
+    "seconds": 4.778514099998574,
+    "line": "[geometry] pages assets=7 pages=367 inflight=0 gpu=2822776 scratch=0 bindings=374 stale=0"
+  },
+  {
+    "seconds": 4.913498599999002,
+    "line": "[geometry] pages assets=8 pages=423 inflight=0 gpu=3253276 scratch=0 bindings=431 stale=0"
+  },
+  {
+    "seconds": 5.05556809999689,
+    "line": "[geometry] pages assets=9 pages=466 inflight=0 gpu=3651384 scratch=0 bindings=475 stale=0"
+  },
+  {
+    "seconds": 5.194652199999837,
+    "line": "[geometry] pages assets=10 pages=519 inflight=2 gpu=4009116 scratch=0 bindings=527 stale=0"
+  },
+  {
+    "seconds": 5.346551799993904,
+    "line": "[geometry] pages assets=11 pages=647 inflight=0 gpu=4651276 scratch=0 bindings=658 stale=0"
+  },
+  {
+    "seconds": 5.509093900000153,
+    "line": "[geometry] pages assets=12 pages=694 inflight=0 gpu=5056492 scratch=0 bindings=706 stale=0"
+  },
+  {
+    "seconds": 5.661754900000233,
+    "line": "[geometry] pages assets=12 pages=694 inflight=0 gpu=5056492 scratch=0 bindings=706 stale=0"
+  },
+  {
+    "seconds": 5.813812299995334,
+    "line": "[geometry] pages assets=12 pages=694 inflight=0 gpu=5056492 scratch=0 bindings=706 stale=0"
+  },
+  {
+    "seconds": 5.965739999999641,
+    "line": "[geometry] pages assets=12 pages=694 inflight=0 gpu=5056492 scratch=0 bindings=706 stale=0"
+  },
+  {
+    "seconds": 6.12077689999569,
+    "line": "[geometry] pages assets=12 pages=694 inflight=0 gpu=5056492 scratch=0 bindings=706 stale=0"
+  },
+  {
+    "seconds": 6.276510399999097,
+    "line": "[geometry] pages assets=12 pages=694 inflight=0 gpu=5056492 scratch=0 bindings=706 stale=0"
+  },
+  {
+    "seconds": 6.432329799994477,
+    "line": "[geometry] pages assets=12 pages=694 inflight=0 gpu=5056492 scratch=0 bindings=706 stale=0"
+  },
+  {
+    "seconds": 6.589240299996163,
+    "line": "[geometry] pages assets=12 pages=694 inflight=0 gpu=5056492 scratch=0 bindings=706 stale=0"
+  },
+  {
+    "seconds": 6.7566637999989325,
+    "line": "[geometry] pages assets=13 pages=747 inflight=0 gpu=5441752 scratch=0 bindings=760 stale=0"
+  },
+  {
+    "seconds": 6.929387399999541,
+    "line": "[geometry] pages assets=14 pages=797 inflight=16 gpu=5725016 scratch=0 bindings=795 stale=0"
+  },
+  {
+    "seconds": 7.085912199996528,
+    "line": "[geometry] pages assets=14 pages=799 inflight=0 gpu=5874168 scratch=0 bindings=813 stale=0"
+  },
+  {
+    "seconds": 7.268446699999913,
+    "line": "[geometry] pages assets=15 pages=863 inflight=0 gpu=6306444 scratch=0 bindings=878 stale=0"
+  },
+  {
+    "seconds": 7.434622799999488,
+    "line": "[geometry] pages assets=15 pages=863 inflight=0 gpu=6306444 scratch=0 bindings=878 stale=0"
+  },
+  {
+    "seconds": 7.59737199999654,
+    "line": "[geometry] pages assets=15 pages=863 inflight=0 gpu=6306444 scratch=0 bindings=878 stale=0"
+  },
+  {
+    "seconds": 7.821272499997576,
+    "line": "[geometry] pages assets=18 pages=1007 inflight=0 gpu=7184372 scratch=0 bindings=1025 stale=0"
+  },
+  {
+    "seconds": 8.070331799994165,
+    "line": "[geometry] pages assets=20 pages=1149 inflight=4 gpu=8144168 scratch=0 bindings=1165 stale=0"
+  },
+  {
+    "seconds": 8.324261099995056,
+    "line": "[geometry] pages assets=21 pages=1246 inflight=0 gpu=8889896 scratch=0 bindings=1267 stale=0"
+  },
+  {
+    "seconds": 8.577535599994007,
+    "line": "[geometry] pages assets=22 pages=1289 inflight=0 gpu=9293788 scratch=0 bindings=1311 stale=0"
+  },
+  {
+    "seconds": 8.841653600000427,
+    "line": "[geometry] pages assets=23 pages=1349 inflight=0 gpu=9725656 scratch=0 bindings=1372 stale=0"
+  },
+  {
+    "seconds": 9.083141299997806,
+    "line": "[geometry] pages assets=23 pages=1349 inflight=0 gpu=9725656 scratch=0 bindings=1372 stale=0"
+  },
+  {
+    "seconds": 9.343427100000554,
+    "line": "[geometry] pages assets=24 pages=1357 inflight=2 gpu=9763308 scratch=0 bindings=1379 stale=0"
+  },
+  {
+    "seconds": 9.578649499999301,
+    "line": "[geometry] pages assets=24 pages=1411 inflight=0 gpu=10160024 scratch=0 bindings=1435 stale=0"
+  },
+  {
+    "seconds": 9.807208599995647,
+    "line": "[geometry] pages assets=24 pages=1411 inflight=0 gpu=10160024 scratch=0 bindings=1435 stale=0"
+  },
+  {
+    "seconds": 10.061814900000172,
+    "line": "[geometry] pages assets=25 pages=1434 inflight=0 gpu=10284288 scratch=0 bindings=1459 stale=0"
+  },
+  {
+    "seconds": 10.3082390999989,
+    "line": "[geometry] pages assets=26 pages=1491 inflight=9 gpu=10581144 scratch=0 bindings=1508 stale=0"
+  },
+  {
+    "seconds": 10.627970800000185,
+    "line": "[geometry] pages assets=27 pages=1633 inflight=0 gpu=11533832 scratch=0 bindings=1660 stale=0"
+  },
+  {
+    "seconds": 10.903271600000153,
+    "line": "[geometry] pages assets=27 pages=1633 inflight=0 gpu=11533832 scratch=0 bindings=1660 stale=0"
+  },
+  {
+    "seconds": 11.215588299994124,
+    "line": "[geometry] pages assets=29 pages=1720 inflight=0 gpu=12300644 scratch=0 bindings=1749 stale=0"
+  },
+  {
+    "seconds": 11.553676999996242,
+    "line": "[geometry] pages assets=32 pages=1874 inflight=14 gpu=13299160 scratch=0 bindings=1892 stale=0"
+  },
+  {
+    "seconds": 11.886926599996514,
+    "line": "[geometry] pages assets=34 pages=1997 inflight=0 gpu=14395700 scratch=0 bindings=2031 stale=0"
+  },
+  {
+    "seconds": 12.145803200000955,
+    "line": "[geometry] pages assets=34 pages=1997 inflight=0 gpu=14395700 scratch=0 bindings=2031 stale=0"
+  },
+  {
+    "seconds": 12.44898419999663,
+    "line": "[geometry] pages assets=35 pages=2050 inflight=0 gpu=14823144 scratch=0 bindings=2085 stale=0"
+  },
+  {
+    "seconds": 12.73095459999604,
+    "line": "[geometry] pages assets=35 pages=2050 inflight=0 gpu=14823144 scratch=0 bindings=2085 stale=0"
+  },
+  {
+    "seconds": 13.0774734000006,
+    "line": "[geometry] pages assets=37 pages=2125 inflight=0 gpu=15418740 scratch=0 bindings=2162 stale=0"
+  },
+  {
+    "seconds": 13.371023599996988,
+    "line": "[geometry] pages assets=38 pages=2169 inflight=0 gpu=15703416 scratch=0 bindings=2207 stale=0"
+  },
+  {
+    "seconds": 13.658890599996084,
+    "line": "[geometry] pages assets=38 pages=2233 inflight=0 gpu=16136344 scratch=0 bindings=2271 stale=0"
+  },
+  {
+    "seconds": 13.977389499996207,
+    "line": "[geometry] pages assets=39 pages=2348 inflight=0 gpu=16648744 scratch=0 bindings=2387 stale=0"
+  },
+  {
+    "seconds": 14.257155299994338,
+    "line": "[geometry] pages assets=39 pages=2348 inflight=0 gpu=16648744 scratch=0 bindings=2387 stale=0"
+  },
+  {
+    "seconds": 14.71088779999991,
+    "line": "[geometry] pages assets=43 pages=2627 inflight=4 gpu=18069084 scratch=0 bindings=2666 stale=0"
+  },
+  {
+    "seconds": 15.058747899995069,
+    "line": "[geometry] pages assets=44 pages=2745 inflight=0 gpu=18909072 scratch=0 bindings=2789 stale=0"
+  },
+  {
+    "seconds": 15.37639979999949,
+    "line": "[geometry] pages assets=45 pages=2753 inflight=0 gpu=18968224 scratch=0 bindings=2798 stale=0"
+  },
+  {
+    "seconds": 15.793926300000749,
+    "line": "[geometry] pages assets=47 pages=2931 inflight=0 gpu=20228940 scratch=0 bindings=2978 stale=0"
+  },
+  {
+    "seconds": 16.12309479999385,
+    "line": "[geometry] pages assets=48 pages=2943 inflight=0 gpu=20256436 scratch=0 bindings=2991 stale=0"
+  },
+  {
+    "seconds": 16.560763199995563,
+    "line": "[geometry] pages assets=49 pages=3097 inflight=2 gpu=21233120 scratch=0 bindings=3144 stale=0"
+  },
+  {
+    "seconds": 17.033056899999792,
+    "line": "[geometry] pages assets=51 pages=3226 inflight=0 gpu=22028636 scratch=0 bindings=3277 stale=0"
+  },
+  {
+    "seconds": 17.438566099997843,
+    "line": "[geometry] pages assets=52 pages=3250 inflight=0 gpu=22165624 scratch=0 bindings=3302 stale=0"
+  },
+  {
+    "seconds": 17.934134999995877,
+    "line": "[geometry] pages assets=54 pages=3396 inflight=6 gpu=23115328 scratch=0 bindings=3444 stale=0"
+  },
+  {
+    "seconds": 18.50697819999914,
+    "line": "[geometry] pages assets=57 pages=3654 inflight=0 gpu=24632796 scratch=0 bindings=3711 stale=0"
+  },
+  {
+    "seconds": 19.0018682000009,
+    "line": "[geometry] pages assets=58 pages=3738 inflight=0 gpu=25231988 scratch=0 bindings=3796 stale=0"
+  },
+  {
+    "seconds": 19.475585899999714,
+    "line": "[geometry] pages assets=59 pages=3788 inflight=0 gpu=25637368 scratch=0 bindings=3847 stale=0"
+  },
+  {
+    "seconds": 20.208879300000262,
+    "line": "[geometry] pages assets=63 pages=4051 inflight=0 gpu=27372044 scratch=0 bindings=4114 stale=0"
+  },
+  {
+    "seconds": 20.723163299997395,
+    "line": "[geometry] pages assets=64 pages=4073 inflight=8 gpu=27481908 scratch=0 bindings=4129 stale=0"
+  },
+  {
+    "seconds": 21.49187399999937,
+    "line": "[geometry] pages assets=67 pages=4276 inflight=0 gpu=29035228 scratch=0 bindings=4343 stale=0"
+  },
+  {
+    "seconds": 21.997521599994798,
+    "line": "[geometry] pages assets=68 pages=4317 inflight=0 gpu=29405240 scratch=0 bindings=4385 stale=0"
+  },
+  {
+    "seconds": 22.928756399996928,
+    "line": "[geometry] pages assets=72 pages=4548 inflight=0 gpu=30846172 scratch=0 bindings=4620 stale=0"
+  },
+  {
+    "seconds": 23.743865799995547,
+    "line": "[geometry] pages assets=75 pages=4843 inflight=0 gpu=32564264 scratch=0 bindings=4918 stale=0"
+  },
+  {
+    "seconds": 24.656625600000552,
+    "line": "[geometry] pages assets=79 pages=5190 inflight=0 gpu=34566648 scratch=0 bindings=5269 stale=0"
+  },
+  {
+    "seconds": 25.286195799999405,
+    "line": "[geometry] pages assets=80 pages=5256 inflight=0 gpu=35009756 scratch=0 bindings=5336 stale=0"
+  },
+  {
+    "seconds": 25.832506699996884,
+    "line": "[geometry] pages assets=81 pages=5267 inflight=4 gpu=35041732 scratch=0 bindings=5344 stale=0"
+  },
+  {
+    "seconds": 26.94775789999403,
+    "line": "[geometry] pages assets=86 pages=5576 inflight=12 gpu=37312432 scratch=0 bindings=5650 stale=0"
+  },
+  {
+    "seconds": 28.09196289999818,
+    "line": "[geometry] pages assets=90 pages=5957 inflight=0 gpu=39604052 scratch=0 bindings=6047 stale=0"
+  },
+  {
+    "seconds": 28.84109460000036,
+    "line": "[geometry] pages assets=92 pages=5996 inflight=8 gpu=39829432 scratch=0 bindings=6080 stale=0"
+  },
+  {
+    "seconds": 30.120591899998544,
+    "line": "[geometry] pages assets=97 pages=6504 inflight=4 gpu=43193908 scratch=0 bindings=6597 stale=0"
+  },
+  {
+    "seconds": 32.05088049999904,
+    "line": "[geometry] pages assets=106 pages=7255 inflight=0 gpu=47931928 scratch=0 bindings=7361 stale=0"
+  },
+  {
+    "seconds": 33.540025099995546,
+    "line": "[geometry] pages assets=111 pages=7643 inflight=0 gpu=50194212 scratch=0 bindings=7754 stale=0"
+  },
+  {
+    "seconds": 35.57024149999779,
+    "line": "[geometry] pages assets=118 pages=8367 inflight=0 gpu=55393632 scratch=0 bindings=8485 stale=0"
+  },
+  {
+    "seconds": 37.38724559999537,
+    "line": "[geometry] pages assets=123 pages=8836 inflight=0 gpu=57803836 scratch=0 bindings=8959 stale=0"
+  },
+  {
+    "seconds": 39.54275629999756,
+    "line": "[geometry] pages assets=131 pages=9792 inflight=4 gpu=63330264 scratch=0 bindings=9919 stale=0"
+  },
+  {
+    "seconds": 41.084990299998026,
+    "line": "[geometry] pages assets=133 pages=10166 inflight=12 gpu=65113748 scratch=0 bindings=10287 stale=0"
+  }
+]

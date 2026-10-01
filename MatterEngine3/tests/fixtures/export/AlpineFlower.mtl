@@ -1,6 +1,6 @@
 # Wavefront MTL exported by MatterEngine3
 # part: AlpineFlower
-# resolved_hash: 9fd57fdb5699f695
+# resolved_hash: 62dd2578800bd70e
 # colour keys (Kd, Ke) are sRGB-encoded; Pr/Pm/map_Ka are linear
 # Kd is white because map_Kd carries the colour; see the base_albedo comment on each material
 

@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "matter/vulkan_device.h"
+#include "profile.h"
 #include "matter/display_dither.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/lod_distance.h"
@@ -38,6 +40,16 @@
 #include "render/water_field_vk.h"
 #include "render/water_mesh_animation_playback.h"
 #include "render/vt_residency.h"
+#include "part_surface.h"
+#include "vt_queue_tests.h"
+#include "vt_material_domain_tests.h"
+#include "vt_module_residency_tests.h"
+#include "vt_pom_work_tests.h"
+#include "vt_surface_connection_tests.h"
+#include "vt_sector_seam_tests.h"
+#include "vt_receiver_material_tests.h"
+#include "vt_export_tests.h"
+#include "vt_feedback_pair_tests.h"
 #include "render/vk_volumetrics.h"
 #include "render/vk_atmosphere.h"
 #include "render/vk_cloud_shadows.h"
@@ -49,6 +61,7 @@
 // LAST on purpose: impostor_bake.h reaches precomp.h, whose `using namespace
 // std;` makes `byte` ambiguous inside any <windows.h> pulled in after it.
 #include "impostor_bake.h"   // M2.5 kQuadMarker, the billboard sentinel
+#include "geometry_page_vk_tests.h"
 
 namespace {
 
@@ -441,6 +454,61 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
         CHECK(traced(first_part.part_hash, rebound) &&
                   traced(second_part.part_hash, second),
               "water field: RT records preserve the same two distinct identities");
+    }
+    // Revisit both frame slots, then replace a published field. The descriptor
+    // guard must skip each settled slot and rewrite both on the new views.
+    const auto record_field_frame = [&](uint32_t& slot,
+                                        uint32_t& prepare_writes) {
+        matter::VulkanFrame next{};
+        if (!vulkan.begin_frame(next, error) ||
+            !renderer.prepare_frame(next, matrices, camera.position, 1.0f,
+                                    error))
+            return false;
+        slot = next.frame_slot;
+        prepare_writes = renderer.frame_descriptors_written();
+        const bool recorded =
+            renderer.record_cull_and_render(next, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(next, error);
+        const bool submitted = recorded && vulkan.end_frame(next, error);
+        renderer.finish_ray_tracing_frame(next.serial, submitted);
+        vulkan.wait_idle();
+        return submitted;
+    };
+    std::vector<uint32_t> settled_prepare_writes(capped_frame.frame_slot_count);
+    for (uint32_t i = 0; i < capped_frame.frame_slot_count; ++i) {
+        uint32_t slot = UINT32_MAX, writes = 0;
+        CHECK(record_field_frame(slot, writes),
+              error.empty() ? "water field: settled frame records"
+                            : error.c_str());
+        CHECK(slot < settled_prepare_writes.size(),
+              "water field: expected a valid frame slot");
+        if (slot < settled_prepare_writes.size())
+            settled_prepare_writes[slot] = writes;
+    }
+    viewer::WaterFieldBinding refreshed;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x505u), &rebound,
+              capped_frame.serial, refreshed, field_error),
+          field_error.message.c_str());
+    CHECK(renderer.set_part_water_field_binding(first_part.part_hash,
+                                                refreshed, error) &&
+              renderer.update_instances(
+                  {{first_part.part_hash, identity, 0x711u},
+                   {second_part.part_hash, identity, 0x712u}}, error),
+          error.empty() ? "water field: bind refreshed field" : error.c_str());
+    for (uint32_t i = 0; i < capped_frame.frame_slot_count; ++i) {
+        uint32_t slot = UINT32_MAX, writes = 0;
+        CHECK(record_field_frame(slot, writes),
+              error.empty() ? "water field: refreshed frame records"
+                            : error.c_str());
+        const uint32_t refreshed_descriptors =
+            vulkan.ray_tracing_available() ? 66u : 33u;
+        CHECK(slot < settled_prepare_writes.size() &&
+                  writes >= settled_prepare_writes[slot] +
+                                refreshed_descriptors &&
+                  renderer.test_water_field_descriptors_match(slot, refreshed),
+              "water field: changed views rewrite raster and RT descriptors in each slot");
     }
     CHECK(vulkan.validation_error_count() == 0u,
           "water field: immutable uploads produce no Vulkan validation errors");
@@ -1429,9 +1497,16 @@ void test_atmosphere_timing_contract() {
               Renderer::kGpuZoneRtGiDiffuse == 22 &&
               Renderer::kGpuZoneRtGiReflectionTransmission == 23 &&
               Renderer::kGpuZonePrimaryLightCull == 24 &&
-              Renderer::kGpuZoneCount == 25 &&
+              Renderer::kGpuZoneVt == 10 &&
+              Renderer::kGpuZoneVtFeedbackReadback == 25 &&
+              std::string(matter::kGpuTimingNames[25]) == "vt_feedback_readback" &&
+              Renderer::kGpuZoneVtFill == 26 &&
+              Renderer::kGpuZoneVtEnrich == 27 &&
+              std::string(matter::kGpuTimingNames[26]) == "vt_fill" &&
+              std::string(matter::kGpuTimingNames[27]) == "vt_enrich" &&
+              Renderer::kGpuZoneCount == 28 &&
               matter::kGpuTimingNames.size() == Renderer::kGpuZoneCount,
-          "lighting detail timings append GPU zones without renumbering");
+          "VT detail timings append GPU zones without renumbering");
     CHECK(std::string(matter::kGpuTimingNames[21]) == "hdr_lighting" &&
               std::string(matter::kGpuTimingNames[22]) == "rt_gi_diffuse" &&
               std::string(matter::kGpuTimingNames[23]) == "rt_gi_reflection_transmission" &&
@@ -2073,13 +2148,12 @@ void run_ray_tracing_capability_contract_tests() {
     CHECK(viewer::vk_scene_detail::scene_binding_stage_flags(5) ==
               (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT),
           "material binding is visible only to raster shader stages");
-    // Scene set storage buffers: bindings 0-5 plus binding 8 (the C3 dynamic
-    // cluster AABB override) is 7 per set. Compute sees all of those except
-    // binding 5, which is VERTEX|FRAGMENT-only, so 6 per stage.
-    CHECK(viewer::vk_scene_detail::scene_storage_limits_supported(6, 7) &&
-              !viewer::vk_scene_detail::scene_storage_limits_supported(5, 7) &&
-              !viewer::vk_scene_detail::scene_storage_limits_supported(6, 6),
-          "scene capability accounting requires six compute and seven set buffers");
+    // Account for the complete scene layout, including VT/water tables and
+    // geometry hierarchy metadata. Compute sees 14 of the 20 storage buffers.
+    CHECK(viewer::vk_scene_detail::scene_storage_limits_supported(14, 20) &&
+              !viewer::vk_scene_detail::scene_storage_limits_supported(13, 20) &&
+              !viewer::vk_scene_detail::scene_storage_limits_supported(14, 19),
+          "scene capability accounting includes all 14 compute and 20 set buffers");
     matter::VulkanRayTracingCapabilities unsupported{};
     unsupported.buffer_device_address = true;
     std::string reason;
@@ -3394,6 +3468,37 @@ void run_vulkan_instance_cache_tests() {
     CHECK(cache.find_source(a) != nullptr && cache.find_source(b) == nullptr,
           "prune_sources keeps live sources and drops absent ones");
     CHECK(cache.source_memo_size() == 1, "pruned memo holds only live sources");
+
+    // Large unchanged sets exercise the contiguous snapshot, including its
+    // tail. Every identity field matters; LOD alone is deliberately ignored.
+    std::vector<viewer::ResolvedInstance> many(4097, a);
+    for (size_t i = 0; i < many.size(); ++i) many[i].stable_id += i;
+    viewer::VulkanInstanceCache dense;
+    dense.store(many, {});
+    CHECK(dense.matches(many), "dense instance snapshot matches original values");
+    auto changed = many;
+    changed.back().part_hash++;
+    CHECK(!dense.matches(changed), "dense snapshot detects changed tail part");
+    changed = many;
+    changed.back().stable_id++;
+    CHECK(!dense.matches(changed), "dense snapshot detects changed tail identity");
+    for (size_t component = 0; component < 16; ++component) {
+        changed = many;
+        changed.back().transform[component] += 0.25f;
+        CHECK(!dense.matches(changed), "dense snapshot checks every matrix component");
+    }
+    changed = many;
+    std::swap(changed[0], changed[1]);
+    CHECK(!dense.matches(changed), "dense snapshot preserves ordering");
+    changed = many;
+    changed.back().lod_level++;
+    CHECK(dense.matches(changed), "dense snapshot ignores GPU-selected LOD");
+    many.back().segment++;
+    CHECK(!dense.matches(many), "caller edits cannot mutate owned snapshot");
+    dense.store({}, {});
+    CHECK(dense.matches({}), "valid empty snapshot matches empty scene");
+    dense.invalidate_expansion();
+    CHECK(!dense.matches({}), "invalid empty snapshot cannot be reused");
 }
 
 bool gpu_matrix_equal(const viewer::GpuMat4& actual,
@@ -5193,20 +5298,40 @@ void run_vt_path(matter::VulkanDevice& vulkan) {
     // only fixes FUTURE fills: the pages already in the pool -- and above all
     // the pinned tail, which never expires and is what every unmapped entry
     // resolves to -- were baked from the OLD table. The renderer's next
-    // push_vt_compositor_inputs() therefore also calls
-    // VtResidency::invalidate_all_content(), which drops the resident unpinned
-    // pages and re-queues every tail for an in-place re-fill. Without it these
+    // push_vt_compositor_inputs() therefore dirties the dependent owners and
+    // schedules candidate replacements while retaining current pages. Without it these
     // probes keep reading page_albedo for the rest of the session.
+    // Revision-only and unused material changes leave real GPU VT pages intact.
+    const auto before_noop_inputs = renderer.vt_stats();
+    CHECK(renderer.update_materials(materials, 2, 1, error), "vt: accept revision-only publication");
+    for (int i = 0; i < 4; ++i) render_once("vt: render revision-only publication");
+    CHECK(renderer.vt_stats().invalidations_total == before_noop_inputs.invalidations_total &&
+          renderer.vt_stats().fills_total == before_noop_inputs.fills_total,
+          "vt: revision-only publication causes no invalidation or fills");
+    materials.emplace_back();
+    materials.back().base_roughness[0] = 0.234f;
+    CHECK(renderer.update_materials(materials, 3, 1, error), "vt: append unused material");
+    for (int i = 0; i < 4; ++i) render_once("vt: render unused material append");
+    materials.back().base_roughness[0] = 0.789f;
+    CHECK(renderer.update_materials(materials, 4, 1, error), "vt: edit unused material");
+    for (int i = 0; i < 4; ++i) render_once("vt: render unused material edit");
+    CHECK(renderer.vt_stats().invalidations_total == before_noop_inputs.invalidations_total &&
+          renderer.vt_stats().fills_total == before_noop_inputs.fills_total,
+          "vt: unused material append/edit retain existing pages without refilling");
+    const auto chart1_noop = pixel_at(96, 80);
+    CHECK(chart1_noop.albedo.x == chart1_again.albedo.x &&
+          chart1_noop.albedo.y == chart1_again.albedo.y &&
+          chart1_noop.albedo.z == chart1_again.albedo.z,
+          "vt: no-op inputs preserve sampled GPU page bytes");
     const matter::Float3 edited_albedo{0.10f, 0.85f, 0.35f};
     const vt::VtResidency::Stats before_invalidate = renderer.vt_stats();
     materials[kMaterial].base_roughness[0] = edited_albedo.x;
     materials[kMaterial].base_roughness[1] = edited_albedo.y;
     materials[kMaterial].base_roughness[2] = edited_albedo.z;
-    CHECK(renderer.update_materials(materials, 2, 1, error),
+    CHECK(renderer.update_materials(materials, 5, 1, error),
           error.empty() ? "vt: edit the material table" : error.c_str());
-    // The next frame pushes the new inputs, invalidates, and re-fills the tail;
-    // the feedback loop takes a few more to bring the finest pages under the
-    // probes back. Six is well past that for a 2-chart fixture.
+    // The next frame pushes inputs and replaces dirty pages through scratch.
+    // Six frames cover this fixture's bounded replacement work.
     for (int i = 0; i < 6; ++i) render_once("vt: render post-edit VT frame");
 
     const vt::VtResidency::Stats after_invalidate = renderer.vt_stats();
@@ -5223,8 +5348,9 @@ void run_vt_path(matter::VulkanDevice& vulkan) {
           "vt: the runtime's own first input push does not invalidate");
     CHECK(after_invalidate.invalidations_total == 1,
           "vt: a material-table edit invalidates resident VT content exactly once");
-    CHECK(after_invalidate.pages_dropped_total >= 1,
-          "vt: the invalidation dropped the pages baked from the old table");
+    CHECK(after_invalidate.pages_dropped_total == before_invalidate.pages_dropped_total &&
+          after_invalidate.dirty_pages == 0,
+          "vt: replacements complete without dropping the old resident pages");
     CHECK(after_invalidate.pool_pinned == before_invalidate.pool_pinned,
           "vt: invalidation never drops a pinned tail");
     CHECK(after_invalidate.fills_total > before_invalidate.fills_total,
@@ -5283,6 +5409,419 @@ void run_vt_path(matter::VulkanDevice& vulkan) {
 //   (c) an edited tape (renderer begin/update/end vt-surface bracket with a
 //       new tape hash) invalidates resident content exactly once and the
 //       re-filled pages show the NEW classification (regions swapped).
+// Uses the actual G-buffer shader, asynchronous feedback transport and page
+// compositor. A fully occluded owner needs its mandatory tail, but must not
+// acquire detail pages merely because its fragments executed behind a wall.
+void run_vt_demand_cache_path(matter::VulkanDevice& vulkan) {
+    matter::ensure_vt_residency_env_applied();
+    auto& budgets = matter::vt_residency_budgets();
+    const auto saved_budgets = budgets;
+    budgets.linger_frames = 2;
+    budgets.requests_per_frame = 1;
+    budgets.pool_mb = 0;
+    budgets.pool_pages = 256;
+    budgets.max_variants = 16;
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error), "vt-demand: renderer initializes");
+    auto part = fixed_part(0x9600u, {-1,-1,-3}, {1,1,-1}, 0);
+    part.vt_deferred_rung_mask = 3;
+    part.clusters[0].radius = 1.0f;
+    part.clusters[0].lods = {{0,3,0.2f,0}, {0,3,0.0f,1}};
+    auto high_rung = part;
+    high_rung.part_hash = 0x9601u;
+    high_rung.vt_deferred_rung_mask = 1u << 31;
+    high_rung.clusters[0].lods = {{0,3,0.0f,31}};
+    CHECK(renderer.ensure_part(part, error) >= 0 &&
+              renderer.ensure_part(high_rung, error) >= 0,
+          "vt-demand: independent chart rungs register");
+    const auto identity = identity_matrix();
+    std::vector<viewer::VkSceneInstance> instances = {
+        {part.part_hash, viewer::mat4_translation({0,0,-1}), 1},
+        {part.part_hash, identity, 2},
+        {high_rung.part_hash, viewer::mat4_translation({0,0,-8}), 3}};
+    CHECK(renderer.update_instances(instances, error), "vt-demand: stage instances");
+    std::vector<viewer::VtRungRequest> requests;
+    const auto demand = [&](matter::Float3 eye = {}, float budget = 1.0f) {
+        renderer.test_update_vt_demand(eye, budget);
+        renderer.take_vt_rung_requests(requests);
+    };
+    demand();
+    CHECK(requests.size() == 1 && requests[0].part_hash == part.part_hash &&
+              requests[0].rung == 0 && std::abs(requests[0].priority - 0.5f) < 1e-6f,
+          "vt-demand: duplicates retain maximum priority before request cap");
+    const auto first_builds = renderer.test_vt_demand_builds();
+    uint32_t selected_rung = UINT32_MAX;
+    const auto first_surface_selection = renderer.vt_surface_selection_revision();
+    CHECK(renderer.vt_surface_selected_rung(part.part_hash, selected_rung) && selected_rung == 0 &&
+          renderer.vt_surface_selected_rung(high_rung.part_hash, selected_rung) && selected_rung == 31,
+          "vt-demand: surface connections see selected rungs independently of the request cap");
+    const auto first_stamp = renderer.test_vt_wanted_stamp(part.part_hash, 0);
+    for (int i = 0; i < 8; ++i) {
+        demand();
+        CHECK(requests.size() == 1 && requests[0].rung == 0,
+              "vt-demand: drained requests retry on unchanged views");
+    }
+    CHECK(renderer.test_vt_demand_builds() == first_builds &&
+              renderer.test_vt_wanted_stamp(part.part_hash, 0) == first_stamp + 8,
+          "vt-demand: unchanged views reuse selection and advance wanted age");
+    budgets.requests_per_frame = 256;
+    demand();
+    CHECK(requests.size() == 2 && requests[1].part_hash == high_rung.part_hash &&
+              requests[1].rung == 31 && renderer.test_vt_demand_builds() == first_builds,
+          "vt-demand: live cap increase retries previously capped high chart rung");
+    renderer.test_freeze_vt_demand_eye({});
+    demand({0,0,100});
+    CHECK(requests.size() == 2 && requests[0].rung == 0 &&
+              renderer.test_vt_demand_builds() == first_builds,
+          "vt-demand: frozen effective eye reuses selection despite live camera motion");
+    renderer.set_cull_camera_frozen(false);
+    const auto cached_requests = requests;
+    renderer.test_rebuild_vt_demand();
+    demand();
+    bool same = requests.size() == cached_requests.size();
+    for (size_t i = 0; same && i < requests.size(); ++i)
+        same = requests[i].part_hash == cached_requests[i].part_hash &&
+               requests[i].rung == cached_requests[i].rung &&
+               requests[i].priority == cached_requests[i].priority;
+    CHECK(same, "vt-demand: reused requests equal a fresh selection");
+    CHECK(renderer.vt_surface_selection_revision() == first_surface_selection,
+          "vt-demand: equivalent selections do not invalidate surface topology");
+
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w = atlas.atlas_h = 128;
+    atlas.tri_order = {0};
+    atlas.charts.resize(1);
+    atlas.charts[0].rect_w = atlas.charts[0].rect_h = 128;
+    atlas.charts[0].texels_per_meter = 4;
+    atlas.charts[0].tri_count = 1;
+    const float positions[] = {0,0,0, 1,0,0, 0,1,0};
+    const float normals[] = {0,0,1, 0,0,1, 0,0,1};
+    const float uvs[] = {0,0, 1,0, 0,1};
+    const uint32_t indices[] = {0,1,2};
+    const uint32_t materials[] = {0,0,0};
+    vt::VtPartContext context;
+    context.positions = positions;
+    context.normals = normals;
+    context.surface_uvs = uvs;
+    context.vertex_count = 3;
+    context.indices = indices;
+    context.triangle_count = 1;
+    context.material_ids = materials;
+    const auto register_rung = [&](uint64_t hash, uint32_t rung) {
+        context.variant_hash = hash;
+        context.rung = rung;
+        return renderer.register_vt_rung(hash, rung, atlas, context);
+    };
+    CHECK(register_rung(part.part_hash, 0) && register_rung(high_rung.part_hash, 31),
+          "vt-demand: registration answers cached requests");
+    const auto registered_builds = renderer.test_vt_demand_builds();
+    for (int i = 0; i < 8; ++i) demand();
+    CHECK(requests.empty() && renderer.test_vt_registered_rung(part.part_hash, 0) != 0 &&
+              renderer.test_vt_demand_builds() == registered_builds,
+          "vt-demand: registered selected rungs survive beyond linger without rebuilds");
+    renderer.test_evict_vt_rung(high_rung.part_hash, 31);
+    demand();
+    CHECK(requests.size() == 1 && requests[0].rung == 31 &&
+              renderer.test_vt_demand_builds() == registered_builds,
+          "vt-demand: eviction restarts a registration retry without rebuilding");
+
+    const uint64_t near_stamp = renderer.test_vt_wanted_stamp(part.part_hash, 0);
+    demand({0,0,100});
+    CHECK(renderer.vt_surface_selected_rung(part.part_hash, selected_rung) && selected_rung == 1 &&
+          renderer.vt_surface_selection_revision() != first_surface_selection,
+          "vt-demand: surface destination switches to drawn coarse rung while fine pages linger");
+    CHECK(requests.size() == 2 && requests[0].rung == 1 &&
+              renderer.test_vt_wanted_stamp(part.part_hash, 0) == near_stamp &&
+              renderer.test_vt_demand_builds() == registered_builds + 1,
+          "vt-demand: camera change selects coarse rung and preserves prior wanted age");
+    demand({0,0,100});
+    CHECK(renderer.test_vt_registered_rung(part.part_hash, 0) != 0,
+          "vt-demand: previous rung survives exact linger boundary");
+    demand({0,0,100});
+    CHECK(renderer.test_vt_registered_rung(part.part_hash, 0) == 0,
+          "vt-demand: previous rung is evicted after linger boundary on a cached view");
+    CHECK(register_rung(part.part_hash, 0), "vt-demand: delayed old request can register");
+    demand({0,0,100});
+    CHECK(renderer.test_vt_registered_rung(part.part_hash, 0) == 0,
+          "vt-demand: late unwanted registration is still subject to linger");
+    auto builds = renderer.test_vt_demand_builds();
+    demand({0,0,100}, 100.0f);
+    CHECK(requests.size() == 2 && requests[0].rung == 0 &&
+              renderer.test_vt_demand_builds() == builds + 1,
+          "vt-demand: pixel budget invalidates selection");
+    instances[0].object_to_world = viewer::mat4_translation({0,0,-1000});
+    instances[1].object_to_world = instances[0].object_to_world;
+    CHECK(renderer.update_instances(instances, error), "vt-demand: move both instances");
+    builds = renderer.test_vt_demand_builds();
+    demand({0,0,100}, 100.0f);
+    bool wants_coarse = false;
+    for (const auto& request : requests)
+        wants_coarse |= request.part_hash == part.part_hash && request.rung == 1;
+    CHECK(wants_coarse && renderer.test_vt_demand_builds() == builds + 1,
+          "vt-demand: changed transforms invalidate selection");
+    instances[1].object_to_world = identity;
+    CHECK(renderer.update_instances(instances, error), "vt-demand: split instance LOD selections");
+    demand();
+    CHECK(!renderer.vt_surface_selected_rung(part.part_hash, selected_rung),
+          "vt-demand: ambiguous multi-instance rungs cannot authorize one physical destination");
+    renderer.release_part(part.part_hash);
+    CHECK(!renderer.vt_surface_selected_rung(part.part_hash, selected_rung),
+          "vt-demand: released surface cannot be a connection destination");
+    demand();
+    CHECK(requests.size() == 1 && requests[0].part_hash == high_rung.part_hash,
+          "vt-demand: released part cannot remain in cached requests");
+    CHECK(renderer.ensure_part(part, error) >= 0 &&
+              renderer.update_instances({{part.part_hash, identity, 4}}, error),
+          "vt-demand: reload same hash into new part slot");
+    demand();
+    CHECK(requests.size() == 1 && requests[0].part_hash == part.part_hash && requests[0].rung == 0,
+          "vt-demand: new part slot receives a fresh selection");
+    CHECK(renderer.update_instances({}, error), "vt-prewarm: parked part has no drawn instances");
+    renderer.set_vt_part_prewarm(part.part_hash, true);
+    demand();
+    CHECK(requests.size() == 1 && requests[0].part_hash == part.part_hash && requests[0].rung == 0,
+          "vt-prewarm: invisible source requests its texture coverage");
+    CHECK(!renderer.vt_part_coverage_ready(part.part_hash) && register_rung(part.part_hash, 0),
+          "vt-prewarm: unregistered coverage is not ready");
+    for (int i = 0; i < 8; ++i) demand();
+    CHECK(renderer.test_vt_registered_rung(part.part_hash, 0) != 0 &&
+              !renderer.vt_part_coverage_ready(part.part_hash),
+          "vt-prewarm: hidden owner survives linger but an unfilled tail is not ready");
+    renderer.set_vt_part_prewarm(part.part_hash, false);
+    for (int i = 0; i < 4; ++i) demand();
+    CHECK(renderer.test_vt_registered_rung(part.part_hash, 0) == 0,
+          "vt-prewarm: cancelled hidden demand can retire normally");
+    renderer.set_vt_part_prewarm(part.part_hash, true);
+    renderer.release_part(part.part_hash);
+    demand();
+    CHECK(requests.empty() && !renderer.vt_part_coverage_ready(part.part_hash),
+          "vt-prewarm: releasing a parked part removes its demand");
+    renderer.reset();
+    demand();
+    CHECK(requests.empty(), "vt-demand: reset clears cached requests");
+    CHECK(renderer.ensure_part(high_rung, error) >= 0 &&
+              renderer.update_instances({{high_rung.part_hash, identity, 5}}, error),
+          "vt-demand: scene can restart after reset");
+    demand();
+    CHECK(requests.size() == 1 && requests[0].rung == 31,
+          "vt-demand: restarted scene does not inherit old part selection");
+
+    // Fill all owner slots with currently wanted variants. Cached ages must
+    // protect every owner during admission, then expose only an unselected
+    // owner as a victim once the instance set changes.
+    viewer::VkSceneRenderer pressure(vulkan);
+    CHECK(pressure.init(error), "vt-demand: pressure renderer initializes");
+    const auto pressure_demand = [&] { pressure.test_update_vt_demand({}, 1.0f); };
+    const auto register_pressure = [&](uint64_t hash) {
+        context.variant_hash = hash;
+        context.rung = 0;
+        return pressure.register_vt_rung(hash, 0, atlas, context);
+    };
+    budgets.linger_frames = 100;
+    instances.clear();
+    for (uint64_t i = 0; i < 17; ++i) {
+        part.part_hash = 0x9700u + i;
+        CHECK(pressure.ensure_part(part, error) >= 0, "vt-demand: pressure part registers");
+        if (i < 16) instances.push_back({part.part_hash, identity, i + 1});
+    }
+    CHECK(pressure.update_instances(instances, error), "vt-demand: pressure instances staged");
+    pressure_demand();
+    for (uint64_t i = 0; i < 16; ++i)
+        CHECK(register_pressure(0x9700u + i), "vt-demand: fill owner capacity");
+    builds = pressure.test_vt_demand_builds();
+    for (int i = 0; i < 8; ++i) pressure_demand();
+    CHECK(pressure.test_vt_demand_builds() == builds &&
+              !register_pressure(0x9710u) && pressure.vt_stats().variants == 16,
+          "vt-demand: admission cannot evict owners wanted by an unchanged cached view");
+    instances.erase(instances.begin());
+    CHECK(pressure.update_instances(instances, error), "vt-demand: stop wanting one owner");
+    pressure_demand();
+    register_pressure(0x9710u);
+    bool selected_owners_survive = pressure.test_vt_registered_rung(0x9700u, 0) == 0;
+    for (uint64_t i = 1; i < 16; ++i)
+        selected_owners_survive &= pressure.test_vt_registered_rung(0x9700u + i, 0) != 0;
+    CHECK(selected_owners_survive, "vt-demand: pressure evicts only the no-longer-wanted owner");
+    // No selected owner can age out when the live linger budget shrinks.
+    budgets.linger_frames = 2;
+    pressure_demand();
+    for (uint64_t i = 1; i < 16; ++i)
+        CHECK(pressure.test_vt_registered_rung(0x9700u + i, 0) != 0,
+              "vt-demand: live linger change preserves cached selected owners");
+    budgets = saved_budgets;
+}
+
+void run_vt_feedback_visibility_path(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 160, height = 160, atlas_edge = 512;
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+#else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+#endif
+    run_vt_demand_cache_path(vulkan);
+    const auto make_quad = [](uint64_t hash, float z, uint32_t material,
+                              bool charted) {
+        auto part = fixed_part(hash, {-1.0f, -1.0f, z}, {1.0f, 1.0f, z}, 0);
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+        constexpr float u0 = 4.0f / atlas_edge;
+        constexpr float u1 = 508.0f / atlas_edge;
+        part.vertices = {
+            {{-1.0f, -1.0f, z}, normal, tint, {u0, u0, 1, 1}, material, {}},
+            {{ 1.0f, -1.0f, z}, normal, tint, {u1, u0, 1, 1}, material, {}},
+            {{ 1.0f,  1.0f, z}, normal, tint, {u1, u1, 1, 1}, material, {}},
+            {{-1.0f,  1.0f, z}, normal, tint, {u0, u1, 1, 1}, material, {}}};
+        part.indices = {0, 1, 2, 0, 2, 3};
+        part.clusters[0].lods[0] = {0, 6, 0.0f,
+                                    charted ? 0u : UINT32_MAX};
+        if (charted) {
+            chart_atlas::ChartAtlasRung rung;
+            rung.atlas_w = rung.atlas_h = atlas_edge;
+            chart_atlas::ChartEntry chart{};
+            chart.origin[0] = chart.origin[1] = -1.0f;
+            chart.origin[2] = z;
+            chart.tangent[0] = chart.bitangent[1] = 1.0f;
+            chart.rect_w = chart.rect_h = atlas_edge;
+            chart.texels_per_meter = 252.0f;
+            chart.tri_count = 2;
+            rung.charts = {chart};
+            rung.tri_order = {0, 1};
+            part.lod_charts = {rung};
+            viewer::VkScenePartChartMesh mesh;
+            mesh.vertex_count = 4;
+            for (const auto& vertex : part.vertices) {
+                mesh.positions.insert(mesh.positions.end(),
+                    {vertex.position.x, vertex.position.y, vertex.position.z});
+                mesh.normals.insert(mesh.normals.end(), {0, 0, 1});
+                mesh.surface_uvs.insert(mesh.surface_uvs.end(),
+                    {vertex.surface.x, vertex.surface.y});
+                mesh.material_ids.push_back(material);
+            }
+            mesh.indices = part.indices;
+            mesh.dominant_material = material;
+            part.lod_chart_meshes = {std::move(mesh)};
+        }
+        return part;
+    };
+    vt::VtVariantLayout layout{};
+    CHECK(vt::vt_build_layout(atlas_edge, atlas_edge, layout),
+          "vt-feedback: fixture atlas layout");
+    for (bool front_charted : {true, false}) {
+        for (bool front_first : {true, false}) {
+            std::string error;
+            viewer::VkSceneRenderer renderer(vulkan);
+            if (!renderer.init(error)) {
+                CHECK(false, error.c_str());
+                return;
+            }
+            std::vector<MaterialGpuRecord> materials(3);
+            for (uint32_t i = 0; i < materials.size(); ++i) {
+                materials[i].base_roughness[0] = i == 1 ? 0.8f : 0.1f;
+                materials[i].base_roughness[1] = i == 2 ? 0.8f : 0.1f;
+                materials[i].base_roughness[2] = 0.1f;
+                materials[i].base_roughness[3] = 0.5f;
+                materials[i].metal_opacity_spec_coat[1] = 1.0f;
+            }
+            CHECK(renderer.update_materials(materials, 1, 1, error),
+                  "vt-feedback: opaque materials");
+            constexpr uint64_t front_hash = 0x771200, rear_hash = 0x771201;
+            const auto front = make_quad(front_hash, -2.0f, 1, front_charted);
+            const auto rear = make_quad(rear_hash, -2.2f, 2, true);
+            CHECK(renderer.ensure_part(front_first ? front : rear, error) >= 0 &&
+                      renderer.ensure_part(front_first ? rear : front, error) >= 0,
+                  "vt-feedback: register overlapping quads in either order");
+            const auto identity = identity_matrix();
+            const viewer::VkSceneInstance front_instance{front_hash, identity, 1};
+            const viewer::VkSceneInstance rear_instance{rear_hash, identity, 2};
+            const std::vector<viewer::VkSceneInstance> both = front_first
+                ? std::vector<viewer::VkSceneInstance>{front_instance, rear_instance}
+                : std::vector<viewer::VkSceneInstance>{rear_instance, front_instance};
+            CHECK(renderer.update_instances(both, error),
+                  "vt-feedback: upload overlapping instances");
+            matter::CameraDesc camera{};
+            camera.position = {0, 0, 0};
+            camera.target = {0, 0, -1};
+            camera.up = {0, 1, 0};
+            camera.vertical_fov_radians = 1.57079632679f;
+            camera.near_plane = 0.1f;
+            camera.far_plane = 10;
+            viewer::FrameMatrices frame{};
+            CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+                  "vt-feedback: camera");
+            const auto render_frames = [&](uint32_t count) {
+                for (uint32_t i = 0; i < count; ++i) {
+                    if (!renderer.dispatch_culling(frame, camera.position, 1.0f, error) ||
+                        !renderer.render_gbuffer_and_composite(width, height, error)) {
+                        CHECK(false, error.c_str());
+                        return false;
+                    }
+                }
+                return true;
+            };
+            const auto detail_count = [&](uint64_t hash) {
+                uint32_t result = 0;
+                for (uint32_t mip = 0; mip + 1 < layout.mip_count; ++mip)
+                    for (uint32_t y = 0; y < layout.page_h[mip]; ++y)
+                        for (uint32_t x = 0; x < layout.page_w[mip]; ++x)
+                            result += renderer.test_vt_page_slot(hash, 0, {mip,x,y}) !=
+                                      UINT32_MAX;
+                return result;
+            };
+            if (!render_frames(48)) return;
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(80, 80, pixel, error),
+                  "vt-feedback: read visible surface");
+            CHECK(pixel.material_index == 1 && pixel.albedo.x > 0.7f &&
+                      pixel.albedo.y < 0.2f,
+                  "vt-feedback: front surface wins final G-buffer visibility");
+            const uint32_t front_pages = detail_count(front_hash);
+            const uint32_t rear_pages = detail_count(rear_hash);
+            std::printf("vt-feedback visibility: front_charted=%d front_first=%d "
+                        "front_detail=%u hidden_detail=%u\n",
+                        int(front_charted), int(front_first), front_pages, rear_pages);
+            CHECK(!front_charted || front_pages > 0,
+                  "vt-feedback: visible chart receives refinement");
+            CHECK(rear_pages == 0,
+                  "vt-feedback: fully occluded owner receives no detail requests");
+            CHECK(renderer.test_vt_page_slot(rear_hash, 0,
+                      {layout.mip_count - 1u, 0, 0}) != UINT32_MAX,
+                  "vt-feedback: hidden owner retains mandatory fallback");
+            CHECK(renderer.update_instances({rear_instance}, error),
+                  "vt-feedback: reveal previously hidden owner");
+            if (!render_frames(24)) return;
+            CHECK(renderer.readback_raster_pixel(80, 80, pixel, error) &&
+                      pixel.material_index == 2 && detail_count(rear_hash) > 0,
+                  "vt-feedback: newly visible owner receives refinement");
+            const auto before_return = renderer.vt_stats().fills_total;
+            CHECK(renderer.update_instances(both, error),
+                  "vt-feedback: restore occluder");
+            if (!render_frames(24)) return;
+            CHECK(renderer.vt_stats().fills_total == before_return,
+                  "vt-feedback: returning to retained surfaces reuses their pages");
+            // Two distinct full extents share the same rounded feedback grid.
+            // Checking only the compact dimensions would retain a too-small
+            // attachment for the second resize. Partial edge blocks remain
+            // valid requests instead of writing outside a floor-sized target.
+            for (const VkExtent2D extent : {VkExtent2D{161, 163}, VkExtent2D{167, 165}}) {
+                CHECK(viewer::build_frame_matrices(camera, extent.width, extent.height,
+                                                   frame, error),
+                      "vt-feedback: odd-extent camera");
+                for (uint32_t i = 0; i < 12; ++i) {
+                    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
+                              renderer.render_gbuffer_and_composite(
+                                  extent.width, extent.height, error),
+                          error.empty() ? "vt-feedback: odd-extent resize" : error.c_str());
+                }
+                CHECK(renderer.readback_raster_pixel(extent.width / 2u,
+                          extent.height / 2u, pixel, error) && pixel.material_index == 1,
+                      "vt-feedback: resize retains correct visible surface");
+            }
+        }
+    }
+}
+
 void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
@@ -5452,7 +5991,20 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
 
     // Quad centres (world x -0.8 / 0 / +0.8 at z = -2) land on screen x
     // 48 / 80 / 112 with the 90-degree camera.
-    for (int i = 0; i < 5; ++i) render_once("vt-surfaces: render VT frame");
+    // Preparation is asynchronous. Wait for actual page work to drain instead
+    // of assuming a fixed five submissions are enough on a cold worker.
+    const auto settle_pages = [&]() {
+        uint32_t stable_frames = 0;
+        for (int i = 0; i < int(4*vt::kVtPageTiles) && stable_frames < 5; ++i) {
+            render_once("vt-surfaces: render VT frame");
+            const auto stats = renderer.vt_stats();
+            stable_frames = stats.fills_total > 0 && stats.queue_depth == 0 &&
+                            stats.dirty_pages == 0 && stats.fills_last_frame == 0
+                                ? stable_frames + 1 : 0;
+        }
+        CHECK(stable_frames == 5, "vt-surfaces: page work completes within bounded tiles");
+    };
+    settle_pages();
     const viewer::VkRasterPixel p_grass = pixel_at(48, 80);
     const viewer::VkRasterPixel p_rock = pixel_at(80, 80);
     const viewer::VkRasterPixel p_snow = pixel_at(112, 80);
@@ -5498,7 +6050,7 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
                                           0x5EAF00D100000002ull),
           "vt-surfaces: the registered rung accepts the edited tape");
     renderer.end_vt_surface_update();
-    for (int i = 0; i < 6; ++i) render_once("vt-surfaces: post-edit frame");
+    settle_pages();
     const vt::VtResidency::Stats after_edit = renderer.vt_stats();
     std::printf("vt-surfaces stats: fills=%llu -> %llu, invalidations=%llu, "
                 "dropped=%llu\n",
@@ -5534,7 +6086,7 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.update_vt_part_surface(0x7710, {}, {}, 0),
           "vt-surfaces: stripping the tape updates the registered rung");
     renderer.end_vt_surface_update();
-    for (int i = 0; i < 6; ++i) render_once("vt-surfaces: stripped frame");
+    settle_pages();
     const viewer::VkRasterPixel stripped = pixel_at(80, 80);
     CHECK(close_albedo(stripped, tri_albedo, 2.0e-2f),
           "vt-surfaces: without the tape the TriEx materialId stub shades "
@@ -5624,8 +6176,7 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
         CHECK(renderer.update_instances({{0x7711, identity, 1}}, error),
               error.empty() ? "vt-surfaces: upload mode-3 instance"
                             : error.c_str());
-        for (int i = 0; i < 6; ++i)
-            render_once("vt-surfaces: mode-3 frame");
+        settle_pages();
         // Probe columns ~0.04 m either side of the step (quad spans screen
         // x 64..96 with this camera; the edge is at x = 80).
         const viewer::VkRasterPixel m3_left = pixel_at(78, 80);
@@ -5647,6 +6198,103 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
         renderer.release_part(0x7711);
         CHECK(renderer.vt_stats().variants == 0,
               "vt-surfaces mode 3: release returns the variant");
+
+        // IDs are categories: a filtered boundary between 30 and 34 must
+        // never select unused materials 31..33. Give those unused records a
+        // strongly tilted detail normal, then change only those records.
+        // The actual compositor, page publication and G-buffer near sampler
+        // must produce identical pixels before and after the unrelated edit.
+        constexpr uint32_t mat_a = 30, mat_b = 34;
+        materials.resize(mat_b + 1);
+        for (uint32_t id = mat_a; id <= mat_b; ++id) {
+            set_material(id, id == mat_b ? rock_albedo : grass_albedo);
+            materials[id].flags_misc[1] = (id == mat_a || id == mat_b) ? 1u : 2u;
+        }
+        materials[kTriMaterial].flags_misc[1] = 1u; // activate the near path
+        constexpr int px = 32;
+        std::vector<uint8_t> alb(px * px * 3, 160), nrm(px * px * 2);
+        std::vector<uint8_t> orm(px * px * 3, 180);
+        std::vector<uint16_t> hgt(px * px, 0);
+        for (int slot = 0; slot < 2; ++slot) {
+            for (int i = 0; i < px * px; ++i) {
+                nrm[2*i] = slot ? 225 : 128;
+                nrm[2*i+1] = slot ? 32 : 128;
+                orm[3*i] = 255; orm[3*i+2] = 0;
+            }
+            tileset::GTexHeader header{};
+            header.tile_size_m = 1.f; header.texels_per_meter = 8;
+            header.height_min = 0; header.height_max = .01f;
+            header.content_hash = 0x5654494443415400ull + uint64_t(slot);
+            const char* temp = std::getenv("TEMP");
+            const std::string path = std::string(temp ? temp : ".") +
+                "/me3_vt_categorical_" + std::to_string(slot) + ".gtex";
+            CHECK(tileset::save_gtex(path, header, px, px, alb.data(), nrm.data(),
+                                    orm.data(), hgt.data(), error), error.c_str());
+            CHECK(renderer.load_tileset_slot(slot, path, error), error.c_str());
+            std::remove(path.c_str());
+        }
+        matter::VtNearBandSettings near_settings{};
+        near_settings.near_band_m = 50.f; near_settings.near_fade_m = .01f;
+        renderer.set_vt_near_band_settings(near_settings);
+        matter::TilesetPomSettings pom{};
+        pom.enabled = false;
+        renderer.set_tileset_pom_settings(pom);
+        CHECK(renderer.update_materials(materials, 2, 1, error), error.c_str());
+        part3.part_hash = 0x7712;
+        part3.surface_materials = {mat_a, mat_b};
+        part3.surface_tape_hash = 0x5EAF00D100000004ull;
+        part3.surface_tape_text =
+            "input lx\nsmoothstep -0.0025 0.0025 r0\noneminus r1\n"
+            "material 30 r2\nmaterial 34 r1\n";
+        CHECK(renderer.ensure_part(part3, error) >= 0, error.c_str());
+        CHECK(renderer.update_instances({{0x7712, identity, 1}}, error), error.c_str());
+        settle_pages();
+        const auto collect_boundary = [&]() {
+            std::vector<viewer::VkRasterPixel> result;
+            for (float offset : {-0.004f, -0.002f, 0.f, 0.002f, 0.004f}) {
+                // Move the local boundary through the pixel centre in small
+                // fractions of one resident texel. Both IDs must be sampled.
+                matter::Mat4f transform = identity;
+                transform.m[3] = .0125f + offset; // renderer uses row-major transforms
+                CHECK(renderer.update_instances({{0x7712, transform, 1}}, error),
+                      error.c_str());
+                for (int i = 0; i < 6; ++i) render_once("categorical IDs: settle");
+                result.push_back(pixel_at(80, 80));
+                const auto& n = result.back().normal;
+                std::printf("categorical probe offset %.4f normal %.6f %.6f %.6f\n",
+                            offset, n.x, n.y, n.z);
+                CHECK(result.back().material_index == kTriMaterial,
+                      "categorical IDs: boundary probe lands on the chart");
+            }
+            return result;
+        };
+        const auto trapped = collect_boundary();
+        const auto fills_before_unused_edit = renderer.vt_stats().fills_total;
+        for (uint32_t id = mat_a + 1; id < mat_b; ++id)
+            materials[id].flags_misc[1] = 1u;
+        CHECK(renderer.update_materials(materials, 3, 1, error), error.c_str());
+        const auto neutral = collect_boundary();
+        const auto normal_error = [](const viewer::VkRasterPixel& a,
+                                     const viewer::VkRasterPixel& b) {
+            return std::max({std::fabs(a.normal.x - b.normal.x),
+                             std::fabs(a.normal.y - b.normal.y),
+                             std::fabs(a.normal.z - b.normal.z)});
+        };
+        for (size_t i = 0; i < trapped.size(); ++i) {
+            const float delta = normal_error(trapped[i], neutral[i]);
+            std::printf("categorical material boundary %zu: normal delta %.6f\n", i, delta);
+            CHECK(delta < .002f,
+                  "categorical IDs: unused intermediate material cannot affect boundary shading");
+        }
+        CHECK(renderer.vt_stats().fills_total == fills_before_unused_edit,
+              "categorical IDs: editing unused materials regenerates no pages");
+        const auto before_authored_edit = pixel_at(78, 80);
+        materials[mat_a].flags_misc[1] = 2u;
+        CHECK(renderer.update_materials(materials, 4, 1, error), error.c_str());
+        settle_pages();
+        CHECK(normal_error(before_authored_edit, pixel_at(78, 80)) > .1f,
+              "categorical IDs: authored source control changes visible detail");
+        renderer.release_part(0x7712);
     }
 }
 
@@ -5751,10 +6399,10 @@ void test_vt_variant_context_storage_lifetime(matter::VulkanDevice& vulkan) {
     context.surface_lane_count = 1;
 
     std::vector<uint32_t> slots;
-    for (uint64_t i = 0; i < 12; ++i) {
+    for (uint64_t i = 0; i < 16; ++i) {
         context.variant_hash = 0x9100u + i;
         const uint32_t slot = residency.register_variant(
-            context.variant_hash, 0, atlas, context);
+            context.variant_hash, 2, atlas, context);
         CHECK(slot != vt::kVtNoSlot,
               "vt lifetime: registration survives vector growth");
         if (slot != vt::kVtNoSlot) slots.push_back(slot);
@@ -5763,7 +6411,39 @@ void test_vt_variant_context_storage_lifetime(matter::VulkanDevice& vulkan) {
         CHECK(residency.context_storage_owned_for_test(slot),
               "vt lifetime: context pointers remain owned after growth");
     }
+    CHECK(residency.stats().variants == residency.stats().max_variants,
+          "vt lifetime: all owner slots are occupied");
+    context.variant_hash = 0x9100u;
+    context.surface_tape_text = "short"; // exercise a moved short-string buffer
+    CHECK(!slots.empty() && residency.register_variant(0x9100u, 0, atlas, context) == slots[0] &&
+              residency.slot_for(0x9100u, 2) == slots[0],
+          "vt lifetime: finer mesh preserves aliases when no spare owner slot exists");
+    CHECK(!slots.empty() && residency.context_storage_owned_for_test(slots[0]),
+          "vt lifetime: staged mesh/string pointers remain owned after promotion");
     residency.shutdown();
+
+    // Exercise renderer admission with aged demand-managed owners. A shared
+    // promotion must not evict its own coarse coverage to make a new layer.
+    viewer::VkSceneRenderer admission(vulkan);
+    CHECK(admission.init(error), error.empty() ? "vt admission: renderer initialized" : error.c_str());
+    for (uint64_t i = 0; i < 16; ++i) {
+        const uint64_t hash = 0x9200u + i;
+        auto part = fixed_part(hash, {-1,-1,-2}, {1,1,-1}, 0);
+        part.vt_deferred_rung_mask = 3;
+        CHECK(admission.ensure_part(part, error) >= 0 &&
+                  admission.register_vt_rung(hash, 1, atlas, context),
+              "vt admission: coarse deferred owner registered");
+    }
+    const auto before_promotion = admission.vt_stats();
+    CHECK(before_promotion.variants == before_promotion.max_variants,
+          "vt admission: renderer's owner capacity is full");
+    admission.test_advance_vt_demand_frame();
+    CHECK(admission.register_vt_rung(0x9200u, 0, atlas, context),
+          "vt admission: full-capacity shared promotion is accepted");
+    CHECK(admission.vt_stats().variants == before_promotion.variants &&
+              admission.vt_stats().graveyard_layers == before_promotion.graveyard_layers &&
+              admission.vt_stats().finer_rebuilds_total == before_promotion.finer_rebuilds_total + 1,
+          "vt admission: promotion evicts no owner and refines the existing mesh");
 }
 
 void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
@@ -5789,13 +6469,19 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
     constexpr float kRoughness = 0.40f;
     constexpr float kMetallic = 0.0f;
     const matter::Float3 page_albedo{0.85f, 0.80f, 0.72f};
-    std::vector<MaterialGpuRecord> materials(kMaterial + 1);
+    constexpr uint32_t kAlternateMaterial = kMaterial + 1u;
+    const matter::Float3 alternate_albedo{0.70f, 0.20f, 0.60f};
+    std::vector<MaterialGpuRecord> materials(kAlternateMaterial + 1);
     materials[kMaterial].base_roughness[0] = page_albedo.x;
     materials[kMaterial].base_roughness[1] = page_albedo.y;
     materials[kMaterial].base_roughness[2] = page_albedo.z;
     materials[kMaterial].base_roughness[3] = kRoughness;
     materials[kMaterial].metal_opacity_spec_coat[0] = kMetallic;
     materials[kMaterial].metal_opacity_spec_coat[1] = 1.0f;   // opacity
+    materials[kAlternateMaterial] = materials[kMaterial];
+    materials[kAlternateMaterial].base_roughness[0] = alternate_albedo.x;
+    materials[kAlternateMaterial].base_roughness[1] = alternate_albedo.y;
+    materials[kAlternateMaterial].base_roughness[2] = alternate_albedo.z;
     CHECK(renderer.update_materials(materials, 1, 1, error),
           error.empty() ? "vt-enrich: stage materials" : error.c_str());
 
@@ -5868,8 +6554,40 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
         mesh.dominant_material = kMaterial;
         charted.lod_chart_meshes = {std::move(mesh)};
     }
+    // Coarse texture geometry omits the fin, but retains the chart mapping.
+    // A finer mesh later restores its actual occlusion on the same owner.
+    charted.lod_charts.push_back(charted.lod_charts[0]);
+    charted.lod_charts[1].charts[1].tri_count = 0;
+    charted.lod_charts[1].tri_order.resize(2);
+    charted.lod_chart_meshes.push_back(charted.lod_chart_meshes[0]);
+    charted.lod_chart_meshes[1].indices.resize(6);
+    charted.lod_charts.push_back(charted.lod_charts[1]);
+    charted.lod_chart_meshes.push_back(charted.lod_chart_meshes[1]);
+    charted.vt_deferred_rung_mask = 7;
+    // Keep drawing a surviving alias while the canonical texture mesh changes.
+    charted.clusters[0].lods[0].chart_rung = 2;
     CHECK(renderer.ensure_part(charted, error) >= 0,
           error.empty() ? "vt-enrich: ensure occluder part" : error.c_str());
+    const auto register_texture_rung = [&](uint32_t rung) {
+        const auto& mesh = charted.lod_chart_meshes[rung];
+        vt::VtPartContext context;
+        context.variant_hash = charted.part_hash;
+        context.rung = rung;
+        context.rung_count = 3;
+        context.positions = mesh.positions.data();
+        context.normals = mesh.normals.data();
+        context.surface_uvs = mesh.surface_uvs.data();
+        context.material_ids = mesh.material_ids.data();
+        context.vertex_count = mesh.vertex_count;
+        context.indices = mesh.indices.data();
+        context.triangle_count = static_cast<uint32_t>(mesh.indices.size() / 3);
+        context.dominant_material = mesh.dominant_material;
+        return renderer.register_vt_rung(charted.part_hash, rung, charted.lod_charts[rung], context);
+    };
+    CHECK(register_texture_rung(1) && register_texture_rung(2),
+          "vt-enrich: deferred coarse aliases register");
+    CHECK(renderer.vt_stats().variants == 1,
+          "vt-enrich: compatible coarse rungs share one texture owner");
     CHECK(renderer.vt_active(), "vt-enrich: the residency runtime started");
     {
         const vt::VtResidency::Stats started = renderer.vt_stats();
@@ -5986,6 +6704,18 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t kFarX = 35;
     constexpr uint32_t kProbeY = 80;
 
+    for (int i = 0; i < 12; ++i) render_once("vt-enrich: coarse geometry frame");
+    CHECK(std::fabs(pixel_at(kNearX, kProbeY).orm.z - 1.0f) < 3.0e-2f,
+          "vt-enrich: coarse mesh without fin has no contact occlusion");
+    const auto before_promotion = renderer.vt_stats();
+    const auto coarse_geometry_builds = renderer.vt_geometry_build_count();
+    const auto coarse_ao_builds = renderer.vt_enrich_as_build_count();
+    CHECK(register_texture_rung(0), "vt-enrich: finer texture mesh is admitted");
+    CHECK(renderer.vt_stats().variants == before_promotion.variants &&
+              renderer.vt_stats().pool_used == before_promotion.pool_used &&
+              renderer.vt_stats().graveyard_layers == before_promotion.graveyard_layers,
+          "vt-enrich: finer mesh retains owner and occupied page slots");
+
     // Frame 1 fills the pinned tail; the feedback loop then drains the finest
     // pages. Enrichment trails the fills by at least a frame by construction
     // (the queue is drained before the fills that feed it), and runs 2 pages a
@@ -6006,6 +6736,9 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
                 "(submit+wait, 160x160)\n",
                 enriching_frame_ms, settled_frame_ms);
 
+    CHECK(renderer.vt_geometry_build_count() == coarse_geometry_builds + 1 &&
+              renderer.vt_enrich_as_build_count() == coarse_ao_builds + (rt ? 1 : 0),
+          "vt-enrich: promotion prepares the finer geometry once per producer");
     const vt::VtResidency::Stats settled = renderer.vt_stats();
     std::printf("vt-enrich stats: rt=%d samples=%u fills=%llu failed=%llu "
                 "enrich=%llu queue=%u enriched_pages=%u dropped=%llu "
@@ -6107,9 +6840,9 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
               near_again.albedo.z == near_probe.albedo.z,
           "vt-enrich: enriched pages are bit-identical across frames");
 
-    // (d) invalidation clears the tier and the re-filled pages re-enrich. The
-    // material edit is what push_vt_compositor_inputs turns into an
-    // invalidate_all_content, which drops resident content AND every tier-2 bit.
+    // (d) Successful replacement resets the tier and queues new enrichment.
+    // The material edit selects only dependent owners and retains old content
+    // until candidate publication; old pending enrichment must not run on it.
     const matter::Float3 edited_albedo{0.30f, 0.55f, 0.40f};
     materials[kMaterial].base_roughness[0] = edited_albedo.x;
     materials[kMaterial].base_roughness[1] = edited_albedo.y;
@@ -6124,7 +6857,7 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
                 static_cast<unsigned long long>(reenriched.enrich_total),
                 static_cast<unsigned long long>(enrich_after_settle),
                 reenriched.enriched_pages);
-    CHECK(reenriched.invalidations_total == 1,
+    CHECK(reenriched.invalidations_total == settled.invalidations_total + 1,
           "vt-enrich: the material edit invalidated resident content once");
     CHECK(reenriched.enrich_total > enrich_after_settle,
           "vt-enrich: invalidated pages were re-filled AND re-enriched");
@@ -6146,6 +6879,92 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
     CHECK(std::fabs(near_edited.orm.z - near_probe.orm.z) < 2.0e-2f,
           "vt-enrich: re-enrichment reproduces the same occlusion, not a "
           "compounded one");
+
+    const auto before_alias_release = renderer.vt_stats();
+    renderer.test_evict_vt_rung(0x7801, 1);
+    for (int i = 0; i < 12; ++i) render_once("vt-enrich: alias retirement frame");
+    CHECK(renderer.vt_stats().variants == before_alias_release.variants &&
+              renderer.vt_stats().fills_total == before_alias_release.fills_total,
+          "vt-enrich: evicting one alias retains the shared owner and pages");
+
+    // Surface classification has a separate lifetime from AO geometry. Add
+    // weights, replace them, then remove the classification entirely through
+    // the production edit bracket. Check rendered changes as well as reuse:
+    // simply skipping the edit or its replacement pages must fail this test.
+    const uint64_t prepared_builds = renderer.vt_enrich_as_build_count();
+    const uint64_t compositor_geometry_builds = renderer.vt_geometry_build_count();
+    CHECK(prepared_builds > 0, "vt-enrich: AO geometry preparation is exercised");
+    CHECK(compositor_geometry_builds > 0,
+          "vt-enrich: compositor geometry preparation is exercised");
+    for (uint32_t edit = 0; edit < 3; ++edit) {
+        const auto before_surface = renderer.vt_stats();
+        std::vector<std::vector<uint8_t>> weights(3);
+        std::vector<uint32_t> surface_materials;
+        if (edit < 2) {
+            surface_materials = {kMaterial, kAlternateMaterial};
+            weights[0].resize(8u * 2u, 0);
+            for (size_t vertex = 0; vertex < 8; ++vertex)
+                weights[0][vertex * 2 + (edit == 0 ? 1 : 0)] = 255;
+            // Another live alias has a different classification. Only the
+            // canonical mesh's weights may update the shared preparation.
+            weights[2].resize(8u * 2u, 0);
+            for (size_t vertex = 0; vertex < 8; ++vertex)
+                weights[2][vertex * 2 + (edit == 0 ? 0 : 1)] = 255;
+        }
+        renderer.begin_vt_surface_update();
+        CHECK(renderer.update_vt_part_surface(0x7801, weights, surface_materials,
+                                              0x78010000ull + edit),
+              "vt-enrich: surface classification edit is accepted");
+        renderer.end_vt_surface_update();
+        for (int i = 0; i < 12; ++i) render_once("vt-enrich: surface edit frame");
+        const auto after_surface = renderer.vt_stats();
+        CHECK(after_surface.invalidations_total == before_surface.invalidations_total + 1 &&
+                  after_surface.fills_total > before_surface.fills_total &&
+                  after_surface.enrich_total > before_surface.enrich_total,
+              "vt-enrich: surface edit replaces and re-enriches its pages");
+        CHECK(renderer.vt_enrich_as_build_count() == prepared_builds,
+              "vt-enrich: surface edits reuse the AO acceleration structure");
+        CHECK(renderer.vt_geometry_build_count() == compositor_geometry_builds,
+              "vt-enrich: surface edits reuse compositor chart geometry");
+        const auto changed_near = pixel_at(kNearX, kProbeY);
+        const auto changed_far = pixel_at(kFarX, kProbeY);
+        const auto expected = edit == 0 ? alternate_albedo : edited_albedo;
+        CHECK(close4(changed_near.albedo, {expected.x, expected.y, expected.z, 1.0f},
+                     2.0e-2f),
+              "vt-enrich: surface edit publishes the selected material");
+        CHECK(std::fabs(changed_near.orm.z - near_probe.orm.z) < 2.0e-2f &&
+                  std::fabs(changed_far.orm.z - far_probe.orm.z) < 2.0e-2f,
+              "vt-enrich: reused geometry reproduces near and far contact AO");
+    }
+
+    // Actual geometry replacement must still retire and rebuild preparation.
+    // Remove the occluding fin under the same part hash after its release has
+    // drained, then verify that the formerly occluded wall becomes unoccluded.
+    renderer.release_part(0x7801);
+    CHECK(renderer.update_instances({}, error),
+          error.empty() ? "vt-enrich: remove the released instance" : error.c_str());
+    for (int i = 0; i < 12; ++i) render_once("vt-enrich: geometry retirement frame");
+    charted.vt_deferred_rung_mask = 0;
+    charted.indices.resize(6);
+    charted.lod_charts.resize(1);
+    charted.lod_chart_meshes.resize(1);
+    charted.clusters[0].lods[0] = {0, 6, 0.0f, 0u};
+    charted.lod_chart_meshes[0].indices = charted.indices;
+    charted.lod_charts[0].charts.resize(1);
+    charted.lod_charts[0].tri_order.resize(2);
+    const uint64_t before_geometry = renderer.vt_enrich_as_build_count();
+    const uint64_t before_compositor_geometry = renderer.vt_geometry_build_count();
+    CHECK(renderer.ensure_part(charted, error) >= 0,
+          error.empty() ? "vt-enrich: register the wall without its fin" : error.c_str());
+    CHECK(renderer.update_instances({{0x7801, identity, 1}}, error),
+          error.empty() ? "vt-enrich: restore the changed instance" : error.c_str());
+    for (int i = 0; i < 12; ++i) render_once("vt-enrich: changed geometry frame");
+    CHECK(renderer.vt_enrich_as_build_count() > before_geometry,
+          "vt-enrich: geometry replacement rebuilds AO preparation");
+    CHECK(renderer.vt_geometry_build_count() > before_compositor_geometry,
+          "vt-enrich: geometry replacement rebuilds compositor preparation");
+    CHECK(std::fabs(pixel_at(kNearX, kProbeY).orm.z - 1.0f) < 3.0e-2f,
+          "vt-enrich: removing the fin removes its baked occlusion");
 
     renderer.release_part(0x7801);
     renderer.release_part(0x7802);
@@ -6174,7 +6993,12 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
 //       hit grows with distance. This is the property the deleted
 //       RT_TILESET_CONE_SPREAD constant could only fake.
 void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = false,
-                    bool surface_parallax_fixture = false) {
+                    bool surface_parallax_fixture = false,
+                    bool input_snapshot_fixture = false,
+                    bool direct_source_fixture = false,
+                    bool composed_parallax_fixture = false,
+                    bool composed_seam_fixture = false,
+                    bool sector_seam_fixture = false) {
     if (!vulkan.ray_tracing_available()) {
         std::printf("vt-rt: ray tracing unavailable, skipping\n");
         return;
@@ -6243,7 +7067,8 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
             materials[kMaterialB].flags_misc[0] |= 32u;
         }
         matter::VtNearBandSettings near_settings{};
-        near_settings.near_band_m = 0; near_settings.near_fade_m = .01f;
+        near_settings.near_band_m = (input_snapshot_fixture || direct_source_fixture) ? 50.f : 0.f;
+        near_settings.near_fade_m = .01f;
         renderer.set_vt_near_band_settings(near_settings);
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(vulkan.physical_device(), &props);
@@ -6320,9 +7145,54 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
         mesh.dominant_material = kMaterialA;
         charted.lod_chart_meshes = {std::move(mesh)};
     }
+    std::shared_ptr<const part_surface::Prepared> local_part_source;
+    if (direct_source_fixture) {
+        charted.surface_materials = {kMaterialA};
+        charted.surface_tape_hash = 0x5654444952454354ull;
+        charted.surface_tape_text =
+            "input lx\nconst 0.25\nmul r0 r1\nconst 0.55\nconst 0.15\n"
+            "const 0.73\nconst 0\nconst 1\nmaterial 5 r7\n"
+            "source 1 r1 r3 r4 r5 r6 r7 r2 -1 1\n";
+        const char* mode=std::getenv("MATTER_VK_SMOKE_MODE");
+        if(mode && std::string(mode)=="vt-context-source") {
+            auto& tape=charted.surface_tape_text;
+            tape.replace(tape.find("source 1"),8,"source 2");
+            charted.surface_tape_hash^=2;
+            std::printf("direct source renderer: receiver-context v2 publication/raster/RT fixture\n");
+        }
+        charted.lod_chart_meshes[0].surface_weights.assign(8, 255);
+        if(mode && std::string(mode)=="vt-part-source") {
+            auto prepared=std::make_shared<part_surface::Prepared>();
+            prepared->kind=part_surface::Prepared::Kind::Direct;
+            prepared->part_hash=charted.part_hash;prepared->material=kMaterialA;
+            prepared->base_program=charted.surface_tape_text;
+            prepared->base_hash=charted.surface_tape_hash;
+            local_part_source=prepared;
+            CHECK(renderer.publish_part_surface(local_part_source,error),error.c_str());
+            // The receiver has no preinstalled world tape or weights. Both
+            // raster and RT must obtain the material through part publication.
+            charted.surface_materials.clear();charted.surface_tape_hash=0;
+            charted.surface_tape_text.clear();charted.lod_chart_meshes[0].surface_weights.clear();
+            std::printf("direct part source renderer: immutable recipe publication without source images\n");
+        }
+    }
+    if (composed_parallax_fixture) {
+        charted.surface_materials = {kMaterialA};
+        charted.surface_tape_hash = 0x5654434f4d500001ull;
+        charted.surface_tape_text =
+            "const 0.4\nconst 1\nconst 0\nconst 0.01\nmaterial 5 r1\n"
+            "source 1 r0 r0 r0 r0 r2 r1 r3 -0.04 0.02\n";
+        charted.lod_chart_meshes[0].surface_weights.assign(8,255);
+    }
     CHECK(renderer.ensure_part(charted, error) >= 0,
           error.empty() ? "vt-rt: ensure two-chart part" : error.c_str());
     CHECK(renderer.vt_active(), "vt-rt: the residency runtime started");
+    if(local_part_source) {
+        CHECK(renderer.publish_part_surface(local_part_source,error),"identical live part source is reusable");
+        auto changed=std::make_shared<part_surface::Prepared>(*local_part_source);changed->base_hash^=1;
+        CHECK(!renderer.publish_part_surface(changed,error),"live receiver rejects changed immutable material identity");
+        error.clear();
+    }
 
     const matter::Mat4f identity = identity_matrix();
     CHECK(renderer.update_instances({{0x7611, identity, 1}}, error),
@@ -6354,6 +7224,12 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
     // frame both shades the raster probes and traces the RT probes.
     viewer::RtSurfaceHit probe_hit{};
     uint32_t probe_invalid = 0;
+    bool audit_input_waits = false;
+    std::function<void()> before_vt_submit;
+    const auto device_idle_count = [&]() {
+        const auto& events = vulkan.test_presentation_events();
+        return std::count(events.begin(), events.end(), "device_wait_idle");
+    };
     const auto frame_with_probe = [&](bool trace, matter::Float3 origin,
                                       matter::Float3 direction,
                                       float cone_width, float cone_spread) {
@@ -6363,16 +7239,25 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
             CHECK(false, local.empty() ? "vt-rt: begin frame" : local.c_str());
             return;
         }
+        const auto idle_before_record = audit_input_waits ? device_idle_count() : 0;
         bool recorded =
             renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
                                    local) &&
             renderer.record_cull_and_render(frame, matrices, camera.position,
                                             1.0f, local) &&
             renderer.record_composite_to_swapchain(frame, local);
+        if (audit_input_waits)
+            CHECK(device_idle_count() == idle_before_record,
+                  "input snapshot: warm frame input publication uses no device idle");
         if (recorded && trace)
             recorded = renderer.record_test_surface_ray(
                 frame, origin, direction, UINT32_MAX, cone_width, cone_spread,
                 local);
+        if (recorded && before_vt_submit) {
+            auto change = std::move(before_vt_submit);
+            before_vt_submit = nullptr;
+            change();
+        }
         const bool submitted = recorded && vulkan.end_frame(frame, local);
         renderer.finish_ray_tracing_frame(frame.serial, submitted);
         CHECK(submitted, local.empty() ? "vt-rt: submit frame" : local.c_str());
@@ -6384,6 +7269,851 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
                                                      local),
                   local.empty() ? "vt-rt: readback probe" : local.c_str());
     };
+
+    if (composed_parallax_fixture) {
+        std::printf("vt-composed-parallax: depth, scaled metric, registration, coarse fallback and chart bounds\n");
+        auto& budgets = matter::vt_residency_budgets();
+        const auto saved_budgets = budgets;
+        budgets.enrich_per_frame = 0;
+        budgets.fills_per_frame = 1;
+        budgets.tail_fills_per_frame = 1;
+        matter::TilesetPomSettings pom{};
+        pom.steps = 64; pom.relief_cap_m = .08f; pom.max_march_m = .3f;
+        pom.enabled = false;
+        renderer.set_tileset_pom_settings(pom);
+        camera.position = {-3,0,0}; camera.target = {-.4f,0,-2};
+        camera.vertical_fov_radians = .34906585f;
+        CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+        const auto length = [](matter::Float3 v){return std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);};
+        const auto sub = [](matter::Float3 a,matter::Float3 b){return matter::Float3{a.x-b.x,a.y-b.y,a.z-b.z};};
+        const auto world_at_depth = [&](float depth){return viewer::unproject_ndc(matrices.clip_to_world,
+            {(160.5f/width)*2-1,1-(100.5f/height)*2,depth});};
+        const auto pixel = [&](bool enabled, bool rt) {
+            pom.enabled = enabled; renderer.set_tileset_pom_settings(pom);
+            rt_settings.enabled = rt; renderer.set_ray_tracing_settings(rt_settings);
+            for (int i=0;i<8;++i) {glfwPollEvents();frame_with_probe(false,{},{},0,0);}
+            viewer::VkRasterPixel p{};
+            CHECK(renderer.readback_raster_pixel(160,100,p,error),error.c_str());
+            CHECK(p.material_index == kMaterialA,"composed POM: raster probe owns the left chart");
+            return p;
+        };
+        const auto settle = [&] {
+            uint32_t stable = 0;
+            for(int i=0;i<int(4*vt::kVtPageTiles) && stable<5;++i) {
+                glfwPollEvents(); frame_with_probe(false,{},{},0,0);
+                const auto s=renderer.vt_stats();
+                stable = s.fills_total && !s.queue_depth && !s.dirty_pages && !s.fills_last_frame ? stable+1 : 0;
+            }
+            CHECK(stable==5,"composed POM: page generation settles");
+        };
+        if (sector_seam_fixture) {
+            budgets.fills_per_frame=8; budgets.tail_fills_per_frame=8;
+            vt_sector_seam_tests::run(renderer,charted,camera,matrices,pom,
+                probe_hit,probe_invalid,frame_with_probe,settle,width,height);
+            CHECK(vulkan.validation_error_count()==0,"sector POM: zero Vulkan validation errors");
+            budgets=saved_budgets;renderer.release_part(0x7611);return;
+        }
+        uint64_t recipe_revision = charted.surface_tape_hash;
+        const auto set_source = [&](const char* text) {
+            renderer.begin_vt_surface_update();
+            CHECK(renderer.update_vt_part_surface(0x7611, {std::vector<uint8_t>(8,255)},
+                      {kMaterialA}, ++recipe_revision, text), "composed POM: source edit accepted");
+            renderer.end_vt_surface_update();
+            settle();
+        };
+        // Publish only the pinned tail, then deliberately withhold requested
+        // fine pages. A stable coarse source must still yield analytic depth.
+        for(int i=0;i<int(vt::kVtPageTiles) && !renderer.vt_stats().fills_total;++i) {
+            glfwPollEvents(); frame_with_probe(false,{},{},0,0);
+        }
+        CHECK(renderer.vt_stats().fills_total==1,"composed POM: only the pinned tail was produced");
+        renderer.test_pause_vt_page_fills(true);
+        const auto coarse_flat=pixel(false,true);
+        auto p0=world_at_depth(coarse_flat.depth);
+        frame_with_probe(true,camera.position,sub(p0,camera.position),0,0);
+        CHECK(probe_hit.valid && probe_hit.vt_applied && probe_invalid==0 &&
+                  length(sub(probe_hit.position,p0))<.00006f &&
+                  std::fabs(probe_hit.vt_albedo.x-coarse_flat.albedo.x)<.025f &&
+                  length(sub(probe_hit.vt_normal,{coarse_flat.normal.x,
+                      coarse_flat.normal.y,coarse_flat.normal.z}))<.03f,
+              "composed POM off: secondary proxy retains VT color and normal sampling");
+        const auto coarse=pixel(true,true);
+        auto p1=world_at_depth(coarse.depth);
+        CHECK(std::fabs((p0.z-p1.z)-.01f)<.0003f,"composed POM: absent fine pages retain analytic coarse depth");
+        frame_with_probe(true,camera.position,sub(p1,camera.position),0,0);
+        CHECK(probe_hit.valid && probe_hit.vt_mapped_mip>probe_hit.vt_desired_mip &&
+                  length(sub(probe_hit.position,p1))<.001f,
+              "composed POM: secondary ray uses coarse fallback and agrees with raster");
+        renderer.test_pause_vt_page_fills(false);
+        budgets.fills_per_frame=8; budgets.tail_fills_per_frame=8;
+        settle();
+        CHECK(renderer.vt_stats().pool_used>1,"composed POM: feedback strips the shading tag and admits fine pages");
+        struct Pose { float degrees; matter::Float3 scale; };
+        for (const Pose pose : {Pose{0,{1,1,1}},Pose{30,{2,.5f,1.5f}},Pose{90,{.5f,2,.75f}}}) {
+            const float a=pose.degrees*3.14159265359f/180,c=std::cos(a),sn=std::sin(a);
+            const auto rotate=[&](matter::Float3 v){return matter::Float3{c*v.x+sn*v.z,v.y,-sn*v.x+c*v.z};};
+            const auto transform_point=[&](matter::Float3 v){return rotate({v.x*pose.scale.x,v.y*pose.scale.y,v.z*pose.scale.z});};
+            matter::Mat4f transform=identity_matrix();
+            transform.m[0]=c*pose.scale.x;transform.m[2]=sn*pose.scale.z;
+            transform.m[5]=pose.scale.y;transform.m[8]=-sn*pose.scale.x;transform.m[10]=c*pose.scale.z;
+            CHECK(renderer.update_instances({{0x7611,transform,1}},error),error.c_str());
+            camera.position=transform_point({-3,0,0});camera.target=transform_point({-.4f,0,-2});
+            CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+            const auto flat=pixel(false,false),displaced=pixel(true,false);
+            p0=world_at_depth(flat.depth);p1=world_at_depth(displaced.depth);
+            const auto v=sub(p0,camera.position),n=rotate({0,0,1});const float len=length(v);
+            const matter::Float3 d{v.x/len,v.y/len,v.z/len};
+            const float cosine=-(n.x*d.x+n.y*d.y+n.z*d.z);
+            const float expected_t=.01f*pose.scale.z/cosine;
+            const matter::Float3 expected{p0.x+d.x*expected_t,p0.y+d.y*expected_t,p0.z+d.z*expected_t};
+            CHECK(displaced.depth<flat.depth && std::fabs(length(sub(p1,p0))-expected_t)<.0004f,
+                  "composed POM: rotation/nonuniform scale preserve analytic world depth");
+            CHECK(flat.orm.w==0 && std::fabs(displaced.orm.w-expected_t)<.00005f,
+                  "composed POM: actual world displacement is transported in ORM alpha");
+            const matter::Float3 restored{p1.x-d.x*displaced.orm.w,p1.y-d.y*displaced.orm.w,p1.z-d.z*displaced.orm.w};
+            CHECK(length(sub(restored,p0))<.00006f,"composed POM: scaled proxy recovery preserves the original mesh point");
+            const auto primary=pixel(true,true);
+            CHECK(std::fabs(primary.depth-displaced.depth)<1e-6f && close4(primary.normal,displaced.normal,.015f),
+                  "composed POM: enabling primary RT preserves raster depth/normal");
+            frame_with_probe(true,camera.position,sub(expected,camera.position),0,0);
+            CHECK(probe_hit.valid && probe_hit.vt_applied && probe_invalid==0 &&
+                      length(sub(probe_hit.position,expected))<.001f,
+                  "composed POM: secondary depth matches the scaled analytic surface");
+            std::printf("composed POM yaw=%g scale=(%g,%g,%g): t=%.7f expected=%.7f RTerror=%.7f\n",
+                pose.degrees,pose.scale.x,pose.scale.y,pose.scale.z,length(sub(p1,p0)),expected_t,length(sub(probe_hit.position,expected)));
+        }
+        CHECK(renderer.update_instances({{0x7611,identity_matrix(),1}},error),error.c_str());
+        camera.position={-3,0,0};camera.target={-.4f,0,-2};
+        CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+        // A curved heightfield gives an independent depth/normal oracle, while
+        // linear color and roughness identify the actual displaced coordinate.
+        set_source("input lx\nconst 0.8\nadd r0 r1\nconst 1.1\nmul r2 r3\n"
+            "const 0.6\nconst 0.2\nconst 0.5\nmul r2 r7\nadd r8 r6\n"
+            "const 0\nconst 1\nmul r0 r0\nconst 0.3\nmul r12 r13\n"
+            "const 0.015\nadd r14 r15\nconst 0.02\nsub r17 r16\nmaterial 5 r11\n"
+            "source 1 r4 r5 r6 r9 r10 r11 r18 -0.2 0.02\n");
+        pom.relief_cap_m=.3f;pom.max_march_m=.6f;
+        const auto marker_flat=pixel(false,false),marker=pixel(true,true);
+        p0=world_at_depth(marker_flat.depth);p1=world_at_depth(marker.depth);
+        const float depth=.015f+.3f*p1.x*p1.x;
+        const float slope=.6f*p1.x,expected_nx=slope/std::sqrt(1+slope*slope);
+        CHECK(std::fabs((p0.z-p1.z)-depth)<.001f,"composed POM: curved height matches its independent analytic depth");
+        CHECK(std::fabs(marker.albedo.x-1.1f*(p1.x+.8f))<.02f &&
+                  std::fabs(marker.orm.x-(.2f+.5f*(p1.x+.8f)))<.02f &&
+                  std::fabs(marker.normal.x-expected_nx)<.025f,
+              "composed POM: color, roughness and height-derived normal share the displaced coordinate");
+        CHECK(marker.albedo.x-marker_flat.albedo.x>.025f && marker.normal.x-marker_flat.normal.x>.02f,
+              "composed POM: relief visibly moves both the color marker and curved normal");
+        frame_with_probe(true,camera.position,sub(p1,camera.position),0,0);
+        CHECK(probe_hit.valid && length(sub(probe_hit.position,p1))<.001f &&
+                  std::fabs(probe_hit.vt_albedo.x-marker.albedo.x)<.025f &&
+                  std::fabs(probe_hit.vt_normal.x-marker.normal.x)<.03f,
+              "composed POM: secondary curved height/color/normal agree with raster");
+        std::printf("composed POM registration: x=%.7f depth=%.7f expected=%.7f red=%.5f nx=%.5f\n",
+                    p1.x,p0.z-p1.z,depth,marker.albedo.x,marker.normal.x);
+        // This UV cut lies on a connected physical surface. Its nonlinear
+        // height and material channels must continue into the other chart.
+        const matter::Float3 edge{-.01f,0,-2};
+        frame_with_probe(true,camera.position,sub(edge,camera.position),0,0);
+        const float seam_depth=.015f+.3f*probe_hit.position.x*probe_hit.position.x;
+        CHECK(probe_hit.valid && std::fabs(-2.f-probe_hit.position.z-seam_depth)<.0001f &&
+                  std::fabs(probe_hit.vt_albedo.x-1.1f*(probe_hit.position.x+.8f))<.02f,
+              "composed POM: connected chart traversal preserves nonlinear height and color registration");
+        frame_with_probe(true,camera.position,sub(p0,camera.position),1.f,0);
+        CHECK(probe_hit.valid && length(sub(probe_hit.position,p0))<.00005f,
+              "composed POM: unresolved broad footprint fades displacement to the proxy");
+        // The deepest representable point meets the march's final endpoint.
+        // Sweep ray angles to catch divide/multiply roundoff losing that hit.
+        set_source("const 0.4\nconst 1\nconst 0\nconst -0.04\nmaterial 5 r1\n"
+                   "source 1 r0 r0 r0 r0 r2 r1 r3 -0.04 0.02\n");
+        float deepest_error=0;
+        for(int i=0;i<41;++i) {
+            const float cosine=.41f+.011f*float(i);
+            const matter::Float3 d{std::sqrt(1-cosine*cosine),0,-cosine};
+            const matter::Float3 origin{-.4f-2*d.x,0,-2-2*d.z};
+            frame_with_probe(true,origin,d,0,0);
+            CHECK(probe_hit.valid,"composed POM: deepest-height sweep hits the receiver");
+            deepest_error=std::max(deepest_error,std::fabs(probe_hit.position.z+2.06f));
+        }
+        CHECK(deepest_error<.00003f,"composed POM: deepest-height endpoints remain bracketed at every tested angle");
+        std::printf("composed POM deepest endpoint: 41 angles, max depth error %.9f\n",deepest_error);
+        // The diagnostic must distinguish real boundary rejection from a
+        // successful recess, without changing that recess or its proxy.
+        pom.horizon_debug=7;
+        const auto status_hit=pixel(true,false),status_off=pixel(false,false);
+        CHECK(close4(status_hit.albedo,{0,1,0,status_hit.albedo.w},.005f) && status_hit.orm.w>0,
+              "composed POM diagnostic: successful depth is green");
+        CHECK(close4(status_off.albedo,{.25f,.25f,.25f,status_off.albedo.w},.005f) && status_off.orm.w==0,
+              "composed POM diagnostic: disabled depth is gray");
+        pom.horizon_debug=9;
+        const auto chart_route=pixel(true,false);
+        CHECK(close4(chart_route.albedo,{0,1,0,chart_route.albedo.w},.005f) &&
+              std::abs(chart_route.orm.w-status_hit.orm.w)<1e-6f,
+              "composed POM route: ordinary chart hit is green with unchanged depth");
+        pom.horizon_debug=10;
+        const auto mip_view=pixel(true,false);
+        const float desired_mip=std::round(mip_view.albedo.x*8);
+        const float resident_mip=std::round(mip_view.albedo.y*8);
+        CHECK(mip_view.albedo.z>.99f && resident_mip>=desired_mip && resident_mip<float(vt::kVtMaxMips) &&
+              std::abs(mip_view.orm.w-status_hit.orm.w)<1e-6f,
+              "VT proxy diagnostic: valid requested/resident mip preserves POM depth");
+        pom.horizon_debug=11;
+        const auto density_view=pixel(true,false);
+        const float finest_density=std::log2(150.f);
+        CHECK(density_view.albedo.z>.99f &&
+              std::abs(density_view.albedo.x-finest_density/12)<.006f &&
+              std::abs(density_view.albedo.y-(finest_density-resident_mip)/12)<.006f &&
+              std::abs(density_view.orm.w-status_hit.orm.w)<1e-6f &&
+              close4(density_view.normal,status_hit.normal,.005f),
+              "VT proxy diagnostic: known 150 texels/metre and resident mip decode with unchanged normal/depth");
+        std::printf("VT proxy sampling: desired=%.0f resident=%.0f density_rgb=(%.6f,%.6f,%.6f)\n",
+            desired_mip,resident_mip,density_view.albedo.x,density_view.albedo.y,density_view.albedo.z);
+        pom.horizon_debug=7;
+        camera.target={-.04f,0,-2};
+        CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+        const auto path_boundary=pixel(true,false);
+        CHECK(close4(path_boundary.albedo,{0,1,0,path_boundary.albedo.w},.005f) && path_boundary.orm.w>0,
+              "composed POM diagnostic: crossing a connected chart edge remains a green hit");
+        pom.horizon_debug=9;
+        const auto connected_route=pixel(true,false);
+        CHECK(close4(connected_route.albedo,{1,1,0,connected_route.albedo.w},.005f) &&
+              std::abs(connected_route.orm.w-path_boundary.orm.w)<1e-6f,
+              "composed POM route: connected hit is yellow with unchanged depth");
+        std::printf("composed POM route: chart=(%.3f,%.3f,%.3f) connected=(%.3f,%.3f,%.3f)\n",
+            chart_route.albedo.x,chart_route.albedo.y,chart_route.albedo.z,
+            connected_route.albedo.x,connected_route.albedo.y,connected_route.albedo.z);
+        pom.horizon_debug=7;
+        camera.position={-3,-.3965f,0};camera.target={-.4f,-.3965f,-2};
+        CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+        const auto initial_boundary=pixel(true,false);
+        CHECK(close4(initial_boundary.albedo,{1,.5f,0,initial_boundary.albedo.w},.005f) && initial_boundary.orm.w==0,
+              "composed POM diagnostic: initial bilinear padding overlap is orange");
+        std::printf("composed POM diagnostic: hit=(%.3f,%.3f,%.3f) path=(%.3f,%.3f,%.3f) initial=(%.3f,%.3f,%.3f)\n",
+            status_hit.albedo.x,status_hit.albedo.y,status_hit.albedo.z,
+            path_boundary.albedo.x,path_boundary.albedo.y,path_boundary.albedo.z,
+            initial_boundary.albedo.x,initial_boundary.albedo.y,initial_boundary.albedo.z);
+        camera.position={-3,0,0};camera.target={-.4f,0,-2};
+        CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+        pom.horizon_debug=0;
+        rt_settings.enabled=true;renderer.set_ray_tracing_settings(rt_settings);
+        set_source("const 0.4\nconst 1\nconst 0\nconst 0.01\nmaterial 5 r1\n"
+                   "source 1 r0 r0 r0 r0 r2 r1 r3 -0.04 0.02\n");
+        pom.max_march_m=.03f;renderer.set_tileset_pom_settings(pom);
+        const matter::Float3 grazing_origin{-20,0,0},grazing_proxy{-.4f,0,-2};
+        frame_with_probe(true,grazing_origin,sub(grazing_proxy,grazing_origin),0,0);
+        CHECK(probe_hit.valid && length(sub(probe_hit.position,grazing_proxy))<.00005f,
+              "composed POM: unbracketed grazing travel stops at the world-distance cap");
+        pom.max_march_m=.3f;
+        set_source("const 0.4\nconst 1\nconst 0\nconst 0.02\nmaterial 5 r1\n"
+                   "source 1 r0 r0 r0 r0 r2 r1 r3 -0.04 0.02\n");
+        const auto zero_flat=pixel(false,false),zero=pixel(true,true);
+        CHECK(std::fabs(zero.depth-zero_flat.depth)<1e-7f && zero.orm.w==0 && zero_flat.orm.w==0,
+              "composed POM: source at the declared shell produces exactly zero displacement");
+        if (composed_seam_fixture) {
+            // Independent acceptance oracle: two packed charts describe one
+            // continuous planar material with a 10 mm recess. Crossing their
+            // internal UV cut must not create an undisplaced strip. This is a
+            // separate mode so the continuity gate remains independently runnable.
+            set_source("const 0.4\nconst 1\nconst 0\nconst 0.01\nmaterial 5 r1\n"
+                       "source 1 r0 r0 r0 r0 r2 r1 r3 -0.04 0.02\n");
+            pom.enabled=true;pom.max_march_m=.3f;renderer.set_tileset_pom_settings(pom);
+            for (float eye_x : {-3.f,3.f}) {
+                float max_error=0;int flat_count=0;int hit_count=0;
+                for (int i=0;i<=40;++i) {
+                    const float x=-.05f+.0025f*float(i);
+                    const matter::Float3 origin{eye_x,0,0},proxy{x,0,-2};
+                    frame_with_probe(true,origin,sub(proxy,origin),0,0);
+                    CHECK(probe_hit.valid && probe_hit.vt_applied && !probe_invalid,
+                          "composed seam: each ray resolves the composed receiver");
+                    const float recess=-2.f-probe_hit.position.z;
+                    max_error=std::max(max_error,std::fabs(recess-.01f));
+                    if(std::fabs(recess)<.0001f)++flat_count;
+                    if(std::fabs(recess-.01f)<.0001f)++hit_count;
+                    std::printf("composed seam sample eye=%g x=%.4f recess=%.7f\n",eye_x,x,recess);
+                }
+                std::printf("composed seam eye=%g flat=%d displaced=%d max_error=%.7f\n",
+                            eye_x,flat_count,hit_count,max_error);
+                CHECK(max_error<.0001f,"composed seam: a packed UV cut preserves the continuous 10 mm recess");
+            }
+            // Preserve rejection of true surface boundaries and disconnected
+            // packed faces. Separate ownership/hashes force fresh geometry.
+            for (float bend_degrees : {-45.f,45.f,90.f,181.f}) {
+                auto folded=charted;
+                folded.part_hash=0x7612+uint64_t(bend_degrees+45);
+                const bool disconnected=bend_degrees>180;
+                const float angle=disconnected?0.f:bend_degrees*3.14159265359f/180.f;
+                const float c=std::cos(angle),sn=std::sin(angle),gap=disconnected?.001f:0.f;
+                auto& chart=folded.lod_charts[0].charts[1];
+                chart.origin[0]=gap;
+                chart.tangent[0]=c;chart.tangent[2]=sn;
+                auto& mesh=folded.lod_chart_meshes[0];
+                for(size_t i=4;i<8;++i) {
+                    const float x=charted.vertices[i].position.x;
+                    folded.vertices[i].position={gap+c*x,charted.vertices[i].position.y,-2+sn*x};
+                    folded.vertices[i].normal={-sn,0,c};
+                    const auto p=folded.vertices[i].position,n=folded.vertices[i].normal;
+                    mesh.positions[3*i]=p.x;mesh.positions[3*i+1]=p.y;mesh.positions[3*i+2]=p.z;
+                    mesh.normals[3*i]=n.x;mesh.normals[3*i+1]=n.y;mesh.normals[3*i+2]=n.z;
+                }
+                auto& cluster=folded.clusters[0];
+                cluster.aabb_min=cluster.aabb_max=folded.vertices.front().position;
+                for(const auto& vertex:folded.vertices) {
+                    const auto p=vertex.position;
+                    cluster.aabb_min={std::min(cluster.aabb_min.x,p.x),std::min(cluster.aabb_min.y,p.y),std::min(cluster.aabb_min.z,p.z)};
+                    cluster.aabb_max={std::max(cluster.aabb_max.x,p.x),std::max(cluster.aabb_max.y,p.y),std::max(cluster.aabb_max.z,p.z)};
+                }
+                cluster.radius=.5f*length(sub(cluster.aabb_max,cluster.aabb_min));
+                CHECK(renderer.ensure_part(folded,error)>=0,error.c_str());
+                CHECK(renderer.update_instances({{folded.part_hash,identity_matrix(),1}},error),error.c_str());
+                const float eye_x=bend_degrees<0 ? -1.f : -3.f;
+                camera.position={eye_x,0,0};camera.target={-.02f,0,-2};
+                CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+                settle();
+                float maximum=0;int flat_count=0;int crossed_count=0;
+                for(int i=0;i<17;++i) {
+                    const float x=-.02f+.0012f*float(i);
+                    const matter::Float3 origin{eye_x,0,0},proxy{x,0,-2};
+                    const auto ray=sub(proxy,origin);const float ray_length=length(ray);
+                    const matter::Float3 d{ray.x/ray_length,0,ray.z/ray_length};
+                    frame_with_probe(true,origin,ray,0,0);
+                    CHECK(probe_hit.valid && !probe_invalid,"composed bend: receiver remains valid");
+                    if(length(sub(probe_hit.position,proxy))<.0001f)++flat_count;
+                    if(disconnected) {
+                        // Every sampled ray near the gap would have to leave
+                        // the left receiver before reaching its 10 mm recess.
+                        if(x>-.004f) CHECK(length(sub(probe_hit.position,proxy))<.0001f,
+                            "composed gap: packed proximity cannot authorize traversal");
+                        continue;
+                    }
+                    const float left_t=.01f/-d.z;
+                    const float right_t=(.01f-sn*x)/(sn*d.x-c*d.z);
+                    const auto candidate=[&](float t){return matter::Float3{x+d.x*t,0,-2+d.z*t};};
+                    auto expected=candidate(left_t);
+                    // Independent miter oracle: the shared edge's bisector
+                    // separates the two recessed planes, including 90 degrees.
+                    if((1+c)*expected.x+sn*(expected.z+2)>0) {
+                        expected=candidate(right_t);++crossed_count;
+                    }
+                    maximum=std::max(maximum,length(sub(probe_hit.position,expected)));
+                }
+                std::printf("composed bend angle=%g flat=%d crossed=%d max_position_error=%.8f\n",bend_degrees,flat_count,crossed_count,maximum);
+                if(!disconnected) {
+                    CHECK(crossed_count>0,"composed bend: fixture exercises traversal onto the neighboring face");
+                    CHECK(maximum<.00015f,"composed bend: joined recessed planes match the analytic miter");
+                }
+                renderer.release_part(folded.part_hash);
+            }
+            // The same connected quad with independently rotated chart frames.
+            // Its shared edge cuts diagonally across both texel grids: a valid
+            // surface tap can have a nearest texel center just outside coverage.
+            auto diagonal=charted;
+            diagonal.part_hash=0x7711;
+            auto& mesh=diagonal.lod_chart_meshes[0];
+            for(int chart_index=0;chart_index<2;++chart_index) {
+                const float angle=(chart_index==0?30.f:-17.f)*3.14159265359f/180.f;
+                const float c=std::cos(angle),sn=std::sin(angle),tpm=100.f;
+                float min_u=1e30f,min_v=1e30f;
+                for(int k=0;k<4;++k) {
+                    const auto p=diagonal.vertices[chart_index*4+k].position;
+                    min_u=std::min(min_u,c*p.x+sn*p.y);
+                    min_v=std::min(min_v,-sn*p.x+c*p.y);
+                }
+                auto& chart=diagonal.lod_charts[0].charts[chart_index];
+                chart.origin[0]=c*min_u-sn*min_v;chart.origin[1]=sn*min_u+c*min_v;
+                chart.tangent[0]=c;chart.tangent[1]=sn;
+                chart.bitangent[0]=-sn;chart.bitangent[1]=c;
+                chart.texels_per_meter=tpm;
+                for(int k=0;k<4;++k) {
+                    const int index=chart_index*4+k;
+                    auto& vertex=diagonal.vertices[index];const auto p=vertex.position;
+                    vertex.surface.x=(chart_index*128+4+(c*p.x+sn*p.y-min_u)*tpm)/256;
+                    vertex.surface.y=(4+(-sn*p.x+c*p.y-min_v)*tpm)/128;
+                    mesh.surface_uvs[index*2]=vertex.surface.x;
+                    mesh.surface_uvs[index*2+1]=vertex.surface.y;
+                }
+            }
+            CHECK(renderer.ensure_part(diagonal,error)>=0,error.c_str());
+            CHECK(renderer.update_instances({{diagonal.part_hash,identity_matrix(),1}},error),error.c_str());
+            camera.position={-3,0,0};camera.target={0,0,-2};
+            CHECK(viewer::build_frame_matrices(camera,width,height,matrices,error),error.c_str());
+            settle();
+            for(float eye_x:{-3.f,3.f}) {
+                float maximum=0;int flat_count=0;
+                for(int i=0;i<41;++i) {
+                    const float x=-.03f+.0015f*i,y=-.24f+.012f*i;
+                    const matter::Float3 origin{eye_x,y,0},proxy{x,y,-2};
+                    frame_with_probe(true,origin,sub(proxy,origin),0,0);
+                    CHECK(probe_hit.valid && probe_hit.vt_applied && !probe_invalid,
+                          "composed diagonal: each ray resolves the composed receiver");
+                    const float recess=-2-probe_hit.position.z;
+                    if(std::fabs(recess)<.0001f)++flat_count;
+                    maximum=std::max(maximum,std::fabs(recess-.01f));
+                }
+                std::printf("composed diagonal eye=%g flat=%d max_depth_error=%.8f\n",eye_x,flat_count,maximum);
+                CHECK(maximum<.0001f,"composed diagonal: rotated chart grids preserve continuous recess");
+            }
+            renderer.release_part(diagonal.part_hash);
+            // Nearest-texel padding on a rotated chart must not authorize a
+            // filter footprint or march to cross an actual disconnected gap.
+            auto diagonal_gap=diagonal;
+            diagonal_gap.part_hash=0x7712;
+            diagonal_gap.lod_charts[0].charts[1].origin[0]+=.001f;
+            for(int i=4;i<8;++i) {
+                diagonal_gap.vertices[i].position.x+=.001f;
+                diagonal_gap.lod_chart_meshes[0].positions[3*i]+=.001f;
+            }
+            diagonal_gap.clusters[0].aabb_max.x+=.001f;
+            diagonal_gap.clusters[0].radius=.5f*length(sub(
+                diagonal_gap.clusters[0].aabb_max,diagonal_gap.clusters[0].aabb_min));
+            CHECK(renderer.ensure_part(diagonal_gap,error)>=0,error.c_str());
+            CHECK(renderer.update_instances({{diagonal_gap.part_hash,identity_matrix(),1}},error),error.c_str());
+            settle();
+            for(int i=0;i<41;++i) {
+                const float y=-.24f+.012f*i;
+                const matter::Float3 origin{-3,y,0},proxy{-.001f,y,-2};
+                frame_with_probe(true,origin,sub(proxy,origin),0,0);
+                CHECK(probe_hit.valid && !probe_invalid && length(sub(probe_hit.position,proxy))<.0001f,
+                      "composed diagonal gap: same-chart dilation cannot bridge disconnected surfaces");
+            }
+            renderer.release_part(diagonal_gap.part_hash);
+        }
+        CHECK(vulkan.validation_error_count()==0,"composed POM: zero Vulkan validation errors");
+        budgets=saved_budgets;renderer.release_part(0x7611);return;
+    }
+
+    if (direct_source_fixture) {
+        // The carrier requests a conflicting tilted Wang normal. Both legacy
+        // detail modes must use the already composed direct page, including
+        // when composed POM is enabled; the procedural slope normal stays coherent.
+        matter::TilesetPomSettings pom{};
+        pom.enabled = true;
+        renderer.set_tileset_pom_settings(pom);
+        auto& budgets = matter::vt_residency_budgets();
+        const auto saved_budgets = budgets;
+        budgets.enrich_per_frame = 0;
+        for (bool finished_surface : {false, true}) {
+            for (auto id : {kMaterialA, kMaterialB})
+                materials[id].flags_misc[0] = finished_surface ? 32u : 0u;
+            CHECK(renderer.update_materials(materials, finished_surface ? 3 : 2, 1, error),
+                  error.c_str());
+            uint32_t stable = 0;
+            for (int i = 0; i < int(4*vt::kVtPageTiles) && stable < 5; ++i) {
+                glfwPollEvents();
+                frame_with_probe(false, {}, {}, 0, 0);
+                const auto stats = renderer.vt_stats();
+                stable = stats.fills_total && !stats.queue_depth && !stats.dirty_pages &&
+                         !stats.fills_last_frame ? stable + 1 : 0;
+            }
+            CHECK(stable == 5, "direct source: renderer page work settles");
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(140, 100, pixel, error), error.c_str());
+            frame_with_probe(true, {-.4f, 0, 1}, {0, 0, -1}, 0, 1e-4f);
+            const float inv = 1.f / std::sqrt(1.0625f);
+            const auto normal_error = [&](matter::Float3 n) {
+                return std::max({std::fabs(n.x + .25f * inv), std::fabs(n.y),
+                                 std::fabs(n.z - inv)});
+            };
+            CHECK(pixel.material_index == kMaterialA,
+                  "direct source: raster probe owns the chart");
+            CHECK(close4(pixel.albedo, {.25f, .55f, .15f, 1}, .02f) &&
+                      std::fabs(pixel.orm.x - .73f) < .02f && std::fabs(pixel.orm.y) < .02f,
+                  "direct source: raster uses composed color and roughness");
+            const float raster_error = normal_error({pixel.normal.x, pixel.normal.y, pixel.normal.z});
+            const float ray_error = normal_error(probe_hit.vt_normal);
+            CHECK(raster_error < .025f, "direct source: raster height normal has no Wang overlay");
+            CHECK(probe_hit.valid && probe_hit.vt_applied && probe_invalid == 0,
+                  "direct source: RT resolves a complete resident page");
+            CHECK(std::fabs(probe_hit.vt_albedo.x - .25f) < .02f &&
+                      std::fabs(probe_hit.vt_albedo.y - .55f) < .02f &&
+                      std::fabs(probe_hit.vt_albedo.z - .15f) < .02f,
+                  "direct source: RT uses composed color");
+            CHECK(ray_error < .025f, "direct source: RT height normal has no Wang overlay");
+            std::printf("direct source renderer: finished=%d rasterNormalError=%.6f rayNormalError=%.6f\n",
+                        finished_surface ? 1 : 0, raster_error, ray_error);
+        }
+        budgets = saved_budgets;
+        renderer.release_part(0x7611);
+        return;
+    }
+
+    if (input_snapshot_fixture) {
+        matter::TilesetPomSettings pom{};
+        pom.enabled = false;
+        renderer.set_tileset_pom_settings(pom);
+        auto& budgets = matter::vt_residency_budgets();
+        const auto saved_budgets = budgets;
+        budgets.enrich_per_frame = 0;
+        // This fixture intentionally submits one authoring edit per frame to
+        // exhaust the descriptor-version bank. Keep its synchronous page
+        // contract; sliced publication and supersession have dedicated tests.
+        budgets.fill_budget_ms = 0;
+        const auto draw_pixel = [&]() {
+            glfwPollEvents();
+            frame_with_probe(false, {}, {}, 0, 0);
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(140, 100, pixel, error), error.c_str());
+            CHECK(pixel.material_index == kMaterialA, "input snapshot: probe owns chart A");
+            return pixel;
+        };
+        const auto settle = [&]() {
+            renderer.test_pause_vt_page_fills(false);
+            for (int i = 0; i < 16; ++i) draw_pixel();
+            CHECK(renderer.vt_stats().dirty_pages == 0,
+                  "input snapshot: replacement work settles");
+            return draw_pixel();
+        };
+        const auto compare_held = [&](const viewer::VkRasterPixel& before,
+                                      uint64_t fills, const char* label) {
+            for (int i = 0; i < 4; ++i) {
+                const auto held = draw_pixel();
+                CHECK(renderer.vt_stats().fills_total == fills &&
+                          renderer.vt_stats().dirty_pages > 0,
+                      "input snapshot: old pages remain dirty and no replacements run");
+                std::printf("input snapshot %s frame=%d normal before=(%.5f %.5f %.5f) held=(%.5f %.5f %.5f)\n",
+                    label, i, before.normal.x, before.normal.y, before.normal.z,
+                    held.normal.x, held.normal.y, held.normal.z);
+                CHECK(close4(before.albedo, held.albedo, 1e-5f) &&
+                          close4(before.normal, held.normal, 1e-5f) &&
+                          close4(before.orm, held.orm, 1e-5f) &&
+                          std::fabs(before.depth - held.depth) < 1e-7f,
+                      "input snapshot: retained page keeps compatible visible detail and depth");
+            }
+        };
+        auto before = settle();
+        // The tileset bank is 8 slots x (1 live + 8 VT input snapshots) x 6
+        // channels = 432 combined-image-samplers, mirrored by raster set-1
+        // binding 6 and RT set binding 15. A settled frame with no tileset
+        // change must rewrite neither, so its whole descriptor count stays
+        // below one bank. (The rest is ~330 descriptors of other per-frame
+        // rewrites -- water fields, the non-tileset RT bindings, GI, composite
+        // -- so the bound is the bank size, not "a few".)
+        constexpr uint32_t kTilesetBankDescriptors =
+            tileset::kMaxTilesetSlots * (1u + vt::kVtMaxInputSnapshots) * 6u;
+        {
+            draw_pixel();
+            const uint32_t a = renderer.frame_descriptors_written();
+            draw_pixel();
+            const uint32_t b = renderer.frame_descriptors_written();
+            std::printf("input snapshot settled descriptor writes: %u, %u\n", a, b);
+            CHECK(a < kTilesetBankDescriptors && b < kTilesetBankDescriptors,
+                  "rt tileset samplers are not rewritten on a frame with no tileset change");
+            // The renderer's frame mark lands before its final descriptor
+            // calls. Fill the recent-frame window with unchanged draws first.
+            for (int i = 0; i < 16; ++i) draw_pixel();
+            CHECK(renderer.frame_descriptors_written() == b,
+                  "input snapshot: settled descriptor count stays stable");
+            std::array<matter::profile::FrameRecord, 16> recent{};
+            const int count = matter::profile::copy_recent(
+                recent.data(), static_cast<int>(recent.size()));
+            const int descriptor_zone =
+                matter::profile::register_zone("vk.descriptor_update");
+            uint64_t update_ns = 0, wall_ns = 0;
+            std::array<uint64_t, 16> update_times{};
+            for (int i = 0; i < count; ++i) {
+                update_times[i] = recent[i].zone_ns[descriptor_zone];
+                update_ns += update_times[i];
+                wall_ns += recent[i].wall_ns;
+            }
+            if (count > 0) {
+                std::sort(update_times.begin(), update_times.begin() + count);
+                std::printf("input snapshot settled descriptor CPU: median %.3f us, p95 %.3f us, mean %.3f us/frame, %.4f%% of frame wall (%d frames)\n",
+                            update_times[count / 2] / 1000.0,
+                            update_times[count - 1] / 1000.0,
+                            update_ns / (1000.0 * count),
+                            wall_ns ? 100.0 * update_ns / wall_ns : 0.0,
+                            count);
+            }
+        }
+        const auto idle_control = device_idle_count();
+        vulkan.wait_idle();
+        CHECK(device_idle_count() == idle_control + 1,
+              "input snapshot: device-idle observation control records the real call");
+        audit_input_waits = true;
+        const auto update_input_materials = [&](uint64_t revision) {
+            const auto idle_before = device_idle_count();
+            CHECK(renderer.update_materials(materials, revision, 1, error), error.c_str());
+            CHECK(device_idle_count() == idle_before,
+                  "input snapshot: warm material update uses no device idle");
+        };
+        renderer.test_pause_vt_page_fills(true);
+        auto fills = renderer.vt_stats().fills_total;
+        materials[kMaterialA].flags_misc[1] = 0u;
+        update_input_materials(2);
+        compare_held(before, fills, "material");
+        const auto no_detail = settle();
+        CHECK(!close4(before.normal, no_detail.normal, .02f),
+              "input snapshot: completed material replacement visibly changes detail");
+
+        materials[kMaterialA].flags_misc[1] = 1u;
+        update_input_materials(3);
+        before = settle();
+        renderer.test_pause_vt_page_fills(true);
+        fills = renderer.vt_stats().fills_total;
+        constexpr int px = 32;
+        std::vector<uint8_t> alb(px * px * 3, 96), nrm(px * px * 2);
+        std::vector<uint8_t> orm(px * px * 3, 80);
+        std::vector<uint16_t> heights(px * px, 32768);
+        for (int i = 0; i < px * px; ++i) {
+            nrm[2*i] = 84; nrm[2*i+1] = 154;
+            orm[3*i] = 255; orm[3*i+2] = 0;
+        }
+        tileset::GTexHeader header{};
+        header.tile_size_m = 2; header.texels_per_meter = 4;
+        header.height_min = 0; header.height_max = .03f;
+        header.content_hash = 0x5654494e50555432ull;
+        const char* temp = std::getenv("TEMP");
+        const std::string path = std::string(temp ? temp : ".") + "/me3_vt_input_snapshot.gtex";
+        CHECK(tileset::save_gtex(path, header, px, px, alb.data(), nrm.data(),
+                                orm.data(), heights.data(), error), error.c_str());
+        {
+            const auto idle_before = device_idle_count();
+            CHECK(renderer.load_tileset_slot(0, path, error), error.c_str());
+            CHECK(device_idle_count() == idle_before,
+                  "input snapshot: source load uses no device idle");
+        }
+        std::remove(path.c_str());
+        {
+            // The load changed the bank: the next frame must rewrite it in
+            // both the raster set and the RT set.
+            draw_pixel();
+            const uint32_t written = renderer.frame_descriptors_written();
+            std::printf("input snapshot source-load descriptor writes: %u\n", written);
+            CHECK(written >= 2u * kTilesetBankDescriptors,
+                  "input snapshot: a tileset source load rewrites the raster and RT banks");
+        }
+        compare_held(before, fills, "source replacement");
+        const auto replaced = settle();
+        CHECK(!close4(before.normal, replaced.normal, .02f) &&
+                  !close4(before.albedo, replaced.albedo, .02f),
+              "input snapshot: completed source replacement changes its page and detail");
+        renderer.test_pause_vt_page_fills(true);
+        fills = renderer.vt_stats().fills_total;
+        {
+            const auto idle_before = device_idle_count();
+            renderer.unload_tileset_slot(0);
+            CHECK(device_idle_count() == idle_before,
+                  "input snapshot: source unload uses no device idle");
+        }
+        compare_held(replaced, fills, "source removal");
+        settle();
+
+        CHECK(tileset::save_gtex(path, header, px, px, alb.data(), nrm.data(),
+                                orm.data(), heights.data(), error), error.c_str());
+        {
+            const auto idle_before = device_idle_count();
+            CHECK(renderer.load_tileset_slot(0, path, error), error.c_str());
+            CHECK(device_idle_count() == idle_before,
+                  "input snapshot: source load uses no device idle");
+        }
+        std::remove(path.c_str());
+        {
+            // A rejected push must release the gate immediately, then retry
+            // the same authoring change without needing a world reload.
+            settle();
+            const auto fills_before = renderer.vt_stats().fills_total;
+            materials[kMaterialA].base_roughness[3] = .77f;
+            renderer.test_fail_next_vt_input_push();
+            update_input_materials(4);
+            draw_pixel();
+            CHECK(!renderer.test_vt_fills_gated(),
+                  "input snapshot: rejected push releases the fill gate");
+            CHECK(renderer.test_vt_input_update_pending(),
+                  "input snapshot: rejected push keeps the edit pending for retry");
+            settle();
+            CHECK(renderer.vt_stats().fills_total > fills_before,
+                  "input snapshot: fills resume after a rejected push");
+        }
+        {
+            const auto retained = draw_pixel();
+            const auto fills_before = renderer.vt_stats().fills_total;
+            materials[kMaterialA].base_roughness[3] = .66f;
+            update_input_materials(5);
+            for (int failure = 0; failure < 8; ++failure) {
+                renderer.test_fail_next_vt_input_push();
+                const auto held = draw_pixel();
+                CHECK(!renderer.test_vt_fills_gated(),
+                      "input snapshot: repeated rejection releases the fill gate");
+                CHECK(renderer.test_vt_input_update_pending() == (failure < 7),
+                      "input snapshot: retries stop after eight consecutive failures");
+                CHECK(close4(held.orm, retained.orm, 1e-5f),
+                      "input snapshot: rejected push retains the published material");
+            }
+            draw_pixel();
+            CHECK(!renderer.test_vt_input_update_pending() &&
+                      renderer.vt_stats().fills_total == fills_before,
+                  "input snapshot: exhausted retry budget stays idle");
+            materials[kMaterialA].base_roughness[3] = .55f;
+            update_input_materials(6);
+            renderer.test_fail_next_vt_input_push();
+            draw_pixel();
+            CHECK(!renderer.test_vt_fills_gated() && renderer.test_vt_input_update_pending(),
+                  "input snapshot: a new authoring change gets a fresh retry budget");
+            settle();
+            CHECK(!renderer.test_vt_input_update_pending() &&
+                      renderer.vt_stats().fills_total > fills_before,
+                  "input snapshot: a new authoring change rearms publication");
+        }
+        materials[kMaterialA].flags_misc[1] = 0u;
+        update_input_materials(7);
+        const auto pressure_flat = settle();
+        materials[kMaterialA].flags_misc[1] = 1u;
+        update_input_materials(8);
+        const auto pressure_detail = settle();
+        auto previous = pressure_detail;
+        uint32_t deferred_frames = 0, published_frames = 0;
+        for (uint32_t edit = 0; edit < 30; ++edit) {
+            materials[kMaterialA].flags_misc[1] = edit & 1u;
+            // Every edit is distinct even when coalescing skips an alternating
+            // detail setting. This exercises all eight retained bank indices.
+            materials[kMaterialA].base_roughness[3] = .2f + .01f * edit;
+            update_input_materials(9u + edit);
+            const auto fills_before = renderer.vt_stats().fills_total;
+            const auto pixel = draw_pixel();
+            if (renderer.test_vt_input_update_pending()) {
+                ++deferred_frames;
+                CHECK(renderer.vt_stats().fills_total == fills_before &&
+                          close4(previous.albedo, pixel.albedo, 1e-5f) &&
+                          close4(previous.normal, pixel.normal, 1e-5f) &&
+                          close4(previous.orm, pixel.orm, 1e-5f) &&
+                          std::fabs(previous.depth - pixel.depth) < 1e-7f,
+                      "input snapshot: version pressure retains the displayed page and compatible bindings");
+            } else {
+                ++published_frames;
+                CHECK(renderer.vt_stats().dirty_pages == 0 &&
+                          close4(pixel.normal, (edit & 1u) ? pressure_detail.normal : pressure_flat.normal, .002f),
+                      "input snapshot: admitted rapid edit publishes its matching detail");
+            }
+            previous = pixel;
+        }
+        std::printf("input snapshot rapid edits: published=%u deferred=%u\n", published_frames, deferred_frames);
+        CHECK(deferred_frames > 0 && published_frames > 0,
+              "input snapshot: real descriptor-version pressure defers work and also makes progress");
+        const auto latest = settle();
+        CHECK(!renderer.test_vt_input_update_pending() && close4(latest.normal, pressure_detail.normal, .002f),
+              "input snapshot: newest coalesced edit recovers after version pressure");
+        // F0 in the raw reflection alpha is selected from the primary
+        // material before stochastic rays. It exposes live-table/captured-page
+        // mismatch without depending on denoising or sample noise.
+        materials[kMaterialA].base_roughness[3] = .2f;
+        materials[kMaterialA].metal_opacity_spec_coat[2] = 1.f;
+        for (int c = 0; c < 3; ++c)
+            materials[kMaterialA].specular_tint_coat_roughness[c] = 1.f;
+        update_input_materials(40);
+        before = settle();
+        CHECK(std::fabs(before.raw_specular.w - .04f) < .001f,
+              "input snapshot: primary reflection F0 control is 0.04");
+        renderer.test_pause_vt_page_fills(true);
+        fills = renderer.vt_stats().fills_total;
+        materials[kMaterialA].metal_opacity_spec_coat[2] = 3.f;
+        update_input_materials(41);
+        for (int i = 0; i < 4; ++i) {
+            const auto held = draw_pixel();
+            CHECK(renderer.vt_stats().fills_total == fills &&
+                      renderer.vt_stats().dirty_pages > 0,
+                  "input snapshot: primary RT material edit retains old pages");
+            CHECK(close4(before.albedo, held.albedo, 1e-5f) &&
+                      close4(before.normal, held.normal, 1e-5f) &&
+                      close4(before.orm, held.orm, 1e-5f),
+                  "input snapshot: primary RT edit retains G-buffer inputs");
+            std::printf("input snapshot primary RT frame=%d F0 before=%.5f held=%.5f\n",
+                        i, before.raw_specular.w, held.raw_specular.w);
+            CHECK(std::fabs(before.raw_specular.w - held.raw_specular.w) < .001f,
+                  "input snapshot: primary RT keeps displayed material F0");
+        }
+        const auto reflected = settle();
+        CHECK(std::fabs(reflected.raw_specular.w - .12f) < .001f,
+              "input snapshot: completed primary material edit publishes F0 0.12");
+
+        // Finished-surface POM still resolves captured inputs, even though it
+        // emits no refinement request. A source-height edit must retain the
+        // old displacement until the replacement page/input version publishes.
+        materials[kMaterialA].flags_misc[0] |= 32u;
+        update_input_materials(42);
+        pom.enabled = true;
+        pom.steps = 64;
+        pom.relief_cap_m = .06f;
+        pom.max_march_m = .12f;
+        renderer.set_tileset_pom_settings(pom);
+        before = settle();
+        CHECK(before.orm.w > .005f,
+              "input snapshot: held-POM control has measurable displacement");
+        renderer.test_pause_vt_page_fills(true);
+        fills = renderer.vt_stats().fills_total;
+        header.height_max = .06f;
+        ++header.content_hash;
+        CHECK(tileset::save_gtex(path, header, px, px, alb.data(), nrm.data(),
+                                orm.data(), heights.data(), error), error.c_str());
+        {
+            const auto idle_before = device_idle_count();
+            CHECK(renderer.load_tileset_slot(0, path, error), error.c_str());
+            CHECK(device_idle_count() == idle_before,
+                  "input snapshot: source load uses no device idle");
+        }
+        std::remove(path.c_str());
+        compare_held(before, fills, "POM height replacement");
+        const auto displaced = settle();
+        CHECK(displaced.depth < before.depth &&
+                  displaced.orm.w > before.orm.w + .005f,
+              "input snapshot: completed source-height edit updates POM depth");
+
+        // Keep an already-recorded draw alive across source replacement and
+        // unload. A device-idle wait cannot protect an unsubmitted reader;
+        // only immutable frame bindings and retained image ownership can.
+        const auto matches_recorded_inputs = [&](const viewer::VkRasterPixel& a,
+                                                 const viewer::VkRasterPixel& b) {
+            return close4(a.albedo, b.albedo, 1e-5f) &&
+                   close4(a.normal, b.normal, 1e-5f) &&
+                   close4(a.orm, b.orm, 1e-5f) &&
+                   std::fabs(a.depth - b.depth) < 1e-7f &&
+                   std::fabs(a.raw_specular.w - b.raw_specular.w) < .001f;
+        };
+        before = displaced;
+        renderer.test_pause_vt_page_fills(true);
+        fills = renderer.vt_stats().fills_total;
+        before_vt_submit = [&]() {
+            std::fill(alb.begin(), alb.end(), 160);
+            for (int i = 0; i < px * px; ++i) {
+                nrm[2*i] = 170; nrm[2*i+1] = 91;
+            }
+            ++header.content_hash;
+            CHECK(tileset::save_gtex(path, header, px, px, alb.data(), nrm.data(),
+                                    orm.data(), heights.data(), error), error.c_str());
+            const auto idle_before = device_idle_count();
+            CHECK(renderer.load_tileset_slot(0, path, error), error.c_str());
+            CHECK(device_idle_count() == idle_before,
+                  "input snapshot: source replacement before submit uses no device idle");
+            std::remove(path.c_str());
+        };
+        const auto recorded_old_source = draw_pixel();
+        CHECK(renderer.vt_stats().fills_total == fills &&
+                  matches_recorded_inputs(before, recorded_old_source),
+              "input snapshot: recorded frame retains replaced source/POM/RT inputs");
+        compare_held(before, fills, "replacement after frame recording");
+        const auto new_source = settle();
+        CHECK(!close4(before.normal, new_source.normal, .02f),
+              "input snapshot: replacement after recording eventually becomes visible");
+
+        renderer.test_pause_vt_page_fills(true);
+        fills = renderer.vt_stats().fills_total;
+        before_vt_submit = [&]() {
+            const auto idle_before = device_idle_count();
+            renderer.unload_tileset_slot(0);
+            CHECK(device_idle_count() == idle_before,
+                  "input snapshot: source unload before submit uses no device idle");
+        };
+        const auto recorded_removed_source = draw_pixel();
+        CHECK(renderer.vt_stats().fills_total == fills &&
+                  matches_recorded_inputs(new_source, recorded_removed_source),
+              "input snapshot: recorded frame retains unloaded source/POM/RT inputs");
+        compare_held(new_source, fills, "unload after frame recording");
+        const auto no_source = settle();
+        CHECK(no_source.orm.w < new_source.orm.w - .005f,
+              "input snapshot: source unload after recording publishes flat fallback");
+
+        budgets = saved_budgets;
+        renderer.release_part(0x7611);
+        return;
+    }
 
     if (surface_parallax_fixture) {
         std::printf("surface-parallax: constant-height analytic oracle; yaw0/30/90, on/off, zero height, grazing\n");
@@ -6571,12 +8301,25 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
             camera.target = rotate({0, 0, -1});
             camera.up = rotate({0, 1, 0});
             CHECK(viewer::build_frame_matrices(camera, width, height, matrices, error), error.c_str());
-            // The window presents every frame; poll events while the user
-            // watches the fixture rotate. No hidden/offscreen launch.
-            for (int i = 0; i < 12; ++i) {
+            // Production fills are sliced into at most two of the page's
+            // 680 work tiles per frame. Wait for actual residency, including
+            // feedback retirement, instead of sampling the fallback after a
+            // fixed twelve frames. The window keeps presenting during the wait.
+            uint32_t stable = 0;
+            uint32_t settle_frames = 0;
+            for (; settle_frames < 4u * vt::kVtPageTiles && stable < 5u;
+                 ++settle_frames) {
                 glfwPollEvents();
                 frame_with_probe(false, {}, {}, 0, 0);
+                const auto stats = renderer.vt_stats();
+                stable = stats.fills_total && !stats.queue_depth &&
+                    !stats.dirty_pages && !stats.fills_last_frame ? stable + 1u : 0u;
             }
+            const auto settled = renderer.vt_stats();
+            std::printf("vt-normal-frame readiness: frames=%u stable=%u fills=%llu queue=%u dirty=%u\n",
+                settle_frames, stable, static_cast<unsigned long long>(settled.fills_total),
+                settled.queue_depth, settled.dirty_pages);
+            CHECK(stable == 5u, "normal-frame: page generation settles before sampling");
             viewer::VkRasterPixel pixel{};
             CHECK(renderer.readback_raster_pixel(140, 100, pixel, error), error.c_str());
             frame_with_probe(true, {0,0,0}, rotate({-.4f,0,-2}), 0, 0);
@@ -6684,6 +8427,27 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
     CHECK(std::fabs(hit_a.vt_albedo.x - hit_b.vt_albedo.x) > 0.3f ||
               std::fabs(hit_a.vt_albedo.z - hit_b.vt_albedo.z) > 0.3f,
           "vt-rt: the two charts trace to their own distinct pages");
+
+    // Terrain page proxies own geometry but sample their controller's atlas.
+    auto page_proxy = charted;
+    page_proxy.part_hash = 0x7612;
+    page_proxy.lod_charts.clear();
+    page_proxy.lod_chart_meshes.clear();
+    CHECK(renderer.ensure_part(page_proxy, error) >= 0, error.c_str());
+    viewer::VkSceneInstance controller{0x7611, identity_matrix(), 1};
+    controller.ray_traced = false;
+    viewer::VkSceneInstance proxy{0x7612, identity_matrix(), 2};
+    proxy.rt_proxy_only = true;
+    proxy.rt_vt_source_hash = 0x7611;
+    CHECK(renderer.update_instances({controller, proxy}, error), error.c_str());
+    frame_with_probe(true, {-0.4f, 0.0f, 1.0f}, forward, 0.0f, kProbeSpread);
+    CHECK(probe_invalid == 0 && probe_hit.valid && probe_hit.vt_applied &&
+          probe_hit.vt_slot == hit_a.vt_slot &&
+          std::fabs(probe_hit.vt_albedo.x - hit_a.vt_albedo.x) < 2.0e-2f &&
+          std::fabs(probe_hit.vt_albedo.z - hit_a.vt_albedo.z) < 2.0e-2f,
+          "vt-rt: chartless page proxy resolves its source sector atlas");
+    CHECK(renderer.update_instances({{0x7611, identity_matrix(), 1}}, error), error.c_str());
+    renderer.release_part(0x7612);
 
     // --- (2) cone-mip monotonicity ------------------------------------------
     // Same surface point, same spread, four increasing distances. Footprint =
@@ -8128,6 +9892,9 @@ static void rt_scenario_blas_pinning(
         std::string& error) {
     {
         viewer::VkSceneRenderer pinning(vulkan);
+        CHECK(pinning.init(error),
+              error.empty() ? "init shared raster/RT geometry buffers"
+                            : error.c_str());
         const viewer::VkScenePart receiver = known_raster_triangle(910);
         CHECK(pinning.ensure_part(receiver, error) >= 0,
               error.empty() ? "build receiver BLAS" : error.c_str());
@@ -8142,7 +9909,7 @@ static void rt_scenario_blas_pinning(
         CHECK(pinning.ensure_part(growth, error) >= 0 && pinned != 0 &&
                   pinning.test_rt_geometry_address(910) == pinned,
               error.empty()
-                  ? "BLAS input geometry stays pinned across raster growth"
+                  ? "shared RT vertex offset stays stable across CPU staging growth"
                   : error.c_str());
     }
 }
@@ -8583,6 +10350,13 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
                 }
             }
         }
+        std::array<viewer::VkRasterPixel, 8> signal_reference{};
+        for (uint32_t i = 0; i < signal_reference.size(); ++i) {
+            CHECK(renderer.readback_raster_pixel(64u * (1u + i % 4u),
+                      60u * (1u + i / 4u), signal_reference[i], error),
+                  "read fixed-seed GI signal reference");
+        }
+        const bool specialized = renderer.test_gi_specialization_enabled();
         renderer.finish_ray_tracing_frame(frame.serial, false);
         CHECK(renderer.test_gi_presented_history_index() == 0u,
               "failed presentation does not publish candidate GI history");
@@ -8590,6 +10364,7 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "failed frame rolls back candidate BLAS state");
         gi_temporal.attempt_token = 202;
+        renderer.test_set_gi_specialization_enabled(!specialized);
         renderer.set_temporal_frame(gi_temporal);
         CHECK(vulkan.begin_frame(frame, error) &&
                   renderer.prepare_frame(frame, matrices, camera.position,
@@ -8612,6 +10387,16 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
                   retry_pixel.material_index == 1u &&
                   close4(retry_pixel.raw_diffuse, failed_raw, 1e-6f),
               "failed-attempt retry keeps GPU GI deterministic from committed frame identity");
+        for (uint32_t i = 0; i < signal_reference.size(); ++i) {
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(64u * (1u + i % 4u),
+                      60u * (1u + i / 4u), pixel, error) &&
+                      close4(pixel.raw_diffuse, signal_reference[i].raw_diffuse, 1e-6f) &&
+                      close4(pixel.raw_specular, signal_reference[i].raw_specular, 1e-6f) &&
+                      close4(pixel.raw_transmission, signal_reference[i].raw_transmission, 1e-6f),
+                  "specialized GI stages preserve fixed-seed diffuse and reflection signals");
+        }
+        renderer.test_set_gi_specialization_enabled(specialized);
         viewer::GiTemporalGpuFixture temporal_fixture{};
         const float fixture_luminance =
             0.2126f * temporal_fixture.raw.x +
@@ -8683,14 +10468,22 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
         gpu_rejection(changed_temporal, viewer::kGiRejectReset,
                       "GPU temporal shader emits reset rejection");
         changed_temporal = temporal_fixture;
-        changed_temporal.previous_radiance = {100.0f, 50.0f, 25.0f, 1.0f};
-        CHECK(renderer.test_dispatch_gi_temporal_fixture(
-                  changed_temporal, temporal_result, error) &&
-                  temporal_result.radiance.x < 2.0f &&
-                  temporal_result.radiance.y < 2.0f &&
-                  temporal_result.radiance.z < 2.0f,
+        // An outlier is one unsupported history sample. Filling the entire
+        // history image with bright light tests sustained indirect fill, which
+        // the reduced-diffuse filter intentionally preserves after fresh misses.
+        changed_temporal.previous_history_background_length = 8;
+        changed_temporal.patch_previous_radiance = true;
+        changed_temporal.previous_radiance_patch = {100.0f, 50.0f, 25.0f, 1.0f};
+        const bool outlier_dispatched = renderer.test_dispatch_gi_temporal_fixture(
+            changed_temporal, temporal_result, error);
+        const float bounded_luminance = 0.2126f * temporal_result.radiance.x +
+            0.7152f * temporal_result.radiance.y + 0.0722f * temporal_result.radiance.z;
+        CHECK(outlier_dispatched && std::isfinite(bounded_luminance) && bounded_luminance < 2.0f,
               error.empty() ? "GPU temporal variance bounds reject radiance outlier"
                             : error.c_str());
+        std::printf("Isolated history outlier: RGB=%.4f/%.4f/%.4f luminance=%.4f\n",
+            temporal_result.radiance.x, temporal_result.radiance.y,
+            temporal_result.radiance.z, bounded_luminance);
 
         viewer::GiTemporalGpuFixture specular_temporal{};
         specular_temporal.signal_mode = 1u;
@@ -9092,6 +10885,62 @@ static Task9CloudPoint task9_froxel_world_position(
 // Isolated real-device lane for Task 8. It deliberately creates a new
 // renderer before the broad legacy RT scenarios: their intentional descriptor
 // stress must not obscure a resize validation failure.
+static void run_rt_empty_tlas_volume_smoke(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error), error.empty() ? "empty TLAS: initialize renderer" : error.c_str());
+    CHECK(renderer.ensure_part(known_raster_triangle(998), error) >= 0 &&
+              renderer.update_instances({{998, identity_matrix()}}, error),
+          error.empty() ? "empty TLAS: retain a real scene instance" : error.c_str());
+    matter::VulkanRayTracingSettings rt{};
+    rt.enabled = true;
+    renderer.set_ray_tracing_settings(rt);
+    matter::VulkanVolumetricsSettings volume{};
+    volume.enabled = true;
+    volume.froxel_xy_scale = matter::FroxelXyScale::X0_5;
+    volume.froxel_depth_slices = matter::FroxelDepthSlices::D64;
+    renderer.set_volumetrics_settings(volume, matter::FogSettings{});
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.5f, 2.0f};
+    camera.target = {0.0f, 0.5f, 0.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 320, 200, matrices, error),
+          error.empty() ? "empty TLAS: build matrices" : error.c_str());
+    // Keep rt_instances_ populated while actual geometry selection rejects
+    // every instance. This reproduces terrain startup and distant impostors
+    // without changing RT capability or injecting a fake dispatch result.
+    renderer.set_part_draw_overrides({{998, {0.25f, 1.0f}}});
+    const auto render = [&](bool expect_trace) {
+        matter::VulkanFrame frame{};
+        const bool recorded = vulkan.begin_frame(frame, error) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error) &&
+            vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, recorded);
+        vulkan.wait_idle();
+        CHECK(recorded, error.empty() ? "empty TLAS: submit production frame" : error.c_str());
+        CHECK(renderer.rt_effective_observed() == expect_trace &&
+                  (renderer.rt_trace_dispatches_observed() != 0) == expect_trace,
+              "empty TLAS: actual trace agrees with selected geometry");
+        CHECK(vulkan.validation_error_count() == 0,
+              "empty TLAS: all composite descriptors reference initialized images");
+    };
+    render(false); // newly allocated volume has never been produced
+    render(false); // reuse another frame slot with the same empty selection
+    renderer.set_part_draw_overrides({});
+    render(true);
+    render(true);
+    renderer.set_part_draw_overrides({{998, {0.25f, 1.0f}}});
+    volume.froxel_depth_slices = matter::FroxelDepthSlices::D128;
+    renderer.set_volumetrics_settings(volume, matter::FogSettings{});
+    render(false); // new bundle, retained scene, now-empty actual TLAS
+    renderer.set_part_draw_overrides({});
+    render(true);
+}
+
 static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
@@ -11394,6 +13243,21 @@ static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
               error.empty() ? "render baked-AO-zero GI fixture"
                             : error.c_str());
         renderer.finish_ray_tracing_frame(ao_frame.serial, true);
+        CHECK(renderer.test_raw_diffuse_extent().width ==
+                  renderer.test_raw_reflection_extent().width &&
+              renderer.test_raw_diffuse_extent().height ==
+                  renderer.test_raw_reflection_extent().height,
+              "full-rate GI fixture exercises equal signal extents");
+        if (renderer.gpu_timers_supported()) {
+            const char* detail = std::getenv("MATTER_GPU_LIGHTING_DETAIL_TIMERS");
+            const uint8_t expected = detail && std::strcmp(detail, "1") == 0
+                ? 3u : 0u;
+            CHECK(renderer.test_gpu_zone_written(ao_frame.frame_slot,
+                      viewer::VkSceneRenderer::kGpuZoneRtGiDiffuse) == expected &&
+                  renderer.test_gpu_zone_written(ao_frame.frame_slot,
+                      viewer::VkSceneRenderer::kGpuZoneRtGiReflectionTransmission) == expected,
+                  "equal-size GI writes both child timestamp pairs only for detailed profiling");
+        }
         float ao_zero_max_raw = 0.0f;
         float ao_min_visibility = 1.0f;
         float ao_max_visibility = 0.0f;
@@ -11452,6 +13316,11 @@ static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
               error.empty() ? "render RT-active GI-disabled fixture"
                             : error.c_str());
         renderer.finish_ray_tracing_frame(disabled_gi_frame.serial, true);
+        CHECK(renderer.test_gpu_zone_written(disabled_gi_frame.frame_slot,
+                  viewer::VkSceneRenderer::kGpuZoneRtGiDiffuse) == 0u &&
+              renderer.test_gpu_zone_written(disabled_gi_frame.frame_slot,
+                  viewer::VkSceneRenderer::kGpuZoneRtGiReflectionTransmission) == 0u,
+              "GI disable leaves child timing queries unavailable");
         bool disabled_receiver_seen = false;
         float disabled_receiver_raw = 0.0f;
         float disabled_min_visibility = 1.0f;
@@ -11988,6 +13857,15 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
           "rt-transmission: fixed frame index reproduces bit-identical rays");
     CHECK(passthrough,
           "rt-transmission: smooth pixels pass the denoiser bit-exactly");
+    const bool specialized = renderer.test_gi_specialization_enabled();
+    renderer.test_set_gi_specialization_enabled(!specialized);
+    render_frame(renderer, true, fixed_index);
+    vulkan.wait_idle();
+    const auto other_stage_row = sample_row(renderer, 8, false);
+    for (size_t i = 0; i < smooth_row.size(); ++i)
+        CHECK(close4(smooth_row[i], other_stage_row[i], 1e-6f),
+              "rt-transmission: specialized GI preserves smooth refraction rays");
+    renderer.test_set_gi_specialization_enabled(specialized);
     // Roughness below the 0.02 sampling threshold must not perturb anything:
     // no VNDF sample is drawn, so the whole lane stays bit-identical.
     author(0.019f, 0.85f, {1.0f, 1.0f, 1.0f});
@@ -13138,6 +15016,8 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
     CHECK(prepare(scene.frame, &first_material_slot),
           error.empty() ? "prepare initial persistent Vulkan frame"
                         : error.c_str());
+    CHECK(renderer.test_scene_buffers_device_local(first_material_slot),
+          "cull inputs, indirect commands and transform outputs reside in GPU memory");
     CHECK(renderer.test_material_upload_record_count(first_material_slot) == 1 &&
               (renderer.test_material_buffer_memory(first_material_slot) &
                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0 &&
@@ -13165,6 +15045,8 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
                   second_material_slot) == 1 &&
               matter::immediate_submit_count() == immediate_before_material,
           "material revision records independently into second in-flight slot");
+    CHECK(renderer.test_scene_buffers_device_local(second_material_slot),
+          "both in-flight scene slots use GPU-local buffers");
     CHECK(renderer.update_instances(instances, error) && prepare(scene.frame),
           error.empty() ? "prepare stable Vulkan frame" : error.c_str());
     const viewer::VkSceneUploadCounters stable = renderer.upload_counters();
@@ -13320,6 +15202,217 @@ void run_static_append_upload_tests(matter::VulkanDevice& vulkan) {
           "appended front clusters are emitted from GPU cluster data");
     CHECK(stats.frustum_culled == kStreamedParts / 2,
           "appended behind clusters are culled from GPU cluster data");
+}
+
+void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
+    // A zero-MiB floor leaves only the one-element minimum. Both registrations
+    // then cross capacity; the second must preserve the first part's uploaded
+    // prefix by copying it on the GPU rather than uploading the whole world.
+    constexpr const char* names[] = {
+        "MATTER_VK_STATIC_RESERVE_CLUSTER_MB",
+        "MATTER_VK_STATIC_RESERVE_VERTEX_MB",
+        "MATTER_VK_STATIC_RESERVE_INDEX_MB"};
+    std::array<std::string, 3> previous;
+    std::array<bool, 3> had_value{};
+    for (size_t i = 0; i < 3; ++i) {
+        if (const char* value = std::getenv(names[i])) {
+            previous[i] = value;
+            had_value[i] = true;
+        }
+#ifdef _WIN32
+        _putenv_s(names[i], "0");
+#else
+        setenv(names[i], "0", 1);
+#endif
+    }
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    const bool initialized = renderer.init(error);
+    for (size_t i = 0; i < 3; ++i) {
+#ifdef _WIN32
+        _putenv_s(names[i], had_value[i] ? previous[i].c_str() : "");
+#else
+        if (had_value[i]) setenv(names[i], previous[i].c_str(), 1);
+        else unsetenv(names[i]);
+#endif
+    }
+    CHECK(initialized,
+          error.empty() ? "init small-reserve growth renderer" : error.c_str());
+    if (!initialized) return;
+    matter::VulkanRayTracingSettings growth_rt{};
+    growth_rt.enabled = true;
+    renderer.set_ray_tracing_settings(growth_rt);
+    renderer.test_set_static_upload_budget(sizeof(viewer::VkRasterVertex) + sizeof(uint32_t) * 3);
+    const FixedCullScene scene = make_fixed_cull_scene();
+    const auto submit = [&](bool draw = false) {
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) return false;
+        const bool prepared = renderer.prepare_frame(
+            frame, scene.frame, scene.eye, 1.0f, error);
+        const bool rendered = prepared && (!draw || renderer.record_cull_and_render(
+            frame, scene.frame, scene.eye, 1.0f, error));
+        const bool ended = vulkan.end_frame(frame, error);
+        return rendered && ended;
+    };
+    const auto first = known_raster_triangle(0x53544131);
+    const auto second = known_raster_triangle(0x53544132);
+    const matter::Mat4f identity = identity_matrix();
+    CHECK(renderer.ensure_part(first, error) >= 0 &&
+              renderer.update_instances({{first.part_hash, identity}}, error) &&
+              submit(),
+          error.empty() ? "submit first grown static part" : error.c_str());
+    const auto after_first = renderer.upload_counters();
+    CHECK(after_first.static_growth_uploads == 1 &&
+              after_first.static_full_uploads == 0,
+          "first capacity growth uses recorded GPU copy path");
+    CHECK(renderer.ensure_part(second, error) >= 0 &&
+              renderer.update_instances({{first.part_hash, identity},
+                                         {second.part_hash, identity}}, error) &&
+              submit(),
+          error.empty() ? "submit second grown static part" : error.c_str());
+    const auto after_second = renderer.upload_counters();
+    CHECK(after_second.static_growth_uploads >= 2 &&
+              after_second.static_full_uploads == 0,
+          "capacity growth never rewrites resident CPU staging");
+    CHECK(!renderer.test_triangle_resident(first.part_hash) &&
+              !renderer.test_triangle_resident(second.part_hash),
+          "growth preserves partially uploaded ranges without publishing them");
+    renderer.test_set_static_upload_budget(32ull * 1024ull * 1024ull);
+    CHECK(submit() && renderer.test_triangle_resident(first.part_hash) &&
+              renderer.test_triangle_resident(second.part_hash),
+          "pending ranges finish correctly after a second capacity growth");
+    CHECK(renderer.test_static_triangle_buffers_device_local(),
+          "grown triangles reside in device-local buffers");
+    if (vulkan.ray_tracing_available()) {
+        const auto first_address =
+            renderer.test_rt_geometry_address(first.part_hash);
+        const auto second_address =
+            renderer.test_rt_geometry_address(second.part_hash);
+        CHECK(first_address != 0 &&
+                  second_address - first_address ==
+                      first.vertices.size() * sizeof(viewer::VkRasterVertex),
+              "RT parts address their ranges in the shared raster vertex buffer");
+    }
+    CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error),
+          error.empty() ? "cull copied old and appended new parts" : error.c_str());
+    viewer::VkCullStats stats{};
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 2,
+          error.empty() ? "both grown parts remain visible" : error.c_str());
+
+    // Recycle an interior range, then grow the cluster/index tails in the
+    // same frame. The GPU copy must exclude the recycled dirty range or it
+    // would restore the old front-facing cluster over the new hidden one.
+    renderer.release_part(first.part_hash);
+    for (int i = 0; i < 4; ++i)
+        CHECK(submit(), error.empty() ? "retire freed static range"
+                                      : error.c_str());
+    auto recycled = known_raster_triangle(0x53544133);
+    recycled.clusters[0].aabb_min.z = 2.0f;
+    recycled.clusters[0].aabb_max.z = 2.0f;
+    for (auto& vertex : recycled.vertices) vertex.position.z = 2.0f;
+    const auto tail = known_raster_triangle(0x53544134);
+    CHECK(renderer.ensure_part(recycled, error) >= 0 &&
+              renderer.ensure_part(tail, error) >= 0 &&
+              renderer.update_instances({{second.part_hash, identity},
+                                         {recycled.part_hash, identity},
+                                         {tail.part_hash, identity}}, error) &&
+              submit(),
+          error.empty() ? "grow tail while replacing recycled static range"
+                        : error.c_str());
+    CHECK(renderer.upload_counters().static_growth_uploads >
+              after_second.static_growth_uploads,
+          "recycled interior write and tail growth share one GPU-copy upload");
+    CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+              renderer.cull_stats(stats, error) && stats.emitted == 2 &&
+              stats.frustum_culled == 1,
+          error.empty() ? "recycled hidden cluster survives GPU copy"
+                        : error.c_str());
+
+    // The large transfer spans frames. Its instance must stay hidden until
+    // both streams are resident, including when its first triangle already
+    // fits in the first chunk. Use the production recorder: dispatch_culling
+    // deliberately drains all pending transfers for synchronous test callers.
+    auto large = known_raster_triangle(0x53544135);
+    large.vertices.resize(800000, large.vertices.front());
+    CHECK(renderer.ensure_part(large, error) >= 0 &&
+              renderer.update_instances({{second.part_hash, identity},
+                                         {recycled.part_hash, identity},
+                                         {tail.part_hash, identity},
+                                         {large.part_hash, identity}}, error) &&
+              submit(true),
+          error.empty() ? "submit large staged static upload" : error.c_str());
+    CHECK(!renderer.test_triangle_resident(large.part_hash) &&
+              renderer.test_static_upload_bytes() <= 32ull * 1024ull * 1024ull,
+          "large part stays pending within the per-frame upload budget");
+    vulkan.wait_idle();
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 2,
+          "pending triangles are hidden while resident parts still draw");
+    const auto& pending_rt = renderer.test_last_rt_geometry_records();
+    CHECK(std::none_of(pending_rt.begin(), pending_rt.end(),
+              [&](const auto& record) { return record.part_hash == large.part_hash; }),
+          "pending triangles never enter the RT build set");
+    int upload_frames = 1;
+    while (!renderer.test_triangle_resident(large.part_hash) && upload_frames < 8) {
+        CHECK(submit(true), error.empty() ? "drain next bounded static chunk" : error.c_str());
+        CHECK(renderer.test_static_upload_bytes() <= 32ull * 1024ull * 1024ull,
+              "every partial frame obeys the shared vertex/index byte budget");
+        ++upload_frames;
+    }
+    vulkan.wait_idle();
+    CHECK(renderer.test_triangle_resident(large.part_hash) && upload_frames == 3,
+          "large part becomes resident after its final chunk");
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 3 &&
+              stats.frustum_culled == 1,
+          error.empty() ? "large staged upload preserves visible triangle"
+                        : error.c_str());
+    if (vulkan.ray_tracing_available()) {
+        const auto& resident_rt = renderer.test_last_rt_geometry_records();
+        CHECK(std::any_of(resident_rt.begin(), resident_rt.end(),
+                  [&](const auto& record) { return record.part_hash == large.part_hash; }),
+              "completed triangles enter RT through the shared raster buffers");
+    }
+
+    renderer.release_part(large.part_hash);
+    for (int i = 0; i < 4; ++i) CHECK(submit(), "retire large static range");
+    renderer.test_set_static_upload_budget(1024);
+    auto cancelled = known_raster_triangle(0x53544136);
+    cancelled.vertices.resize(32, cancelled.vertices.front());
+    CHECK(renderer.ensure_part(cancelled, error) >= 0 && submit() &&
+              !renderer.test_triangle_resident(cancelled.part_hash),
+          "interior recycled geometry also waits for residency");
+    renderer.release_part(cancelled.part_hash);
+    CHECK(submit() && renderer.test_static_upload_bytes() == 0,
+          "eviction cancels the remaining dirty triangle writes");
+    for (int i = 0; i < 4; ++i) CHECK(submit(), "retire cancelled range");
+    cancelled.part_hash = 0x53544137;
+    cancelled.vertices.resize(3);
+    CHECK(renderer.ensure_part(cancelled, error) >= 0 &&
+              renderer.update_instances({{cancelled.part_hash, identity}}, error) &&
+              submit(true) && renderer.test_triangle_resident(cancelled.part_hash),
+          "new owner of a cancelled range becomes resident independently");
+    vulkan.wait_idle();
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 1,
+          "recycled range draws only its current owner");
+
+    auto index_heavy = known_raster_triangle(0x53544138);
+    for (int i = 0; i < 199; ++i)
+        index_heavy.indices.insert(index_heavy.indices.end(), {0, 1, 2});
+    CHECK(renderer.ensure_part(index_heavy, error) >= 0 &&
+              renderer.update_instances({{cancelled.part_hash, identity},
+                                         {index_heavy.part_hash, identity}}, error) &&
+              submit(true) && !renderer.test_triangle_resident(index_heavy.part_hash),
+          "an index stream alone can exhaust the shared upload budget");
+    vulkan.wait_idle();
+    CHECK(renderer.cull_stats(stats, error) && stats.emitted == 1,
+          "pending indices suppress the new draw");
+    for (int i = 0; i < 2; ++i) {
+        CHECK(submit(true) && renderer.test_static_upload_bytes() <= 1024,
+              "index and vertex chunks share one byte budget");
+    }
+    vulkan.wait_idle();
+    CHECK(renderer.test_triangle_resident(index_heavy.part_hash) &&
+              renderer.cull_stats(stats, error) && stats.emitted == 2,
+          "index-heavy part draws once both streams are resident");
 }
 
 void run_display_transform_tests(matter::VulkanDevice& vulkan) {
@@ -14995,11 +17088,19 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
           error.empty() ? "create outliving buffer" : error.c_str());
     CHECK(matter::create_image(
               *vulkan, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM,
-              {1, 1, 1},
+              {8, 8, 1},
               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
               VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-              image, error),
+              image, error, 4, 3, true),
           error.empty() ? "create outliving image" : error.c_str());
+    const VkImage original_image = image.image;
+    CHECK(!matter::create_image(
+              *vulkan, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM,
+              {8, 8, 1}, VK_IMAGE_USAGE_SAMPLED_BIT,
+              VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+              image, error, 5, 3, true) && image.image == original_image,
+          "invalid mip count preserves the previous image");
+    error.clear();
     VkDescriptorSetLayoutBinding binding{};
     binding.binding = 0;
     binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -15016,8 +17117,34 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
           "moved-from buffer releases lifetime control");
     CHECK(image.image == VK_NULL_HANDLE && !image.lifetime,
           "moved-from image releases lifetime control");
+    CHECK(moved_image.mip_levels == 4 && moved_image.array_layers == 3 &&
+              image.mip_levels == 1 && image.array_layers == 1,
+          "image move transfers the complete subresource range");
     CHECK(pipeline.pipeline == VK_NULL_HANDLE && !pipeline.lifetime,
           "moved-from pipeline releases lifetime control");
+
+    if (moved_image.image != VK_NULL_HANDLE) {
+        CHECK(matter::transition_image(*vulkan, moved_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_NONE, 0,
+                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_IMAGE_ASPECT_COLOR_BIT, error),
+              "transition every mip and array layer");
+        const auto clear_array = [](VkCommandBuffer cmd, void* data) {
+            const auto& source = *static_cast<matter::VkImageResource*>(data);
+            const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 4, 0, 3};
+            const VkClearColorValue color{{0.25f, 0.5f, 0.75f, 1.0f}};
+            vkCmdClearColorImage(cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 &color, 1, &range);
+        };
+        CHECK(matter::submit_immediate(*vulkan, clear_array, &moved_image, error,
+                  matter::ImmediateSubmitPhase::image_transition, {moved_image.lifetime}),
+              "clear validates all transitioned subresources");
+    }
+    std::shared_ptr<void> image_owner = moved_image.lifetime;
+    std::weak_ptr<void> observed_image = image_owner;
+    moved_image.reset();
+    CHECK(!observed_image.expired(), "detached image ownership survives wrapper reset");
 
     CHECK(vulkan->validation_error_count() == 0,
           "no validation errors before outlive device teardown");
@@ -15028,8 +17155,10 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
     vulkan.reset();
     _putenv_s("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "");
     moved_buffer.reset();
-    // The moved image and pipeline intentionally use their destructors after
-    // their VulkanDevice owner has already been destroyed.
+    image_owner.reset();
+    CHECK(observed_image.expired(), "detached image ownership releases after device teardown");
+    // The moved pipeline intentionally uses its destructor after its
+    // VulkanDevice owner has already been destroyed.
 }
 
 }  // namespace
@@ -15399,6 +17528,8 @@ static void run_gi_firefly_path(matter::VulkanDevice& vulkan) {
     std::printf("GI_FIREFLY_GPU probes=%u reduced_extent=9x7 full_extent=65x49\n", probes);
 }
 
+#include "sparse_voxel_vk_tests.h"
+
 int main() {
     test_atmosphere_timing_contract();
     test_water_forward_perf_evidence_contract();
@@ -15445,7 +17576,8 @@ int main() {
          // WP-H: the RT-unavailable arm of the tier-2 enrichment gate. Ray
          // tracing is a device property, so the only honest way to test the
          // "no enricher" path is to bring the device up without it.
-         std::string(requested_smoke_mode) == "vt-enrich-nort")) {
+         std::string(requested_smoke_mode) == "vt-enrich-nort" ||
+         std::string(requested_smoke_mode) == "water-field-nort")) {
         _putenv_s("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE", "1");
     }
 
@@ -15491,6 +17623,23 @@ int main() {
         CHECK(vulkan->multi_draw_indirect_enabled(),
               "multiDrawIndirect is enabled on the logical device");
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        if (smoke_mode && std::string(smoke_mode) == "geometry-pages") {
+            geometry_page_vk_test::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "sparse-voxel") {
+            sparse_voxel_gpu_test::run(*vulkan);
+            CHECK(vulkan->validation_error_count() == 0, "sparse voxel Vulkan validation");
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "gi-firefly") {
             run_gi_firefly_path(*vulkan);
             std::printf("validation errors: %u\n", vulkan->validation_error_count());
@@ -15535,7 +17684,11 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
-        if (smoke_mode && std::string(smoke_mode) == "water-field") {
+        if (smoke_mode && (std::string(smoke_mode) == "water-field" ||
+                          std::string(smoke_mode) == "water-field-nort")) {
+            if (std::string(smoke_mode) == "water-field-nort")
+                CHECK(!vulkan->ray_tracing_available(),
+                      "water field uploads exercise a device without RT support");
             run_water_field_upload_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
@@ -15640,6 +17793,7 @@ int main() {
         if (smoke_mode && std::string(smoke_mode) == "cull") {
             run_frame_upload_tests(*vulkan);
             run_static_append_upload_tests(*vulkan);
+            run_static_growth_copy_tests(*vulkan);
             run_frame_record_tests(*vulkan);
             run_frame_resource_recovery_tests(*vulkan);
             run_vk_scene_checked_size_tests(*vulkan);
@@ -15675,10 +17829,34 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
+        if (smoke_mode && std::string(smoke_mode) == "vt-queue") {
+            vt_queue_tests::run_page_probe(*vulkan);
+            vt_queue_tests::run(*vulkan);
+            vt_queue_tests::run_scoped_updates(*vulkan);
+            vt_queue_tests::run_replacements(*vulkan);
+            vt_queue_tests::run_input_snapshot_publication(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "vt") {
             run_vt_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-feedback") {
+            run_vt_feedback_visibility_path(*vulkan);
+            CHECK(vulkan->validation_error_count() == 0,
+                  "vt-feedback: zero Vulkan validation errors");
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
             vulkan->wait_idle();
             finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);
@@ -15706,11 +17884,90 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
+        if (smoke_mode && std::string(smoke_mode) == "vt-material-domain") {
+            vt_material_domain_tests::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-surface-connections") {
+            vt_surface_connection_tests::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-pom-work") {
+            vt_pom_work_tests::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-module-residency") {
+            vt_module_residency_tests::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-export") {
+            vt_export_tests::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-receiver-material") {
+            vt_receiver_material_tests::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-feedback-pair") {
+            vt_feedback_pair_tests::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && (std::string(smoke_mode) == "vt-rt" ||
                            std::string(smoke_mode) == "vt-normal-frame" ||
+                           std::string(smoke_mode) == "vt-direct-source" ||
+                           std::string(smoke_mode) == "vt-part-source" ||
+                           std::string(smoke_mode) == "vt-context-source" ||
+                           std::string(smoke_mode) == "vt-composed-parallax" ||
+                           std::string(smoke_mode) == "vt-composed-seam" ||
+                           std::string(smoke_mode) == "vt-sector-seam" ||
+                           std::string(smoke_mode) == "vt-input-snapshot" ||
                            std::string(smoke_mode) == "surface-parallax")) {
             run_vt_rt_path(*vulkan, std::string(smoke_mode) != "vt-rt",
-                          std::string(smoke_mode) == "surface-parallax");
+                          std::string(smoke_mode) == "surface-parallax",
+                          std::string(smoke_mode) == "vt-input-snapshot",
+                          std::string(smoke_mode) == "vt-direct-source" ||
+                              std::string(smoke_mode) == "vt-part-source" ||
+                              std::string(smoke_mode) == "vt-context-source",
+                          std::string(smoke_mode) == "vt-composed-parallax" ||
+                              std::string(smoke_mode) == "vt-composed-seam" ||
+                              std::string(smoke_mode) == "vt-sector-seam",
+                          std::string(smoke_mode) == "vt-composed-seam",
+                          std::string(smoke_mode) == "vt-sector-seam");
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
@@ -15785,6 +18042,14 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
+        if (smoke_mode && std::string(smoke_mode) == "rt-empty-tlas") {
+            run_rt_empty_tlas_volume_smoke(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "froxel-resize") {
             run_rt_froxel_resize_smoke(*vulkan);
             std::printf("validation errors: %u\n",
@@ -15840,6 +18105,7 @@ int main() {
         uint32_t retained_probe_destroyed = 0;
         run_frame_upload_tests(*vulkan);
         run_static_append_upload_tests(*vulkan);
+        run_static_growth_copy_tests(*vulkan);
         run_frame_record_tests(*vulkan);
         run_frame_resource_recovery_tests(*vulkan);
         run_tileset_slot_load(*vulkan);

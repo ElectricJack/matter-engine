@@ -33,6 +33,7 @@
 
 #include "agent_protocol.h"
 #include "matter/camera.h"
+#include "matter/evaluation_channels.h"
 #include "matter/json_doc.h"
 #include "selection_bounds.h"
 
@@ -56,6 +57,31 @@ struct Rect {
     double height = 0.0;
 };
 
+struct ReadinessInput {
+    bool production_view = false;
+    bool scene_ready = false;
+    bool gpu_jobs_idle = false;
+    bool visible_streaming_known = true;
+    uint32_t visible_sectors_pending = 0;
+    uint32_t visible_refinement_pending = 0;
+    uint32_t vt_queue_depth = 0;
+    uint32_t vt_dirty_pages = 0;
+    uint32_t vt_rejected_variants = 0;
+    bool require_rt = false;
+    bool rt_available = false;
+    bool rt_effective = false;
+    uint32_t stable_camera_frames = 0;
+    matter::VisibleDetailReport detail;
+    std::string detail_error;
+};
+
+struct ReadinessReport {
+    bool ready = false;
+    std::vector<std::string> blockers;
+};
+
+ReadinessReport evaluate_readiness(const ReadinessInput& input);
+
 // Measured on the frame that ACTUALLY presented and was read back -- never at
 // arm time. A window resize between the two is therefore reported as the size
 // the image really is, which is the whole reason this is a separate struct
@@ -78,6 +104,12 @@ struct Geometry {
     // the picker and the production camera all describe the OTHER world, so
     // annotations are reported unavailable rather than projected into it.
     bool production_view = true;
+    // Optional numeric bundle, copied from the same render submission.
+    std::string channels_path;
+    std::uint32_t channels_width = 0;
+    std::uint32_t channels_height = 0;
+    ReadinessInput readiness_input;
+    ReadinessReport readiness;
 };
 
 // The viewport rectangle expressed in framebuffer and in image pixels.
@@ -107,6 +139,9 @@ struct Request {
     std::uint64_t ticket_id = 0;
     std::string path;            // the PNG the capture writes
     bool annotate = false;       // include projected selection annotations
+    bool export_channels = false; // synchronized numeric raster planes
+    std::uint32_t desired_max_lod = 0;
+    bool require_rt = false;
     Clock::time_point deadline{};
 };
 
@@ -213,8 +248,18 @@ matter::jsondoc::Value capture_result_json(
 struct Arguments {
     std::string path;
     bool annotate = false;
+    bool export_channels = false;
+    std::uint32_t desired_max_lod = 0;
+    bool require_rt = false;
 };
 bool parse_arguments(const matter::jsondoc::Value& arguments, Arguments& out,
                      std::string& error);
+
+// Atomic raw bundle writer. The receipt records each plane's byte offset,
+// format and dimensions. The caller writes its PNG completion marker only
+// after this succeeds, so a partial bundle is never a completed capture.
+bool write_channel_bundle(const std::string& path,
+                          const matter::EvaluationChannels& channels,
+                          std::string& error);
 
 }  // namespace viewer::capture

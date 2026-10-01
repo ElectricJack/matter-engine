@@ -1,0 +1,28 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 54.7915965480006,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,canonical-shared-walls-v4-group,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=31/25600,pinned=3,queue=0,fills=31,evictions=0,ind=0.01/64 MiB,material_pages=31,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v4-close-left,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=72/25600,pinned=3,queue=0,fills=72,evictions=0,ind=0.01/64 MiB,material_pages=72,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v4-close,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=117/25600,pinned=3,queue=0,fills=117,evictions=0,ind=0.01/64 MiB,material_pages=117,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v4-close-right,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=157/25600,pinned=3,queue=0,fills=157,evictions=0,ind=0.01/64 MiB,material_pages=157,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v4-grazing,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=183/25600,pinned=3,queue=0,fills=183,evictions=0,ind=0.01/64 MiB,material_pages=183,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v4-rt,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=183/25600,pinned=3,queue=0,fills=183,evictions=0,ind=0.01/64 MiB,material_pages=183,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v4-pom-status,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=183/25600,pinned=3,queue=0,fills=183,evictions=0,ind=0.01/64 MiB,material_pages=183,shared_material_refs=0",
+    "STATSVT,canonical-shared-walls-v4-pom-charts,active=1,variants=3/32768,rejected=0,mesh=249.1/3512.0 MiB,pool=183/25600,pinned=3,queue=0,fills=183,evictions=0,ind=0.01/64 MiB,material_pages=183,shared_material_refs=0"
+  ],
+  "images": {
+    "canonical-shared-walls-v4-group.png": "c75f5e3f50e40fdd5a66016bee774b9134405e735a921dae6970cc67531dc62c",
+    "canonical-shared-walls-v4-close-left.png": "9d293f4485ce2f1bfe402adc515373edb70a999b0c2e7991f8755ae4a786af96",
+    "canonical-shared-walls-v4-close.png": "18ac3d4d94d3e4de7d708e79b8bedd53b2906aece67db463525c22f579e961ad",
+    "canonical-shared-walls-v4-close-right.png": "6bd196ad26df056a568d37778d89e762f0a9b2ec4f8638c6807f8f540b464fd8",
+    "canonical-shared-walls-v4-grazing.png": "af248ca34afc3edef49fe407ba0c6641220e3dec11a80c032704f7a6822a4c6f",
+    "canonical-shared-walls-v4-rt.png": "e9843087dc7d90480cf2e8a1325c0b64a56cf9e378d5c79e1185028526089f55",
+    "canonical-shared-walls-v4-pom-status.png": "70dcd41d7520f1823fe3659d431bed1e7376b85a92a45c9557eb10215eed0dde",
+    "canonical-shared-walls-v4-pom-charts.png": "03de938c397a45c8f886d462577016ee060075dafdb94cce91c9ea518ea260e4"
+  },
+  "passed": true
+}

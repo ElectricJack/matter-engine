@@ -1,0 +1,35 @@
+{
+  "prefix": "mountain-material-v5",
+  "source_count": 1003,
+  "source_changes": [],
+  "binary_changes": [],
+  "builds": [
+    {
+      "target": "chart_atlas_tests",
+      "exit": 0
+    },
+    {
+      "target": "matter_editor",
+      "exit": 0
+    }
+  ],
+  "checks": [
+    {
+      "mode": "chart",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"chart\"; & \"./build/cmake/windows-msvc/relwithdebinfo/chart_atlas_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 3.999292807005986,
+      "binary_sha256": "719500fc03f5b8a584847ecd76d3ccb4677d0c9af63690ad74855bee0de5e846",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "16f9933450c51f045d8a050cce372541abc33f31e50fa1664af41190762bff97",
+      "passed": true
+    }
+  ],
+  "previous_gates": "native-audit-v3.json (six modes); mountain-material-v4-tests.json (revised JS recipe)",
+  "live_capture": "after-v4/audit.json; v5 only fixes authored density for small terrain sectors below StreamMountain size",
+  "accepted": true
+}

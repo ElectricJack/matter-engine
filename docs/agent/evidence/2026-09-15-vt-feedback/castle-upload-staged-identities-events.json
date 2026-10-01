@@ -1,0 +1,78 @@
+{
+  "event_count": 3995,
+  "recorded_count": 3995,
+  "duplicate_recorded_identities": 0,
+  "identity_fields": [
+    "owner",
+    "generation",
+    "revision",
+    "mip",
+    "x",
+    "y"
+  ],
+  "marker_vt_serials": [
+    2672,
+    3272
+  ],
+  "events_in_marked_interval": [
+    {
+      "frame": 3170,
+      "owner": "3a7cc88afc76f232",
+      "generation": 25,
+      "revision": 1,
+      "mip": 0,
+      "x": 10,
+      "y": 4,
+      "slot": 2894,
+      "mandatory": 0,
+      "first_frame": 3170,
+      "result": "recorded"
+    }
+  ],
+  "events_after_vt_frame_2000": [
+    {
+      "frame": 2138,
+      "owner": "3a7cc88afc76f232",
+      "generation": 25,
+      "revision": 1,
+      "mip": 0,
+      "x": 18,
+      "y": 0,
+      "slot": 2892,
+      "mandatory": 0,
+      "first_frame": 2138,
+      "result": "recorded"
+    },
+    {
+      "frame": 2350,
+      "owner": "3a7cc88afc76f232",
+      "generation": 25,
+      "revision": 1,
+      "mip": 0,
+      "x": 17,
+      "y": 2,
+      "slot": 2893,
+      "mandatory": 0,
+      "first_frame": 2350,
+      "result": "recorded"
+    },
+    {
+      "frame": 3170,
+      "owner": "3a7cc88afc76f232",
+      "generation": 25,
+      "revision": 1,
+      "mip": 0,
+      "x": 10,
+      "y": 4,
+      "slot": 2894,
+      "mandatory": 0,
+      "first_frame": 3170,
+      "result": "recorded"
+    }
+  ],
+  "limitations": [
+    "Recorded events prove command recording and identity, not presentation or GPU completion.",
+    "This separate capture cannot identify the exact page from the earlier unlogged late fill.",
+    "Logging overhead excludes this run from performance acceptance."
+  ]
+}

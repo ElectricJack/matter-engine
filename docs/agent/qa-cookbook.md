@@ -120,6 +120,48 @@ MinGW build for this acceptance.
 ./tools/build-windows-from-wsl.sh RelWithDebInfo matter_editor
 ```
 
+For calibrated object evaluation, set the complete camera and capture a fresh
+path with synchronized numeric planes:
+
+```bash
+printf 'render_path native_rt\n' >> /mnt/c/tmp/matter-agent-physics/commands.txt
+python3 tools/matter_agent.py view.set_camera \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"position":[20,16,34],"target":[0,9,0],"up":[0,1,0],"vertical_fov_radians":0.8,"near_plane":0.1,"far_plane":5000}'
+python3 tools/matter_agent.py render.reset_temporal \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl
+python3 tools/matter_agent.py viewport.capture \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"path":"C:/tmp/matter-agent-physics/eval-001.png","export_channels":true,"desired_max_lod":0,"require_rt":true}' \
+  --timeout 30
+```
+
+Read `result.readiness.ready` and `blockers` before scoring the image. Decode
+`result.channels.path` using the plane offsets and formats in the receipt;
+verify the file starts with `MECAP001` and its width/height match the receipt.
+For temporal characterization, repeat five captures at unique paths with the
+same pose, then restart the editor and repeat a cold capture. Record pixel
+differences and readiness for each, including RT/raster mode. A stable camera
+can still have varying RT pixels, so a repeated PNG hash alone is not a useful
+quality threshold. Set `render_path native_rt` again after restart when RT is
+required; the saved render preference can be raster. Test failure behavior
+with an invalid camera, stale capture
+path, a capture timeout, and `require_rt:true` while raster is selected.
+
+The 2026-09-28 `PhysicsPlayground` native MSVC probe at 1280×720 PNG and
+663×523 internal raster extent saw ten visible instance tokens. Five warm RT
+repeats and a fresh-process RT capture all reported `ready:true` at LOD 0.
+Identity, depth, normal, albedo and ORM planes were byte identical across the
+captures. HDR color varied; relative to the first PNG, warm mean absolute RGB
+differences were 0.0037–0.0042 on the 0–255 scale, and the fresh-process RT
+difference was 0.0089. These are measured noise, not a universal tolerance.
+Raster with `require_rt:false` was ready; raster with `require_rt:true` named
+`native_rt_unavailable` and `visible_blas_missing`. A degenerate camera gave
+`invalid_input`, and reusing a channel bundle path gave `execution_failure`.
+
 Then use the `PhysicsPlayground` sequence in
 [`control-surface.md`](control-surface.md#native-windows-selection-acceptance).
 It is the reproducible native fixture with both dynamic authored entities and
@@ -414,12 +456,53 @@ MatterEditor/tools/smoke_vulkan_faults.ps1 `
 
 The fault harness runs the smoke exe **12 times**, once per
 `MATTER_VK_SMOKE_MODE` value, each
-under a per-mode timeout (30 s from the Makefile's override, except `rt`
-90 s and `rt-transmission` 45 s, which raise their own floor): the two
+under a per-mode timeout (30 s from the caller's override, except `rt`
+180 s, `rt-transmission` 45 s, `animation-skin` 120 s, and `vt-rt` 120 s,
+which raise their own floors): the two
 Streamline-proxy-missing fault modes, `rt`, `rt-transmission`, `rt-disabled`,
 `rt-unavailable`, `animation-skin`, and the five chart-VT modes (`vt`,
 `vt-surfaces`, `vt-rt`, `vt-enrich`, `vt-enrich-nort`). Each mode must print
 `validation errors: 0` and `ALL PASS`, and exit 0, or the whole gate fails.
+
+The harness prints each mode's elapsed time and timeout after a pass. The
+longer RT, animation, and VT-in-RT limits reflect passing RTX 4090 runs
+measured at 78 s, 65 s, and 66 s respectively; the gate still kills a mode
+that exceeds its limit.
+
+`vt-enrich` also adds, changes and removes surface classification through the
+renderer edit API. It checks the rendered material/contact AO and asserts that
+these edits reuse compositor chart geometry and AO preparation. A geometry
+replacement removes the occluding fin and must rebuild both preparations and
+remove its occlusion. The standalone `vt_compositor_tests` additionally checks
+four delayed weight/field-lane versions against separately submitted references,
+with shared geometry surviving every material version and their retirement.
+
+Additional focused regression modes are `rt-empty-tlas` (enabled volumes with
+scene instances but no selected traceable geometry), `water-field` and
+`water-field-nort` (real field uploads with and without RT capability).
+`rt-empty-tlas` covers startup, return to traceable geometry, and a volume
+bundle resize. Run these modes directly with validation enabled by the smoke
+executable; each must print `validation errors: 0`, `ALL PASS`, and exit 0.
+
+`vt-feedback` exercises production G-buffer visibility and asynchronous VT
+requests with overlapping charted/uncharted surfaces in both orders. It checks
+that hidden owners receive no detail requests, visible owners refine, retained
+pages survive reveal/return, and odd-size target resizes remain valid. CMake
+registers the same mode as `vt_feedback_visibility_tests`.
+
+`vt-feedback-pair` checks the independent receiver/material transport: GPU
+address packing, extraction from the wider visible image, cached readback,
+deduplication and real generation for both owners. It includes tagged background,
+partial screen blocks, repeated demand and resize. Run it together with
+`vt-feedback` for the production raster depth-visibility gate; the paired fixture
+supplies its visible image explicitly and does not render module-mapped walls.
+
+`vt-receiver-material` exercises published planar chart mappings using the real
+compressed module and receiver pages. It checks three sizes/orientations against
+independent physical-coordinate sampling, normal conversion, signed height datum,
+chart POM, paired demand, pending/invalid bindings, removal and reader retirement.
+It is a compute sampling integration fixture; rendered mapped-wall and connected
+corner acceptance remain separate gates.
 
 To run a single mode directly (faster iteration while chasing one failure):
 
@@ -439,7 +522,7 @@ for the full current set.
 MatterEngine3/tools/seam_suite.sh /tmp/seam-out
 ```
 
-Runs the editor twice against the `SeamLab` world (`projects/world_demo/scenes/SeamLab`
+Runs the editor twice against the `SeamLab` world (`projects/world_demo/scenes/texturing/virtual_texture/SeamLab`
 — a cave-free heightfield built so "anything visible below the surface" is
 unambiguously a defect): once with welds drawn, once with
 `MATTER_NO_SEAM_WELD_DRAW=1`. Reports six checks, each the only detector of one
@@ -667,3 +750,14 @@ Task 10 remains blocked unless that finding says `handoffVisualGate: pass`.
   `MATTER_WORLD=FloorDemo MATTER_TILESET_DUMP_PNG=<dir>`, bake twice into two
   different dump directories, and `img_diff.py` the pairs — a double-bake
   bitwise (or near-bitwise) compare is the real gate, not the smoke suite.
+
+### Optional native VT feedback CPU benchmark
+
+Build `vt_residency_tests` with the canonical MSVC wrapper, then run its executable
+with `MATTER_VT_FEEDBACK_BENCH=1`. This runs the normal correctness suite and adds
+three synthetic 32,400-texel workloads (empty, repeated requests, interleaved
+requests), each with 50 warmups and 1,000 measured iterations.
+`VT_FEEDBACK_BENCH` CSV rows contain pattern, sample count, scan p50/p95 µs,
+whole-collector p50/p95 µs and an output checksum. Timings are evidence, not
+pass/fail limits; run independently of builds or GPU captures. A CPU-memory
+benchmark does not establish GPU-readback or whole-scene performance.

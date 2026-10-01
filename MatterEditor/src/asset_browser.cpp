@@ -34,6 +34,9 @@
 // Render thread only: ImGui, QuickJS and std::filesystem are all touched here.
 
 #include "asset_browser.h"
+#include <cstdlib>
+#include "matter/project_layout.h"
+#include "matter/log.h"
 #include "asset_browser_ids.h"
 
 #include "ui.h"          // WorldEntry, ViewerStats (kept out of the header to
@@ -50,11 +53,43 @@
 #include <filesystem>
 #include <fstream>
 #include <regex>
+#include <map>
+#include <functional>
 #include <sstream>
 #include <system_error>
 
 namespace viewer {
 namespace {
+
+struct AssetFolder {
+    std::map<std::string, AssetFolder> children;
+    std::vector<size_t> rows;
+    bool reveal = false;
+
+    void add(const std::string& folder, size_t row, bool open) {
+        AssetFolder* node = this;
+        node->reveal |= open;
+        std::istringstream path(folder);
+        std::string name;
+        while (std::getline(path, name, '/')) {
+            if (name.empty()) continue;
+            node = &node->children[name];
+            node->reveal |= open;
+        }
+        node->rows.push_back(row);
+    }
+
+    void draw(const std::function<void(size_t)>& draw_row) const {
+        for (const auto& [name, child] : children) {
+            if (child.reveal) ImGui::SetNextItemOpen(true);
+            if (ImGui::TreeNode(name.c_str())) {
+                child.draw(draw_row);
+                ImGui::TreePop();
+            }
+        }
+        for (size_t row : rows) draw_row(row);
+    }
+};
 
 std::string to_lower(const std::string& s) {
     std::string out = s;
@@ -173,6 +208,7 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
         }
         WorldRef ref;
         ref.world_name = w.world_name;
+        ref.folder = w.scene_group;
         ref.world_index = static_cast<int>(wi);
         projects_[pidx].worlds.push_back(std::move(ref));
     }
@@ -207,26 +243,16 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
         // Objects, shared tier first then each scene's own. `scene` is carried
         // per object so the browser can show where a module lives, which is
         // the whole point of the split layout.
-        auto collect_js = [&](const fs::path& dir) {
-            std::vector<fs::path> files;
-            std::error_code dir_ec;
-            for (auto dit = fs::directory_iterator(dir, dir_ec);
-                 !dir_ec && dit != fs::directory_iterator(); dit.increment(dir_ec)) {
-                if (fs::is_regular_file(dit->path(), dir_ec) &&
-                    dit->path().extension() == ".js")
-                    files.push_back(dit->path());
-            }
-            std::sort(files.begin(), files.end());
-            return files;
-        };
-
         auto add_objects = [&](const std::vector<fs::path>& files,
-                               const std::string& scene) {
+                               const std::string& scene, const fs::path& root,
+                               const std::string& folder) {
             for (const fs::path& path : files) {
                 AssetObject obj;
                 obj.module = path.stem().string();
                 obj.source_path = path.string();
                 obj.scene = scene;
+                const auto relative = path.parent_path().lexically_relative(root);
+                obj.folder = folder + (relative == "." ? "" : "/" + relative.generic_string());
                 obj.source_text = read_file(obj.source_path);
                 obj.kind = classify_kind(obj.source_text);
                 obj.mtime_ns = read_mtime(obj.source_path);
@@ -242,22 +268,18 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
             }
         };
 
-        add_objects(collect_js(fs::path(project.path) / "objects"), std::string());
+        matter::project_layout::Diagnostics diag;
+        const fs::path shared_objects = fs::path(project.path) / "objects";
+        add_objects(matter::project_layout::object_files(shared_objects, &diag), "", shared_objects, "Shared");
 
         const fs::path scenes_dir = fs::path(project.path) / "scenes";
-        std::error_code scenes_ec;
-        if (fs::is_directory(scenes_dir, scenes_ec)) {
-            std::vector<fs::path> scene_dirs;
-            for (auto sit = fs::directory_iterator(scenes_dir, scenes_ec);
-                 !scenes_ec && sit != fs::directory_iterator(); sit.increment(scenes_ec)) {
-                if (fs::is_directory(sit->path(), scenes_ec))
-                    scene_dirs.push_back(sit->path());
-            }
-            std::sort(scene_dirs.begin(), scene_dirs.end());
-            for (const fs::path& scene_path : scene_dirs)
-                add_objects(collect_js(scene_path / "objects"),
-                            scene_path.filename().string());
+        for (const auto& script : matter::project_layout::scene_scripts(scenes_dir, &diag)) {
+            const auto scene = script.parent_path();
+            add_objects(matter::project_layout::object_files(scene / "objects", &diag),
+                        script.stem().string(), scene / "objects",
+                        "Scenes/" + scene.lexically_relative(scenes_dir).generic_string());
         }
+        for (const auto& d : diag.duplicates) MATTER_LOGW("asset_browser", "%s", d.c_str());
 
         // shared-lib listing: names only, not interactive (part-workbench.md
         // I.3: "shared-lib: noise, curves, ... (listed, not openable)").
@@ -407,10 +429,11 @@ void AssetBrowser::draw(const std::vector<WorldEntry>& worlds, ViewerStats& stat
     ImGui::InputTextWithHint("##asset_browser_filter", "Search worlds/objects...",
                              filter_buf_, sizeof(filter_buf_));
 
+    const bool skip_cache_status = std::getenv("MATTER_ASSET_BROWSER_SKIP_CACHE_STATUS") != nullptr;
     if (need_full_scan) {
         rescan(worlds, shared_lib_root);
-        for (Project& p : projects_) annotate_project(p);
-    } else {
+        if (!skip_cache_status) for (Project& p : projects_) annotate_project(p);
+    } else if (!skip_cache_status) {
         // Cheap per-frame mtime probe (stat only — see AssetObject::mtime_ns
         // doc); a full re-annotate (which runs resolve_hash/eval_requires,
         // the expensive QuickJS-eval part) only fires for a project when one
@@ -442,8 +465,14 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
         ImGui::Indent();
 
         if (ImGui::TreeNodeEx("Worlds", ImGuiTreeNodeFlags_DefaultOpen)) {
-            for (const WorldRef& w : project.worlds) {
-                if (!passes_filter(w.world_name)) continue;
+            AssetFolder folders;
+            for (size_t i = 0; i < project.worlds.size(); ++i) {
+                const auto& w = project.worlds[i];
+                if (passes_filter(w.folder + "/" + w.world_name))
+                    folders.add(w.folder, i, filter_buf_[0] != '\0');
+            }
+            folders.draw([&](size_t i) {
+                const auto& w = project.worlds[i];
                 ImGui::PushID(w.world_index);
                 ImGui::Bullet();
                 ImGui::TextUnformatted(w.world_name.c_str());
@@ -454,44 +483,19 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
                     commands.switch_world(w.world_index);
                 if (is_current) ImGui::EndDisabled();
                 ImGui::PopID();
-            }
+            });
             if (project.worlds.empty()) ImGui::TextDisabled("(none)");
             ImGui::TreePop();
         }
 
         if (ImGui::TreeNodeEx("Objects", ImGuiTreeNodeFlags_DefaultOpen)) {
-            // Mirror the on-disk objects/ folder layout: a sub-tree per owning
-            // scene, plus the project-wide shared tier. rescan()/add_objects
-            // append objects contiguously by scene (shared tier first, then
-            // each scene in sorted order), so we open a new group whenever the
-            // scene key changes rather than needing a separate grouping pass.
-            // The per-scene PushID scope also disambiguates modules that exist
-            // in more than one tier (e.g. WorldSector, shared + StreamMountain),
-            // which otherwise collide on draw_object_row's PushID(module).
-            bool have_group = false;
-            bool group_open = false;
-            std::string current_scene;
-            for (AssetObject& obj : project.objects) {
-                if (!passes_filter(obj.module)) continue;
-                if (!have_group || obj.scene != current_scene) {
-                    if (have_group) {
-                        if (group_open) ImGui::TreePop();
-                        ImGui::PopID();
-                    }
-                    current_scene = obj.scene;
-                    have_group = true;
-                    const bool shared = current_scene.empty();
-                    ImGui::PushID(shared ? "\x01shared" : current_scene.c_str());
-                    group_open = ImGui::TreeNodeEx(
-                        shared ? "objects/ (shared)" : current_scene.c_str(),
-                        ImGuiTreeNodeFlags_DefaultOpen);
-                }
-                if (group_open) draw_object_row(project, obj, commands);
+            AssetFolder folders;
+            for (size_t i = 0; i < project.objects.size(); ++i) {
+                const auto& obj = project.objects[i];
+                if (passes_filter(obj.folder + "/" + obj.module))
+                    folders.add(obj.folder, i, filter_buf_[0] != '\0' || obj.module == scroll_to_module_);
             }
-            if (have_group) {
-                if (group_open) ImGui::TreePop();
-                ImGui::PopID();
-            }
+            folders.draw([&](size_t i) { draw_object_row(project, project.objects[i], commands); });
             if (project.objects.empty()) ImGui::TextDisabled("(none)");
             ImGui::TreePop();
         }
@@ -511,12 +515,10 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
 // One object row: kind glyph, name, bake badge, action buttons, and an
 // expandable list of its declared required children.
 //
-// PushID(module) is NOT unique on its own -- the same module name can exist in
-// the shared tier and in a scene (WorldSector, above all) -- which is why
-// draw_project() wraps each scene group in its own PushID scope.
+// Source paths keep row IDs unique across shared and scene-local copies.
 void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
                                    const ViewerCommands& commands) {
-    ImGui::PushID(obj.module.c_str());
+    ImGui::PushID(obj.source_path.c_str());
 
     if (obj.module == scroll_to_module_) {
         ImGui::SetScrollHereY(0.2f);
@@ -538,7 +540,9 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
                                         obj.module.c_str(), kind_label(obj.kind));
 
     ImGui::SameLine();
-    if (obj.baked) {
+    if (!obj.annotated) {
+        ImGui::TextDisabled("bake status not checked");
+    } else if (obj.baked) {
         ImGui::TextColored(ImVec4(0.35f, 1.0f, 0.35f, 1.0f), "OK  %.1f KB  %d LOD%s",
                            obj.baked_bytes / 1024.0, obj.lod_count,
                            obj.lod_count == 1 ? "" : "s");

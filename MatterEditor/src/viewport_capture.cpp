@@ -2,10 +2,13 @@
 
 #include "viewport_capture.h"
 
+#include "camera_calibration.h"
 #include "view_projection.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <utility>
 
 namespace viewer::capture {
@@ -31,6 +34,37 @@ JsonValue rect_json(const Rect& rect) {
 }
 
 }  // namespace
+
+ReadinessReport evaluate_readiness(const ReadinessInput& input) {
+    ReadinessReport result;
+    const auto block = [&](bool condition, const char* reason) {
+        if (condition) result.blockers.emplace_back(reason);
+    };
+    block(!input.production_view, "production_view_unavailable");
+    block(!input.scene_ready, "scene_not_ready");
+    block(!input.gpu_jobs_idle, "gpu_jobs_pending");
+    block(!input.visible_streaming_known, "visible_streaming_unknown");
+    block(input.visible_sectors_pending != 0, "visible_sectors_pending");
+    block(input.visible_refinement_pending != 0, "visible_refinement_pending");
+    block(!input.detail.observed, "visible_draw_census_unavailable");
+    block(input.detail.visible_instances == 0, "no_visible_object_pixels");
+    block(input.detail.unmatched_tokens != 0, "unmatched_visible_identity");
+    block(input.detail.identities.size() != input.detail.visible_instances,
+          "identity_map_incomplete");
+    block(input.detail.identities.size() > 2048, "identity_map_truncated");
+    block(input.detail.missing_draws != 0, "visible_draw_missing");
+    block(input.detail.coarse_draws != 0, "visible_vg_coarser_than_requested");
+    block(input.detail.missing_blas != 0, "visible_blas_missing");
+    block(input.detail.missing_vt != 0, "visible_vt_missing");
+    block(input.vt_queue_depth != 0 || input.vt_dirty_pages != 0,
+          "vt_content_pending");
+    block(input.vt_rejected_variants != 0, "vt_variant_rejected");
+    block(input.require_rt && (!input.rt_available || !input.rt_effective),
+          "native_rt_unavailable");
+    block(input.stable_camera_frames < 3, "temporal_settle_pending");
+    result.ready = result.blockers.empty();
+    return result;
+}
 
 Rect viewport_in_framebuffer(const Geometry& geometry) {
     return Rect{geometry.viewport_logical.x * geometry.framebuffer_scale_x,
@@ -319,7 +353,126 @@ matter::jsondoc::Value capture_result_json(
                     number(camera.vertical_fov_radians));
     camera_json.set("near_plane", number(camera.near_plane));
     camera_json.set("far_plane", number(camera.far_plane));
+    camera_json.set("intrinsics",
+                    camera_calibration::intrinsics(camera, viewport_image.width,
+                                                   viewport_image.height,
+                                                   viewport_image.x,
+                                                   viewport_image.y));
     result.set("camera", std::move(camera_json));
+
+    if (!request.export_channels) {
+        result.set("channels", unavailable("export_channels was not requested"));
+    } else if (geometry.channels_path.empty()) {
+        result.set("channels", unavailable("numeric channel bundle was not written"));
+    } else {
+        JsonValue channels = object();
+        channels.set("available", boolean(true));
+        channels.set("path", string(geometry.channels_path));
+        channels.set("container", string("MECAP001"));
+        channels.set("width", number(geometry.channels_width));
+        channels.set("height", number(geometry.channels_height));
+        channels.set("origin", string("top_left"));
+        channels.set("raster_space", string("internal_render_pixels"));
+        channels.set("intrinsics", camera_calibration::intrinsics(
+            camera, geometry.channels_width, geometry.channels_height, 0, 0));
+        channels.set("identity_semantics", string(
+            "uint32 material_index_with_impostor_bit, uint32 frame_local_instance_token; "
+            "UINT32_MAX in both lanes is background"));
+        channels.set("depth_semantics", string(
+            "reversed-Z device depth; 0 is background; linear view depth = "
+            "near*far/(near + device_depth*(far-near))"));
+        const char* names[] = {"identity", "depth", "normal", "color", "albedo", "orm"};
+        const char* formats[] = {"rg32_uint", "r32_float", "rgba16_float",
+                                 "rgba16_float", "rgba8_unorm", "rgba16_float"};
+        JsonValue planes = array();
+        std::uint64_t byte_offset = 16;
+        const std::uint64_t pixels =
+            std::uint64_t(geometry.channels_width) * geometry.channels_height;
+        for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i) {
+            JsonValue plane = object();
+            plane.set("name", string(names[i]));
+            plane.set("format", string(formats[i]));
+            plane.set("offset_bytes", decimal(byte_offset));
+            const std::uint64_t bytes = pixels *
+                matter::EvaluationChannels::bytes_per_pixel[i];
+            plane.set("size_bytes", decimal(bytes));
+            planes.arr.push_back(std::move(plane));
+            byte_offset += bytes;
+        }
+        channels.set("planes", std::move(planes));
+        JsonValue identities = array();
+        const auto& identity_rows = geometry.readiness_input.detail.identities;
+        for (size_t i = 0; i < identity_rows.size() && i < 2048; ++i) {
+            const auto& identity = identity_rows[i];
+            JsonValue row = object();
+            row.set("frame_token", number(identity.frame_token));
+            row.set("part_hash", decimal(identity.part_hash));
+            row.set("kind", string(identity.dynamic_entity
+                ? "dynamic_entity" : "static_instance"));
+            row.set("resolved", boolean(identity.resolved));
+            if (identity.dynamic_entity) {
+                row.set("entity_id", decimal(identity.entity_id));
+                row.set("entity_generation", number(identity.entity_generation));
+            }
+            identities.arr.push_back(std::move(row));
+        }
+        channels.set("identities", std::move(identities));
+        channels.set("identities_truncated", boolean(identity_rows.size() > 2048));
+        result.set("channels", std::move(channels));
+    }
+
+    if (!request.export_channels || geometry.channels_path.empty()) {
+        result.set("readiness", unavailable(
+            "readiness requires synchronized numeric channels"));
+    } else {
+        const ReadinessInput& input = geometry.readiness_input;
+        const matter::VisibleDetailReport& detail = input.detail;
+        JsonValue readiness = object();
+        readiness.set("available", boolean(true));
+        readiness.set("ready", boolean(geometry.readiness.ready));
+        readiness.set("frame_id", decimal(context.frame_id));
+        readiness.set("desired_max_lod", number(detail.desired_max_lod));
+        readiness.set("visible_instances", number(detail.visible_instances));
+        readiness.set("max_selected_lod", number(detail.max_selected_lod));
+        readiness.set("unmatched_tokens", number(detail.unmatched_tokens));
+        readiness.set("missing_draws", number(detail.missing_draws));
+        readiness.set("coarse_draws", number(detail.coarse_draws));
+        readiness.set("missing_blas", number(detail.missing_blas));
+        readiness.set("missing_vt", number(detail.missing_vt));
+        readiness.set("visible_refinement_pending",
+                      number(input.visible_refinement_pending));
+        readiness.set("visible_sectors_pending",
+                      number(input.visible_sectors_pending));
+        readiness.set("vt_queue_depth", number(input.vt_queue_depth));
+        readiness.set("vt_dirty_pages", number(input.vt_dirty_pages));
+        readiness.set("vt_rejected_variants", number(input.vt_rejected_variants));
+        readiness.set("rt_available", boolean(input.rt_available));
+        readiness.set("rt_effective", boolean(input.rt_effective));
+        readiness.set("stable_camera_frames", number(input.stable_camera_frames));
+        if (!input.detail_error.empty())
+            readiness.set("detail_error", string(input.detail_error));
+        JsonValue blockers = array();
+        for (const std::string& reason : geometry.readiness.blockers)
+            blockers.arr.push_back(string(reason));
+        readiness.set("blockers", std::move(blockers));
+        JsonValue parts = array();
+        for (size_t i = 0; i < detail.parts.size() && i < 128; ++i) {
+            const auto& part = detail.parts[i];
+            JsonValue row = object();
+            row.set("part_hash", decimal(part.part_hash));
+            row.set("visible_instances", number(part.visible_instances));
+            row.set("vertex_count", number(part.vertex_count));
+            row.set("index_count", number(part.index_count));
+            row.set("blas_rungs_ready", number(part.blas_rungs_ready));
+            row.set("blas_rungs_total", number(part.blas_rungs_total));
+            row.set("vt_rungs_active", number(part.vt_rungs_active));
+            row.set("vt_rungs_total", number(part.vt_rungs_total));
+            parts.arr.push_back(std::move(row));
+        }
+        readiness.set("parts_truncated", boolean(detail.parts.size() > 128));
+        readiness.set("parts", std::move(parts));
+        result.set("readiness", std::move(readiness));
+    }
 
     // The envelope's own `context` is a completion-time snapshot; this one is
     // the state of the frame the PNG actually shows. They differ whenever a
@@ -376,12 +529,90 @@ bool parse_arguments(const matter::jsondoc::Value& arguments, Arguments& out,
     }
     out.path = path->str;
     out.annotate = false;
+    out.export_channels = false;
+    out.desired_max_lod = 0;
+    out.require_rt = false;
     if (const JsonValue* annotate = arguments.find("annotate_selection")) {
         if (annotate->kind != JsonValue::Kind::Bool) {
             error = "annotate_selection must be a boolean";
             return false;
         }
         out.annotate = annotate->b;
+    }
+    if (const JsonValue* channels = arguments.find("export_channels")) {
+        if (channels->kind != JsonValue::Kind::Bool) {
+            error = "export_channels must be a boolean";
+            return false;
+        }
+        out.export_channels = channels->b;
+    }
+    if (const JsonValue* lod = arguments.find("desired_max_lod")) {
+        if (lod->kind != JsonValue::Kind::Number || !std::isfinite(lod->num) ||
+            lod->num < 0 || lod->num > 7 || std::floor(lod->num) != lod->num) {
+            error = "desired_max_lod must be an integer from 0 (finest) to 7";
+            return false;
+        }
+        out.desired_max_lod = static_cast<uint32_t>(lod->num);
+    }
+    if (const JsonValue* rt = arguments.find("require_rt")) {
+        if (rt->kind != JsonValue::Kind::Bool) {
+            error = "require_rt must be a boolean";
+            return false;
+        }
+        out.require_rt = rt->b;
+    }
+    if (!out.export_channels && (arguments.find("desired_max_lod") ||
+                                 arguments.find("require_rt"))) {
+        error = "desired_max_lod and require_rt require export_channels=true";
+        return false;
+    }
+    return true;
+}
+
+bool write_channel_bundle(const std::string& path,
+                          const matter::EvaluationChannels& channels,
+                          std::string& error) {
+    const std::uint64_t pixels =
+        std::uint64_t(channels.width) * channels.height;
+    if (pixels == 0 || pixels > 2048u * 2048u) {
+        error = "channel bundle extent is empty or exceeds 2048x2048";
+        return false;
+    }
+    for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i) {
+        if (channels.planes[i].size() !=
+            pixels * matter::EvaluationChannels::bytes_per_pixel[i]) {
+            error = "channel bundle plane size does not match its format and extent";
+            return false;
+        }
+    }
+    { std::ifstream existing(path, std::ios::binary);
+      if (existing.good()) {
+          error = "channel bundle path already exists; use a unique capture path";
+          return false;
+      }
+    }
+    const std::string temporary = path + ".tmp";
+    std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        error = "cannot open temporary channel bundle";
+        return false;
+    }
+    stream.write("MECAP001", 8);
+    const auto write_u32 = [&](std::uint32_t value) {
+        const char bytes[4] = {char(value), char(value >> 8),
+                               char(value >> 16), char(value >> 24)};
+        stream.write(bytes, 4);
+    };
+    write_u32(channels.width);
+    write_u32(channels.height);
+    for (const auto& plane : channels.planes)
+        stream.write(reinterpret_cast<const char*>(plane.data()),
+                     static_cast<std::streamsize>(plane.size()));
+    stream.close();
+    if (!stream || std::rename(temporary.c_str(), path.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        error = "channel bundle write or atomic rename failed";
+        return false;
     }
     return true;
 }

@@ -1,0 +1,5 @@
+{
+  "MatterEngine3/src/render/geometry_raster_adapter.h": "b8e0e77e39faa411305cf2d232647d027955df200ded777928c8170f48546df2",
+  "MatterEngine3/tests/geometry_page_vk_tests.h": "764ea3bd50692d6260c704f96410e440b6cc6c5fa3dd8c39afda0e1445a02e9d",
+  "MatterEngine3/src/render/geometry_world_runtime.cpp": "ff523fa9f2fcee00d6e349e9856ca253aea7aea9ef0f8b641d3dd99e07846159"
+}

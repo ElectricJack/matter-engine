@@ -1,0 +1,81 @@
+{
+  "classification": "progress",
+  "checkpoint": "sector-links-v4",
+  "native_builds": [
+    {
+      "target": "vulkan_smoke_tests",
+      "exit": 0,
+      "seconds": 94.21557618498628
+    },
+    {
+      "target": "vt_compositor_tests",
+      "exit": 0,
+      "seconds": 4.86194031201012
+    },
+    {
+      "target": "matter_editor",
+      "exit": 0,
+      "seconds": 7.232833424001001
+    }
+  ],
+  "tests": [
+    {
+      "mode": "vt-surface-connections",
+      "passed": true,
+      "seconds": 1.47888746400713,
+      "zero_validation_errors": true
+    },
+    {
+      "mode": "vt-sector-seam",
+      "passed": true,
+      "seconds": 42.60573563800426,
+      "zero_validation_errors": true
+    },
+    {
+      "mode": "compositor",
+      "passed": true,
+      "seconds": 4.611111147998599,
+      "zero_validation_errors": true
+    },
+    {
+      "mode": "vt-composed-seam",
+      "passed": true,
+      "seconds": 21.626431469994714,
+      "zero_validation_errors": true
+    },
+    {
+      "mode": "vt-pom-work",
+      "passed": true,
+      "seconds": 1.106951920010033,
+      "zero_validation_errors": true
+    },
+    {
+      "mode": "vt-feedback-pair",
+      "passed": true,
+      "seconds": 1.129979525008821,
+      "zero_validation_errors": true
+    }
+  ],
+  "binary_hashes": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "2afac42f3abe686e799ab8d8daaf5ca1ce8a746753022c7583e2ab70c0a1f4db",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "7b7b4ddafb6304c114ec54e3b690aa42a2e3de0ef70e7c9300474e729aa6661d",
+    "MatterEditor/build/windows-msvc/editor.exe": "c56a0adaa271849955f3f27d99d0d80e8c25c1f1b22c36d91a31e16d4cad8d07"
+  },
+  "maximum_split_position_error_m": 1.689e-05,
+  "split_undisplaced_raster_samples": 0,
+  "split_undisplaced_rt_samples": 0,
+  "local_edit": {
+    "initial_pairs": 2,
+    "initial_gpu_tables": 4,
+    "pairs_recompiled": 1,
+    "tables_uploaded": 2,
+    "unrelated_gpu_addresses_retained": true
+  },
+  "remaining": [
+    "Automatic terrain continuity domains and neighbor/weld publication",
+    "Chart VT/POM for runtime weld strips",
+    "Full live streaming/LOD/edit/eviction and secondary-only feedback verification",
+    "Visual terrain geology/rock/contact development and all remaining environment goal requirements"
+  ],
+  "completion_claimed": false
+}

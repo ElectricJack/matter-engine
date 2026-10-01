@@ -1,0 +1,5 @@
+
+ProcessId Name DedicatedMiB
+--------- ---- ------------
+    11420 vmwp        20681
+     4964 dwm          2150

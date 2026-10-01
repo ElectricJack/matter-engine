@@ -56,10 +56,10 @@ public:
         : pitch_(pitch), active_radius_(active_radius) {}
     // The per-frame pass: re-bin (only if the world version changed), select a
     // rung per sector, emit the instances inside the activation radius plus any
-    // inline-cutover children. Allocates and returns a fresh vector every call
-    // and is O(active instances) even on the cached path. The float3 is the
-    // camera position in world space.
-    std::vector<ResolvedInstance>
+    // inline-cutover children. The returned reference is valid until the next
+    // resolve() or destruction. Camera-dependent selection stays live, while
+    // unchanged sector/part decisions reuse the existing output array.
+    const std::vector<ResolvedInstance>&
         resolve(const WorldState&, const lod_select::PartLodTable&, const float3&);
     const char* name() const { return "SectorLod"; }
     // The world's outermost terrain LOD band -- see RenderOptions in
@@ -71,6 +71,7 @@ public:
     // Times the sector table was (re)built — bumps only when WorldState::version()
     // changes, never on camera motion.
     int rebin_count() const { return rebin_count_; }
+    uint64_t output_rebuild_count() const { return output_rebuild_count_; }
 
 private:
     float pitch_;
@@ -80,8 +81,15 @@ private:
     // Binning cache (Stage 1): re-binning ~44k instances into a std::map every
     // frame dominated the CPU floor. Sectors only change when the world does.
     sector_grid::Sectors sectors_;
+    lod_select::SectorParts distinct_parts_;
+    const WorldState* cached_state_ = nullptr;
     uint64_t cached_version_ = UINT64_MAX;
     int      rebin_count_    = 0;
+    using Selection = std::map<sector_grid::SectorCoord, std::map<uint64_t, int>>;
+    Selection output_selection_;
+    std::vector<ResolvedInstance> output_;
+    bool output_reusable_ = false;
+    uint64_t output_rebuild_count_ = 0;
 };
 
 } // namespace viewer

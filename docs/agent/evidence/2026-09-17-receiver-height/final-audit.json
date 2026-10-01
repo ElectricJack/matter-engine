@@ -1,0 +1,32 @@
+{
+  "build_manifest_sha256": "48639fe8331ded8da45c8a51c8ce485cb8855a646bebcd246a25e52ccd3dbb60",
+  "source_count": 1013,
+  "source_changes": [],
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/eval_world_tests.exe": {
+      "matches": true,
+      "sha256": "e865995bb3325a8be1de02fb8e44c58d2ca41b93821fc0401aff7bdf3a7c3e7f"
+    },
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe": {
+      "matches": true,
+      "sha256": "de33517efa00982f513d6c2c5925d1d3c452b218e942e97da9da378c090cb374"
+    },
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/surface_field_tests.exe": {
+      "matches": true,
+      "sha256": "7546ea7a003cef5bbcd52a4718e0050da85853897a7fa3b7715a86c60f973a9d"
+    },
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": {
+      "matches": true,
+      "sha256": "cc31c530145218964e5fbd1cecb74a2db5df299a74b89a72c785b575079a3c7e"
+    },
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": {
+      "matches": true,
+      "sha256": "bf61ecacf757fb8bb97b519d59c77b8569a80247bc34cdcaef44916f0b2186d4"
+    },
+    "MatterEditor/build/windows-msvc/editor.exe": {
+      "matches": true,
+      "sha256": "ced060ff290c6859b749863240d6f12434b71ea75c6440711ca1bba0b388fea6"
+    }
+  },
+  "passed": true
+}

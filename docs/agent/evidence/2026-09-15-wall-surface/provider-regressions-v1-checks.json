@@ -1,0 +1,92 @@
+[
+  {
+    "kind": "build",
+    "name": "authored_world_provider_cache_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "authored_world_provider_cache_tests"
+    ],
+    "exit": 0,
+    "seconds": 12.06660953599203,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/provider-regressions-v1-build-authored_world_provider_cache_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "authored_world_provider_cache_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/authored_world_provider_cache_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.0268407510011457,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/provider-regressions-v1-rootcpu-authored_world_provider_cache_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "resolve_cache_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "resolve_cache_tests"
+    ],
+    "exit": 0,
+    "seconds": 9.690405545989051,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/provider-regressions-v1-build-resolve_cache_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "resolve_cache_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/resolve_cache_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.635198304997175,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/provider-regressions-v1-rootcpu-resolve_cache_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "conifer_lod_provider_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "conifer_lod_provider_tests"
+    ],
+    "exit": 0,
+    "seconds": 13.595647167006973,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/provider-regressions-v1-build-conifer_lod_provider_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "conifer_lod_provider_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/conifer_lod_provider_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 2.8407748760073446,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/provider-regressions-v1-rootcpu-conifer_lod_provider_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

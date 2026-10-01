@@ -1,0 +1,238 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 162.44285311400017,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/castle-production-timing/native-environment.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "CastleUpgraded",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/castle-production-timing/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/castle-production-timing/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=-15,24,43,16.062178,7,7.674546",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-production-timing/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/castle-production-timing/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-production-timing/profile.json"
+  ],
+  "changed_inputs_during_run": [],
+  "validation_enabled": false,
+  "page_event_logging": false,
+  "full_vt_acceptance": false,
+  "analysis_exit": 0,
+  "analysis_command": [
+    "python3",
+    "tools/vt_acceptance.py",
+    "--trace",
+    "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/vt.jsonl",
+    "--output",
+    "docs/agent/evidence/2026-09-15-vt-feedback/castle-production-timing-summary.json",
+    "--begin-marker",
+    "settle_begin",
+    "--end-marker",
+    "settle_end",
+    "--required-frames",
+    "600",
+    "--require-settled"
+  ],
+  "settled_counter_gate": true,
+  "source_manifest": "tracer-green-source.json",
+  "final_fingerprint_changes": [],
+  "native_environment": {
+    "MATTER_VK_VALIDATION": null,
+    "VK_INSTANCE_LAYERS": null,
+    "VK_LOADER_LAYERS_ENABLE": null
+  },
+  "native_process_census_after_both_captures": [],
+  "end_counters": {
+    "active": 1,
+    "variants": 79,
+    "pool_used": 1853,
+    "pool_capacity": 33024,
+    "replacement_reserve_pages": 64,
+    "dirty_pages": 0,
+    "fills_stale_total": 0,
+    "pinned": 79,
+    "queue": 0,
+    "mandatory_queue": 0,
+    "detail_queue": 0,
+    "oldest_mandatory_age_frames": 0,
+    "oldest_detail_age_frames": 0,
+    "fills_total": 3037,
+    "evictions_total": 0,
+    "invalidations_total": 2,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "requests_dropped_total": 34799,
+    "enrich_total": 0,
+    "enrich_queue": 0,
+    "shared_refs_total": 0,
+    "finer_rebuilds_total": 0,
+    "mesh_bytes": 61081088,
+    "pool_bytes": 4275683328,
+    "resident_sectors": 0,
+    "vertex_uploads": 77,
+    "cluster_uploads": 77,
+    "dlss_resets": 0,
+    "output_width": 1920,
+    "output_height": 1080,
+    "internal_width": 1920,
+    "internal_height": 1080,
+    "cpu_begin_ms": 0.1067,
+    "cpu_pre_pass_ms": 0.0079,
+    "cpu_post_pass_ms": 0.0043,
+    "cpu_registration_ms": 0,
+    "gpu_readback_sequence": 3477,
+    "gpu_total_ms": 41.86684799194336,
+    "gpu_vt_page_ms": 0,
+    "gpu_vt_feedback_ms": 0.01945599913597107,
+    "gpu_vt_ms": 0.01945599913597107,
+    "fills_per_frame": 8,
+    "tail_fills_per_frame": 8,
+    "enrich_per_frame": 0,
+    "queue_cap": 256,
+    "request_budget_ms": 5.090000152587891,
+    "linger_frames": 4,
+    "evict_protect_frames": 16
+  },
+  "occupied_page_storage_mib": 228.79754638671875,
+  "pool_occupied_percent": 5.611070736434108,
+  "vulkan_error_lines": [],
+  "skip_or_oversize_lines": [],
+  "missing_part_warning_count": 0,
+  "distinct_missing_part_hashes": 0,
+  "settled_cpu_target_ms": 0.25,
+  "settled_cpu_target_pass": false,
+  "gpu_total_ms": {
+    "samples": 601,
+    "p50_ms": 42.80259323120117,
+    "p95_ms": 55.50406265258789,
+    "p99_ms": 62.74480056762695,
+    "max_ms": 69.91728210449219,
+    "basis": "Latest retired whole renderer GPU timestamps paired with selected trace rows; nearest-rank quantiles. Not VT-only time or presentation latency."
+  },
+  "visual_review": "Inspected final 1920x1080 image. Reference blue castle framing retained; stippled roofs/walls and existing surface noise remain.",
+  "limits": [
+    "One production-mode run per scene, not repeated performance acceptance.",
+    "Final screenshots and stable counters do not establish intermediate continuity.",
+    "Different startup-retained page sets prevent controlled speedup or packing comparisons.",
+    "VT GPU timestamps exclude G-buffer attachment and sampling cost; whole renderer GPU time is reported separately.",
+    "Source loading, active/edit latency, camera return, source/page/POM compatibility and ordinary input waits remain open.",
+    "Code-graph queries/index activity ran concurrently; no native build or competing GPU capture."
+  ],
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/camera.path",
+      "bytes": 372076,
+      "sha256": "5caac095539bfdb731cf9728e88b348190e8b1ff065352bb022ccc9715e10662"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/command.json",
+      "bytes": 1586,
+      "sha256": "bff0d28645606f98becd96b5ea0b87f69a48e1400cb9f79967b77cc395a52278"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/driver.log",
+      "bytes": 22054,
+      "sha256": "de913d487dcc42273f478ef4cad2bfcc3df186abd52dcd5c0a59cd2fd5c79c67"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/launch-source.json",
+      "bytes": 55349,
+      "sha256": "5da4f28aef7ee34e05bb164f470a5013ef97e3967288b9e19f11cd53c10e55f0"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/native-environment.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/profile.json",
+      "bytes": 3669291,
+      "sha256": "8bb38a1999c1ba71f15acceee7869364364f41ceb99b106e56bb15258932886a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/result.json",
+      "bytes": 1894,
+      "sha256": "e4e318230d8d555e683e7cc4039a6297ec225bbd104b2755c880b4de0914f783"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/run/cmd.txt",
+      "bytes": 215,
+      "sha256": "c71651882dbc251fc0e6adcbf9a97881ec60551fdd290a78f4747ee6da189e25"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/run/log.txt",
+      "bytes": 21574,
+      "sha256": "f8d9ed0da4c8cfcc6808b1e36173bdb2e6097853c72e48f23b67401ee0375c31"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/settled.png",
+      "bytes": 2117578,
+      "sha256": "82f45935febd8045eaaefb5ae05af7e055f6f4bd810ae40f9aac0006f7a90089"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/timeline.txt",
+      "bytes": 215,
+      "sha256": "c71651882dbc251fc0e6adcbf9a97881ec60551fdd290a78f4747ee6da189e25"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-timing/vt.jsonl",
+      "bytes": 1311392,
+      "sha256": "7397e80c8f753446ee1e7ce9e5bf549993f0481d926308553fb72fd0e3af6f80"
+    }
+  ],
+  "capture_helpers": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_production_timing.py",
+      "sha256": "0956be3053d7fab50061ae217de430f299bd124ffc6dc3bd1d00a0d20a4e300a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+      "sha256": "f4dfbf924a1637fc2c3d0293e39cc1f723dee34338d1f0610bd74fe2c8a390b3"
+    }
+  ]
+}

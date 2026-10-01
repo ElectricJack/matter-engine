@@ -27,7 +27,7 @@ namespace chart_atlas {
 constexpr uint32_t kVtPagePayload   = 128;
 constexpr uint32_t kVtPageBorder    = 4;
 // No variant's virtual atlas exceeds this dimension (texels, finest mip).
-constexpr uint32_t kVtMaxAtlasDim   = 8192;
+constexpr uint32_t kVtMaxAtlasDim   = 16384;
 // Resident tail: atlas mips of dimension <= kVtTailDim are always resident.
 constexpr uint32_t kVtTailDim       = 64;
 // Gutter (dilated texels) around every chart's content inside its rect.
@@ -68,7 +68,7 @@ struct ChartEntry {
 // A rung with no charts (charts empty, atlas_w/atlas_h 0) is the legacy
 // chartless path, which is also what a part carrying no "CHRT" section gets.
 struct ChartAtlasRung {
-    uint32_t atlas_w = 0, atlas_h = 0;         // finest-mip virtual dims, <= 8192
+    uint32_t atlas_w = 0, atlas_h = 0;         // finest-mip virtual dims, <= kVtMaxAtlasDim
     std::vector<ChartEntry> charts;
     std::vector<uint32_t>   tri_order;         // triangle indices grouped by chart
 };

@@ -1,0 +1,122 @@
+{
+  "back-albedo": {
+    "maximum_byte_difference": 6,
+    "mean_absolute_byte_difference": 0.00013704427083333334,
+    "fraction_pixels_any_channel_gt_1": 9.765625e-07
+  },
+  "back-finished": {
+    "maximum_byte_difference": 15,
+    "mean_absolute_byte_difference": 0.0004091796875,
+    "fraction_pixels_any_channel_gt_1": 0.000205078125
+  },
+  "back-lit": {
+    "maximum_byte_difference": 15,
+    "mean_absolute_byte_difference": 0.0004091796875,
+    "fraction_pixels_any_channel_gt_1": 0.000205078125
+  },
+  "close-albedo": {
+    "maximum_byte_difference": 1,
+    "mean_absolute_byte_difference": 4.1341145833333334e-05,
+    "fraction_pixels_any_channel_gt_1": 0.0
+  },
+  "close-finished": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 0.00012825520833333333,
+    "fraction_pixels_any_channel_gt_1": 5.859375e-05
+  },
+  "close-flat": {
+    "maximum_byte_difference": 8,
+    "mean_absolute_byte_difference": 0.00011881510416666667,
+    "fraction_pixels_any_channel_gt_1": 4.296875e-05
+  },
+  "close-lit": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 0.00012825520833333333,
+    "fraction_pixels_any_channel_gt_1": 5.859375e-05
+  },
+  "close-normal": {
+    "maximum_byte_difference": 1,
+    "mean_absolute_byte_difference": 6.770833333333333e-05,
+    "fraction_pixels_any_channel_gt_1": 0.0
+  },
+  "close-rt": {
+    "maximum_byte_difference": 41,
+    "mean_absolute_byte_difference": 0.15869108072916666,
+    "fraction_pixels_any_channel_gt_1": 0.0140712890625
+  },
+  "depth-albedo": {
+    "maximum_byte_difference": 1,
+    "mean_absolute_byte_difference": 0.000119140625,
+    "fraction_pixels_any_channel_gt_1": 0.0
+  },
+  "depth-finished": {
+    "maximum_byte_difference": 5,
+    "mean_absolute_byte_difference": 0.0003424479166666667,
+    "fraction_pixels_any_channel_gt_1": 0.000201171875
+  },
+  "depth-lit": {
+    "maximum_byte_difference": 5,
+    "mean_absolute_byte_difference": 0.0003424479166666667,
+    "fraction_pixels_any_channel_gt_1": 0.000201171875
+  },
+  "grazing-albedo": {
+    "maximum_byte_difference": 1,
+    "mean_absolute_byte_difference": 6.73828125e-05,
+    "fraction_pixels_any_channel_gt_1": 0.0
+  },
+  "grazing-finished": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 0.0001962890625,
+    "fraction_pixels_any_channel_gt_1": 9.5703125e-05
+  },
+  "grazing-flat": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 0.00016438802083333333,
+    "fraction_pixels_any_channel_gt_1": 6.73828125e-05
+  },
+  "grazing-lit": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 0.0001962890625,
+    "fraction_pixels_any_channel_gt_1": 9.5703125e-05
+  },
+  "grazing-normal": {
+    "maximum_byte_difference": 1,
+    "mean_absolute_byte_difference": 9.537760416666667e-05,
+    "fraction_pixels_any_channel_gt_1": 0.0
+  },
+  "overview-albedo": {
+    "maximum_byte_difference": 1,
+    "mean_absolute_byte_difference": 2.0833333333333333e-05,
+    "fraction_pixels_any_channel_gt_1": 0.0
+  },
+  "overview-finished": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 6.119791666666666e-05,
+    "fraction_pixels_any_channel_gt_1": 2.83203125e-05
+  },
+  "overview-lit": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 6.119791666666666e-05,
+    "fraction_pixels_any_channel_gt_1": 2.83203125e-05
+  },
+  "overview-normal": {
+    "maximum_byte_difference": 1,
+    "mean_absolute_byte_difference": 3.02734375e-05,
+    "fraction_pixels_any_channel_gt_1": 0.0
+  },
+  "shelf-albedo": {
+    "maximum_byte_difference": 1,
+    "mean_absolute_byte_difference": 5.17578125e-05,
+    "fraction_pixels_any_channel_gt_1": 0.0
+  },
+  "shelf-finished": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 0.00015950520833333333,
+    "fraction_pixels_any_channel_gt_1": 7.421875e-05
+  },
+  "shelf-lit": {
+    "maximum_byte_difference": 7,
+    "mean_absolute_byte_difference": 0.00015950520833333333,
+    "fraction_pixels_any_channel_gt_1": 7.421875e-05
+  }
+}

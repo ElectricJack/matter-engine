@@ -1,0 +1,365 @@
+{
+  "region_xyxy": [
+    540,
+    300,
+    740,
+    500
+  ],
+  "limits": "Fixed central surface region, checked against images. Density is the ordinary proxy chart diagnostic, not the final displaced address; 8-bit PNG density quantization is about 3.3%. Image changes demonstrate an effect, not correct displacement or visual acceptance.",
+  "views": {
+    "size-0p5-near": {
+      "valid_proxy_pixels": 40000,
+      "region_pixels": 40000,
+      "finest_texels_per_m": {
+        "p05": 167.52531320032384,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "resident_texels_per_m": {
+        "p05": 167.52531320032384,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "albedo_mean": [
+        34.88615,
+        32.868875,
+        30.02625
+      ],
+      "albedo_stddev": [
+        2.9845582885075856,
+        2.266369615568451,
+        1.6020801907207713
+      ],
+      "raster_pom": {
+        "mean_absolute_byte_difference": 0.009116666666666667,
+        "fraction_pixels_over_3_bytes": 0.000275
+      },
+      "native_rt_pom": {
+        "mean_absolute_byte_difference": 0.19756666666666667,
+        "fraction_pixels_over_3_bytes": 0.00365
+      },
+      "raster_vs_rt": {
+        "mean_absolute_byte_difference": 24.749375,
+        "fraction_pixels_over_3_bytes": 1.0
+      }
+    },
+    "size-0p5-grazing": {
+      "valid_proxy_pixels": 29232,
+      "region_pixels": 40000,
+      "finest_texels_per_m": {
+        "p05": 16.0,
+        "p50": 167.52531320032384,
+        "p95": 184.7475938598344
+      },
+      "resident_texels_per_m": {
+        "p05": 3.935291727416975,
+        "p50": 167.52531320032384,
+        "p95": 184.7475938598344
+      },
+      "albedo_mean": [
+        31.06925,
+        27.13915,
+        23.330025
+      ],
+      "albedo_stddev": [
+        26.67762553971769,
+        19.51734836696538,
+        14.873491805871096
+      ],
+      "raster_pom": {
+        "mean_absolute_byte_difference": 0.112275,
+        "fraction_pixels_over_3_bytes": 0.008625
+      },
+      "native_rt_pom": {
+        "mean_absolute_byte_difference": 0.4014583333333333,
+        "fraction_pixels_over_3_bytes": 0.029925
+      },
+      "raster_vs_rt": {
+        "mean_absolute_byte_difference": 24.1202,
+        "fraction_pixels_over_3_bytes": 0.7308
+      }
+    },
+    "size-2-near": {
+      "valid_proxy_pixels": 40000,
+      "region_pixels": 40000,
+      "finest_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "resident_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "albedo_mean": [
+        35.684175,
+        33.779825,
+        30.637275
+      ],
+      "albedo_stddev": [
+        1.2928958076253942,
+        1.2498191746709928,
+        0.9094809367850142
+      ],
+      "raster_pom": {
+        "mean_absolute_byte_difference": 0.005016666666666667,
+        "fraction_pixels_over_3_bytes": 0.0
+      },
+      "native_rt_pom": {
+        "mean_absolute_byte_difference": 0.217575,
+        "fraction_pixels_over_3_bytes": 0.00375
+      },
+      "raster_vs_rt": {
+        "mean_absolute_byte_difference": 28.878458333333334,
+        "fraction_pixels_over_3_bytes": 1.0
+      }
+    },
+    "size-2-grazing": {
+      "valid_proxy_pixels": 38088,
+      "region_pixels": 40000,
+      "finest_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "resident_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "albedo_mean": [
+        33.682975,
+        31.83755,
+        29.100675
+      ],
+      "albedo_stddev": [
+        9.31770466098657,
+        7.826308836066812,
+        6.713891535045764
+      ],
+      "raster_pom": {
+        "mean_absolute_byte_difference": 0.12864166666666665,
+        "fraction_pixels_over_3_bytes": 2.5e-05
+      },
+      "native_rt_pom": {
+        "mean_absolute_byte_difference": 0.5309833333333334,
+        "fraction_pixels_over_3_bytes": 0.025575
+      },
+      "raster_vs_rt": {
+        "mean_absolute_byte_difference": 48.424058333333335,
+        "fraction_pixels_over_3_bytes": 0.9522
+      }
+    },
+    "size-8-near": {
+      "valid_proxy_pixels": 40000,
+      "region_pixels": 40000,
+      "finest_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "resident_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "albedo_mean": [
+        33.7284,
+        31.76565,
+        29.0472
+      ],
+      "albedo_stddev": [
+        1.234112409791294,
+        1.259436412646622,
+        0.9279397394226971
+      ],
+      "raster_pom": {
+        "mean_absolute_byte_difference": 0.005758333333333333,
+        "fraction_pixels_over_3_bytes": 0.0
+      },
+      "native_rt_pom": {
+        "mean_absolute_byte_difference": 0.2021,
+        "fraction_pixels_over_3_bytes": 0.002625
+      },
+      "raster_vs_rt": {
+        "mean_absolute_byte_difference": 32.553175,
+        "fraction_pixels_over_3_bytes": 1.0
+      }
+    },
+    "size-8-grazing": {
+      "valid_proxy_pixels": 40000,
+      "region_pixels": 40000,
+      "finest_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "resident_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "albedo_mean": [
+        34.477175,
+        32.534375,
+        29.687375
+      ],
+      "albedo_stddev": [
+        1.2996649642794458,
+        1.2838295678845364,
+        1.084915024034064
+      ],
+      "raster_pom": {
+        "mean_absolute_byte_difference": 0.16360833333333333,
+        "fraction_pixels_over_3_bytes": 0.000125
+      },
+      "native_rt_pom": {
+        "mean_absolute_byte_difference": 0.5473916666666667,
+        "fraction_pixels_over_3_bytes": 0.02565
+      },
+      "raster_vs_rt": {
+        "mean_absolute_byte_difference": 60.379425,
+        "fraction_pixels_over_3_bytes": 1.0
+      }
+    },
+    "size-32-near": {
+      "valid_proxy_pixels": 40000,
+      "region_pixels": 40000,
+      "finest_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "resident_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "albedo_mean": [
+        34.2486,
+        32.28235,
+        29.4458
+      ],
+      "albedo_stddev": [
+        1.1152793551394313,
+        1.1345829531156053,
+        1.1666243439941328
+      ],
+      "raster_pom": {
+        "mean_absolute_byte_difference": 0.0029333333333333334,
+        "fraction_pixels_over_3_bytes": 0.0
+      },
+      "native_rt_pom": {
+        "mean_absolute_byte_difference": 0.190125,
+        "fraction_pixels_over_3_bytes": 0.003075
+      },
+      "raster_vs_rt": {
+        "mean_absolute_byte_difference": 22.113758333333333,
+        "fraction_pixels_over_3_bytes": 1.0
+      }
+    },
+    "size-32-grazing": {
+      "valid_proxy_pixels": 40000,
+      "region_pixels": 40000,
+      "finest_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "resident_texels_per_m": {
+        "p05": 184.7475938598344,
+        "p50": 184.7475938598344,
+        "p95": 184.7475938598344
+      },
+      "albedo_mean": [
+        35.09855,
+        33.212375,
+        30.201025
+      ],
+      "albedo_stddev": [
+        1.2013483664201352,
+        1.2761942874716863,
+        1.0945839160954896
+      ],
+      "raster_pom": {
+        "mean_absolute_byte_difference": 0.07261666666666666,
+        "fraction_pixels_over_3_bytes": 0.0
+      },
+      "native_rt_pom": {
+        "mean_absolute_byte_difference": 0.547025,
+        "fraction_pixels_over_3_bytes": 0.028975
+      },
+      "raster_vs_rt": {
+        "mean_absolute_byte_difference": 35.46769166666667,
+        "fraction_pixels_over_3_bytes": 1.0
+      }
+    }
+  },
+  "visual_approval": false,
+  "images": {
+    "overview-albedo.png": "edbe45b9da5e207b266ae993e02c4859ae7e6444d6e94c44e22620489a0eaf55",
+    "overview-density.png": "7e5b75e0a2090a70abcdf6bb096fc7ba5227a7149d0b29e8bba648bef6dc12fd",
+    "overview-flat.png": "b18df5542da96b2b53ad99d6dfecf1d2b7cf989a89f3b92abcc5b51c3f8740d0",
+    "overview-lit.png": "b18df5542da96b2b53ad99d6dfecf1d2b7cf989a89f3b92abcc5b51c3f8740d0",
+    "overview-normal.png": "3a953c70fb69bbd17a4537013ad1779b29653790029a85596c30dd5cb6273d12",
+    "overview-rt-flat.png": "d9887ea343e288a98d5edc8500ff7f6890f1f952e20f5cadd9dc3c5069e1573a",
+    "overview-rt-lit.png": "6341f0f1709f630d80925181ecd1d7b0f3e10378b474b50dbdef75060dfa4f01",
+    "size-0p5-grazing-albedo.png": "312b61fac40c1facef66ff5f6096fc3036741a5ab4c11600a457a1b08d52196a",
+    "size-0p5-grazing-density.png": "fcfcd7da699725d6a7503b473983aaf46ebe6d11bfbc4d669384a097f222bf5c",
+    "size-0p5-grazing-flat.png": "e44eed5ae642bf9b4379971930aea94a9e2fa621c6fe283372f92689f13893f5",
+    "size-0p5-grazing-lit.png": "e76ce3ebc2bd27668f035934b6a73890999fa7e68724a10e1cb8d6e59e615ec8",
+    "size-0p5-grazing-normal.png": "64a723b429ca5ea82658a630a677c672c2d01f216048f7a81e06fa2ea62371c2",
+    "size-0p5-grazing-rt-flat.png": "312ad1dad9ec4b15f115832f150986905660f972d084956c934882b395d3f656",
+    "size-0p5-grazing-rt-lit.png": "6d47ca4461d7f94f59ac724466f1472a2f6ff4cc897618ed350a1a80256cd522",
+    "size-0p5-near-albedo.png": "225ef60d9f60835372d045c4ac190543d1495ded559ccdfc7969e0fdef0c03b4",
+    "size-0p5-near-density.png": "47ae4a92c2ba1794c5ea696df775d26fe30b0605dfe13b9db44348e6b01fe685",
+    "size-0p5-near-flat.png": "ff3bc35ce548b088ec366d919b0c9a702fc80a3d22b1b28343b4e8afb840cdf5",
+    "size-0p5-near-lit.png": "548062552cad00636707c69fb942b0824a23a03c412d214fd353bd440730c576",
+    "size-0p5-near-normal.png": "76a0a6f327453d1dc623673f9e4ba4ff6eda8de404e5dcf5f7e71bd83b36e8c4",
+    "size-0p5-near-rt-flat.png": "b104b345c096715bc7bf63632c82a6b1ff0fb6d91a2a1a33ec2f73bb14b56f93",
+    "size-0p5-near-rt-lit.png": "f82341db9dff6dc00906638fc1c8e16a55c7132c01857c68c387dfb0df555124",
+    "size-2-grazing-albedo.png": "924914f7640d2c495c24cdfda3cedd03b1cae2955004ee270da3385fe22ffe92",
+    "size-2-grazing-density.png": "89af90ea33c4f2fa4a987d071eb6d4d285b1830765e010d831ff7700228204b2",
+    "size-2-grazing-flat.png": "f12dc3bbbe3a4644e286e1cc93e9470b688c36f7d3498f2c9eb22ae04b25dbac",
+    "size-2-grazing-lit.png": "8c4f88c2b6d74387242c15a0d32b8537cb89ea07ffab996c7ce878f175cd50e6",
+    "size-2-grazing-normal.png": "60b38a9ba8ea263c53c54484d8a257d48616166c3b7bae5eccd40fa00515cf79",
+    "size-2-grazing-rt-flat.png": "bdd0dca02f691e11ac6fc82f05ba659ca2d719f33c9bf328327d8b368aa962a7",
+    "size-2-grazing-rt-lit.png": "1e5fffaa51953e1de502508e79cb7bc9374c59612ceb75f63c14b66a6e06a7c3",
+    "size-2-near-albedo.png": "3f52a6a5ad1b106debf57a2c1b3569265539a689db018524c28e4f85268e4cc9",
+    "size-2-near-density.png": "37377147d0dca3921ec5d7e0c13d52e631e42a5a98ba973dfa522bf0a873e386",
+    "size-2-near-flat.png": "345c0fa44ad061a22f97e9135e85ed1541e26be3346f53852623f8c2d2a5870a",
+    "size-2-near-lit.png": "b84e0da4c2b9b63716ed82d0034c9a8e774d78b9614bd8d510789021351cc7c1",
+    "size-2-near-normal.png": "0d03324172c293b3e0a79bc4344f2e1e1bdb4ae193bbc6973b2c542787a51a6b",
+    "size-2-near-rt-flat.png": "bc4ccc75fd874d072870755027cf9f57148c51d8ca07a4eccdd28f3646f9ee83",
+    "size-2-near-rt-lit.png": "8de80947411373375096fbeab20afb53a50c19b15c3f2ac5416b374aa6d04249",
+    "size-32-grazing-albedo.png": "24932796ad233a62e5245d1e3b69293107c867f09cba513f3d05b12f058d83e7",
+    "size-32-grazing-density.png": "97d3583497dffc1728d10e17ee903133129e23d8ced6083f5205601a6e499c82",
+    "size-32-grazing-flat.png": "0f1ddb7a734a533150fc2c19c84f0317501107b86652dd04606129e9105ebd22",
+    "size-32-grazing-lit.png": "326dee852d5c1947bf8d652277e46ac3d094a5938902dc11dd6dce1ede0b83ac",
+    "size-32-grazing-normal.png": "a4ea8182019770cdd89dffea2327911fa592b50133f9befc8a19d71727119609",
+    "size-32-grazing-rt-flat.png": "444e295d4e127e8ed1a98a787275a49bc42fe5e331b274a4edae46e8e164c444",
+    "size-32-grazing-rt-lit.png": "560cc43437b6aa5df42d2330da4ec14dc4391a34f021841b696362407a38e33a",
+    "size-32-near-albedo.png": "6cb4aaad5f4889a6c69ce92e0262e79a2522504015219c9dc5fac73accb7bf22",
+    "size-32-near-density.png": "542e5f3b70fb3d8a72485fdc86a4dce87a321b061456786a88df05b660da3496",
+    "size-32-near-flat.png": "c561e7be65822fb67e8ff56a873cfe1ba2271846277ce77d3b74c84f9d8128a9",
+    "size-32-near-lit.png": "bc5c82c0f51caccdb41dab9a61e99f7851b921a1b10757cdbe1814173bb1854a",
+    "size-32-near-normal.png": "ef78913ca3cd47f15461e661d6176a9415a4ba96c9383f4afa090740e11b1cfb",
+    "size-32-near-rt-flat.png": "3b8b17e02bd9f360db01b93cc270ffb10e73ea209462a98c8ffa1d52841e3057",
+    "size-32-near-rt-lit.png": "336d2151eb8fd26489880a96a2f5b82de5c132624d51efe4d0c927f938dcd55b",
+    "size-8-grazing-albedo.png": "5617025a4efae1528d2946a7b76bfb357a108b6689a4687a8601ff6c65deaa1b",
+    "size-8-grazing-density.png": "1646b8c0e2bc80d688015278484066629bbd747410045cd6829e9dbe52e16437",
+    "size-8-grazing-flat.png": "c08d43d8680a461a3bd7fd30663ea0fdfaf16d17d8927f2613b382ef6f8007bd",
+    "size-8-grazing-lit.png": "b915274fa5dea684996dfe43ba58725a7da93daffd327ae8bd97134db47e76b5",
+    "size-8-grazing-normal.png": "28628fc0267ac75691bbd3759ffadc8b9ac6099871f6a637eccc8ccb73cbf817",
+    "size-8-grazing-rt-flat.png": "c2317181aa81cb73e479eeb2d377c8061c0404c22429a4d9ae29d043ad9464b8",
+    "size-8-grazing-rt-lit.png": "bbebe2c851bbeeab472b89b3f314d9de07a1b35b8b4d20fb541a07429494b7ee",
+    "size-8-near-albedo.png": "6e0d87b283814576b8901a2418120b291c6e6cd26ae6a2ba1953cac9325d34db",
+    "size-8-near-density.png": "85478060baf6bf5c486f4854a823a574a0590b06b1f1e85a4d448edddb15b82a",
+    "size-8-near-flat.png": "ad4b692959b147b2d169eca9d0227ad721dc2e1b7efd441635d4a1e6cdd1b704",
+    "size-8-near-lit.png": "57156051c0604be72eb7c428b606d0bad3fc593f69efe8e4cdd1e958f84221f0",
+    "size-8-near-normal.png": "8132431b2c0e16903d05338eda62df0abc33445d42386f48e8d4f4aacdacef24",
+    "size-8-near-rt-flat.png": "4dfa846910b8a870d78a329213bcc97a5907a81ff08b259975ade64c8f69118b",
+    "size-8-near-rt-lit.png": "37de4d754533aafe31ba80af33e1261e2d63a0bef4026d3162a9bd395496f34a"
+  }
+}

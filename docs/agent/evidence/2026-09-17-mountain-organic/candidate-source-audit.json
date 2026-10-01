@@ -1,0 +1,9 @@
+{
+  "changed_runtime_input": [
+    "projects/world_demo/shared-lib/mountain_surface.js"
+  ],
+  "editor_sha256": "c503c7d16294eddc8048f1628a692d745bb09b1cd86d5a91f5491bcfe60479c5",
+  "runtime_implementation_changed": false,
+  "capture": "../2026-09-17-mountain-layering/v4 (passed audit)",
+  "native_check_prefix": "mountain-organic-v3"
+}

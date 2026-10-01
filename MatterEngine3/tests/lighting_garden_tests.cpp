@@ -66,7 +66,7 @@ int main() {
     // LightingGarden.js is the scene's own object, so the scene tier leads the
     // search path exactly as the engine builds it.
     const std::vector<std::string> object_roots = {
-        (project / "scenes" / "LightingGarden" / "objects").string(),
+        (project / "scenes" / "lighting" / "LightingGarden" / "objects").string(),
         objects.string(),
     };
     const fs::path shared_lib = fs::absolute("../shared-lib");
@@ -84,7 +84,7 @@ int main() {
 
     matter::WorldLoadDesc load_desc;
     load_desc.world_path =
-        (project / "scenes" / "LightingGarden" / "LightingGarden.js").string();
+        (project / "scenes" / "lighting" / "LightingGarden" / "LightingGarden.js").string();
     load_desc.objects_dir = objects.string();
     load_desc.engine_shared_lib_dir = shared_lib.string();
     matter::WorldDefinition definition;

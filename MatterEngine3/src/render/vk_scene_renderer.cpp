@@ -105,14 +105,22 @@
 #if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
+#include "indirect_draw_runs.h"
 #include "vk_scene_renderer.h"
+#include "vk_blas_cache.h"
+#include "vt_export.h"
+#include "vt_encoded_filler.h"
+#include "../asset_export.h"
 #include "primary_light_culling.h"
 #include "gpu_meshing/gpu_visual_mesher_vk.h"
 #include "gpu_meshing/gpu_solid_mesher_vk.h"
 #include "gpu_meshing/gpu_solid_face_projector_vk.h"
+#include "gpu_meshing/gpu_face_material_vk.h"
+#include "part_surface.h"
 
 #include "lod_distance.h"   // the one LOD selection rule (M1)
 #include "impostor_bake.h"  // M2.5 terminal impostor atlas layout
+#include "impostor_mips.h"
 #include "lod_trace.h"      // M1d fly-through determinism trace
 #include "visibility_hash.h"  // M4 identity-buffer visibility: the shared hash
 
@@ -129,6 +137,7 @@
 #include <limits>
 #include <new>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -136,6 +145,7 @@
 #include "matrix_math.h"
 #include "engine_profile_zones.h"
 #include "vk_perf.h"
+#include "vk_pipeline_stats.h"
 #include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "matter/vt_budgets.h"
@@ -145,6 +155,7 @@
 #include "bc_encode.h"
 #include "streamline_bridge.h"
 #include "tileset_gtex.h"
+#include "asset_binary.h"
 #include "tileset_slicer.h"
 #include "vk_volumetrics.h"
 #include "vk_atmosphere.h"
@@ -183,6 +194,15 @@ bool lighting_detail_timers_enabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("MATTER_GPU_LIGHTING_DETAIL_TIMERS");
         return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+// Opt-in workload counters, read only after the owning frame fence completes.
+bool raster_workload_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MATTER_GBUFFER_WORKLOAD");
+        return value && std::strcmp(value, "1") == 0;
     }();
     return enabled;
 }
@@ -230,6 +250,13 @@ VkDeviceSize static_reserve_bytes(const char* name, VkDeviceSize fallback_mb) {
         if (parsed >= 0) mb = static_cast<VkDeviceSize>(parsed);
     }
     return mb * 1024ull * 1024ull;
+}
+
+VkBufferUsageFlags static_rt_input_usage(const matter::VulkanDevice& vulkan) {
+    return vulkan.ray_tracing_available()
+        ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+        : 0;
 }
 
 // Flat mirror of slot_of_ for the per-instance part lookup.
@@ -563,6 +590,10 @@ struct CullDispatchRecord {
     VkBuffer materials = VK_NULL_HANDLE;
     VkDeviceSize material_bytes = 0;
     uint64_t* material_upload_record_count = nullptr;
+    VkBuffer indirect_buffer = VK_NULL_HANDLE;
+    VkPipeline selection_pipeline = VK_NULL_HANDLE;
+    uint32_t selection_jobs = 0, selection_capacity = 0;
+    VkBuffer feedback_buffer = VK_NULL_HANDLE;
 };
 
 void record_material_upload_commands(VkCommandBuffer command_buffer,
@@ -592,11 +623,42 @@ void record_material_upload_commands(VkCommandBuffer command_buffer,
 
 void record_cull_dispatch_commands(VkCommandBuffer command_buffer,
                                    const CullDispatchRecord& dispatch) {
+    if (dispatch.selection_pipeline) {
+        const uint32_t header[] = {0, 1, 1, 0, dispatch.selection_capacity, 0, 0, 0};
+        vkCmdUpdateBuffer(command_buffer, dispatch.indirect_buffer, 0, sizeof(header), header);
+        VkMemoryBarrier2 memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        memory.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; memory.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        memory.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        memory.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1; dependency.pMemoryBarriers = &memory;
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, dispatch.selection_pipeline);
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, dispatch.layout,
+            0, 2, dispatch.sets, 0, nullptr);
+        vkCmdDispatch(command_buffer, dispatch.selection_jobs / 64 + (dispatch.selection_jobs % 64 != 0), 1, 1);
+        memory.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT; memory.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        memory.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        memory.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        if (dispatch.feedback_buffer) {
+            memory.dstStageMask |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            memory.dstAccessMask |= VK_ACCESS_2_TRANSFER_READ_BIT;
+        }
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+        if (dispatch.feedback_buffer) {
+            const VkBufferCopy copies[] = {{0, 0, 32}, {32ull + uint64_t(dispatch.selection_capacity)*16, 32, 1024*8}};
+            vkCmdCopyBuffer(command_buffer, dispatch.indirect_buffer, dispatch.feedback_buffer, 2, copies);
+            memory.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; memory.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            memory.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; memory.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+            vkCmdPipelineBarrier2(command_buffer, &dependency);
+        }
+    }
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       dispatch.pipeline);
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                             dispatch.layout, 0, 2, dispatch.sets, 0, nullptr);
-    vkCmdDispatch(command_buffer, dispatch.group_count, 1, 1);
+    if (dispatch.indirect_buffer) vkCmdDispatchIndirect(command_buffer, dispatch.indirect_buffer, 0);
+    else vkCmdDispatch(command_buffer, dispatch.group_count, 1, 1);
 
     VkMemoryBarrier2 memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     memory.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -660,6 +722,7 @@ struct RasterRecord {
     matter::VkImageResource* velocity;
     matter::VkImageResource* material_instance;
     matter::VkImageResource* reactivity;
+    matter::VkImageResource* vt_feedback;
     matter::VkImageResource* depth;
     matter::VkImageResource* hdr;
     matter::VkImageResource* visibility;
@@ -725,6 +788,7 @@ struct RasterRecord {
     // the VT hooks turns the smoke suite into a null deref.
     VkSceneRenderer* vt_hooks = nullptr;
     uint32_t vt_zone = 0;
+    uint32_t vt_feedback_zone = 0;
     // Fence-owned baked-water lane. Decode/copy commands execute before
     // dynamic rendering; direct indexed draws execute after static/skinned
     // raster. None of these buffers is visible to the RT build path.
@@ -741,8 +805,14 @@ struct RasterRecord {
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     uint32_t* recorded_water_draw_count = nullptr;
 #endif
+    VkQueryPool raster_stats_pool = VK_NULL_HANDLE;
     VkSceneRenderer* water_forward_owner = nullptr;
     void* water_forward_record = nullptr;
+    const VkSparseVoxelScene* sparse_voxels = nullptr;
+    const FrameMatrices* sparse_voxel_matrices = nullptr;
+    SparseVoxelTemporal sparse_temporal{};
+    const VkSparseVoxelScene* sparse_shadows=nullptr;
+    float sparse_shadow_bias=.002f,sparse_shadow_distance=10000;
 };
 
 struct NeutralVolumeClearRecord {
@@ -781,6 +851,13 @@ void record_neutral_volume_clear(VkCommandBuffer command_buffer, void* user_data
 // GPU time for the same passes comes from the kGpuZone* timestamps.
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     auto& record = *static_cast<RasterRecord*>(user_data);
+    if (record.sparse_voxels && record.sparse_voxel_matrices &&
+        !record.sparse_voxels->record_selection(command_buffer,
+            *record.sparse_voxel_matrices, record.frame_slot, record.pixel_budget,record.sparse_temporal)) {
+        if (record.error) *record.error = "invalid sparse voxel selection frame or budget";
+        if (record.ray_trace_ok) *record.ray_trace_ok = false;
+        return;
+    }
     const auto valid_skin_draw = [&record](const VkSkinRasterDraw& draw) {
         if (draw.output_frame_slot >= record.skin_buffer_count ||
             record.skin_vertex_buffers == nullptr ||
@@ -842,7 +919,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     }
     matter::VkImageResource* colors[] = {
         record.albedo, record.normal, record.orm, record.velocity,
-        record.material_instance, record.reactivity};
+        record.material_instance, record.reactivity, record.vt_feedback};
     for (auto* color : colors) {
         transition_for_use(command_buffer, *color,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -871,9 +948,9 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     const VkRect2D scissor{{0, 0}, record.extent};
     const VkDeviceSize vertex_offset = 0;
 
-    // --- GBuffer pass: 6-color MRT + depth write ---
+    // --- GBuffer pass: six surface channels plus depth-tested VT demand ---
     const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
-    VkRenderingAttachmentInfo color_attachments[6]{};
+    VkRenderingAttachmentInfo color_attachments[7]{};
     for (size_t i = 0; i < 6; ++i) {
         color_attachments[i].sType =
             VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -886,6 +963,11 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     }
     color_attachments[4].clearValue.color.uint32[0] = UINT32_MAX;
     color_attachments[4].clearValue.color.uint32[1] = UINT32_MAX;
+    color_attachments[6].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color_attachments[6].imageView = record.vt_feedback->view;
+    color_attachments[6].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_attachments[6].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachments[6].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingAttachmentInfo depth_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     depth_attachment.imageView = record.depth->view;
@@ -898,7 +980,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = record.extent;
     rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 6;
+    rendering.colorAttachmentCount = 7;
     rendering.pColorAttachments = color_attachments;
     rendering.pDepthAttachment = &depth_attachment;
     // WP-E: VT pool/indirection uploads and the feedback clear are transfers,
@@ -925,6 +1007,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         record.ts_written[record.gbuffer_zone] |= 1u;
     }
     vkCmdBeginRendering(command_buffer, &rendering);
+    if (record.raster_stats_pool != VK_NULL_HANDLE)
+        vkCmdBeginQuery(command_buffer, record.raster_stats_pool, 0, 0);
     vkCmdSetViewport(command_buffer, 0, 1, &raster_viewport);
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -970,62 +1054,15 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     // record when the device reports less than one.
     PROFILE_SCOPE_NAMED(z_static, "raster.draw_static");
     PROFILE_COUNT("raster.draw_ranges", record.draw_range_count);
-    {
-        const uint32_t max_per_call =
-            std::max(1u, record.max_draw_indirect_count);
-        uint32_t run_first = 0, run_count = 0, run_part = 0;
-        bool run_raster_water = false;
-        uint32_t issued = 0;
-        const auto flush_run = [&]() {
-            uint32_t first = run_first;
-            uint32_t remaining = run_count;
-            while (remaining != 0) {
-                const uint32_t count = std::min(remaining, max_per_call);
-                vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
-                                         static_cast<VkDeviceSize>(first) *
-                                             sizeof(DrawCommand),
-                                         count, sizeof(DrawCommand));
-                ++issued;
-                if (record.recorded_draw_ranges) {
-                    // part_slot of the run's FIRST range. Under coalescing a
-                    // recorded range can span several parts, so this field is
-                    // no longer a per-part identity -- it is only a debug hint.
-                    // recorded_draw_ranges_ has no engine consumer; the smoke
-                    // suite is the only reader.
-                    record.recorded_draw_ranges->push_back(
-                        {first, count, run_part, run_raster_water});
-                }
-                first += count;
-                remaining -= count;
-            }
-            run_count = 0;
-        };
-        for (uint32_t i = 0; i < record.draw_range_count; ++i) {
-            const PartCommandRange& range = record.draw_ranges[i];
-            if (range.raster_water_surface) continue;
-            if (range.first_command > record.static_command_count ||
-                range.command_count >
-                    record.static_command_count - range.first_command)
-                continue;
-            if (range.command_count == 0) continue;
-            // Extend the open run when this range starts exactly where it ends
-            // and the merged span still fits one call.
-            if (run_count != 0 &&
-                run_first + run_count == range.first_command &&
-                range.command_count <= max_per_call - run_count) {
-                run_count += range.command_count;
-                continue;
-            }
-            if (run_count != 0) flush_run();
-            run_first = range.first_command;
-            run_count = range.command_count;
-            run_part = range.part_slot;
-            run_raster_water = range.raster_water_surface;
-        }
-        if (run_count != 0) flush_run();
-        // The merge ratio, measurable directly against raster.draw_ranges.
-        PROFILE_COUNT("raster.draw_calls", issued);
-    }
+    const auto issued = for_each_opaque_indirect_run(record.draw_ranges,
+        record.draw_range_count, record.static_command_count,
+        record.max_draw_indirect_count, [&](const PartCommandRange& range) {
+            vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
+                static_cast<VkDeviceSize>(range.first_command) * sizeof(DrawCommand),
+                range.command_count, sizeof(DrawCommand));
+            if (record.recorded_draw_ranges) record.recorded_draw_ranges->push_back(range);
+        });
+    PROFILE_COUNT("raster.draw_calls", issued);
     z_static.stop();
     // Accepted skin work is drawn from the per-frame compute output, never
     // from the immutable bind-pose arena.  Each draw carries the exact
@@ -1098,12 +1135,24 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                              record.skin_transform_base + draw.instance_slot);
         }
     }
+    if (record.sparse_voxels && record.sparse_voxel_matrices)
+        record.sparse_voxels->record(command_buffer, *record.sparse_voxel_matrices, record.frame_slot);
+    if (record.raster_stats_pool != VK_NULL_HANDLE)
+        vkCmdEndQuery(command_buffer, record.raster_stats_pool, 0);
     vkCmdEndRendering(command_buffer);
-    // WP-E: copy the 1/8-res feedback target into this frame slot's readback
+    // WP-E: extract visible requests into this frame slot's compact readback
     // buffer; it is consumed at the next begin_frame on the same slot.
     if (record.vt_hooks) {
         PROFILE_SCOPE("raster.vt_post");
+        if (time_vt) {
+            write_ts(command_buffer, record.ts_pool, record.vt_feedback_zone, false);
+            record.ts_written[record.vt_feedback_zone] |= 1u;
+        }
         record.vt_hooks->vt_record_post_pass(command_buffer);
+        if (time_vt) {
+            write_ts(command_buffer, record.ts_pool, record.vt_feedback_zone, true);
+            record.ts_written[record.vt_feedback_zone] |= 2u;
+        }
     }
     if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
         write_ts(command_buffer, record.ts_pool, record.gbuffer_zone, true);
@@ -1154,6 +1203,25 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+
+    if(record.sparse_shadows && record.sparse_voxel_matrices) {
+        transition_for_use(command_buffer,*record.depth,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
+        transition_for_use(command_buffer,*record.visibility,VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+        const auto sun=record.lighting.sun_direction;
+        std::string shadow_error;
+        const bool ok=record.sparse_shadows->record_shadows(command_buffer,*record.sparse_voxel_matrices,record.frame_slot,
+            record.extent,{-sun.x,-sun.y,-sun.z},record.sparse_shadow_bias,record.sparse_shadow_distance,
+            *record.depth,*record.visibility,record.sparse_temporal,shadow_error);
+        if(!ok) {
+            if(record.error) *record.error=shadow_error;
+            if(record.ray_trace_ok) *record.ray_trace_ok=false;
+            return;
+        }
+        transition_for_use(command_buffer,*record.visibility,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
     }
 
     // --- Volumetrics pass: froxel density + scatter + integrate ---
@@ -1832,7 +1900,7 @@ VkShaderStageFlags scene_binding_stage_flags(uint32_t binding) noexcept {
 
 bool scene_storage_limits_supported(uint32_t max_per_stage,
                                     uint32_t max_per_set) noexcept {
-    return max_per_stage >= 6 && max_per_set >= 7;
+    return max_per_stage >= 14 && max_per_set >= 20;
 }
 
 size_t frame_constants_size_for_test() noexcept {
@@ -1954,6 +2022,193 @@ uint64_t water_forward_image_bytes_for_extent(uint32_t width,
 // load_tileset_slot. destroy_pipeline() is the matching teardown and runs both
 // from the destructor and from a poisoned reset().
 // ---------------------------------------------------------------------------
+
+bool VkSceneRenderer::set_sparse_voxels(
+    const std::vector<SparseVoxelBatch>& batches, std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    for (const auto& batch : batches)
+        for (const auto& instance : batch.instances)
+            if (instance.material_index >= material_staging_.size()) {
+                error = "sparse voxel instance references an unstaged material";
+                return false;
+            }
+    auto candidate = VkSparseVoxelScene::create(*vulkan_, batches, error);
+    if (!candidate) return false;
+    sparse_voxels_ = std::move(candidate);
+    shared_forest_catalog_.clear();shared_forest_shadow_catalog_.clear();
+    return true;
+}
+
+bool VkSceneRenderer::set_shared_surfaces(const std::vector<SparseSharedObject>& objects,std::string& error) {
+    error.clear();if(fail_if_poisoned(error)) return false;
+    for(const auto& object:objects) for(const auto& instance:object.instances)
+        if(instance.material_index>=material_staging_.size()) {error="shared surface root references an unstaged material";return false;}
+    std::shared_ptr<VkSparseVoxelScene> candidate;
+    if(!objects.empty()) {candidate=VkSparseVoxelScene::create_shared_surfaces(*vulkan_,objects,error);if(!candidate) return false;}
+    sparse_voxels_=std::move(candidate);note_sparse_snapshot_changed();
+    shared_forest_catalog_.clear();shared_forest_shadow_catalog_.clear();
+    return true;
+}
+
+bool VkSceneRenderer::set_shared_surface_forest(const std::vector<SparseSharedObject>& surfaces,
+    const std::vector<SparseShadowObject>& shadows,std::string& error) {
+    error.clear();if(fail_if_poisoned(error)) return false;
+    if(surfaces.size()!=shadows.size()) {error="shared forest surface/shadow catalogs disagree";return false;}
+    const auto same_instances=[](const auto& a,const auto& b) {
+        if(a.size()!=b.size()) return false;
+        for(size_t i=0;i<a.size();++i) {
+            const auto& x=a[i];const auto& y=b[i];
+            if(std::memcmp(x.object_to_world.m,y.object_to_world.m,sizeof(x.object_to_world.m)) ||
+               x.instance_token!=y.instance_token || x.material_index!=y.material_index || x.roughness!=y.roughness) return false;
+        }
+        return true;
+    };
+    const auto same_parts=[&](const auto& a,const auto& b) {
+        if(a.parts.size()!=b.parts.size() || a.use_part_materials!=b.use_part_materials) return false;
+        for(size_t i=0;i<a.parts.size();++i) {
+            const auto& x=a.parts[i];const auto& y=b.parts[i];
+            if(x.asset!=y.asset || x.surface!=y.surface || !x.coarser.empty() || !x.coarser_surfaces.empty() ||
+               !same_instances(x.instances,y.instances)) return false;
+        }
+        return true;
+    };
+    bool reuse=sparse_voxels_ && sparse_shadows_ && surfaces.size()==shared_forest_catalog_.size() &&
+        shadows.size()==shared_forest_shadow_catalog_.size();
+    bool unchanged=reuse;
+    std::vector<std::vector<SparseVoxelInstance>> placements;placements.reserve(surfaces.size());
+    for(size_t i=0;i<surfaces.size();++i) {
+        const auto& object=surfaces[i];placements.push_back(object.instances);
+        if(!same_instances(object.instances,shadows[i].instances)) {
+            error="shared forest primary/shadow world placements disagree";return false;
+        }
+        for(const auto& instance:object.instances) if(instance.material_index>=material_staging_.size()) {
+            error="shared forest root references an unstaged material";return false;
+        }
+        if(object.use_part_materials) for(const auto& part:object.parts) for(const auto& instance:part.instances)
+            if(instance.material_index>=material_staging_.size()) {
+                error="shared forest part references an unstaged material";return false;
+            }
+        if(reuse) {
+            reuse=same_parts(object,shared_forest_catalog_[i]) && same_parts(shadows[i],shared_forest_shadow_catalog_[i]);
+            unchanged=unchanged && reuse && same_instances(object.instances,shared_forest_catalog_[i].instances);
+        } else unchanged=false;
+    }
+    if(unchanged) return true;
+    std::shared_ptr<VkSparseVoxelScene> primary,shadow;
+    if(!surfaces.empty()) {
+        primary=reuse?sparse_voxels_->with_shared_placements(*vulkan_,placements,error):VkSparseVoxelScene::create_shared_surfaces(*vulkan_,surfaces,error);
+        if(!primary) return false;
+        shadow=reuse?sparse_shadows_->with_shared_placements(*vulkan_,placements,error):VkSparseVoxelScene::create_shared_shadow_casters(*vulkan_,shadows,error);
+        if(!shadow) return false;
+    }
+    sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadow);
+    shared_forest_catalog_=surfaces;shared_forest_shadow_catalog_=shadows;
+    note_sparse_snapshot_changed();
+    return true;
+}
+
+bool VkSceneRenderer::set_shared_surface_forest_placements(
+    const std::vector<std::vector<SparseVoxelInstance>>& placements,std::string& error) {
+    error.clear();if(fail_if_poisoned(error)) return false;
+    if(!sparse_voxels_ || !sparse_shadows_ || placements.size()!=shared_forest_catalog_.size() ||
+       placements.size()!=shared_forest_shadow_catalog_.size()) {
+        error="shared forest placement update needs an accepted matching catalog";return false;
+    }
+    bool changed=false;
+    for(size_t i=0;i<placements.size();++i) {
+        const auto& previous=shared_forest_catalog_[i].instances;
+        const auto& next=placements[i];changed=changed || previous.size()!=next.size();
+        for(size_t n=0;n<next.size();++n) {
+            const auto& x=next[n];
+            if(x.material_index>=material_staging_.size()) {error="shared forest placement material is not staged";return false;}
+            if(!changed) {
+                const auto& y=previous[n];
+                changed=std::memcmp(x.object_to_world.m,y.object_to_world.m,sizeof(x.object_to_world.m)) ||
+                    x.instance_token!=y.instance_token || x.material_index!=y.material_index || x.roughness!=y.roughness;
+            }
+        }
+    }
+    if(!changed) return true;
+    auto primary=sparse_voxels_->with_shared_placements(*vulkan_,placements,error);
+    if(!primary) return false;
+    auto shadows=sparse_shadows_->with_shared_placements(*vulkan_,placements,error);
+    if(!shadows) return false;
+    sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadows);
+    for(size_t i=0;i<placements.size();++i) {
+        shared_forest_catalog_[i].instances=placements[i];shared_forest_shadow_catalog_[i].instances=placements[i];
+    }
+    note_sparse_snapshot_changed();
+    return true;
+}
+
+bool VkSceneRenderer::set_sparse_hierarchy(const std::vector<SparseHierarchyPrototype>& prototypes,
+    const std::vector<SparseHierarchyPlacement>& placements,const SparseHierarchyConfig& config,std::string& error) {
+    error.clear();
+    if(fail_if_poisoned(error)) return false;
+    for(const auto& placement:placements) if(placement.instance.material_index>=material_staging_.size()) {
+        error="sparse hierarchy instance references an unstaged material"; return false;
+    }
+    auto candidate=VkSparseVoxelScene::create_hierarchy(*vulkan_,prototypes,placements,config,error);
+    if(!candidate) return false;
+    sparse_voxels_=std::move(candidate); shared_forest_catalog_.clear();shared_forest_shadow_catalog_.clear();
+    return true;
+}
+
+bool VkSceneRenderer::set_sparse_shadow_casters(const std::vector<SparseVoxelBatch>& batches,std::string& error) {
+    error.clear();if(fail_if_poisoned(error)) return false;
+    std::shared_ptr<VkSparseVoxelScene> candidate;
+    if(!batches.empty()) {candidate=VkSparseVoxelScene::create_shadow_casters(*vulkan_,batches,error);if(!candidate) return false;}
+    if(candidate==sparse_shadows_) return true;
+    sparse_shadows_=std::move(candidate);
+    note_sparse_snapshot_changed();
+    shared_forest_catalog_.clear();shared_forest_shadow_catalog_.clear();
+    return true;
+}
+
+bool VkSceneRenderer::readback_sparse_shadow_ms(uint32_t slot,double& ms,std::string& error) const {
+    if(!sparse_shadows_) {ms=0;error="no sparse shadow snapshot";return false;}
+    return sparse_shadows_->readback_shadow_ms(*vulkan_,slot,ms,error);
+}
+
+bool VkSceneRenderer::set_shared_sparse_shadow_casters(const std::vector<SparseShadowObject>& objects,std::string& error) {
+    error.clear();if(fail_if_poisoned(error)) return false;
+    std::shared_ptr<VkSparseVoxelScene> candidate;
+    if(!objects.empty()) {candidate=VkSparseVoxelScene::create_shared_shadow_casters(*vulkan_,objects,error);if(!candidate) return false;}
+    if(candidate==sparse_shadows_) return true;
+    sparse_shadows_=std::move(candidate);note_sparse_snapshot_changed();
+    shared_forest_catalog_.clear();shared_forest_shadow_catalog_.clear();
+    return true;
+}
+
+// A replaced sparse snapshot always invalidates the per-pixel sparse history
+// (sparse_temporal() below compares the presented snapshot) and the instance
+// snapshot. The whole-frame DLSS reset is optional: it makes every tree pixel
+// restart its stochastic accumulation, which the user sees as the forest going
+// coarse after each streaming update until it re-converges.
+void VkSceneRenderer::note_sparse_snapshot_changed() {
+    if(forest_history_reset_) dlss_history_reset_pending_=true;
+    temporal_history_changed_=true;
+}
+
+SparseVoxelTemporal VkSceneRenderer::sparse_temporal() const {
+    SparseVoxelTemporal result;
+    result.previous_world_to_clip=temporal_frame_.previous_jittered.world_to_clip;
+    result.extent=raster_extent_;
+    result.presented_frame_index=temporal_frame_.presented_frame_index;
+    const bool matching_extent=raster_extent_.width && raster_extent_.height &&
+        temporal_frame_.internal_extent.width==raster_extent_.width &&
+        temporal_frame_.internal_extent.height==raster_extent_.height;
+    result.history_valid=matching_extent && !temporal_frame_.reset && sparse_voxels_ &&
+        sparse_presented_.lock()==sparse_voxels_ && sparse_presented_index_!=UINT64_MAX &&
+        sparse_presented_index_+1==temporal_frame_.presented_frame_index;
+    result.accumulate_samples=matching_extent && selected_dlss_mode_!=matter::DlssMode::Native &&
+        active_dlss_mode()!=matter::DlssMode::Native;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    result.accumulate_samples=result.accumulate_samples || (matching_extent && sparse_voxel_test_accumulation_);
+#endif
+    return result;
+}
 
 VkSceneRenderer::VkSceneRenderer(matter::VulkanDevice& vulkan)
     : vulkan_(&vulkan), water_field_resources_(vulkan),
@@ -2590,7 +2845,8 @@ bool VkSceneRenderer::wireframe_available() const noexcept {
 
 void VkSceneRenderer::set_ray_tracing_settings(
     const matter::VulkanRayTracingSettings& settings) {
-    if (ray_tracing_settings_.enabled != settings.enabled) {
+    const float normal_bias=std::isfinite(settings.max_normal_bias)?std::max(0.0f,settings.max_normal_bias):.5f;
+    if (ray_tracing_settings_.enabled != settings.enabled || ray_tracing_settings_.max_normal_bias!=normal_bias) {
         gi_history_reset_pending_ = true;
         local_direct_history_state_.reset_pending = true;
         // RT enablement also changes who owns primary local direct (raster or
@@ -2600,6 +2856,7 @@ void VkSceneRenderer::set_ray_tracing_settings(
         temporal_history_changed_ = true;
     }
     ray_tracing_settings_ = settings;
+    ray_tracing_settings_.max_normal_bias=normal_bias;
     ray_tracing_settings_.samples =
         std::max(1u, std::min(settings.samples, 16u));
 }
@@ -2656,6 +2913,7 @@ void VkSceneRenderer::destroy_pipeline() {
     if (!vulkan_) return;
     gpu_visual_mesher_.reset();
     gpu_solid_face_projector_.reset();
+    gpu_face_material_baker_.reset();
     gpu_solid_mesher_.reset();
     if (volumetrics_) {
         volumetrics_->destroy();
@@ -2776,7 +3034,8 @@ void VkSceneRenderer::destroy_pipeline() {
     if (tileset_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, tileset_sampler_, nullptr);
     tileset_sampler_ = VK_NULL_HANDLE;
-    tileset_params_.reset();
+    tileset_params_staging_ = {};
+    for (auto& snapshot : vt_draw_snapshot_registry_) snapshot.reset();
     tileset_infra_ready_ = false;
     // WP-E: the residency runtime owns raw Vulkan handles, so it must go down
     // with the pipeline (its shutdown() is idempotent).
@@ -2784,11 +3043,18 @@ void VkSceneRenderer::destroy_pipeline() {
         vt_->shutdown();
         vt_.reset();
     }
+    vt_encoded_filler_ = nullptr;
+    vt_encoded_geometry_only_ = false;
+    vt_encoded_log_time_ = 0;
     vt_compositor_ = nullptr;   // borrowed; the residency layer owned it
     vt_enricher_ = nullptr;     // ditto (WP-H)
-    vt_pending_invalidate_.clear();
     vt_inputs_dirty_ = true;
+    vt_input_push_failures_ = 0;
     vt_inputs_pushed_ = false;
+    vt_materials_pushed_.clear();
+    vt_tileset_revisions_.fill(0);
+    vt_tileset_revisions_pushed_.fill(0);
+    vt_surface_dirty_owners_.clear();
     vt_init_attempted_ = false;
     vt_unavailable_ = false;
     vt_unavailable_reason_.clear();
@@ -2852,6 +3118,9 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipeline(device, pipeline_, nullptr);
     if (vis_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, vis_pipeline_, nullptr);
+    if (geometry_pipeline_) vkDestroyPipeline(device, geometry_pipeline_, nullptr);
+    if (geometry_vis_pipeline_) vkDestroyPipeline(device, geometry_vis_pipeline_, nullptr);
+    if (geometry_select_pipeline_) vkDestroyPipeline(device, geometry_select_pipeline_, nullptr);
     if (pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device, pipeline_layout_, nullptr);
     if (descriptor_pool_ != VK_NULL_HANDLE)
@@ -2863,6 +3132,8 @@ void VkSceneRenderer::destroy_pipeline() {
     }
     pipeline_ = VK_NULL_HANDLE;
     vis_pipeline_ = VK_NULL_HANDLE;
+    geometry_pipeline_ = geometry_vis_pipeline_ = VK_NULL_HANDLE;
+    geometry_select_pipeline_ = VK_NULL_HANDLE;
     raster_pipeline_ = VK_NULL_HANDLE;
     skinned_raster_pipeline_ = VK_NULL_HANDLE;
     water_animation_raster_pipeline_ = VK_NULL_HANDLE;
@@ -2906,6 +3177,9 @@ void VkSceneRenderer::destroy_pipeline() {
     rt_sbt_test_raygen_address_ = 0;
     rt_sbt_lighting_raygen_address_ = 0;
     rt_sbt_primary_raygen_address_ = 0;
+    rt_sbt_diffuse_raygen_address_ = 0;
+    rt_sbt_reflection_raygen_address_ = 0;
+    rt_specialize_gi_ = true;
     rt_primary_adaptive_ = false;
     rt_separate_primary_ = false;
     rt_adaptive_diagnostics_ = false;
@@ -2918,6 +3192,8 @@ void VkSceneRenderer::destroy_pipeline() {
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     for (auto& f : frames_) {
+        if (f.raster_stats_pool != VK_NULL_HANDLE)
+            vkDestroyQueryPool(vulkan_->device(), f.raster_stats_pool, nullptr);
         if (f.ts_pool != VK_NULL_HANDLE) {
             vkDestroyQueryPool(device, f.ts_pool, nullptr);
             f.ts_pool = VK_NULL_HANDLE;
@@ -3014,7 +3290,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // by gbuffer.frag.
     // Bindings 9-13 (WP-E, chart-space virtual texturing):
     //   9  vt_draw_slots  storage buffer, COMPUTE  (cull.comp -> DrawTransform)
-    //   10 vt_pool[4]     combined image samplers, FRAGMENT
+    //   10 vt_pool[5]     combined image samplers, FRAGMENT
     //   11 vt_indirection storage buffer,          FRAGMENT (was an image
     //      array; the buffer indirection removed the 2048-layer format cap)
     //   12 vt_variants    storage buffer,          FRAGMENT
@@ -3036,7 +3312,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // it left was not free: a default-constructed VkDescriptorSetLayoutBinding
     // has binding 0, so the array carried a DUPLICATE of binding 0 and layout
     // creation failed -- taking every cull smoke mode with it.
-    std::array<VkDescriptorSetLayoutBinding, 25> scene_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 29> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -3044,12 +3320,10 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     scene_bindings[6] = descriptor_binding(
         6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
-    // kMaxTilesetSlots slots * kTilesetChannelCount channels (Phase 2's
-    // horizon-map lighting grew the per-slot channel count 4 -> 6; WP-B of
-    // the chart-VT work grew the slot count 4 -> 8). 8 * 6 = 48, and
-    // shaders_vk/tileset_common.glsl declares tilesetTex[48] to match.
+    // One live source bank and eight retained input banks, each with eight
+    // logical slots and six channels. The shader uses the same 432 entries.
     scene_bindings[6].descriptorCount =
-        tileset::kMaxTilesetSlots * kTilesetChannelCount;
+        kTilesetSourceDescriptors;
     scene_bindings[7] = descriptor_binding(
         7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     // C3 dynamic cluster AABBs. Static cluster metadata stays at binding 0;
@@ -3091,6 +3365,14 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     scene_bindings[24] = descriptor_binding(
         24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
+    scene_bindings[25] = descriptor_binding(
+        25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
+    scene_bindings[26] = descriptor_binding(
+        26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
+    scene_bindings[27] = descriptor_binding(
+        27, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    scene_bindings[28] = descriptor_binding(
+        28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -3389,6 +3671,7 @@ bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
 // individually -- a trace picks its entry point by choosing an address, not
 // by an index. Adaptive primary optionally appends stage 9 / group 7 and a
 // fourth raygen record after all existing SBT regions, preserving their offsets.
+// Two signal-specialized copies of lighting follow the optional primary record.
 bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
     // Compile the sample count into the shader: keep the four-sample baseline
@@ -3409,6 +3692,14 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         MATTER_LOGW("rt", "MATTER_RT_PRIMARY_ONLY must be 0 or 1; using 0");
     rt_separate_primary_ = rt_primary_adaptive_ || primary_light_culling_ ||
                            primary_light_audit_ || primary_only;
+    rt_specialize_gi_ = true;
+    if (const char* value = std::getenv("MATTER_RT_GI_SPECIALIZE")) {
+        if (std::strcmp(value, "0") == 0)
+            rt_specialize_gi_ = false;
+        else if (std::strcmp(value, "1") != 0)
+            MATTER_LOGW("rt", "MATTER_RT_GI_SPECIALIZE must be 0 or 1; using 1");
+    }
+    MATTER_LOGI("rt", "independent GI shader specialization=%u", rt_specialize_gi_ ? 1u : 0u);
     rt_adaptive_diagnostics_ = false;
     if (const char* value = std::getenv("MATTER_RT_ADAPTIVE_DIAGNOSTICS")) {
         if (std::strcmp(value, "1") == 0)
@@ -3528,9 +3819,17 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         // raygen even when GI is disabled and sampled only when set-2 metadata
         // publishes RayTraced ownership for this frame slot.
         descriptor_binding(26, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(27, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                           VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                           VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(29, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
     bindings[15].descriptorCount =
-        tileset::kMaxTilesetSlots * kTilesetChannelCount;
+        kTilesetSourceDescriptors;
     bindings[17].descriptorCount = vt::kVtChannelCount;
     bindings[21].descriptorCount = kWaterFieldBindingSlots;
     bindings[22].descriptorCount = kWaterFieldBindingSlots;
@@ -3539,7 +3838,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     // Original scene set is identical in both modes. Adaptive history is set 3.
-    set_info.bindingCount = 27u;
+    set_info.bindingCount = static_cast<uint32_t>(std::size(bindings));
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
                                                    &rt_set_layout_);
@@ -3578,15 +3877,18 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                     &rt_pipeline_layout_);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreatePipelineLayout(ray tracing)", result, error);
-    const uint32_t stage_count = rt_separate_primary_ ? 10u : 9u;
-    const uint32_t group_count = rt_separate_primary_ ? 8u : 7u;
+    const uint32_t diffuse_stage = rt_separate_primary_ ? 10u : 9u;
+    const uint32_t diffuse_group = rt_separate_primary_ ? 8u : 7u;
+    const uint32_t stage_count = diffuse_stage + 2u;
+    const uint32_t group_count = diffuse_group + 2u;
     const char* names[] = {"rt_shadow.rgen.spv", "rt_surface_test.rgen.spv",
                            "rt_lighting.rgen.spv",
                            "rt_visibility.rmiss.spv", "rt_radiance.rmiss.spv",
                            "rt_visibility.rchit.spv",
                            "rt_visibility.rahit.spv",
                            "rt_surface.rchit.spv",
-                           "rt_surface.rahit.spv", "rt_primary_adaptive.rgen.spv"};
+                           "rt_surface.rahit.spv", "rt_primary_adaptive.rgen.spv",
+                           "rt_lighting.rgen.spv", "rt_lighting.rgen.spv"};
     // Stage 2 always keeps the original full GI module. Only the optional
     // primary stage includes tile iteration/audit code, so secondary rays do
     // not inherit its larger call graph or compiler resource requirements.
@@ -3601,6 +3903,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
             : (primary_light_culling_ ? "rt_lighting_culled.rgen.spv"
                                       : "rt_primary_fixed.rgen.spv");
     }
+    names[diffuse_stage] = names[diffuse_stage + 1u] = "rt_lighting.rgen.spv";
     const VkShaderStageFlagBits stages_bits[] = {
         VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR,
         VK_SHADER_STAGE_RAYGEN_BIT_KHR,
@@ -3608,9 +3911,10 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
         VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
-        VK_SHADER_STAGE_ANY_HIT_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR};
-    VkShaderModule modules[10]{};
-    VkPipelineShaderStageCreateInfo stages[10]{};
+        VK_SHADER_STAGE_ANY_HIT_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR};
+    VkShaderModule modules[12]{};
+    VkPipelineShaderStageCreateInfo stages[12]{};
     for (uint32_t i = 0; i < stage_count; ++i) {
         if (!create_shader_module(device, names[i], modules[i], error)) {
             for (VkShaderModule module : modules)
@@ -3696,6 +4000,20 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkSpecializationInfo lighting_specialization{
         5u, lighting_entries, 5u * sizeof(uint32_t), lighting_constants};
     stages[2].pSpecializationInfo = &lighting_specialization;
+    // Keep all original lighting constants and specialize only ownership.
+    // The shared module retains exactly the same random streams and ray work.
+    uint32_t signal_constants[2][6]{};
+    VkSpecializationMapEntry signal_entries[6]{};
+    std::copy_n(lighting_entries, 5, signal_entries);
+    signal_entries[5] = {11, 5u * sizeof(uint32_t), sizeof(uint32_t)};
+    VkSpecializationInfo signal_specializations[2]{};
+    for (uint32_t signal = 0; signal < 2; ++signal) {
+        std::copy_n(lighting_constants, 5, signal_constants[signal]);
+        signal_constants[signal][5] = signal + 1u;
+        signal_specializations[signal] = {
+            6u, signal_entries, sizeof(signal_constants[signal]), signal_constants[signal]};
+        stages[diffuse_stage + signal].pSpecializationInfo = &signal_specializations[signal];
+    }
     const VkSpecializationInfo primary_specialization{
         lighting_constant_count, lighting_entries,
         lighting_constant_count * sizeof(uint32_t), lighting_constants};
@@ -3733,7 +4051,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkSpecializationInfo detail_specialization{
         1, &detail_entry, sizeof(surface_detail_mode), &surface_detail_mode};
     stages[7].pSpecializationInfo = &detail_specialization;
-    VkRayTracingShaderGroupCreateInfoKHR groups[8]{};
+    VkRayTracingShaderGroupCreateInfoKHR groups[10]{};
     for (auto& group : groups) {
         group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         group.generalShader = VK_SHADER_UNUSED_KHR;
@@ -3763,6 +4081,10 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     if (rt_separate_primary_) {
         groups[7].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
         groups[7].generalShader = 9;
+    }
+    for (uint32_t signal = 0; signal < 2; ++signal) {
+        groups[diffuse_group + signal].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+        groups[diffuse_group + signal].generalShader = diffuse_stage + signal;
     }
     VkRayTracingPipelineCreateInfoKHR create{
         VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
@@ -3824,8 +4146,9 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     // Keep every existing raygen/miss/hit offset unchanged. Optional group 7
     // is a separately base-aligned raygen record appended after the hit span.
     const VkDeviceSize primary_offset = raygen_span + 2 * category_span;
-    const VkDeviceSize sbt_span = primary_offset +
+    const VkDeviceSize diffuse_offset = primary_offset +
         (rt_separate_primary_ ? raygen_record_stride : 0);
+    const VkDeviceSize sbt_span = diffuse_offset + 2 * raygen_record_stride;
     if (!matter::create_buffer(
             *vulkan_, sbt_span +
                            props.shader_group_base_alignment - 1,
@@ -3842,6 +4165,8 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     rt_sbt_lighting_raygen_address_ = rt_sbt_address_ + 2 * raygen_record_stride;
     rt_sbt_primary_raygen_address_ = rt_separate_primary_
         ? rt_sbt_address_ + primary_offset : 0;
+    rt_sbt_diffuse_raygen_address_ = rt_sbt_address_ + diffuse_offset;
+    rt_sbt_reflection_raygen_address_ = rt_sbt_diffuse_raygen_address_ + raygen_record_stride;
     rt_sbt_miss_address_ = rt_sbt_address_ + raygen_span;
     rt_sbt_hit_address_ = rt_sbt_miss_address_ + category_span;
     rt_sbt_miss_size_ = category_size;
@@ -3869,6 +4194,12 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
                         primary_offset,
                     handles.data() + 7 * handle_size,
+                    static_cast<size_t>(handle_size));
+    }
+    for (uint32_t signal = 0; signal < 2; ++signal) {
+        std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
+                        diffuse_offset + signal * raygen_record_stride,
+                    handles.data() + (diffuse_group + signal) * handle_size,
                     static_cast<size_t>(handle_size));
     }
     return matter::flush_buffer(rt_sbt_, mapped_offset, sbt_span, error);
@@ -3921,6 +4252,56 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     raster_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     raster_stages[1].module = raster_fragment;
     raster_stages[1].pName = "main";
+    // Controlled terrain-cost diagnosis. Ordinary launches use the shader's
+    // true default; chart-only deliberately omits connected relief and must
+    // never be reported as visual/performance acceptance.
+    const char* pom_path = std::getenv("MATTER_GBUFFER_POM_PATH");
+    struct GbufferSpecialization {
+        VkBool32 connected = VK_TRUE;
+        VkBool32 work = VK_FALSE;
+        int32_t profile_mode = 0;
+    } specialization_data;
+    const VkSpecializationMapEntry specialization_entries[] = {
+        {0, offsetof(GbufferSpecialization, connected), sizeof(VkBool32)},
+        {1, offsetof(GbufferSpecialization, work), sizeof(VkBool32)},
+        {2, offsetof(GbufferSpecialization, profile_mode), sizeof(int32_t)}};
+    const VkSpecializationInfo specialization{
+        3, specialization_entries, sizeof(specialization_data), &specialization_data};
+    bool use_specialization = false;
+    if (pom_path && std::strcmp(pom_path, "chart_only") == 0) {
+        specialization_data.connected = VK_FALSE;
+        use_specialization = true;
+        MATTER_LOGW("terrain-profile", "G-buffer POM path=chart_only (diagnostic; connected relief omitted)");
+    } else if (pom_path && std::strcmp(pom_path, "work") == 0) {
+        specialization_data.work = VK_TRUE;
+        use_specialization = true;
+        MATTER_LOGW("terrain-profile", "G-buffer POM path=work (diagnostic; raw albedo encodes log2(count+1)/24; horizon 9 selects walk work)");
+    } else if (pom_path && std::strcmp(pom_path, "reference") != 0) {
+        vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+        vkDestroyShaderModule(device, raster_fragment, nullptr);
+        vkDestroyShaderModule(device, raster_vertex, nullptr);
+        error = "MATTER_GBUFFER_POM_PATH must be reference, chart_only or work";
+        return false;
+    }
+    if (const char* profile = std::getenv("MATTER_GBUFFER_PROFILE_MODE")) {
+        if (std::strcmp(profile, "geometry") == 0)
+            specialization_data.profile_mode = 1;
+        else if (std::strcmp(profile, "no_vt") == 0)
+            specialization_data.profile_mode = 2;
+        else if (std::strcmp(profile, "geometry_cutout") == 0)
+            specialization_data.profile_mode = 3;
+        else {
+            vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+            vkDestroyShaderModule(device, raster_fragment, nullptr);
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+            error = "MATTER_GBUFFER_PROFILE_MODE must be geometry, no_vt or geometry_cutout";
+            return false;
+        }
+        use_specialization = true;
+        MATTER_LOGW("terrain-profile", "G-buffer profile mode=%s (diagnostic; image changed)", profile);
+    }
+    if (use_specialization)
+        raster_stages[1].pSpecializationInfo = &specialization;
     VkVertexInputBindingDescription vertex_binding{
         0, sizeof(VkRasterVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     const VkVertexInputAttributeDescription attributes[] = {
@@ -3982,7 +4363,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     dynamic.dynamicStateCount = 2;
     dynamic.pDynamicStates = dynamic_values;
 
-    // GBuffer pipeline: 6-color MRT + depth write.
+    // GBuffer pipeline: six surface channels, integer VT demand and depth.
     VkPipelineDepthStencilStateCreateInfo depth_stencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth_stencil.depthTestEnable  = VK_TRUE;
@@ -3990,7 +4371,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     // Reversed-Z: nearer geometry has a larger NDC depth, so passing requires
     // depth >= existing (was <= under standard-Z).
     depth_stencil.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL;
-    VkPipelineColorBlendAttachmentState blend_attachments[6]{};
+    VkPipelineColorBlendAttachmentState blend_attachments[7]{};
     for (auto& blend : blend_attachments) {
         blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
                                VK_COLOR_COMPONENT_G_BIT |
@@ -3999,15 +4380,15 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     }
     VkPipelineColorBlendStateCreateInfo color_blend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    color_blend.attachmentCount = 6;
+    color_blend.attachmentCount = 7;
     color_blend.pAttachments = blend_attachments;
     const VkFormat gbuffer_formats[] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16_SFLOAT,
-        VK_FORMAT_R32G32_UINT, VK_FORMAT_R8_UNORM};
+        VK_FORMAT_R32G32_UINT, VK_FORMAT_R8_UNORM, vt::kVtFeedbackFormat};
     VkPipelineRenderingCreateInfo rendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 6;
+    rendering.colorAttachmentCount = 7;
     rendering.pColorAttachmentFormats = gbuffer_formats;
     rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     VkGraphicsPipelineCreateInfo raster_create{
@@ -4024,6 +4405,10 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     raster_create.pColorBlendState = &color_blend;
     raster_create.pDynamicState = &dynamic;
     raster_create.layout = pipeline_layout_;
+    if (std::getenv("MATTER_VK_PIPELINE_STATS") &&
+        vkGetDeviceProcAddr(device, "vkGetPipelineExecutableStatisticsKHR"))
+        raster_create.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR |
+            VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
     VkResult result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &raster_create, [&] {
         return vkCreateGraphicsPipelines(
         device, VK_NULL_HANDLE, 1, &raster_create, nullptr, &raster_pipeline_);
@@ -4034,6 +4419,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         vkDestroyShaderModule(device, raster_vertex, nullptr);
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
     }
+    log_vk_pipeline_stats(device, raster_pipeline_, "gbuffer.frag");
 
     // ---- the occlusion ID pipeline (M4) ----------------------------------
     //
@@ -4964,7 +5350,16 @@ void VkSceneRenderer::update_descriptor(
     write.descriptorCount = 1;
     write.descriptorType = type;
     write.pBufferInfo = &info;
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 1, &write, 0, nullptr);
+}
+
+void VkSceneRenderer::update_descriptor_sets(
+    VkDevice device, uint32_t write_count, const VkWriteDescriptorSet* writes,
+    uint32_t copy_count, const VkCopyDescriptorSet* copies) {
+    for (uint32_t i = 0; i < write_count; ++i)
+        frame_descriptors_written_ += writes[i].descriptorCount;
+    PROFILE_SCOPE("vk.descriptor_update");
+    vkUpdateDescriptorSets(device, write_count, writes, copy_count, copies);
 }
 
 // ---------------------------------------------------------------------------
@@ -4977,9 +5372,11 @@ void VkSceneRenderer::update_descriptor(
 // ---------------------------------------------------------------------------
 
 // Grows `buffer` to at least `required_size` if it is smaller, keeping the
-// existing allocation otherwise. New allocations are HOST_VISIBLE (coherent,
-// cached if available) so uploads are plain memcpy + flush with no staging
-// copy. The size is rounded up by checked_grown_capacity's doubling policy and
+// existing allocation otherwise. CPU-facing allocations are HOST_VISIBLE;
+// GPU work arrays opt into DEVICE_LOCAL and use fenced staging for CPU writes.
+// Keeping compute output in cached system RAM made a dense forest repeatedly
+// transfer hundreds of megabytes across PCIe during cull and raster.
+// The size is rounded up by checked_grown_capacity's doubling policy and
 // clamped to the device's descriptor range / maxBufferSize; exceeding those
 // fails with a legible message rather than allocating.
 //
@@ -4988,7 +5385,8 @@ void VkSceneRenderer::update_descriptor(
 bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
                                      VkDeviceSize required_size,
                                      VkBufferUsageFlags usage,
-                                     std::string& error, bool* replaced) {
+                                     std::string& error, bool* replaced,
+                                     bool device_local) {
     if (replaced) *replaced = false;
     const bool uniform = (usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) != 0;
     const VkDeviceSize descriptor_limit =
@@ -4997,7 +5395,10 @@ bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
     const VkDeviceSize limit =
         std::min(descriptor_limit, limits_.max_buffer_size);
     required_size = std::max<VkDeviceSize>(required_size, 1);
-    if (buffer.size >= required_size) return true;
+    const VkMemoryPropertyFlags memory = device_local
+        ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    if (buffer.size >= required_size &&
+        (buffer.memory_properties & memory) == memory) return true;
     VkDeviceSize capacity = 0;
     if (!vk_scene_detail::checked_grown_capacity(
             buffer.size, required_size, limit, capacity,
@@ -5010,9 +5411,8 @@ bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
             *vulkan_, capacity,
             usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            memory, device_local ? 0u : (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                         VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
             replacement, error)) {
         return false;
     }
@@ -5060,7 +5460,8 @@ bool VkSceneRenderer::ensure_vertex_buffer(VkDeviceSize required_size,
             *vulkan_, capacity,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                static_rt_input_usage(*vulkan_),
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                 VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -5088,8 +5489,10 @@ bool VkSceneRenderer::ensure_index_buffer(VkDeviceSize required_size,
     if (!matter::create_buffer(
             *vulkan_, capacity,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                static_rt_input_usage(*vulkan_),
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                 VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -5150,10 +5553,10 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // +1 for the per-part occlusion-class table at binding 19.
         // +5 for the standalone local-light publication set (records, hashed
         // cells, compact indices, oversized indices, metadata).
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 39},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 43},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
-              (155 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+              (155 + kTilesetSourceDescriptors +
               vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 43}};
     VkDescriptorPoolCreateInfo pool{
@@ -5242,14 +5645,15 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     uint32_t allocations = 1;
     const auto ensure_candidate_buffer = [&](matter::VkBufferResource& buffer,
                                              VkDeviceSize size,
-                                             VkBufferUsageFlags usage) {
+                                             VkBufferUsageFlags usage,
+                                             bool device_local = false) {
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         if (allocations == test_fail_after_frame_resource_allocations_) {
             error = "forced frame resource allocation failure";
             return false;
         }
 #endif
-        if (!ensure_buffer(buffer, size, usage, error)) return false;
+        if (!ensure_buffer(buffer, size, usage, error, nullptr, device_local)) return false;
         ++allocations;
         return true;
     };
@@ -5272,6 +5676,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.tileset_params, sizeof(TilesetParamsGpu),
+                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !matter::map_buffer(frame.tileset_params, error) ||
+            !ensure_candidate_buffer(frame.vt_draw_inputs,
+                                     sizeof(VtDrawInputGpu) * vt::kVtMaxInputSnapshots,
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !matter::map_buffer(frame.vt_draw_inputs, error) ||
             !ensure_candidate_buffer(frame.water_forward_constants,
                                      sizeof(WaterForwardConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
@@ -5280,13 +5691,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                                          sizeof(EnvironmentLightingGpu),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.instances, sizeof(GpuInstance),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true) ||
             !ensure_candidate_buffer(
                 frame.commands, sizeof(DrawCommand),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) ||
+                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, true) ||
             !ensure_candidate_buffer(frame.draw_transforms, sizeof(GpuDrawTransform),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true) ||
             // The ID pass's pair, seeded HERE for the same reason the two
             // above are: the descriptor write a few lines below names them, and
             // a binding written with a null buffer is a validation error on the
@@ -5295,10 +5706,10 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(
                 frame.vis_commands, sizeof(DrawCommand),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) ||
+                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, true) ||
             !ensure_candidate_buffer(frame.vis_draw_transforms,
                                      sizeof(GpuDrawTransform),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true) ||
             !ensure_candidate_buffer(frame.stats, sizeof(VkCullStats),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.animation_bounds,
@@ -5362,6 +5773,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(frame.part_occluder_class,
                                      sizeof(uint32_t),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.geometry_cut, 8 * sizeof(uint32_t),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.geometry_selected, 8 * sizeof(uint32_t),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) ||
+            !ensure_candidate_buffer(frame.geometry_feedback, 32 + 1024*8, VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
             !ensure_candidate_buffer(
                 frame.water_field_records,
                 sizeof(WaterFieldGpuRecord) * kWaterFieldBindingSlots,
@@ -5418,6 +5834,27 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             }
         }
     }
+    if (raster_workload_enabled()) {
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(vulkan_->physical_device(), &features);
+        if (features.pipelineStatisticsQuery) {
+            for (auto& candidate : next_frames) {
+                VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+                info.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+                info.queryCount = 1;
+                info.pipelineStatistics =
+                    VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
+                if (vkCreateQueryPool(vulkan_->device(), &info, nullptr,
+                                      &candidate.raster_stats_pool) != VK_SUCCESS)
+                    MATTER_LOGW("gbuffer-workload", "query pool unavailable");
+            }
+        } else {
+            MATTER_LOGW("gbuffer-workload", "pipeline statistics unsupported");
+        }
+    }
     if (descriptor_pool_ != VK_NULL_HANDLE) {
         vulkan_->wait_idle();
         vkDestroyDescriptorPool(vulkan_->device(), descriptor_pool_, nullptr);
@@ -5426,6 +5863,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         vkDestroyDescriptorPool(vulkan_->device(),
                                 water_forward_descriptor_pool_, nullptr);
     for (auto& f : frames_) {
+        if (f.raster_stats_pool != VK_NULL_HANDLE)
+            vkDestroyQueryPool(vulkan_->device(), f.raster_stats_pool, nullptr);
         if (f.ts_pool != VK_NULL_HANDLE) {
             vkDestroyQueryPool(vulkan_->device(), f.ts_pool, nullptr);
             f.ts_pool = VK_NULL_HANDLE;
@@ -5445,7 +5884,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // (kMaxTilesetSlots*kTilesetChannelCount combined-image-sampler
         // descriptors -- 48 = 8 slots x 6 channels) and binding 16 (1
         // uniform buffer, TilesetParams) per frame slot.
-        // WP-G: plus binding 17 (kVtChannelCount = 4 VT pool samplers)
+        // WP-G: plus binding 17 (kVtChannelCount = 5 VT pool samplers)
         // combined-image-samplers, and 18/19 storage buffers (the VT
         // indirection buffer and the variant table — 18 was an indirection
         // sampler before the buffer-indirection redesign).
@@ -5455,12 +5894,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
              frame_slot_count *
                  (5 + (rt_primary_adaptive_ ? 8u : 0u) +
-                  tileset::kMaxTilesetSlots * kTilesetChannelCount +
+                  kTilesetSourceDescriptors +
                   vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
-            // 7 storage images: visibility, raw diffuse, raw specular + aux,
-            // raw transmission + aux, and traced local direct.
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 7},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 7},
+            // Visibility, six raw lighting lanes and primary input metadata.
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 8},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 9},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -5562,7 +6000,11 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
     update_descriptor(frame.descriptor_sets[1], 19,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                       frame.part_occluder_class);
-    write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
+    update_descriptor(frame.descriptor_sets[1], 27,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.geometry_cut);
+    update_descriptor(frame.descriptor_sets[1], 28,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.geometry_selected);
+    write_tileset_descriptors_for_frame(frame);
     write_vt_descriptors_for_frame(frame);
 }
 
@@ -5595,7 +6037,7 @@ void VkSceneRenderer::update_water_forward_descriptor(FrameResources& frame) {
     writes[1].pImageInfo = &opaque_depth_info;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[2].pBufferInfo = &constants_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 3, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 3, writes, 0, nullptr);
 }
 
 bool VkSceneRenderer::upload_water_forward_constants(
@@ -5637,6 +6079,7 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
     std::array<std::array<VkDescriptorImageInfo,
                           kWaterFieldBindingSlots>, 4>
         image_infos{};
+    bool views_changed = false;
     for (std::uint32_t channel = 0u; channel != image_infos.size();
          ++channel) {
         for (std::uint32_t slot = 0u; slot != kWaterFieldBindingSlots;
@@ -5646,8 +6089,19 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
             info.imageView =
                 water_field_resources_.descriptor_view(slot, channel);
             info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            views_changed = views_changed ||
+                frame.water_field_views[channel][slot] != info.imageView;
             frame.water_field_views[channel][slot] = info.imageView;
         }
+    }
+    const bool write_raster =
+        !frame.water_field_raster_descriptors_valid || views_changed;
+    const bool write_rt = rt_set != VK_NULL_HANDLE &&
+        (!frame.water_field_rt_descriptors_valid || views_changed);
+    if (!write_raster && !write_rt) {
+        std::copy(std::begin(generations), std::end(generations),
+                  std::begin(frame.water_field_generations));
+        return true;
     }
     const VkDescriptorBufferInfo buffer_info{
         frame.water_field_records.buffer, 0u,
@@ -5668,19 +6122,21 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
     writes[4].descriptorCount = 1u;
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[4].pBufferInfo = &buffer_info;
-    vkUpdateDescriptorSets(vulkan_->device(),
-                           static_cast<std::uint32_t>(writes.size()),
-                           writes.data(), 0u, nullptr);
-    frame.water_field_raster_descriptors_valid = true;
+    if (write_raster) {
+        update_descriptor_sets(vulkan_->device(),
+                               static_cast<std::uint32_t>(writes.size()),
+                               writes.data(), 0u, nullptr);
+        frame.water_field_raster_descriptors_valid = true;
+    }
 
-    if (rt_set != VK_NULL_HANDLE) {
+    if (write_rt) {
         for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
             writes[channel].dstSet = rt_set;
             writes[channel].dstBinding = 21u + channel;
         }
         writes[4].dstSet = rt_set;
         writes[4].dstBinding = 25u;
-        vkUpdateDescriptorSets(vulkan_->device(),
+        update_descriptor_sets(vulkan_->device(),
                                static_cast<std::uint32_t>(writes.size()),
                                writes.data(), 0u, nullptr);
         frame.water_field_rt_descriptors_valid = true;
@@ -5794,6 +6250,13 @@ bool VkSceneRenderer::record_animation_skinning(
             resources.ready_skin_raster_draws =
                 filter_ready_animation_skin_raster_draws(
                     staged.raster_draws, validation);
+            auto& draws = resources.ready_skin_raster_draws;
+            draws.erase(std::remove_if(draws.begin(), draws.end(),
+                [this](const VkSkinRasterDraw& draw) {
+                    if (draw.instance_slot >= dynamic_instance_part_slots_.size()) return true;
+                    const auto slot = dynamic_instance_part_slots_[draw.instance_slot];
+                    return slot >= parts_.size() || !parts_[slot].triangle_resident;
+                }), draws.end());
             resources.skin_raster_ready =
                 !resources.ready_skin_raster_draws.empty();
             probe_skin_raster_draws(resources.ready_skin_raster_draws);
@@ -5974,83 +6437,15 @@ bool VkSceneRenderer::create_tileset_image(VkFormat format, uint32_t edge_px,
                                            uint32_t array_layers,
                                            TilesetImage& out,
                                            std::string& error) {
-    out = TilesetImage{};
-    if (edge_px == 0 || mip_levels == 0 || array_layers == 0) {
-        error = "create_tileset_image requires nonzero extent/mips/layers";
-        return false;
-    }
-    const VkDevice device = vulkan_->device();
-    VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    create.imageType = VK_IMAGE_TYPE_2D;
-    create.format = format;
-    create.extent = {edge_px, edge_px, 1};
-    create.mipLevels = mip_levels;
-    create.arrayLayers = array_layers;
-    create.samples = VK_SAMPLE_COUNT_1_BIT;
-    create.tiling = VK_IMAGE_TILING_OPTIMAL;
-    create.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    create.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImage image = VK_NULL_HANDLE;
-    VkResult result = vkCreateImage(device, &create, nullptr, &image);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkCreateImage(tileset)", result, error);
-    VkMemoryRequirements requirements{};
-    vkGetImageMemoryRequirements(device, image, &requirements);
-    uint32_t memory_type = 0;
-    VkMemoryPropertyFlags selected = 0;
-    if (!matter::find_memory_type(vulkan_->physical_device(),
-                                  requirements.memoryTypeBits,
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                  memory_type, selected, error)) {
-        vkDestroyImage(device, image, nullptr);
-        return false;
-    }
-    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    allocate.allocationSize = requirements.size;
-    allocate.memoryTypeIndex = memory_type;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    result = vkAllocateMemory(device, &allocate, nullptr, &memory);
-    if (result != VK_SUCCESS) {
-        vkDestroyImage(device, image, nullptr);
-        return fail_vk("vkAllocateMemory(tileset)", result, error);
-    }
-    result = vkBindImageMemory(device, image, memory, 0);
-    if (result != VK_SUCCESS) {
-        vkFreeMemory(device, memory, nullptr);
-        vkDestroyImage(device, image, nullptr);
-        return fail_vk("vkBindImageMemory(tileset)", result, error);
-    }
-    VkImageViewCreateInfo view_create{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    view_create.image = image;
-    view_create.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    view_create.format = format;
-    view_create.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mip_levels,
-                                    0, array_layers};
-    VkImageView view = VK_NULL_HANDLE;
-    result = vkCreateImageView(device, &view_create, nullptr, &view);
-    if (result != VK_SUCCESS) {
-        vkFreeMemory(device, memory, nullptr);
-        vkDestroyImage(device, image, nullptr);
-        return fail_vk("vkCreateImageView(tileset)", result, error);
-    }
-    out.image = image;
-    out.view = view;
-    out.memory = memory;
-    return true;
+    return matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D, format,
+        {edge_px, edge_px, 1},
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        out, error, mip_levels, array_layers, true);
 }
 
 void VkSceneRenderer::destroy_tileset_image(TilesetImage& image) {
-    if (!vulkan_) {
-        image = TilesetImage{};
-        return;
-    }
-    const VkDevice device = vulkan_->device();
-    if (image.view != VK_NULL_HANDLE) vkDestroyImageView(device, image.view, nullptr);
-    if (image.image != VK_NULL_HANDLE) vkDestroyImage(device, image.image, nullptr);
-    if (image.memory != VK_NULL_HANDLE) vkFreeMemory(device, image.memory, nullptr);
-    image = TilesetImage{};
+    image.reset();
 }
 
 namespace {
@@ -6155,38 +6550,40 @@ bool VkSceneRenderer::ensure_tileset_infra(std::string& error) {
         vulkan_->ray_tracing_available()};
     if (!matter::submit_immediate(*vulkan_, record_tileset_dummy_init,
                                   &dummy_record, error,
-                                  matter::ImmediateSubmitPhase::image_transition)) {
+                                  matter::ImmediateSubmitPhase::image_transition,
+                                  {tileset_dummy_rgba8_.lifetime,
+                                   tileset_dummy_rg8_.lifetime,
+                                   tileset_dummy_r16_.lifetime})) {
         return false;
     }
+    tileset_dummy_rgba8_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    tileset_dummy_rg8_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    tileset_dummy_r16_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    if (!matter::create_buffer(*vulkan_, sizeof(TilesetParamsGpu),
-                               VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                               tileset_params_, error) ||
-        !matter::map_buffer(tileset_params_, error)) {
-        return false;
-    }
     tileset_infra_ready_ = true;
-    write_tileset_params_buffer();
+    stage_tileset_params();
     return true;
 }
 
-VkImageView VkSceneRenderer::tileset_channel_view(int slot, int channel) const {
+const VkSceneRenderer::TilesetImage& VkSceneRenderer::tileset_channel_image(int slot, int channel) const {
     if (slot >= 0 && slot < tileset::kMaxTilesetSlots) {
-        const TilesetSlotGpu& s = tileset_slots_[slot];
-        if (s.loaded && s.channels[channel].view != VK_NULL_HANDLE)
-            return s.channels[channel].view;
+        const TilesetSlotGpu& source = tileset_slots_[slot];
+        if (source.loaded && source.channels[channel].view != VK_NULL_HANDLE)
+            return source.channels[channel];
     }
     switch (channel) {
-        case kTilesetChannelNormal: return tileset_dummy_rg8_.view;
-        case kTilesetChannelHeight: return tileset_dummy_r16_.view;
-        default: return tileset_dummy_rgba8_.view;  // albedo, orm
+        case kTilesetChannelNormal: return tileset_dummy_rg8_;
+        case kTilesetChannelHeight: return tileset_dummy_r16_;
+        default: return tileset_dummy_rgba8_;
     }
 }
 
-void VkSceneRenderer::write_tileset_params_buffer() {
-    if (!tileset_infra_ready_ || tileset_params_.mapped == nullptr) return;
+VkImageView VkSceneRenderer::tileset_channel_view(int slot, int channel) const {
+    return tileset_channel_image(slot, channel).view;
+}
+
+void VkSceneRenderer::stage_tileset_params() {
+    if (!tileset_infra_ready_) return;
     TilesetParamsGpu params{};
     for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
         const TilesetSlotGpu& s = tileset_slots_[slot];
@@ -6246,7 +6643,7 @@ void VkSceneRenderer::write_tileset_params_buffer() {
     // shipped frame uploads; gbuffer.frag's overlay branch is a
     // uniform-conditional and does nothing at 0. Carried here rather than in
     // a new vec4 because vt_near.w was the last unused component and
-    // TilesetParamsGpu's size is static_asserted at 464 bytes.
+    // TilesetParamsGpu's layout is static_asserted against the source-bank count.
     params.vt_near_band[3] =
         static_cast<float>(tileset_pom_settings_.horizon_debug);
     // Task 11: direction-to-sun, same convention as the RT shadow push
@@ -6263,41 +6660,88 @@ void VkSceneRenderer::write_tileset_params_buffer() {
         params.sun_dir_intensity[2] = length > 0.0f ? z / length : 0.0f;
         params.sun_dir_intensity[3] = lighting_.sun_intensity;
     }
-    std::memcpy(tileset_params_.mapped, &params, sizeof(params));
-    std::string flush_error;
-    matter::flush_buffer(tileset_params_, 0, sizeof(params), flush_error);
+    tileset_params_staging_ = params;
 }
 
-void VkSceneRenderer::write_tileset_descriptors_for_frame(VkDescriptorSet set) {
-    if (set == VK_NULL_HANDLE || !tileset_infra_ready_) return;
-    VkDescriptorImageInfo
-        image_infos[tileset::kMaxTilesetSlots * kTilesetChannelCount]{};
-    for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
-        for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
-            VkDescriptorImageInfo& info =
-                image_infos[slot * kTilesetChannelCount + channel];
-            info.sampler = tileset_sampler_;
-            info.imageView = tileset_channel_view(slot, channel);
-            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+void VkSceneRenderer::write_tileset_descriptors_for_frame(FrameResources& frame) {
+    const VkDescriptorSet set = frame.descriptor_sets[1];
+    if (set == VK_NULL_HANDLE || !tileset_infra_ready_ || !frame.tileset_params.mapped ||
+        !frame.vt_draw_inputs.mapped) return;
+    const auto snapshots = vt_ && vt_->available() ? vt_->active_input_snapshots()
+        : decltype(frame.vt_input_snapshots){};
+    const bool bindings_changed = !frame.tileset_bindings_valid ||
+        snapshots != frame.vt_input_snapshots || frame.tileset_source_revisions != vt_tileset_revisions_;
+    TilesetParamsGpu params = tileset_params_staging_;
+    std::string flush_error;
+    if (bindings_changed) {
+        // tileset_image_infos changes below; the RT set that mirrors it must
+        // rewrite binding 15 on its next dispatch.
+        ++tileset_descriptor_revision_;
+        for (uint32_t key = 0; key < kTilesetSourceSlots; ++key) {
+            const uint32_t logical = key % tileset::kMaxTilesetSlots;
+            for (uint32_t channel = 0; channel < kTilesetChannelCount; ++channel) {
+                const auto& source = tileset_channel_image(key < tileset::kMaxTilesetSlots ? logical : -1, channel);
+                frame.tileset_image_infos[key * kTilesetChannelCount + channel] = {
+                    tileset_sampler_, source.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+                if (key < tileset::kMaxTilesetSlots)
+                    frame.live_tileset_lifetimes[key * kTilesetChannelCount + channel] = source.lifetime;
+            }
         }
     }
-    VkDescriptorBufferInfo params_info{tileset_params_.buffer, 0,
-                                       sizeof(TilesetParamsGpu)};
-    VkWriteDescriptorSet writes[2]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = set;
-    writes[0].dstBinding = 6;
-    writes[0].descriptorCount =
-        tileset::kMaxTilesetSlots * kTilesetChannelCount;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].pImageInfo = image_infos;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = set;
-    writes[1].dstBinding = 7;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[1].pBufferInfo = &params_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 2, writes, 0, nullptr);
+    for (uint32_t bank = 0; bank < vt::kVtMaxInputSnapshots; ++bank) {
+        const auto source = snapshots[bank]
+            ? std::static_pointer_cast<const VtDrawInputSnapshot>(snapshots[bank]->lifetime) : nullptr;
+        if (!frame.tileset_bindings_valid || snapshots[bank] != frame.vt_input_snapshots[bank]) {
+            const VkDeviceSize offset = bank * sizeof(VtDrawInputGpu);
+            auto* target = static_cast<uint8_t*>(frame.vt_draw_inputs.mapped) + offset;
+            if (source) std::memcpy(target, &source->gpu, sizeof(VtDrawInputGpu));
+            else std::memset(target, 0, sizeof(VtDrawInputGpu));
+            matter::flush_buffer(frame.vt_draw_inputs, offset, sizeof(VtDrawInputGpu), flush_error);
+        }
+        if (!source) continue;
+        const uint32_t base = (bank + 1u) * tileset::kMaxTilesetSlots;
+        for (uint32_t logical = 0; logical < tileset::kMaxTilesetSlots; ++logical) {
+            const uint32_t key = base + logical;
+            params.slot_tile_size_m[key] = source->params.slot_tile_size_m[logical];
+            params.slot_texels_per_meter[key] = source->params.slot_texels_per_meter[logical];
+            params.slot_height_min[key] = source->params.slot_height_min[logical];
+            params.slot_height_max[key] = source->params.slot_height_max[logical];
+            std::copy_n(source->params.slot_mean_albedo[logical], 4, params.slot_mean_albedo[key]);
+            std::copy_n(source->params.slot_mean_orm[logical], 4, params.slot_mean_orm[key]);
+        }
+        if (bindings_changed)
+            std::copy(source->images.begin(), source->images.end(),
+                      frame.tileset_image_infos.begin() + base * kTilesetChannelCount);
+    }
+    if (!frame.tileset_bindings_valid || std::memcmp(&params, &frame.tileset_params_cache, sizeof(params)) != 0) {
+        std::memcpy(frame.tileset_params.mapped, &params, sizeof(params));
+        matter::flush_buffer(frame.tileset_params, 0, sizeof(params), flush_error);
+        frame.tileset_params_cache = params;
+    }
+    if (bindings_changed) {
+        VkDescriptorBufferInfo params_info{frame.tileset_params.buffer, 0, sizeof(TilesetParamsGpu)};
+        VkDescriptorBufferInfo materials_info{frame.vt_draw_inputs.buffer, 0, frame.vt_draw_inputs.size};
+        VkWriteDescriptorSet writes[3]{};
+        for (auto& write : writes) {
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = set;
+            write.descriptorCount = 1;
+        }
+        writes[0].dstBinding = 6;
+        writes[0].descriptorCount = kTilesetSourceDescriptors;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = frame.tileset_image_infos.data();
+        writes[1].dstBinding = 7;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[1].pBufferInfo = &params_info;
+        writes[2].dstBinding = 26;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].pBufferInfo = &materials_info;
+        update_descriptor_sets(vulkan_->device(), 3, writes, 0, nullptr);
+        frame.tileset_bindings_valid = true;
+    }
+    frame.vt_input_snapshots = snapshots;
+    frame.tileset_source_revisions = vt_tileset_revisions_;
 }
 
 // --- WP-E: chart-space virtual texturing ------------------------------------
@@ -6353,68 +6797,23 @@ void record_vt_dummy_init(VkCommandBuffer cmd, void* user_data) {
 
 bool VkSceneRenderer::ensure_vt_dummies(std::string& error) {
     if (vt_dummies_ready_) return true;
-    // Storage-image dummy for the feedback binding needs STORAGE usage, which
-    // create_tileset_image does not request, so it is created inline here.
-    // The indirection and variant-table bindings are storage buffers and both
-    // dummy through vt_dummy_storage_ below.
-    {
-        const VkDevice device = vulkan_->device();
-        VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        create.imageType = VK_IMAGE_TYPE_2D;
-        create.format = VK_FORMAT_R16G16B16A16_UINT;
-        create.extent = {1, 1, 1};
-        create.mipLevels = 1;
-        create.arrayLayers = 1;
-        create.samples = VK_SAMPLE_COUNT_1_BIT;
-        create.tiling = VK_IMAGE_TILING_OPTIMAL;
-        create.usage = VK_IMAGE_USAGE_STORAGE_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        create.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(device, &create, nullptr,
-                          &vt_dummy_feedback_.image) != VK_SUCCESS) {
-            error = "vkCreateImage(vt feedback dummy) failed";
-            return false;
-        }
-        VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(device, vt_dummy_feedback_.image,
-                                     &requirements);
-        uint32_t type = 0;
-        VkMemoryPropertyFlags selected = 0;
-        if (!matter::find_memory_type(vulkan_->physical_device(),
-                                      requirements.memoryTypeBits,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                      type, selected, error)) {
-            return false;
-        }
-        VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocate.allocationSize = requirements.size;
-        allocate.memoryTypeIndex = type;
-        if (vkAllocateMemory(device, &allocate, nullptr,
-                             &vt_dummy_feedback_.memory) != VK_SUCCESS ||
-            vkBindImageMemory(device, vt_dummy_feedback_.image,
-                              vt_dummy_feedback_.memory, 0) != VK_SUCCESS) {
-            error = "vt feedback dummy memory allocation failed";
-            return false;
-        }
-        VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        view.image = vt_dummy_feedback_.image;
-        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view.format = VK_FORMAT_R16G16B16A16_UINT;
-        view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        if (vkCreateImageView(device, &view, nullptr,
-                              &vt_dummy_feedback_.view) != VK_SUCCESS) {
-            error = "vkCreateImageView(vt feedback dummy) failed";
-            return false;
-        }
+    // The feedback dummy is a 2D storage image; indirection and variant
+    // tables use the storage buffer below.
+    if (!matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
+            vt::kVtFeedbackFormat, {1, 1, 1},
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            vt_dummy_feedback_, error)) {
+        return false;
     }
     VtDummyInitRecord record{vt_dummy_feedback_.image};
     if (!matter::submit_immediate(*vulkan_, record_vt_dummy_init, &record,
                                   error,
-                                  matter::ImmediateSubmitPhase::image_transition)) {
+                                  matter::ImmediateSubmitPhase::image_transition,
+                                  {vt_dummy_feedback_.lifetime})) {
         return false;
     }
+    vt_dummy_feedback_.layout = VK_IMAGE_LAYOUT_GENERAL;
     if (!matter::create_buffer(*vulkan_, 64,
                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0,
@@ -6459,6 +6858,16 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
         }
     }
     vt_init_attempted_ = true;
+    // Eager part publication can start VT before init() creates the raster
+    // pipeline. Its first immutable draw-input snapshot must already own valid
+    // dummy source views; initializing them later cannot repair that snapshot.
+    if (!ensure_tileset_infra(error)) {
+        vt_unavailable_ = true;
+        vt_unavailable_reason_ = error;
+        MATTER_LOGW("vk", "VT source descriptors unavailable: %s\n",
+                    error.c_str());
+        return false;
+    }
     auto runtime = std::make_unique<vt::VtResidency>();
     // Install WP-D's tier-1 compositor as the page filler BEFORE init(), which
     // only falls back to the WP-E stub when no filler is set. The residency
@@ -6475,7 +6884,34 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
             compositor_error);
         if (compositor) {
             vt_compositor_ = compositor.get();
-            runtime->set_filler(std::move(compositor));
+            const char* cache_dir = std::getenv("MATTER_VT_ENCODED_CACHE");
+            if (cache_dir && *cache_dir) {
+                const char* cook = std::getenv("MATTER_VT_ENCODED_COOK");
+                const bool capture = cook && cook[0] == '1';
+                asset_store::PageCacheConfig config;
+                config.store.dir = cache_dir;
+                config.resident_bytes = 512ull << 20;
+                config.bank = asset_store::PageBank::create(config.resident_bytes, 256);
+                config.read_ahead_bytes = 4u << 20;
+                auto adapter = vt::encoded::Filler::create(*vulkan_, std::move(compositor),
+                    std::move(config), [this]() {
+                        const auto words = vt_compositor_->encoded_input_identity();
+                        return asset_store::BlobHash{words[0], words[1]};
+                    }, false, compositor_error, 64, capture);
+                if (!adapter) {
+                    vt_compositor_ = nullptr;
+                    vt_unavailable_ = true;
+                    error = vt_unavailable_reason_ = "encoded VT cache initialization: " + compositor_error;
+                    return false;
+                }
+                vt_encoded_filler_ = adapter.get();
+                vt_encoded_geometry_only_ = true;
+                tileset_pom_settings_.enabled = false;
+                stage_tileset_params();
+                runtime->set_filler(std::move(adapter));
+                MATTER_LOGI("vt-cache", "enabled mode=%s bank_mib=512 pages_per_frame=64 POM=off dir=%s",
+                    capture ? "cook" : "read", cache_dir);
+            } else runtime->set_filler(std::move(compositor));
             vt_inputs_dirty_ = true;
         } else {
             vt_compositor_ = nullptr;
@@ -6515,6 +6951,7 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
         }
     }
     if (!runtime->init(*vulkan_, error)) {
+        vt_encoded_filler_ = nullptr;
         vt_compositor_ = nullptr;
         vt_enricher_ = nullptr;
         // Fail closed for the whole session: every part stays chartless and
@@ -6553,125 +6990,269 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     return true;
 }
 
-// Rebinds the tier-1 compositor's inputs -- the ground tileset slot views and
-// the decoded material table -- and then invalidates all resident page
-// content so everything is re-baked from them.
+void VkSceneRenderer::note_vt_input_push_failure(const char* why) {
+    constexpr uint32_t kMaxConsecutiveFailures = 8;
+    ++vt_input_push_failures_;
+    MATTER_LOGE("vk", "VT input push rejected (%u/%u): %s", vt_input_push_failures_,
+                kMaxConsecutiveFailures, why);
+    if (vt_input_push_failures_ >= kMaxConsecutiveFailures) {
+        MATTER_LOGE("vk", "VT input push giving up; rendering continues from the last published snapshot");
+        vt_inputs_dirty_ = false;
+        // The next authoring change starts a fresh bounded retry sequence.
+        vt_input_push_failures_ = 0;
+    }
+}
+
+// Stages the tier-1 compositor's source views and decoded material table,
+// then queues replacements for resident owners that consume changed inputs.
 //
-// EXPENSIVE AND BLOCKING: calls vulkan_->wait_idle(). That is deliberate and
-// safe only because the setters require the device idle with respect to prior
-// fills, and because the trigger is a world-load / live-edit event (a tileset
-// slot load, or a material table change), not a per-frame one. It must run
-// outside any active command-buffer recording, which is why the per-frame
-// caller is vt_begin_frame(). PROFILE_COUNT("vt.input_pushes") is what proves
+// Compositor batches and draw frames retain immutable input bindings and source
+// allocations. Updating the desired inputs therefore needs no device-idle wait.
+// The trigger is a world-load / live-edit event (a tileset slot load, or a
+// material table change), not a per-frame one. The per-frame caller is
+// vt_begin_frame(), before the retired frame slot captures its descriptor banks.
+// PROFILE_COUNT("vt.input_pushes") is what proves
 // it is not silently running every publish in a streaming world.
 void VkSceneRenderer::push_vt_compositor_inputs() {
     if (!vt_compositor_ || !vt_inputs_dirty_) return;
-    // How often this whole path actually runs. The comment below asserts it is
-    // a world-load / live-edit event; the counter is what proves or disproves
-    // that in a streaming world, where update_materials() sets the dirty bit on
-    // every publish that grows the material table.
-    PROFILE_COUNT("vt.input_pushes", 1);
-    // Both setters require the device to be idle with respect to this
-    // compositor's prior fills (vt_compositor.h). Tileset loads and material
-    // table changes are world-load / live-edit events, not per-frame ones, so
-    // paying a wait_idle here is cheap and unambiguously correct.
-    {
-        PROFILE_SCOPE("vt.wait_idle");
-        vulkan_->wait_idle();
+    // Gate fills only while publishing. Every rejected or deferred push
+    // releases the gate so the previous snapshot can keep serving fills.
+    // Rejections retain the newest desired inputs until the retry cap;
+    // a later authoring change rearms publication after that cap is reached.
+    struct PendingGate {
+        vt::VtResidency* vt;
+        bool published = false;
+        ~PendingGate() { if (!published) vt->set_input_update_pending(false); }
+    } gate{vt_.get()};
+    vt_->set_input_update_pending(true);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_next_vt_input_push_) {
+        test_fail_next_vt_input_push_ = false;
+        note_vt_input_push_failure("injected test failure");
+        return;
     }
+#endif
 
-    vt::VtTilesetSlotViews slots[tileset::kMaxTilesetSlots]{};
-    for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
-        const TilesetSlotGpu& source = tileset_slots_[slot];
-        if (!source.loaded) continue;   // null views -> compositor's neutral dummy
-        slots[slot].albedo = source.channels[kTilesetChannelAlbedo].view;
-        slots[slot].normal = source.channels[kTilesetChannelNormal].view;
-        slots[slot].orm = source.channels[kTilesetChannelOrm].view;
-        slots[slot].height = source.channels[kTilesetChannelHeight].view;
-        slots[slot].tile_size_m =
-            source.tile_size_m > 0.0f ? source.tile_size_m : 1.0f;
-        slots[slot].texels_per_meter =
-            source.texels_per_meter > 0.0f ? source.texels_per_meter : 1024.0f;
-    }
-    std::string tileset_error;
-    if (!vt_compositor_->set_tilesets(slots, tileset::kMaxTilesetSlots,
-                                      tileset_error)) {
-        MATTER_LOGE("vk", "VT compositor tileset bind failed: %s\n",
-                     tileset_error.c_str());
-        std::fflush(stderr);
-    }
-
-    // materialId -> detail slot + scalar fallbacks, decoded from the same
-    // MaterialGpuRecord table the G-buffer shades with, so the compositor and
-    // the legacy path can never disagree about which tileset a material uses.
-    // flags_misc[1] carries MaterialPackDetailMacroSlots(detail, macro);
-    // its low byte is detailSlot + 1 (0 = none) -- the encoding
-    // tileset_common.glsl's tileset_detail_slot() decodes.
-    const size_t material_count =
-        std::min<size_t>(material_staging_.size(), vt::VtCompositor::kMaxMaterials);
-    std::vector<vt::VtCompositorMaterial> materials(material_count);
+    // Canonicalize exactly the inputs the compositor consumes. Appending an
+    // unused material or advancing a table revision must not rebuild the world.
+    std::vector<vt::VtCompositorMaterial> materials(vt::VtCompositor::kMaxMaterials);
+    const size_t material_count = std::min(material_staging_.size(), materials.size());
     for (size_t i = 0; i < material_count; ++i) {
         const MaterialGpuRecord& source = material_staging_[i];
-        vt::VtCompositorMaterial& target = materials[i];
-        target.albedo[0] = source.base_roughness[0];
-        target.albedo[1] = source.base_roughness[1];
-        target.albedo[2] = source.base_roughness[2];
+        auto& target = materials[i];
+        std::copy_n(source.base_roughness, 3, target.albedo);
         target.albedo[3] = 1.0f;
-        target.orm[0] = 1.0f;                              // occlusion
-        target.orm[1] = source.base_roughness[3];          // roughness
-        target.orm[2] = source.metal_opacity_spec_coat[0]; // metallic
-        const int packed_detail =
-            static_cast<int>(source.flags_misc[1] & 0xFFu) - 1;
-        target.detail_slot =
-            (packed_detail >= 0 && packed_detail < tileset::kMaxTilesetSlots)
-                ? packed_detail
-                : -1;
+        target.orm[0] = 1.0f;
+        target.orm[1] = source.base_roughness[3];
+        target.orm[2] = source.metal_opacity_spec_coat[0];
+        const int detail = static_cast<int>(source.flags_misc[1] & 0xFFu) - 1;
+        target.detail_slot = detail >= 0 && detail < tileset::kMaxTilesetSlots
+            ? detail : -1;
     }
-    vt_compositor_->set_materials(materials.data(),
-                                  static_cast<uint32_t>(materials.size()));
-    vt_inputs_dirty_ = false;
+    std::array<MaterialGpuRecord, kVtDrawMaterials> draw_materials{};
+    std::copy_n(material_staging_.begin(), material_count, draw_materials.begin());
+    const bool tilesets_changed = !vt_inputs_pushed_ ||
+        vt_tileset_revisions_ != vt_tileset_revisions_pushed_;
+    std::vector<uint32_t> changed_materials;
+    bool material_inputs_changed = !vt_inputs_pushed_;
+    if (vt_inputs_pushed_) {
+        for (uint32_t i = 0; i < materials.size(); ++i) {
+            const auto& old = vt_materials_pushed_[i];
+            const auto& next = materials[i];
+            const bool changed = (i < vt_draw_material_count_pushed_) != (i < material_count) ||
+                std::memcmp(&draw_materials[i], &vt_draw_materials_pushed_[i], sizeof(MaterialGpuRecord)) != 0 ||
+                old.detail_slot != next.detail_slot ||
+                std::memcmp(old.albedo, next.albedo, sizeof(old.albedo)) != 0 ||
+                std::memcmp(old.orm, next.orm, sizeof(old.orm)) != 0;
+            material_inputs_changed = material_inputs_changed || changed;
+            const auto source_changed = [&](int slot) {
+                return slot >= 0 && slot < tileset::kMaxTilesetSlots &&
+                    vt_tileset_revisions_[slot] != vt_tileset_revisions_pushed_[slot];
+            };
+            if (changed || source_changed(old.detail_slot) || source_changed(next.detail_slot))
+                changed_materials.push_back(i);
+        }
+    }
+    if (!material_inputs_changed && !tilesets_changed) {
+        vt_inputs_dirty_ = false;
+        vt_input_push_failures_ = 0;
+        return;
+    }
 
-    // Rebinding only fixes FUTURE fills. Every page already in the pool was
-    // baked from the tilesets/materials that just changed, and the pinned
-    // per-variant tails never expire on their own -- so without this the world
-    // keeps showing pre-edit pages indefinitely.
-    //
-    // ORDERING: the wait_idle above retired every fill recorded against the old
-    // inputs, and invalidate_all_content only QUEUES the re-fills; they are
-    // drained by VtResidency::record_frame during this frame's recording, i.e.
-    // strictly after the set_tilesets/set_materials above. A re-queued fill can
-    // therefore only ever run against the newly bound inputs.
-    //
-    // Skipped on the first push (the one inside ensure_vt_runtime): nothing is
-    // resident yet, so it could only duplicate registration-time tail fills.
-    if (vt_inputs_pushed_ && vt_ && vt_->available()) {
-        PROFILE_SCOPE("vt.invalidate_all");
-        // Returns the resident pages dropped. Each one is a page the compositor
-        // has to bake again, so this number is the size of the fill burst that
-        // lands in vt.fill over the following frames.
-        PROFILE_COUNT("vt.pages_invalidated", vt_->invalidate_all_content());
+    uint32_t bank = vt::kVtMaxInputSnapshots;
+    for (uint32_t i = 0; i < vt::kVtMaxInputSnapshots; ++i)
+        if (vt_draw_snapshot_registry_[i].expired()) { bank = i; break; }
+    if (bank == vt::kVtMaxInputSnapshots) return; // coalesce desired inputs; keep prior snapshot serving fills
+    auto binding = std::make_shared<VtDrawInputSnapshot>();
+    binding->params = tileset_params_staging_;
+    binding->gpu.meta[0] = static_cast<uint32_t>(material_count);
+    for (uint32_t i = 0; i < kVtDrawMaterials; ++i) {
+        auto& target = binding->gpu.materials[i];
+        target = draw_materials[i];
+        const uint32_t slot_plus_one = target.flags_misc[1] & 0xFFu;
+        if (slot_plus_one > 0u && slot_plus_one <= tileset::kMaxTilesetSlots)
+            target.flags_misc[1] = (target.flags_misc[1] & ~0xFFu) |
+                (slot_plus_one + (bank + 1u) * tileset::kMaxTilesetSlots);
     }
+    for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot)
+        for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
+            const auto& source = tileset_channel_image(slot, channel);
+            const uint32_t index = slot * kTilesetChannelCount + channel;
+            binding->images[index] = {tileset_sampler_, source.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            binding->image_lifetimes[index] = source.lifetime;
+        }
+    auto snapshot = std::make_shared<const vt::VtInputSnapshot>(bank, binding);
+
+    PROFILE_COUNT("vt.input_pushes", 1);
+    // Setters change future batches. Recorded batches, displayed pages and
+    // frame descriptor banks keep their captured inputs through retirement.
+    if (tilesets_changed) {
+        vt::VtTilesetSlotViews slots[tileset::kMaxTilesetSlots]{};
+        for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
+            const TilesetSlotGpu& source = tileset_slots_[slot];
+            if (!source.loaded) continue;
+            auto& target = slots[slot];
+            std::copy_n(source.pixel_hash, 2, target.pixel_hash);
+            target.albedo = source.channels[kTilesetChannelAlbedo].view;
+            target.normal = source.channels[kTilesetChannelNormal].view;
+            target.orm = source.channels[kTilesetChannelOrm].view;
+            target.height = source.channels[kTilesetChannelHeight].view;
+            for (int channel = 0; channel < 4; ++channel)
+                target.lifetimes[channel] = source.channels[channel].lifetime;
+            target.tile_size_m = source.tile_size_m > 0.0f ? source.tile_size_m : 1.0f;
+            target.texels_per_meter = source.texels_per_meter > 0.0f
+                ? source.texels_per_meter : 1024.0f;
+        }
+        std::string error;
+        if (!vt_compositor_->set_tilesets(slots, tileset::kMaxTilesetSlots, error)) {
+            note_vt_input_push_failure(error.c_str());
+            return; // keep dirty until the cap; never publish a rejected snapshot
+        }
+    }
+    if (material_inputs_changed)
+        vt_compositor_->set_materials(materials.data(), static_cast<uint32_t>(materials.size()));
+    {
+        PROFILE_SCOPE("vt.invalidate_dependencies");
+        const auto reason = tilesets_changed
+            ? (material_inputs_changed ? vt::VtInvalidationReason::MaterialAndSourceInputs
+                                       : vt::VtInvalidationReason::SourceInputs)
+            : vt::VtInvalidationReason::MaterialInputs;
+        if (!vt_->set_input_snapshot(snapshot, changed_materials, reason)) {
+            note_vt_input_push_failure("draw input snapshot publication rejected");
+            return;
+        }
+    }
+    gate.published = true; // set_input_snapshot already cleared the pending flag
+    vt_input_push_failures_ = 0;
+    vt_draw_snapshot_registry_[bank] = snapshot;
+    vt_draw_materials_pushed_ = draw_materials;
+    vt_draw_material_count_pushed_ = static_cast<uint32_t>(material_count);
+    vt_materials_pushed_ = std::move(materials);
+    vt_tileset_revisions_pushed_ = vt_tileset_revisions_;
     vt_inputs_pushed_ = true;
+    vt_inputs_dirty_ = false;
 }
 
-void VkSceneRenderer::drain_vt_invalidations(uint64_t serial) {
-    if ((!vt_compositor_ && !vt_enricher_) || vt_pending_invalidate_.empty())
-        return;
-    size_t keep = 0;
-    for (size_t i = 0; i < vt_pending_invalidate_.size(); ++i) {
-        if (serial >= vt_pending_invalidate_[i].second) {
-            if (vt_compositor_)
-                vt_compositor_->invalidate_part(vt_pending_invalidate_[i].first);
-            // WP-H: the enricher caches the same geometry PLUS the variant's
-            // acceleration structure; both are keyed on the variant hash and
-            // both go stale for exactly the same reasons.
-            if (vt_enricher_)
-                vt_enricher_->invalidate_part(vt_pending_invalidate_[i].first);
-            continue;
-        }
-        vt_pending_invalidate_[keep++] = vt_pending_invalidate_[i];
+bool VkSceneRenderer::export_part_material(const chart_atlas::ChartAtlasRung& atlas,
+    const vt::VtPartContext& input, const float transform[16],
+    const std::vector<float>& baked_ao, asset_export::Mesh& mesh,
+    asset_export::Material& material, std::string& error) {
+    const auto found=slot_of_.find(input.variant_hash);
+    if(!vulkan_ || found==slot_of_.end()) {error="export part has not been published to the renderer";return false;}
+    const auto source=parts_[found->second].finite_surface;
+    vt::VtPartContext context=input;part_surface::BindingScratch scratch;
+    if(source && !part_surface::bind(*source,context,scratch,error))return false;
+    auto unique=vt::VtCompositor::create(vulkan_->device(),vulkan_->physical_device(),VK_NULL_HANDLE,error);
+    if(!unique)return false;
+    std::shared_ptr<vt::VtCompositor> compositor(std::move(unique));
+    if(context.surface_tape_text && !compositor->tape_gpu_enabled()) {
+        error="asset export requires GPU surface evaluation (MATTER_VT_TAPE_GPU=1)";return false;
     }
-    vt_pending_invalidate_.resize(keep);
+    std::vector<vt::VtCompositorMaterial> materials(vt::VtCompositor::kMaxMaterials);
+    const size_t count=std::min(material_staging_.size(),materials.size());
+    std::vector<std::array<float,2>> clearcoat(count);
+    std::vector<bool> used(material_staging_.size());
+    for(uint32_t v=0;v<context.vertex_count;++v) {
+        uint32_t id=context.material_ids?context.material_ids[v]:context.dominant_material;
+        if(id==UINT32_MAX)id=0;
+        if(id>=count){error="export material is missing from the renderer registry";return false;}
+        used[id]=true;
+    }
+    // A surface program can blend materials that are absent from the mesh's
+    // dominant vertex IDs. Bind and validate every declared contributor.
+    for(uint32_t i=0;i<context.surface_material_count;++i) {
+        const uint32_t id=context.surface_materials[i];
+        if(id>=count){error="export surface material is missing from the renderer registry";return false;}
+        used[id]=true;
+    }
+    vt::VtTilesetSlotViews slots[tileset::kMaxTilesetSlots]{};
+    for(size_t i=0;i<count;++i) {
+        const auto& in=material_staging_[i];auto& out=materials[i];
+        std::copy_n(in.base_roughness,3,out.albedo);out.orm[0]=1;
+        out.orm[1]=in.base_roughness[3];out.orm[2]=in.metal_opacity_spec_coat[0];
+        if(used[i])clearcoat[i]={in.metal_opacity_spec_coat[3],in.specular_tint_coat_roughness[3]};
+        const int detail=int(in.flags_misc[1]&255u)-1;
+        if(used[i] && (in.metal_opacity_spec_coat[1]<.999f || in.emission_strength[3]>0 ||
+            in.scattering[3]>0 || in.transmission[0]>0)) {
+            error="asset exporter currently supports static opaque base-color/normal/metallic/roughness materials; opacity, emission, subsurface or transmission requires an extension";return false;
+        }
+        if(used[i] && detail>=0 && detail<tileset::kMaxTilesetSlots) {
+            if(used[i] && !tileset_slots_[detail].loaded){error="asset detail tileset is not loaded; wait for bake completion";return false;}
+            out.detail_slot=detail;
+            out.height_from_top=(in.flags_misc[0]&(1u<<5))!=0;
+        }
+    }
+    for(int i=0;i<tileset::kMaxTilesetSlots;++i){
+        const auto& in=tileset_slots_[i];auto& out=slots[i];if(!in.loaded)continue;
+        out.albedo=in.channels[kTilesetChannelAlbedo].view;out.normal=in.channels[kTilesetChannelNormal].view;
+        out.orm=in.channels[kTilesetChannelOrm].view;out.height=in.channels[kTilesetChannelHeight].view;
+        for(int c=0;c<4;++c)out.lifetimes[c]=in.channels[c].lifetime;
+        out.tile_size_m=in.tile_size_m;out.texels_per_meter=in.texels_per_meter;
+        out.height_min_m=in.height_min;out.height_max_m=in.height_max;
+        std::copy_n(in.pixel_hash,2,out.pixel_hash);
+    }
+    if(!compositor->set_tilesets(slots,tileset::kMaxTilesetSlots,error))return false;
+    compositor->set_materials(materials.data(),uint32_t(materials.size()));
+    const auto snapshot=vt::VtPartSnapshot::capture(atlas,context);
+    return vt::vt_export_mesh(*vulkan_,std::move(compositor),snapshot,source.get(),
+        transform,baked_ao,mesh,material,error,clearcoat);
+}
+
+bool VkSceneRenderer::bind_vt_materials(uint64_t hash,uint32_t rung,
+    const part_surface::Prepared& source,const chart_atlas::ChartAtlasRung& atlas,
+    const vt::VtPartContext& context,std::string& error) {
+    if(source.modules.empty())return true;
+    std::vector<vt::VtMaterialModuleLease> modules(source.modules.size());
+    for(size_t i=0;i<modules.size();++i)
+        if(!vt_->acquire_material_module(source.modules[i],modules[i],error))return false;
+    std::vector<vt::VtReceiverMaterialChart> mappings;
+    for(uint32_t chart=0;chart<atlas.charts.size();++chart) {
+        const auto& c=atlas.charts[chart];
+        if(!c.tri_count || c.first_tri>=atlas.tri_order.size())continue;
+        const size_t triangle=atlas.tri_order[c.first_tri];
+        if(!context.indices || triangle>=context.triangle_count)return false;
+        const size_t vertex=context.indices[triangle*3];
+        if(vertex>=context.vertex_count || !context.positions || !context.normals)return false;
+        const float* p=context.positions+vertex*3;const float* n=context.normals+vertex*3;
+        bool bound=false;
+        for(const auto& authored:source.material_mappings) {
+            const auto& f=authored.frame;
+            const float distance=(p[0]-f.origin_m.x)*f.n.x+(p[1]-f.origin_m.y)*f.n.y+(p[2]-f.origin_m.z)*f.n.z;
+            const float facing=n[0]*f.n.x+n[1]*f.n.y+n[2]*f.n.z;
+            if(std::abs(distance)>.00005f || facing<.9999f)continue;
+            if(bound){error="multiple periodic mappings select the same receiver chart";return false;}
+            if(authored.module>=modules.size()){error="receiver module index outside prepared bank";return false;}
+            vt::VtReceiverMaterialChart mapping;
+            mapping.chart=chart;mapping.module=modules[authored.module];mapping.frame=f;
+            mapping.phase=authored.phase;mapping.datum_m=authored.datum_m;mapping.u_range_m=authored.u_range_m;
+            mappings.push_back(std::move(mapping));bound=true;
+        }
+    }
+    if(mappings.empty()){error="periodic material mappings matched no receiver charts";return false;}
+    if(!vt_->bind_receiver_materials(hash,rung,mappings,error))return false;
+    MATTER_LOGI("vt-material","receiver=%016llx rung=%u mapped_charts=%u unique_modules=%u",
+        static_cast<unsigned long long>(hash),rung,uint32_t(mappings.size()),vt_->stats().module_variants);
+    return true;
 }
 
 void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
@@ -6687,8 +7268,10 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
     // runtime, exactly like a chartless world.
     if (part.vt_deferred_rung_mask != 0) {
         record.vt_rung_mask = part.vt_deferred_rung_mask;
+        record.vt_expected_rung_mask = part.vt_deferred_rung_mask;
         record.vt_last_wanted.fill(0);
-        record.vt_last_requested.fill(0);
+        record.vt_cached_wanted_mask = 0;
+        vt_demand_cache_valid_ = false;
         ++vt_deferred_parts_;
         return;
     }
@@ -6697,6 +7280,11 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
         if (!rung.charts.empty()) { any_charts = true; break; }
     }
     if (!any_charts) return;   // legacy path, no runtime start
+    for (size_t rung = 0;
+         rung < std::min<size_t>(part.lod_charts.size(), kVkMaxChartRung);
+         ++rung)
+        if (!part.lod_charts[rung].charts.empty())
+            record.vt_expected_rung_mask |= 1u << rung;
     std::string error;
     if (!ensure_vt_runtime(error)) return;
 
@@ -6778,8 +7366,17 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
                 }
             }
         }
-        const uint32_t slot = vt_->register_variant(
+        part_surface::BindingScratch binding;
+        if (record.finite_surface && !part_surface::bind(*record.finite_surface,context,binding,error)) {
+            MATTER_LOGE("finite-surface","eager binding: %s\n",error.c_str()); continue;
+        }
+        uint32_t slot = vt_->register_variant(
             part.part_hash, static_cast<uint32_t>(rung), atlas, context);
+        if(slot && record.finite_surface && !bind_vt_materials(part.part_hash,uint32_t(rung),
+            *record.finite_surface,atlas,context,error)) {
+            MATTER_LOGE("vt-material","eager binding rejected: %s",error.c_str());
+            vt_->release_variant(part.part_hash,uint32_t(rung));slot=vt::kVtNoSlot;
+        }
         record.vt_slots[rung] = slot;
         if (slot != vt::kVtNoSlot) {
             vt_draw_slots_dirty_ = true;
@@ -6789,30 +7386,70 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
 
 // --- Demand-driven VT variant registration ----------------------------------
 
+bool VkSceneRenderer::set_vt_surface_connections(const std::vector<vt::VtSurfaceConnectionPair>& pairs,std::string& error) {
+    if(!ensure_vt_runtime(error))return false;
+    return vt_->set_surface_connections(pairs,error);
+}
+
+bool VkSceneRenderer::vt_surface_selected_rung(uint64_t part_hash, uint32_t& rung) const {
+    const auto found = slot_of_.find(part_hash);
+    if (!vt_demand_cache_valid_ || found == slot_of_.end()) return false;
+    const auto& part = parts_[found->second];
+    const uint32_t mask = part.vt_cached_wanted_mask;
+    if (!part.live || !mask || (mask & (mask - 1u))) return false;
+    rung = 0;
+    while ((mask & (1u << rung)) == 0) ++rung;
+    return true;
+}
+
 void VkSceneRenderer::take_vt_rung_requests(std::vector<VtRungRequest>& out) {
     out.clear();
     out.swap(vt_rung_requests_);
 }
 
-void VkSceneRenderer::evict_vt_rung(PartRecord& record, uint32_t rung) {
+void VkSceneRenderer::set_vt_part_prewarm(uint64_t part_hash, bool wanted) {
+    const auto found = slot_of_.find(part_hash);
+    if (found == slot_of_.end()) return;
+    const uint32_t slot = found->second;
+    const auto at = std::find(vt_prewarm_parts_.begin(), vt_prewarm_parts_.end(), slot);
+    if (wanted && at == vt_prewarm_parts_.end()) vt_prewarm_parts_.push_back(slot);
+    else if (!wanted && at != vt_prewarm_parts_.end()) vt_prewarm_parts_.erase(at);
+    else return;
+    vt_demand_cache_valid_ = false;
+}
+
+bool VkSceneRenderer::vt_part_coverage_ready(uint64_t part_hash) const {
+    const auto found = slot_of_.find(part_hash);
+    if (found == slot_of_.end()) return false;
+    const auto& part = parts_[found->second];
+    if (!part.live) return false;
+    // Disabled/unsupported VT intentionally uses the ordinary material path.
+    if (vt_unavailable_ || !(part.vt_rung_mask & 1u)) return true;
+    return vt_ && !part.vt_slots.empty() && vt_->slot_active(part.vt_slots[0]);
+}
+
+void VkSceneRenderer::evict_vt_rung(PartRecord& record, uint32_t rung,
+                                   const char* reason) {
     if (rung >= record.vt_slots.size() ||
         record.vt_slots[rung] == vt::kVtNoSlot)
         return;
+    static const bool log_events = std::getenv("MATTER_VT_EVENT_LOG") != nullptr;
+    if (log_events)
+        MATTER_LOGI("vt-owner-retire",
+            "demand_frame=%llu part=%016llx rung=%u slot=%u reason=%s wanted_mask=%u age=%llu",
+            static_cast<unsigned long long>(vt_demand_frame_),
+            static_cast<unsigned long long>(record.hash), rung, record.vt_slots[rung],
+            reason, record.vt_cached_wanted_mask,
+            static_cast<unsigned long long>(vt_demand_frame_ - vt_wanted_stamp(record, rung)));
     if (vt_) vt_->release_variant(record.hash, rung);
     record.vt_slots[rung] = vt::kVtNoSlot;
-    // Same deferred filler-cache retirement as release_part: a fill recorded
-    // this frame may still read the compositor/enricher buffers cached for
-    // this part. Re-registration after the drop rebuilds them (content-
-    // addressed, so only tape edits actually change what gets rebuilt).
-    if (vt_compositor_ || vt_enricher_)
-        vt_pending_invalidate_.emplace_back(record.hash,
-                                            vt_invalidate_retire_serial());
     vt_draw_slots_dirty_ = true;
+    vt_demand_registrations_pending_ = true;
 }
 
 bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
                                        const chart_atlas::ChartAtlasRung& atlas,
-                                       const vt::VtPartContext& context) {
+                                       const vt::VtPartContext& input_context) {
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return false;   // part unloaded since request
     PartRecord& record = parts_[found->second];
@@ -6824,6 +7461,11 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
     if (record.vt_slots[rung] != vt::kVtNoSlot) return true;   // already live
     std::string error;
     if (!ensure_vt_runtime(error)) return false;
+    vt::VtPartContext context=input_context;
+    part_surface::BindingScratch binding;
+    if (record.finite_surface && !part_surface::bind(*record.finite_surface,context,binding,error)) {
+        MATTER_LOGE("finite-surface","deferred binding: %s\n",error.c_str()); return false;
+    }
 
     // Working-set admission: when the layer pool or the CPU mesh budget is
     // full, reclaim least-recently-wanted demand-managed variants until the
@@ -6832,10 +7474,13 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
     // working set genuinely exceeds the budget, the residency layer counts
     // the rejection, and the warning banner tells the author which knob to
     // raise. The request itself simply retries while the rung stays wanted.
-    const size_t wanted_bytes = vt::vt_variant_mesh_bytes(atlas, context);
+    const uint32_t shared_owner = vt_->compatible_owner_slot(part_hash, atlas);
+    const bool shares_mesh = shared_owner != vt::kVtNoSlot &&
+        rung >= vt_->canonical_rung_for_slot(shared_owner);
+    const size_t wanted_bytes = shares_mesh ? 0 : vt::vt_variant_mesh_bytes(atlas, context);
     for (;;) {
         const vt::VtResidency::Stats& s = vt_->stats();
-        if (vt::vt_registration_verdict(s.variants, s.max_variants,
+        if (shares_mesh || vt::vt_registration_verdict(shared_owner ? 0 : s.variants, s.max_variants,
                                         s.mesh_bytes, s.mesh_budget_bytes,
                                         wanted_bytes) ==
             vt::VtRejectReason::Accept)
@@ -6850,7 +7495,10 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
                                  kVkMaxChartRung);
             for (uint32_t r = 0; r < rung_count; ++r) {
                 if (candidate.vt_slots[r] == vt::kVtNoSlot) continue;
-                const uint64_t stamp = candidate.vt_last_wanted[r];
+                // Promotion uses this owner's valid pages as replacement
+                // coverage. Admission may reclaim other owners, never it.
+                if (candidate.vt_slots[r] == shared_owner) continue;
+                const uint64_t stamp = vt_wanted_stamp(candidate, r);
                 if (stamp >= vt_demand_frame_) continue;   // wanted this frame
                 if (stamp < victim_stamp) {
                     victim_stamp = stamp;
@@ -6860,13 +7508,22 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
             }
         }
         if (!victim_record) break;   // nothing evictable; let the gate reject
-        evict_vt_rung(*victim_record, victim_rung);
+        evict_vt_rung(*victim_record, victim_rung, "admission_pressure");
     }
 
-    const uint32_t slot = vt_->register_variant(part_hash, rung, atlas, context);
+    uint32_t slot = vt_->register_variant(part_hash, rung, atlas, context);
+    if(slot && record.finite_surface && !bind_vt_materials(part_hash,rung,
+        *record.finite_surface,atlas,context,error)) {
+        MATTER_LOGE("vt-material","deferred binding rejected: %s",error.c_str());
+        vt_->release_variant(part_hash,rung);slot=vt::kVtNoSlot;
+    }
     record.vt_slots[rung] = slot;
     if (slot != vt::kVtNoSlot) {
         vt_draw_slots_dirty_ = true;
+        vt_demand_registrations_pending_ = true;
+        // An asynchronous answer may register a rung the view no longer
+        // selects. Revisit linger even if the current selection is unchanged.
+        vt_demand_linger_pending_ = true;
     }
     return slot != vt::kVtNoSlot;
 }
@@ -6881,11 +7538,11 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
 //   - proactively evict variants nothing has wanted for vt_linger_frames_, so
 //     the pool tracks the camera instead of pinning the high-water working set.
 //
-// O(static instances x clusters) on the render thread -- the cull.instances /
-// cull.clusters counters at the call site are what separate "this frame was
-// slow" from "this world is big". Returns immediately when no part is deferred.
+// Visits each static instance's cluster range, then the part slots for linger
+// release. Returns immediately when no part is deferred.
 void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
                                        float pixel_budget) {
+    vt_rung_requests_.clear();
     if (vt_deferred_parts_ == 0) return;
     // This is the CPU mirror of cull.comp's rung pick, stamping wanted VT
     // rungs for the draws that pick will emit -- so it has to select with
@@ -6908,83 +7565,135 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
     }
     ++vt_demand_frame_;
 
-    // Stamp wanted rungs: the exact CPU mirror of cull.comp's LOD selection
-    // (same clusters, thresholds and projected-size formula) over the static
-    // instance set. instance_staging_ holds exactly that set here — dynamic
-    // tails are merged later, in prepare_frame, and dynamic (animated)
-    // instances are not deferred-VT parts. A near-threshold float divergence
-    // from the GPU costs one frame of classified-legacy fallback for one
-    // cluster, nothing more.
-    vt_rung_requests_.clear();
-    for (const GpuInstance& instance : instance_staging_) {
-        if (instance.part_slot >= parts_.size()) continue;
-        PartRecord& record = parts_[instance.part_slot];
-        if (record.vt_rung_mask == 0u || !record.live) continue;
-        const float* m = instance.object_to_world.elements;   // column-major
-        const float scale =
-            (std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]) +
-             std::sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]) +
-             std::sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10])) /
-            3.0f;
-        const uint32_t cluster_end = instance.cluster_start +
-                                     instance.cluster_count;
-        for (uint32_t c = instance.cluster_start;
-             c < cluster_end && c < cluster_staging_.size(); ++c) {
-            const GpuCluster& cluster = cluster_staging_[c];
-            const float lx = (cluster.aabb_min[0] + cluster.aabb_max[0]) * 0.5f;
-            const float ly = (cluster.aabb_min[1] + cluster.aabb_max[1]) * 0.5f;
-            const float lz = (cluster.aabb_min[2] + cluster.aabb_max[2]) * 0.5f;
-            const float wx = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
-            const float wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
-            const float wz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
-            const float dx = wx - camera_eye.x;
-            const float dy = wy - camera_eye.y;
-            const float dz = wz - camera_eye.z;
-            const float distance_to_eye =
-                std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
-            // Third copy of cull.comp's pick before M1 (mesh rung, VT demand,
-            // and the planning mirror each had their own). All three now go
-            // through lod_distance.h, so a divergence between what the GPU
-            // draws and what VT prefetches can no longer come from the rule
-            // itself -- only from the inputs, which is the divergence the
-            // comment above this loop actually reasons about.
-            const uint32_t lod = static_cast<uint32_t>(lod::select_rep(
-                cluster.switch_distances, static_cast<int>(cluster.lod_count),
-                distance_to_eye,
-                lod::reach(cluster.radius, scale, pixel_budget)));
-            // Still wanted as the request PRIORITY below (bigger on screen ==
-            // fetch first). That is a ranking, not a selection, so it keeps the
-            // projected-size form rather than being converted.
-            const float projected_size =
-                cluster.radius * scale / distance_to_eye * pixel_budget;
-            if (c >= cluster_lods_.size()) continue;
-            const std::vector<VkSceneLod>& lods = cluster_lods_[c];
-            if (lod >= lods.size()) continue;
-            const uint32_t rung = lods[lod].chart_rung;
-            if (rung >= kVkMaxChartRung ||
-                ((record.vt_rung_mask >> rung) & 1u) == 0u)
-                continue;
-            record.vt_last_wanted[rung] = vt_demand_frame_;
-            const bool registered =
-                rung < record.vt_slots.size() &&
-                record.vt_slots[rung] != vt::kVtNoSlot;
-            if (!registered &&
-                record.vt_last_requested[rung] != vt_demand_frame_) {
-                record.vt_last_requested[rung] = vt_demand_frame_;
-                vt_rung_requests_.push_back(
-                    {record.hash, rung, projected_size});
-            } else if (!registered) {
-                // Already queued this frame by another cluster/instance —
-                // keep the highest priority for the sort below.
-                for (VtRungRequest& request : vt_rung_requests_) {
-                    if (request.part_hash == record.hash &&
-                        request.rung == rung) {
-                        request.priority =
-                            std::max(request.priority, projected_size);
-                        break;
-                    }
+    const bool rebuild = !vt_demand_cache_valid_ ||
+        vt_demand_instance_generation_ != instance_generation_ ||
+        vt_demand_static_generation_ != static_generation_ ||
+        vt_demand_command_generation_ != command_generation_ ||
+        vt_demand_slot_version_ != slot_of_version_ ||
+        vt_demand_eye_.x != camera_eye.x || vt_demand_eye_.y != camera_eye.y ||
+        vt_demand_eye_.z != camera_eye.z || vt_demand_pixel_budget_ != pixel_budget;
+    PROFILE_SCOPE_NAMED(stamp_scope, "vt.demand_stamp");
+    if (rebuild) {
+        const auto previous_selection = vt_demand_entries_;
+        // Materialize the previous selection's last applied age before
+        // changing it. Released part slots have been cleared and are not reused.
+        for (const VtDemandEntry& entry : vt_demand_entries_) {
+            if (entry.part_slot >= parts_.size()) continue;
+            PartRecord& record = parts_[entry.part_slot];
+            if (!record.live) continue;
+            record.vt_last_wanted[entry.rung] = vt_demand_cache_frame_;
+            record.vt_cached_wanted_mask &= ~(1u << entry.rung);
+        }
+        vt_demand_entries_.clear();
+        ++vt_demand_builds_;
+        // Same CPU mirror of cull.comp's selection, over the static instance
+        // cluster ranges. Cache all selected rungs, including registered ones.
+        size_t vt_scanned = 0;
+        for (const GpuInstance& instance : instance_staging_) {
+            ++vt_scanned;
+            if (instance.part_slot >= parts_.size()) continue;
+            PartRecord& record = parts_[instance.part_slot];
+            if (record.vt_rung_mask == 0u || !record.live) continue;
+            const float* m = instance.object_to_world.elements;   // column-major
+            const float scale =
+                (std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]) +
+                 std::sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]) +
+                 std::sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10])) /
+                3.0f;
+            const uint32_t cluster_end = instance.cluster_start +
+                                         instance.cluster_count;
+            for (uint32_t c = instance.cluster_start;
+                 c < cluster_end && c < cluster_staging_.size(); ++c) {
+                const GpuCluster& cluster = cluster_staging_[c];
+                const float lx = (cluster.aabb_min[0] + cluster.aabb_max[0]) * 0.5f;
+                const float ly = (cluster.aabb_min[1] + cluster.aabb_max[1]) * 0.5f;
+                const float lz = (cluster.aabb_min[2] + cluster.aabb_max[2]) * 0.5f;
+                const float wx = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+                const float wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+                const float wz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+                const float dx = wx - camera_eye.x;
+                const float dy = wy - camera_eye.y;
+                const float dz = wz - camera_eye.z;
+                const float distance_to_eye =
+                    std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
+                // Third copy of cull.comp's pick before M1 (mesh rung, VT demand,
+                // and the planning mirror each had their own). All three now go
+                // through lod_distance.h, so a divergence between what the GPU
+                // draws and what VT prefetches can no longer come from the rule
+                // itself -- only from the inputs, which is the divergence the
+                // comment above this loop actually reasons about.
+                const uint32_t lod = static_cast<uint32_t>(lod::select_rep(
+                    cluster.switch_distances, static_cast<int>(cluster.lod_count),
+                    distance_to_eye,
+                    lod::reach(cluster.radius, scale, pixel_budget)));
+                // Still wanted as the request PRIORITY below (bigger on screen ==
+                // fetch first). That is a ranking, not a selection, so it keeps the
+                // projected-size form rather than being converted.
+                const float projected_size =
+                    cluster.radius * scale / distance_to_eye * pixel_budget;
+                if (c >= cluster_lods_.size()) continue;
+                const std::vector<VkSceneLod>& lods = cluster_lods_[c];
+                if (lod >= lods.size()) continue;
+                const uint32_t rung = lods[lod].chart_rung;
+                if (rung >= kVkMaxChartRung ||
+                    ((record.vt_rung_mask >> rung) & 1u) == 0u)
+                    continue;
+                const uint32_t bit = 1u << rung;
+                if ((record.vt_cached_wanted_mask & bit) == 0) {
+                    record.vt_cached_wanted_mask |= bit;
+                    record.vt_demand_entry_index[rung] =
+                        static_cast<uint32_t>(vt_demand_entries_.size());
+                    vt_demand_entries_.push_back(
+                        {instance.part_slot, rung, projected_size});
+                } else {
+                    VtDemandEntry& entry =
+                        vt_demand_entries_[record.vt_demand_entry_index[rung]];
+                    entry.priority = std::max(entry.priority, projected_size);
                 }
             }
+        }
+        PROFILE_COUNT("instances.vt_scanned", vt_scanned);
+        // Parked terrain has no drawn instance yet. Demand its source tail
+        // explicitly so a visibility gate cannot wait on invisible feedback.
+        for (uint32_t slot : vt_prewarm_parts_) {
+            if (slot >= parts_.size()) continue;
+            PartRecord& record = parts_[slot];
+            if (!record.live || !(record.vt_rung_mask & 1u) ||
+                (record.vt_cached_wanted_mask & 1u)) continue;
+            record.vt_cached_wanted_mask |= 1u;
+            record.vt_demand_entry_index[0] = static_cast<uint32_t>(vt_demand_entries_.size());
+            vt_demand_entries_.push_back({slot, 0u, 1.0f});
+        }
+        const bool same_selection = previous_selection.size() == vt_demand_entries_.size() &&
+            std::equal(previous_selection.begin(), previous_selection.end(), vt_demand_entries_.begin(),
+                [](const VtDemandEntry& a, const VtDemandEntry& b) {
+                    return a.part_slot == b.part_slot && a.rung == b.rung;
+                });
+        if (!same_selection) ++vt_surface_selection_revision_;
+        vt_demand_instance_generation_ = instance_generation_;
+        vt_demand_static_generation_ = static_generation_;
+        vt_demand_command_generation_ = command_generation_;
+        vt_demand_slot_version_ = slot_of_version_;
+        vt_demand_eye_ = camera_eye;
+        vt_demand_pixel_budget_ = pixel_budget;
+        vt_demand_cache_valid_ = true;
+        vt_demand_registrations_pending_ = true;
+        vt_demand_linger_pending_ = true;
+    }
+    // This shared stamp advances only when demand is actually applied. It is
+    // also the admission guard for selected rungs on every cache-hit frame.
+    vt_demand_cache_frame_ = vt_demand_frame_;
+    PROFILE_COUNT("vt.demand_rebuilds", vt_demand_builds_);
+    stamp_scope.stop();
+    PROFILE_SCOPE_NAMED(sort_scope, "vt.demand_sort");
+    if (vt_demand_registrations_pending_) {
+        vt_demand_registrations_pending_ = false;
+        for (const VtDemandEntry& entry : vt_demand_entries_) {
+            const PartRecord& record = parts_[entry.part_slot];
+            if (entry.rung < record.vt_slots.size() &&
+                record.vt_slots[entry.rung] != vt::kVtNoSlot) continue;
+            vt_demand_registrations_pending_ = true;
+            vt_rung_requests_.push_back({record.hash, entry.rung, entry.priority});
         }
     }
     std::sort(vt_rung_requests_.begin(), vt_rung_requests_.end(),
@@ -6993,40 +7702,45 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
               });
     if (vt_rung_requests_.size() > vt_max_requests_)
         vt_rung_requests_.resize(vt_max_requests_);
+    sort_scope.stop();
+    PROFILE_COUNT("vt.demand_requests", vt_rung_requests_.size());
 
     // Linger release: reclaim variants no instance has wanted for a while.
     // Proactive (not just under admission pressure) so the pool tracks the
     // camera instead of pinning the high-water-mark working set forever.
-    if (!vt_ || !vt_->available()) return;
+    if (!vt_ || !vt_->available() || !vt_demand_linger_pending_) return;
+    PROFILE_SCOPE("vt.demand_linger");
+    PROFILE_COUNT("vt.demand_parts", parts_.size());
+    PROFILE_COUNT("vt.demand_deferred_parts", vt_deferred_parts_);
+    bool waiting_for_linger = false;
     for (PartRecord& record : parts_) {
         if (!record.live || record.vt_rung_mask == 0u) continue;
         const size_t rung_count =
             std::min<size_t>(record.vt_slots.size(), kVkMaxChartRung);
         for (uint32_t r = 0; r < rung_count; ++r) {
             if (record.vt_slots[r] == vt::kVtNoSlot) continue;
-            if (vt_demand_frame_ - record.vt_last_wanted[r] >
-                vt_linger_frames_)
-                evict_vt_rung(record, r);
+            if ((record.vt_cached_wanted_mask & (1u << r)) != 0) continue;
+            if (vt_demand_frame_ - record.vt_last_wanted[r] > vt_linger_frames_)
+                evict_vt_rung(record, r, "unwanted_rung");
+            else
+                waiting_for_linger = true;
         }
     }
+    vt_demand_linger_pending_ = waiting_for_linger;
 }
 
 // --- WP-F: surfaces()-tape live update --------------------------------------
 // A tape edit changes what the compositor bakes into every page of every
 // tape-classified variant, without touching geometry or tileset bindings. The
-// bracket mirrors push_vt_compositor_inputs' discipline: wait the device idle
-// once (tape edits are live-edit events, not per-frame ones), swap the CPU
-// weight columns in the residency layer's owned copies, drop the compositor's
-// cached GPU triangle streams (they embed the old weights), then declare all
-// resident page content stale so the queued re-fills bake from the new tape.
+// bracket swaps the residency layer's owned CPU weight columns, retires old
+// prepared GPU streams, and queues replacements for changed owners. Both page
+// passes copy CPU inputs while recording and defer old GPU resources until
+// their readers retire. No device-wide wait is needed for this operation.
 
 void VkSceneRenderer::begin_vt_surface_update() {
     vt_surface_update_open_ = false;
-    vt_surface_updates_applied_ = 0;
+    vt_surface_dirty_owners_.clear();
     if (!vt_ || !vt_->available()) return;
-    // No fill referencing the old weight arrays (or the mesh caches about to
-    // be invalidated) may still be unretired while we swap them.
-    vulkan_->wait_idle();
     vt_surface_update_open_ = true;
 }
 
@@ -7035,45 +7749,43 @@ bool VkSceneRenderer::update_vt_part_surface(
     const std::vector<uint32_t>& materials, uint64_t tape_hash,
     const char* tape_text,
     const std::vector<std::vector<uint16_t>>* rung_lanes,
-    uint32_t lane_count) {
+    uint32_t lane_count, const float* local_to_world, uint32_t world_anchored) {
     if (!vt_surface_update_open_ || !vt_ || !vt_->available()) return false;
     bool updated = false;
+    uint32_t seen_owners[32]{};
+    uint32_t seen_count = 0;
     // Same rung sweep bound as VtResidency::release_variant.
     for (uint32_t rung = 0; rung < 32u; ++rung) {
-        if (vt_->slot_for(part_hash, rung) == vt::kVtNoSlot) continue;
+        const uint32_t owner = vt_->slot_for(part_hash, rung);
+        if (!owner || std::find(seen_owners, seen_owners + seen_count, owner) !=
+                          seen_owners + seen_count) continue;
+        seen_owners[seen_count++] = owner;
+        const uint32_t source_rung = vt_->canonical_rung_for_slot(owner);
         const std::vector<uint8_t>* weights =
-            rung < rung_weights.size() ? &rung_weights[rung] : nullptr;
+            source_rung < rung_weights.size() ? &rung_weights[source_rung] : nullptr;
         const bool strip =
             materials.empty() || weights == nullptr || weights->empty();
         // P2: the mode-3 payload for this rung (tape text is per part; lanes
         // are per rung and optional — a missing/empty entry means the tape
         // reads no field inputs, and lane_count 0 travels with it).
         const std::vector<uint16_t>* lanes =
-            (rung_lanes != nullptr && rung < rung_lanes->size())
-                ? &(*rung_lanes)[rung]
+            (rung_lanes != nullptr && source_rung < rung_lanes->size())
+                ? &(*rung_lanes)[source_rung]
                 : nullptr;
         const bool have_lanes =
             !strip && lanes != nullptr && !lanes->empty() && lane_count > 0;
+        bool rung_changed = false;
         const bool ok = vt_->update_variant_surface(
             part_hash, rung, strip ? nullptr : weights->data(),
             strip ? 0 : weights->size(), strip ? nullptr : materials.data(),
             strip ? 0u : static_cast<uint32_t>(materials.size()), tape_hash,
             strip ? nullptr : tape_text,
             have_lanes ? lanes->data() : nullptr,
-            have_lanes ? lane_count : 0u);
+            have_lanes ? lane_count : 0u, &rung_changed, local_to_world, world_anchored);
         updated = updated || ok;
-    }
-    if (updated) {
-        // The compositor's cached per-(variant, rung) triangle buffers embed
-        // the per-vertex weights; rebuild them from the swapped context on the
-        // next fill. Safe immediately: begin_vt_surface_update wait_idled.
-        if (vt_compositor_) vt_compositor_->invalidate_part(part_hash);
-        // WP-H: the enricher caches the same streams (its chart resolve reads
-        // them), so it must rebuild too. Its acceleration structure is over
-        // positions/indices only and a tape edit does not move geometry -- but
-        // dropping the whole entry keeps one invalidation rule instead of two.
-        if (vt_enricher_) vt_enricher_->invalidate_part(part_hash);
-        ++vt_surface_updates_applied_;
+        if (ok && rung_changed) {
+            vt_surface_dirty_owners_.push_back(owner);
+        }
     }
     return updated;
 }
@@ -7081,13 +7793,14 @@ bool VkSceneRenderer::update_vt_part_surface(
 void VkSceneRenderer::end_vt_surface_update() {
     if (!vt_surface_update_open_) return;
     vt_surface_update_open_ = false;
-    if (vt_surface_updates_applied_ == 0) return;
-    vt_surface_updates_applied_ = 0;
+    if (vt_surface_dirty_owners_.empty()) return;
     // Same reasoning as push_vt_compositor_inputs: swapping inputs only fixes
     // FUTURE fills; every resident page (pinned tails included) was baked from
-    // the old tape. invalidate_all_content only QUEUES re-fills — they drain
+    // the old tape. Owner invalidation only QUEUES re-fills — they drain
     // in the next record_frame, strictly after the updates above.
-    if (vt_ && vt_->available()) vt_->invalidate_all_content();
+    if (vt_ && vt_->available())
+        vt_->invalidate_owners(vt_surface_dirty_owners_, vt::VtInvalidationReason::Surface);
+    vt_surface_dirty_owners_.clear();
 }
 
 uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
@@ -7109,9 +7822,10 @@ uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
     // because chart coverage measured complete (charts == ladder on every
     // part) while ~80% of canopy pixels still never sampled a page, and
     // nothing in between reported why.
-    vt_route_census_[kVtRouteTotal].fetch_add(1, std::memory_order_relaxed);
+    static const bool census_enabled = std::getenv("MATTER_VT_CHART_LOG") != nullptr;
+    if (census_enabled) vt_route_census_[kVtRouteTotal].fetch_add(1, std::memory_order_relaxed);
     auto miss = [this](VtRouteReason r) {
-        vt_route_census_[r].fetch_add(1, std::memory_order_relaxed);
+        if (census_enabled) vt_route_census_[r].fetch_add(1, std::memory_order_relaxed);
         return vt::kVtNoSlot;
     };
     if (record.vt_slots.empty()) return miss(kVtRouteNoSlots);
@@ -7133,7 +7847,7 @@ uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
     // ready (consume_activation_dirty), so the gate lifts within a frame of
     // the fill landing.
     if (!vt_ || !vt_->slot_active(slot)) return miss(kVtRouteTailGate);
-    vt_route_census_[kVtRouteOk].fetch_add(1, std::memory_order_relaxed);
+    if (census_enabled) vt_route_census_[kVtRouteOk].fetch_add(1, std::memory_order_relaxed);
     return slot;
 }
 
@@ -7205,6 +7919,159 @@ void VkSceneRenderer::set_part_draw_overrides(
     part_draw_overrides_dirty_ = true;
 }
 
+matter::PartDrawOverrideGpu VkSceneRenderer::part_draw_override(uint64_t source_hash) const {
+    const auto it = std::lower_bound(part_draw_override_entries_.begin(), part_draw_override_entries_.end(),
+        source_hash, [](const matter::PartDrawOverrideEntry& entry, uint64_t hash) { return entry.part_hash < hash; });
+    return it != part_draw_override_entries_.end() && it->part_hash == source_hash
+        ? it->value : matter::PartDrawOverrideGpu{};
+}
+
+bool VkSceneRenderer::ensure_geometry_cull_pipelines(std::string& error) {
+    if (geometry_pipeline_ && geometry_vis_pipeline_ && geometry_select_pipeline_) return true;
+    const auto spirv = matter::find_spirv("cull.comp.spv");
+    VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    module_info.codeSize = spirv.word_count * sizeof(uint32_t); module_info.pCode = spirv.words;
+    VkShaderModule module = VK_NULL_HANDLE;
+    auto result = vkCreateShaderModule(vulkan_->device(), &module_info, nullptr, &module);
+    if (result != VK_SUCCESS) return fail_vk("geometry cull shader module", result, error);
+    const VkSpecializationMapEntry entries[] = {{0,0,4}, {1,4,4}};
+    VkPipeline* targets[] = {&geometry_vis_pipeline_, &geometry_pipeline_};
+    for (uint32_t pass = 0; pass < 2; ++pass) {
+        if (*targets[pass]) continue;
+        const uint32_t values[] = {pass, 1};
+        const VkSpecializationInfo spec{2, entries, sizeof(values), values};
+        VkComputePipelineCreateInfo create{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        create.layout = pipeline_layout_;
+        create.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        create.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; create.stage.module = module;
+        create.stage.pName = "main"; create.stage.pSpecializationInfo = &spec;
+        result = vkCreateComputePipelines(vulkan_->device(), VK_NULL_HANDLE, 1, &create, nullptr, targets[pass]);
+        if (result != VK_SUCCESS) break;
+    }
+    vkDestroyShaderModule(vulkan_->device(), module, nullptr);
+    if (result != VK_SUCCESS) return fail_vk("geometry hierarchy cull pipeline", result, error);
+    if (!geometry_select_pipeline_) {
+        const auto selection = matter::find_spirv("geometry_select.comp.spv");
+        module_info.codeSize = selection.word_count * sizeof(uint32_t); module_info.pCode = selection.words;
+        result = vkCreateShaderModule(vulkan_->device(), &module_info, nullptr, &module);
+        if (result != VK_SUCCESS) return fail_vk("geometry selection shader module", result, error);
+        VkComputePipelineCreateInfo create{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        create.layout = pipeline_layout_; create.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        create.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; create.stage.module = module; create.stage.pName = "main";
+        result = vkCreateComputePipelines(vulkan_->device(), VK_NULL_HANDLE, 1, &create, nullptr, &geometry_select_pipeline_);
+        vkDestroyShaderModule(vulkan_->device(), module, nullptr);
+        if (result != VK_SUCCESS) return fail_vk("geometry selection pipeline", result, error);
+    }
+    return true;
+}
+
+bool VkSceneRenderer::set_geometry_cut(const std::vector<VkGeometryCutNode>& nodes,
+    const std::vector<uint32_t>& roots, const std::vector<VkGeometryCutJob>& jobs, std::string& error, bool raster_only) {
+    if (jobs.empty()) {
+        if (!geometry_page_capacities_.empty()) {
+            geometry_page_capacities_.clear();
+            command_template_dirty_ = true;
+        }
+        geometry_cut_words_.assign(8, 0); ++geometry_cut_generation_; geometry_node_pages_.clear(); geometry_job_owners_.clear();
+        error.clear(); return true;
+    }
+    const uint64_t words = 8ull + jobs.size()*8ull + roots.size() + nodes.size()*12ull;
+    if (words > UINT32_MAX || words*4 > limits_.max_storage_buffer_range) {
+        error = "geometry hierarchy GPU snapshot exceeds storage limit"; return false;
+    }
+    auto& capacities = geometry_cut_scratch_capacities_;
+    capacities.assign(raster_only ? parts_.size() : 0, 0);
+    auto& packed = geometry_cut_scratch_words_;
+    packed.assign(static_cast<size_t>(words), 0);
+    auto& pages = geometry_cut_scratch_pages_; pages.clear(); pages.reserve(nodes.size());
+    auto& owners = geometry_cut_scratch_owners_; owners.clear(); owners.reserve(jobs.size());
+    for (const auto& node : nodes) pages.push_back({node.page_lo, node.page_hi});
+    for (const auto& job : jobs) owners.push_back(job.owner_lease);
+    packed[0] = static_cast<uint32_t>(jobs.size()); packed[3] = 8;
+    packed[2] = 8 + static_cast<uint32_t>(jobs.size())*8;
+    packed[1] = packed[2] + static_cast<uint32_t>(roots.size());
+    packed[6] = static_cast<uint32_t>(nodes.size()); packed[7] = static_cast<uint32_t>(roots.size());
+    const auto bits = [](float value) { uint32_t result; std::memcpy(&result, &value, 4); return result; };
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        const auto& job = jobs[i]; const size_t at = 8 + i*8;
+        if (job.root_count > 4096 || job.first_root > roots.size() || job.root_count > roots.size()-job.first_root ||
+            job.node_base > (UINT32_MAX>>1) || (job.root_count && job.node_base >= nodes.size()) ||
+            !std::isfinite(job.scale) || job.scale < 0 || !std::isfinite(job.error_reach) || job.error_reach < 0) {
+            error = "invalid geometry hierarchy dispatch"; return false;
+        }
+        packed[at] = job.instance_index; packed[at+1] = job.first_root; packed[at+2] = job.root_count;
+        packed[at+3] = 4096; packed[at+4] = 4096; packed[at+5] = bits(job.scale); packed[at+6] = bits(job.error_reach);
+        packed[at+7] = (job.node_base<<1) | (job.source_vt ? 1u : 0u);
+    }
+    for (size_t i = 0; i < roots.size(); ++i) {
+        if (roots[i] >= nodes.size()) { error = "geometry root index outside snapshot"; return false; }
+        packed[packed[2]+i] = roots[i];
+    }
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const auto& node = nodes[i]; const size_t at = packed[1]+i*12;
+        std::memcpy(packed.data()+at,&node,12*sizeof(uint32_t));
+        packed[at+7]=packed[at+10]=packed[at+11]=0;
+        for (size_t c = 0; c < 2; ++c) {
+            if (node.children[c] != UINT32_MAX && node.children[c] >= nodes.size()) {
+                error = "geometry child index outside snapshot"; return false;
+            }
+            packed[at+8+c] = node.children[c];
+        }
+        if (node.ready_part_hash) {
+            const int slot = node.ready_slot < parts_.size() && parts_[node.ready_slot].hash == node.ready_part_hash
+                ? static_cast<int>(node.ready_slot) : part_slot_lookup(node.ready_part_hash);
+            if (slot < 0 || parts_[slot].cluster_count != 1 || !geometry_page_render_ready_slot(static_cast<uint32_t>(slot))) {
+                error = "geometry GPU snapshot references an unready raster/RT group"; return false;
+            }
+            if (raster_only && !checked_u32_add(capacities[slot], 1u,
+                    capacities[slot], "geometry page draw capacity", error)) return false;
+            packed[at+10] = 1; packed[at+11] = parts_[slot].cluster_start;
+        }
+    }
+    if (!ensure_geometry_cull_pipelines(error)) return false;
+    if (capacities != geometry_page_capacities_) {
+        geometry_page_capacities_.swap(capacities);
+        command_template_dirty_ = true;
+    }
+    ++geometry_cut_generation_;
+    geometry_cut_words_.swap(packed); geometry_node_pages_.swap(pages);
+    geometry_job_owners_.swap(owners); error.clear(); return true;
+}
+
+std::vector<VkGeometryPageRequest> VkSceneRenderer::take_geometry_page_requests() {
+    std::vector<VkGeometryPageRequest> result; result.swap(geometry_page_requests_); return result;
+}
+bool VkSceneRenderer::consume_geometry_feedback(FrameResources& frame, std::string& error) {
+    if (!frame.geometry_feedback_valid) return true;
+    frame.geometry_feedback_valid = false;
+    if (!matter::map_buffer(frame.geometry_feedback, error) ||
+        !matter::invalidate_buffer(frame.geometry_feedback, 0, 32 + 1024*8, error)) return false;
+    const auto* words = static_cast<const uint32_t*>(frame.geometry_feedback.mapped);
+    if (words[5] || words[6] > 1024) { error = "geometry GPU traversal exceeded its admitted capacity"; return false; }
+    // Telemetry only: a retired GPU snapshot may precede the live camera.
+    // Never combine this with current sector counts as an acceptance verdict
+    // until the camera/scene revisions have been matched by the audit.
+    static const bool visible_profile = std::getenv("MATTER_GEOMETRY_VISIBLE_PROFILE") != nullptr;
+    if (visible_profile) {
+        MATTER_LOGI("geometry", "visible_detail cut_generation=%llu requests=%u request_overflow=%u refinement_fallback=%u frame=%llu view=%llu current_view=%llu current_cut=%llu",
+            (unsigned long long)frame.geometry_cut_generation, words[6],
+            unsigned((words[7]&1u)!=0), unsigned((words[7]&2u)!=0),
+            (unsigned long long)frame.geometry_feedback_serial,
+            (unsigned long long)frame.geometry_feedback_view_revision,
+            (unsigned long long)geometry_view_revision_,
+            (unsigned long long)geometry_cut_generation_);
+    }
+    for (uint32_t i = 0; i < words[6] && geometry_page_requests_.size() < 4096; ++i) {
+        const uint32_t job = words[8+i*2], node = words[9+i*2];
+        if (job >= frame.geometry_job_owners.size() || node >= frame.geometry_node_pages.size()) {
+            error = "geometry GPU request escaped its retained snapshot"; return false;
+        }
+        const auto& page = frame.geometry_node_pages[node];
+        geometry_page_requests_.push_back({frame.geometry_job_owners[job], page[0], page[1]});
+    }
+    return true;
+}
+
 void VkSceneRenderer::rebuild_part_draw_overrides() {
     part_draw_overrides_dirty_ = false;
     if (part_draw_override_entries_.empty()) {
@@ -7246,49 +8113,47 @@ void VkSceneRenderer::rebuild_part_draw_overrides() {
 // proxy is a solid silhouette, which would wrongly hide whatever is behind
 // them. Excluded parts fall back to frustum-only culling: a cost, never a
 // coverage, regression.
-void VkSceneRenderer::rebuild_part_occluder_table() {
-    part_occluder_dirty_ = false;
-    // Default 1 everywhere: an unknown class occludes, which is the
-    // pre-exclusion behaviour. Covers dead slots (never dispatched), parts
-    // registered before the first material upload, and out-of-range ids.
-    part_occluder_table_.assign(std::max<size_t>(parts_.size(), 1), 1u);
-    if (material_staging_.empty()) return;
-    for (size_t slot = 0; slot < parts_.size(); ++slot) {
-        const PartRecord& record = parts_[slot];
-        if (!record.live) continue;
-        bool non_occluder = false;
-        for (const RtLodRecord& lod : record.rt_lods) {
-            // Billboard rungs are already outside the ID pass through
-            // GpuCluster::vis_mesh_lods; only the mesh rungs it can
-            // rasterise decide the class.
-            const uint32_t mesh_lods =
-                lod.cluster_index < record.rt_cluster_mesh_lods.size()
-                    ? record.rt_cluster_mesh_lods[lod.cluster_index]
-                    : 0u;
-            if (lod.lod_index >= mesh_lods) continue;
-            for (const uint32_t material_id : lod.material_ids) {
-                // Alpha-tested cutouts AND thin-walled foliage are both porous
-                // occluders: their coarse ID-pass proxy is a solid silhouette
-                // where the real surface is full of holes, so stamping it into
-                // the occluder buffer wrongly hides whatever is behind it
-                // (issue 77c79c44 — alpine conifers hiding StreamMountain
-                // sectors). Vegetation canopies are opaque geometry, so the
-                // alpha-test heuristic alone never caught them; THIN_WALLED is
-                // carried only by LEAF (15) and FOLIAGE_THIN (29) in the
-                // builtin palette, i.e. exactly the vegetation materials, and
-                // by nothing terrain-side. Excluded parts fall to frustum-only
-                // culling (cost, never coverage — see cull.comp), never hidden.
-                if (material_id < material_staging_.size() &&
-                    (material_staging_[material_id].flags_misc[0] &
-                     (MATERIAL_ALPHA_TESTED | MATERIAL_THIN_WALLED)) != 0u) {
-                    non_occluder = true;
-                    break;
-                }
+uint32_t VkSceneRenderer::part_occluder_class(uint32_t slot) const {
+    const PartRecord& record=parts_[slot];
+    if(!record.live || material_staging_.empty()) return 1u;
+    bool non_occluder = false;
+    for (const RtLodRecord& lod : record.rt_lods) {
+        // Billboard rungs are already outside the ID pass through
+        // GpuCluster::vis_mesh_lods; only the mesh rungs it can
+        // rasterise decide the class.
+        const uint32_t mesh_lods =
+            lod.cluster_index < record.rt_cluster_mesh_lods.size()
+                ? record.rt_cluster_mesh_lods[lod.cluster_index]
+                : 0u;
+        if (lod.lod_index >= mesh_lods) continue;
+        for (const uint32_t material_id : lod.material_ids) {
+            // Alpha-tested cutouts AND thin-walled foliage are both porous
+            // occluders: their coarse ID-pass proxy is a solid silhouette
+            // where the real surface is full of holes, so stamping it into
+            // the occluder buffer wrongly hides whatever is behind it
+            // (issue 77c79c44 — alpine conifers hiding StreamMountain
+            // sectors). Vegetation canopies are opaque geometry, so the
+            // alpha-test heuristic alone never caught them; THIN_WALLED is
+            // carried only by LEAF (15) and FOLIAGE_THIN (29) in the
+            // builtin palette, i.e. exactly the vegetation materials, and
+            // by nothing terrain-side. Excluded parts fall to frustum-only
+            // culling (cost, never coverage — see cull.comp), never hidden.
+            if (material_id < material_staging_.size() &&
+                (material_staging_[material_id].flags_misc[0] &
+                 (MATERIAL_ALPHA_TESTED | MATERIAL_THIN_WALLED)) != 0u) {
+                non_occluder = true;
+                break;
             }
-            if (non_occluder) break;
         }
-        if (non_occluder) part_occluder_table_[slot] = 0u;
+        if (non_occluder) break;
     }
+    return non_occluder ? 0u : 1u;
+}
+void VkSceneRenderer::rebuild_part_occluder_table() {
+    part_occluder_dirty_=false;
+    part_occluder_table_.assign(std::max<size_t>(parts_.size(),1),1u);
+    for(uint32_t slot=0;slot<parts_.size();++slot)
+        part_occluder_table_[slot]=part_occluder_class(slot);
 }
 
 void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
@@ -7311,13 +8176,16 @@ void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
     VkDescriptorBufferInfo variants_info{
         live ? vt_->variant_buffer() : vt_dummy_storage_.buffer, 0,
         live ? vt_->variant_buffer_size() : VkDeviceSize{64}};
+    VkDescriptorBufferInfo input_info{
+        live ? vt_->input_snapshot_buffer() : vt_dummy_storage_.buffer, 0,
+        live ? vt_->input_snapshot_buffer_size() : VkDeviceSize{64}};
     const bool feedback_live = live && vt_->feedback_view() != VK_NULL_HANDLE;
     VkDescriptorImageInfo feedback_info{
         VK_NULL_HANDLE,
         feedback_live ? vt_->feedback_view() : vt_dummy_feedback_.view,
         VK_IMAGE_LAYOUT_GENERAL};
 
-    VkWriteDescriptorSet writes[4]{};
+    VkWriteDescriptorSet writes[5]{};
     for (VkWriteDescriptorSet& write : writes) {
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write.dstSet = frame.descriptor_sets[1];
@@ -7336,15 +8204,17 @@ void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
     writes[3].dstBinding = 13;
     writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[3].pImageInfo = &feedback_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 4, writes, 0, nullptr);
+    writes[4].dstBinding = 25;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[4].pBufferInfo = &input_info;
+    update_descriptor_sets(vulkan_->device(), 5, writes, 0, nullptr);
 }
 
 // The three per-frame VT hooks, in the order they must run:
 //
 //   vt_begin_frame()       OUTSIDE command-buffer recording, once this slot's
 //                          fence has been waited on. Pushes dirty compositor
-//                          inputs (wait_idle), drains deferred part
-//                          invalidations, advances the residency frame,
+//                          inputs (wait_idle), advances the residency frame,
 //                          consumes the previous readback, resizes the
 //                          feedback target and rewrites this slot's VT
 //                          descriptors. Called near the TOP of
@@ -7354,30 +8224,44 @@ void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
 //   vt_record_pre_pass()   from record_raster, before dynamic rendering
 //                          begins: the queued page fills plus the feedback
 //                          clear, both transfers.
-//   vt_record_post_pass()  from record_raster, after the G-buffer: copies the
-//                          1/8-res feedback target into this slot's readback
+//   vt_record_post_pass()  from record_raster, after the G-buffer: extracts
+//                          depth-visible requests into this slot's compact readback
 //                          buffer, consumed at the next vt_begin_frame on the
 //                          same slot.
 //
 // All three no-op when the VT runtime never started.
 void VkSceneRenderer::vt_begin_frame(FrameResources& frame,
                                      uint32_t frame_slot) {
-    if (!vt_ || !vt_->available()) return;
+    if (!vt_ || !vt_->available()) {
+        write_tileset_descriptors_for_frame(frame);
+        return;
+    }
+    const auto vt_cpu_start = std::chrono::steady_clock::now();
     ++vt_frame_serial_;
-    // Both of these must run OUTSIDE any active command-buffer recording and
-    // while no fill can still be unretired -- this hook is the one place per
-    // frame that is true.
+    vt_cpu_begin_ms_ = 0;
+    vt_cpu_pre_pass_ms_ = 0;
+    vt_cpu_post_pass_ms_ = 0;
+    // Select desired inputs before capturing this retired frame slot's banks.
     {
         PROFILE_SCOPE("vt.push_inputs");
         push_vt_compositor_inputs();
     }
     {
-        PROFILE_SCOPE("vt.invalidations");
-        drain_vt_invalidations(vt_frame_serial_);
-    }
-    {
         PROFILE_SCOPE("vt.residency_begin");
         vt_->begin_frame(vt_frame_serial_, frame_slot);
+    }
+    if (vt_encoded_filler_) {
+        const double now = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now - vt_encoded_log_time_ >= 1.0) {
+            vt_encoded_log_time_ = now;
+            const auto stats = vt_encoded_filler_->stats();
+            MATTER_LOGI("vt-cache", "hits=%llu misses=%llu errors=%llu pending=%llu captured=%llu persisted=%llu rejected=%llu pending_pages=%llu",
+                (unsigned long long)stats.hits, (unsigned long long)stats.misses,
+                (unsigned long long)stats.errors, (unsigned long long)stats.pending,
+                (unsigned long long)stats.captured, (unsigned long long)stats.persisted,
+                (unsigned long long)stats.capture_rejected, (unsigned long long)stats.pending_pages);
+        }
     }
     // Tail-gate activations: variants whose tail fill landed last frame may
     // now enter the VT path, so the (cluster, lod) -> vt_slot table must be
@@ -7387,8 +8271,7 @@ void VkSceneRenderer::vt_begin_frame(FrameResources& frame,
     {
         PROFILE_SCOPE("vt.feedback_target");
         if (raster_extent_.width != 0 && raster_extent_.height != 0 &&
-            !vt_->ensure_feedback(raster_extent_.width, raster_extent_.height,
-                                  error)) {
+            !vt_->ensure_feedback(vt_feedback_, error)) {
             // Feedback is an optimization: without it nothing new becomes
             // resident, but every variant still samples its pinned tail.
             MATTER_LOGW("vk", "VT feedback target unavailable: %s\n",
@@ -7399,23 +8282,46 @@ void VkSceneRenderer::vt_begin_frame(FrameResources& frame,
     {
         PROFILE_SCOPE("vt.descriptors");
         write_vt_descriptors_for_frame(frame);
+        write_tileset_descriptors_for_frame(frame);
     }
+    vt_cpu_begin_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - vt_cpu_start).count();
 }
 
 void VkSceneRenderer::vt_record_pre_pass(VkCommandBuffer command_buffer) {
     if (!vt_ || !vt_->available()) return;
+    const auto vt_cpu_start = std::chrono::steady_clock::now();
     std::string error;
-    if (!vt_->record_frame(command_buffer, error)) {
+    vt_->set_surface_walk_enabled(tileset_pom_settings_.enabled && tileset_pom_settings_.steps > 0);
+    FrameResources* timing_frame = active_frame_index_ < frames_.size()
+        ? &frames_[active_frame_index_] : nullptr;
+    // Some standalone raster fixtures record the VT hook without calling
+    // prepare_frame(), so their query pool has not been reset for this frame.
+    if (timing_frame &&
+        (timing_frame->ts_written[kGpuZoneTotal] & 1u) == 0u)
+        timing_frame = nullptr;
+    if (!vt_->record_frame(command_buffer, error,
+                           timing_frame ? timing_frame->ts_pool : VK_NULL_HANDLE,
+                           timing_frame ? timing_frame->ts_written : nullptr)) {
         MATTER_LOGE("vk", "VT frame record failed: %s\n",
                      error.c_str());
         std::fflush(stderr);
     }
-    vt_->record_feedback_clear(command_buffer);
+    if (timing_frame) {
+        timing_frame->vt_recorded_fills = vt_->recorded_fill_count();
+        timing_frame->vt_fill_tiles = vt_->recorded_fill_tiles();
+        timing_frame->vt_enrich_tiles = vt_->recorded_enrich_tiles();
+    }
+    vt_cpu_pre_pass_ms_ += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - vt_cpu_start).count();
 }
 
 void VkSceneRenderer::vt_record_post_pass(VkCommandBuffer command_buffer) {
     if (!vt_ || !vt_->available()) return;
-    vt_->record_feedback_readback(command_buffer);
+    const auto vt_cpu_start = std::chrono::steady_clock::now();
+    vt_->record_feedback_readback(command_buffer, vt_feedback_);
+    vt_cpu_post_pass_ms_ += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - vt_cpu_start).count();
 }
 
 namespace {
@@ -7500,8 +8406,8 @@ namespace {
 // literal cannot be derived from the enum across the GLSL boundary, so it is
 // pinned here instead. (4 since the M6.5 dir-occ channel was removed — this
 // assertion is what caught the shader half of that removal.)
-static_assert(vt::kVtChannelCount == 4u,
-              "shaders_vk/vt_common.glsl: uniform sampler2DArray vt_pool[4]");
+static_assert(vt::kVtChannelCount == 5u,
+              "shaders_vk/vt_common.glsl: uniform sampler2DArray vt_pool[5]");
 
 static_assert(impostor::kViews == 48u, "shaders_vk/impostor_common.glsl: IMPOSTOR_VIEWS");
 static_assert(impostor::kGridDim == 8u, "shaders_vk/impostor_common.glsl: IMPOSTOR_GRID_DIM");
@@ -7532,7 +8438,7 @@ void record_impostor_upload(VkCommandBuffer cmd, void* user_data) {
     // already SHADER_READ_ONLY_OPTIMAL from the clear at creation, and a
     // whole-image barrier would drop those back to UNDEFINED.
     const VkImageSubresourceRange range{
-        VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
+        VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS,
         rec.regions.front().imageSubresource.baseArrayLayer, rec.layer_count};
     VkImageMemoryBarrier2 to_dst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     to_dst.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
@@ -7582,7 +8488,7 @@ void record_impostor_clear(VkCommandBuffer cmd, void* user_data) {
     const auto& rec = *static_cast<ImpostorClearRecord*>(user_data);
     const VkPipelineStageFlags2 dst_stage =
         vk_scene_detail::ray_depth_destination_stages(rec.rt_available);
-    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0,
                                         rec.layers};
     const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
     VkImageMemoryBarrier2 to_dst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -7626,14 +8532,14 @@ bool VkSceneRenderer::create_impostor_atlas(std::string& error) {
     VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sampler.magFilter = VK_FILTER_LINEAR;
     sampler.minFilter = VK_FILTER_LINEAR;
-    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     // CLAMP, not REPEAT: cells are packed edge to edge in one layer, so a
     // wrapping tap would land in a different azimuth entirely. The bake's
     // guard band and the shader's uv clamp are the other two belts.
     sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler.maxLod = 0.0f;
+    sampler.maxLod = float(impostor::filtered_mip_count(impostor::cell_px()) - 1);
     VkResult result = vkCreateSampler(vulkan_->device(), &sampler, nullptr,
                                       &impostor_sampler_);
     if (result != VK_SUCCESS)
@@ -7647,22 +8553,30 @@ bool VkSceneRenderer::create_impostor_atlas(std::string& error) {
     // mis-sample into the rejection in adopt_part_impostors.
     impostor_layer_px_ = impostor::layer_px();
     impostor_atlas_bytes_ = impostor::atlas_bytes();
+    impostor_gpu_bytes_per_slot_ = 0;
+    for (uint32_t mip = 0; mip < impostor::filtered_mip_count(impostor::cell_px()); ++mip) {
+        const size_t edge = impostor_layer_px_ >> mip;
+        impostor_gpu_bytes_per_slot_ += edge * edge * 8;
+    }
     const double atlas_mib =
-        double(impostor_atlas_bytes_) * double(kImpostorMaxSlots) / 1048576.0;
+        double(impostor_gpu_bytes_per_slot_) * double(kImpostorMaxSlots) / 1048576.0;
     MATTER_LOGI("vk",
                  "impostor atlas: %u slots x 2 layers of %ux%u RGBA8 "
-                 "(cell %u px) = %.0f MiB\n",
+                 "(cell %u px, filtered mips) = %.0f MiB\n",
                  kImpostorMaxSlots, impostor_layer_px_, impostor_layer_px_,
                  impostor::cell_px(), atlas_mib);
     std::fflush(stderr);
-    if (!create_tileset_image(VK_FORMAT_R8G8B8A8_UNORM, impostor_layer_px_, 1,
+    if (!create_tileset_image(VK_FORMAT_R8G8B8A8_UNORM, impostor_layer_px_,
+                              impostor::filtered_mip_count(impostor::cell_px()),
                               kImpostorMaxSlots * 2, impostor_atlas_, error))
         return false;
     ImpostorClearRecord clear{impostor_atlas_.image, kImpostorMaxSlots * 2,
                               vulkan_->ray_tracing_available()};
     if (!matter::submit_immediate(*vulkan_, record_impostor_clear, &clear, error,
-                                  matter::ImmediateSubmitPhase::image_transition))
+                                  matter::ImmediateSubmitPhase::image_transition,
+                                  {impostor_atlas_.lifetime}))
         return false;
+    impostor_atlas_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     // Slot 0 is the reserved "no atlas" slot (see record_impostor_clear).
     impostor_next_slot_ = 1;
     return true;
@@ -7678,7 +8592,7 @@ void VkSceneRenderer::write_impostor_descriptor_for_frame(VkDescriptorSet set) {
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &info;
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 1, &write, 0, nullptr);
 }
 
 // ---- identity-buffer visibility (M4) ---------------------------------------
@@ -7815,30 +8729,16 @@ void VkSceneRenderer::record_visibility_id_pass(
     // Keep forward-classified water out of the opaque occluder pass. Preserve
     // the shared indirect command layout: the later forward pass consumes the
     // same ranges without any command compaction or reindexing.
-    const uint32_t max_per_call = std::max(1u, record.max_draw_indirect_count);
-    for (uint32_t i = 0; i < record.draw_range_count; ++i) {
-        const PartCommandRange& range = record.draw_ranges[i];
-        if (range.raster_water_surface ||
-            range.first_command > record.static_command_count ||
-            range.command_count >
-                record.static_command_count - range.first_command)
-            continue;
-        uint32_t first = range.first_command;
-        uint32_t remaining = range.command_count;
-        while (remaining != 0u) {
-            const uint32_t count = std::min(max_per_call, remaining);
-            vkCmdDrawIndexedIndirect(
-                command_buffer, record.indirect_buffer,
-                static_cast<VkDeviceSize>(first) * sizeof(DrawCommand), count,
-                sizeof(DrawCommand));
+    for_each_opaque_indirect_run(record.draw_ranges, record.draw_range_count,
+        record.static_command_count, record.max_draw_indirect_count,
+        [&](const PartCommandRange& range) {
+            vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
+                static_cast<VkDeviceSize>(range.first_command) * sizeof(DrawCommand),
+                range.command_count, sizeof(DrawCommand));
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
-            recorded_visibility_id_ranges_.push_back(
-                {first, count, range.part_slot, range.raster_water_surface});
+            recorded_visibility_id_ranges_.push_back(range);
 #endif
-            first += count;
-            remaining -= count;
-        }
-    }
+        });
     vkCmdEndRendering(command_buffer);
 
     matter::record_image_transition(
@@ -7876,7 +8776,7 @@ bool VkSceneRenderer::ensure_visibility_pipelines(std::string& error) {
         id_write.descriptorCount = 1;
         id_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         id_write.pImageInfo = &id_image;
-        vkUpdateDescriptorSets(vulkan_->device(), 1, &id_write, 0, nullptr);
+        update_descriptor_sets(vulkan_->device(), 1, &id_write, 0, nullptr);
         // Writes THE shared mask, not a per-slot copy: this is the buffer pass
         // 1 of the cull reads at binding 18, a few commands after this reduce
         // runs. One buffer because the hand-off is now inside a single frame.
@@ -7937,6 +8837,7 @@ void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer
 void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
                                            uint32_t part_slot,
                                            uint32_t vertex_base) {
+    const auto started_at = std::chrono::steady_clock::now();
     if (impostor_atlas_.image == VK_NULL_HANDLE) {
         // Create it on demand. Parts register BEFORE VkSceneRenderer::init()
         // in the production publish path -- measured on RockGallery, ten of
@@ -7975,8 +8876,10 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     }
 
     std::vector<uint8_t> staging_bytes;
+    const bool prepared = !part.impostor_upload_bytes.empty();
     std::vector<VkBufferImageCopy> regions;
     std::vector<uint32_t> assigned;
+    std::vector<size_t> assigned_impostors;
     // ordinal -> slot, for the vertex patch below.
     std::vector<uint32_t> slot_for_ordinal(part.impostors.size(), 0);
     uint32_t first_layer = UINT32_MAX;
@@ -7985,14 +8888,40 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         // Compared against the LATCH (what the image was created with), not a
         // fresh impostor::atlas_bytes(): those differ exactly when the
         // resolution changed after init, which is the case this catches.
-        if (imp.atlas.size() != impostor_atlas_bytes_) {
-            MATTER_LOGE("vk",
-                "impostor atlas for part %016llx cluster %u is %zu bytes, "
-                "expected %zu (atlas built for cell %u px) -- this impostor "
-                "will not draw\n",
-                static_cast<unsigned long long>(part.part_hash), imp.cluster,
-                imp.atlas.size(), impostor_atlas_bytes_,
-                impostor_layer_px_ / impostor::kGridDim);
+        const bool valid_prepared = prepared &&
+            imp.upload_mips.size() == impostor::filtered_mip_count(
+                impostor_layer_px_ / impostor::kGridDim) &&
+            !imp.upload_mips.empty() &&
+            imp.upload_mips.front().edge == impostor_layer_px_ &&
+            std::all_of(imp.upload_mips.begin(), imp.upload_mips.end(),
+                [&](const VkScenePartImpostor::UploadMip& mip) {
+                    const size_t mip_index = &mip - imp.upload_mips.data();
+                    const uint32_t expected_edge = impostor_layer_px_ >> mip_index;
+                    const size_t count = size_t(mip.edge) * mip.edge * 4;
+                    return mip.edge == expected_edge &&
+                        mip.shade_offset <= part.impostor_upload_bytes.size() &&
+                        count <= part.impostor_upload_bytes.size() - mip.shade_offset &&
+                        mip.tint_offset <= part.impostor_upload_bytes.size() &&
+                        count <= part.impostor_upload_bytes.size() - mip.tint_offset;
+                });
+        if (prepared ? !valid_prepared :
+            imp.atlas.size() != impostor_atlas_bytes_) {
+            if (prepared) {
+                MATTER_LOGE("vk",
+                    "impostor mip upload for part %016llx cluster %u has "
+                    "invalid offsets or resolution (expected cell %u px) "
+                    "-- this impostor will not draw\n",
+                    static_cast<unsigned long long>(part.part_hash),
+                    imp.cluster, impostor_layer_px_ / impostor::kGridDim);
+            } else {
+                MATTER_LOGE("vk",
+                    "impostor atlas for part %016llx cluster %u is %zu bytes, "
+                    "expected %zu (atlas built for cell %u px) -- this impostor "
+                    "will not draw\n",
+                    static_cast<unsigned long long>(part.part_hash),
+                    imp.cluster, imp.atlas.size(), impostor_atlas_bytes_,
+                    impostor_layer_px_ / impostor::kGridDim);
+            }
             std::fflush(stderr);
             continue;
         }
@@ -8021,24 +8950,42 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         if (imp.ordinal < slot_for_ordinal.size())
             slot_for_ordinal[imp.ordinal] = slot;
         assigned.push_back(slot);
+        assigned_impostors.push_back(&imp - part.impostors.data());
+        const auto mips = prepared ? std::vector<impostor::FilteredMip>{}
+                                   : impostor::filtered_mips(imp.atlas,
+                                                             impostor_layer_px_);
         for (uint32_t layer = 0; layer < 2; ++layer) {
-            const size_t offset = staging_bytes.size();
-            staging_bytes.insert(
-                staging_bytes.end(),
-                imp.atlas.begin() + layer * (impostor_atlas_bytes_ / 2),
-                imp.atlas.begin() + (layer + 1) * (impostor_atlas_bytes_ / 2));
+          const uint32_t mip_count = prepared
+              ? static_cast<uint32_t>(imp.upload_mips.size())
+              : static_cast<uint32_t>(mips.size());
+          for (uint32_t mip = 0; mip < mip_count; ++mip) {
+            size_t offset;
+            uint32_t edge;
+            if (prepared) {
+                const auto& upload = imp.upload_mips[mip];
+                offset = layer == 0 ? upload.shade_offset : upload.tint_offset;
+                edge = upload.edge;
+            } else {
+                offset = staging_bytes.size();
+                const auto& bytes = layer == 0 ? mips[mip].shade : mips[mip].tint;
+                staging_bytes.insert(staging_bytes.end(), bytes.begin(), bytes.end());
+                edge = mips[mip].edge;
+            }
             VkBufferImageCopy region{};
             region.bufferOffset = static_cast<VkDeviceSize>(offset);
             region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.mipLevel = mip;
             region.imageSubresource.baseArrayLayer = slot * 2 + layer;
             region.imageSubresource.layerCount = 1;
-            region.imageExtent = {impostor_layer_px_, impostor_layer_px_, 1};
+            region.imageExtent = {edge, edge, 1};
             regions.push_back(region);
             first_layer = std::min(first_layer, slot * 2 + layer);
+          }
         }
     }
     if (regions.empty()) return;
+    const auto filtered_at = std::chrono::steady_clock::now();
+    const auto& upload_bytes = prepared ? part.impostor_upload_bytes : staging_bytes;
 
     // Layers are assigned from a free list, so a part's slots need not be
     // contiguous. The barrier covers the whole span they touch; layers inside
@@ -8051,7 +8998,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     std::string error;
     matter::VkBufferResource staging;
     if (!matter::create_buffer(*vulkan_,
-                               static_cast<VkDeviceSize>(staging_bytes.size()),
+                               static_cast<VkDeviceSize>(upload_bytes.size()),
                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
@@ -8066,8 +9013,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
         return;
     }
-    std::memcpy(staging.mapped, staging_bytes.data(), staging_bytes.size());
-    if (!matter::flush_buffer(staging, 0, staging_bytes.size(), error)) {
+    std::memcpy(staging.mapped, upload_bytes.data(), upload_bytes.size());
+    if (!matter::flush_buffer(staging, 0, upload_bytes.size(), error)) {
         MATTER_LOGE("vk",
             "impostor atlas flush failed for part %016llx: %s\n",
             static_cast<unsigned long long>(part.part_hash), error.c_str());
@@ -8075,6 +9022,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
         return;
     }
+    const auto staged_at = std::chrono::steady_clock::now();
     ImpostorUploadRecord upload;
     upload.image = impostor_atlas_.image;
     upload.staging = staging.buffer;
@@ -8091,7 +9039,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     if (!matter::submit_immediate(*vulkan_, record_impostor_upload, &upload,
                                   error,
                                   matter::ImmediateSubmitPhase::staging_upload,
-                                  {staging.lifetime})) {
+                                  {staging.lifetime, impostor_atlas_.lifetime})) {
         MATTER_LOGE("vk",
             "impostor atlas upload failed for part %016llx: %s -- "
             "%zu impostor(s) will not draw\n",
@@ -8101,6 +9049,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
         return;
     }
+    const auto submitted_at = std::chrono::steady_clock::now();
 
     // Patch the STAGED vertices, not the caller's copy: the billboard's tint
     // channel transports its atlas slot to raster.vert, and the slot is not
@@ -8121,6 +9070,18 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         dst.tint.y = static_cast<float>((slot >> 8) & 0xFFu) / 255.0f;
         ++patched;
     }
+    const auto finished_at = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    if (elapsed_ms(started_at, finished_at) > 100.0)
+        MATTER_LOGW("vk", "slow impostor adoption hash=%016llx slots=%zu "
+            "bytes=%zu filter=%.3f staging=%.3f submit=%.3f patch=%.3f ms",
+            static_cast<unsigned long long>(part.part_hash), assigned.size(),
+            upload_bytes.size(), elapsed_ms(started_at, filtered_at),
+            elapsed_ms(filtered_at, staged_at),
+            elapsed_ms(staged_at, submitted_at),
+            elapsed_ms(submitted_at, finished_at));
     if (patched == 0 && !assigned.empty()) {
         // The atlas is resident but nothing references it: the ladder and the
         // vertex stream disagree, which is exactly the class of silent
@@ -8140,11 +9101,14 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     // actually take the slot.
     static const bool debug = std::getenv("MATTER_IMPOSTOR_DEBUG") != nullptr;
     if (debug) {
-        for (size_t k = 0; k < part.impostors.size() && k < assigned.size(); ++k) {
-            const auto& imp = part.impostors[k];
+        for (size_t k = 0; k < assigned.size(); ++k) {
+            const auto& imp = part.impostors[assigned_impostors[k]];
             uint32_t max_cov = 0, covered = 0;
+            const auto& source = prepared ? part.impostor_upload_bytes : imp.atlas;
+            const size_t shade_offset = prepared
+                ? imp.upload_mips[0].shade_offset : 0;
             for (size_t t = 0; t + 3 < impostor_atlas_bytes_ / 2; t += 4) {
-                const uint8_t a = imp.atlas[t + 3];
+                const uint8_t a = source[shade_offset + t + 3];
                 if (a > max_cov) max_cov = a;
                 if (a > 0) ++covered;
             }
@@ -8167,15 +9131,15 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
 // channel, block-compresses the four core channels, uploads everything, and
 // swaps the result into `slot`.
 //
-// SLOW AND BLOCKING, by design: it decodes and BC-encodes on the calling
-// thread and then wait_idles before rewriting every frame slot's scene set 1.
-// Loads are world-connect / rebake events, so the stall is acceptable; the
-// provider marshals the call onto the app/Vulkan thread via gpu_run.
+// Source preparation still decodes and BC-encodes on the calling thread and
+// waits for its staging-upload fence. Descriptor publication is deferred until
+// each frame slot is safe to reuse; old frame/batch bindings retain their images.
+// The provider marshals this call onto the app/Vulkan thread via gpu_run.
 //
 // Fails closed at every step -- a malformed atlas, an unsupported BC format or
 // a failed upload leaves the previous occupant of the slot untouched and
-// returns false; the caller's contract is "that slot's ground stays
-// untextured". A v1 .gtex simply has no horizon channels, which is not an
+// returns false. A previously empty slot stays empty. A v1 .gtex simply has
+// no horizon channels, which is not an
 // error. Also lazily calls init(): the deferred tileset phase runs before the
 // first frame, so this used to lose the race and silently drop a session's
 // first ground atlas.
@@ -8554,35 +9518,37 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
         for (auto& image : new_images) destroy_tileset_image(image);
         return false;
     }
+    std::vector<std::shared_ptr<void>> upload_dependencies{staging.lifetime};
+    for (const auto& image : new_images)
+        if (image.lifetime) upload_dependencies.push_back(image.lifetime);
     if (!matter::submit_immediate(*vulkan_, record_tileset_upload,
                                   &upload_record, error,
                                   matter::ImmediateSubmitPhase::staging_upload,
-                                  {staging.lifetime})) {
+                                  std::move(upload_dependencies))) {
         for (auto& image : new_images) destroy_tileset_image(image);
         return false;
     }
+    for (auto& image : new_images)
+        if (image.image) image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Everything succeeded: swap the new images into place. Only now do we
     // touch renderer state / destroy the previous occupant, so an unloaded or
     // still-valid prior slot is never left half-updated on failure.
     //
-    // wait_idle is unconditional: the descriptor rewrite below touches EVERY
-    // frame slot's raster set 1, and sets referenced by still-pending command
-    // buffers must not be updated (no UPDATE_AFTER_BIND on these layouts).
-    // Loads are rare (world connect / rebake), so the stall is acceptable.
-    vulkan_->wait_idle();
+    // Existing frame/batch snapshots own the previous allocations. Their
+    // descriptors stay untouched until each frame slot is retired and reused.
     if (tileset_slots_[slot].loaded) {
         for (auto& channel : tileset_slots_[slot].channels)
             destroy_tileset_image(channel);
     }
     TilesetSlotGpu& target = tileset_slots_[slot];
     target = TilesetSlotGpu{};
-    for (int c = 0; c < 4; ++c) target.channels[c] = new_images[c];
+    for (int c = 0; c < 4; ++c) target.channels[c] = std::move(new_images[c]);
     if (has_horizon) {
         target.channels[kTilesetChannelHorizonA] =
-            new_images[kTilesetChannelHorizonA];
+            std::move(new_images[kTilesetChannelHorizonA]);
         target.channels[kTilesetChannelHorizonB] =
-            new_images[kTilesetChannelHorizonB];
+            std::move(new_images[kTilesetChannelHorizonB]);
     }
     target.has_horizon = has_horizon;
     target.tile_size_m = header.tile_size_m;
@@ -8597,11 +9563,31 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
     // the ORM counterpart of the albedo ratio that shipped with WP-E.
     tileset::mean_rgb(orm_rgb8.data(), atlas_dim, atlas_dim, 3,
                       target.mean_orm);
+    // Hash exactly what composition samples, including compression results and
+    // every mip. File names, process revisions and image handles are not content.
+    std::vector<uint8_t> pixel_identity;
+    asset_store::push_u32(pixel_identity, 1); // compressed-source identity schema
+    for (const auto& channel : compressed) {
+        asset_store::push_u32(pixel_identity, uint32_t(channel.format));
+        asset_store::push_u32(pixel_identity, uint32_t(channel.tile_px));
+        asset_store::push_u32(pixel_identity, uint32_t(channel.mip_count));
+        asset_store::push_u32(pixel_identity, uint32_t(channel.layers.size()));
+        for (const auto& layer : channel.layers) {
+            asset_store::push_u32(pixel_identity, uint32_t(layer.size()));
+            for (const auto& mip : layer) {
+                const auto hash = asset_store::hash_bytes(mip.data(), mip.size());
+                asset_store::push_u64(pixel_identity, mip.size());
+                asset_store::push_u64(pixel_identity, hash.lo);
+                asset_store::push_u64(pixel_identity, hash.hi);
+            }
+        }
+    }
+    const auto pixel_hash = asset_store::hash_bytes(pixel_identity.data(), pixel_identity.size());
+    target.pixel_hash[0] = pixel_hash.lo; target.pixel_hash[1] = pixel_hash.hi;
     target.loaded = true;
+    ++vt_tileset_revisions_[slot];
 
-    write_tileset_params_buffer();
-    for (auto& frame : frames_)
-        write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
+    stage_tileset_params();
     // WP-D/E: the tier-1 compositor samples these same slot images at page
     // bake time; rebind them on the next vt_begin_frame.
     vt_inputs_dirty_ = true;
@@ -8642,17 +9628,14 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
 void VkSceneRenderer::unload_tileset_slot(int slot) {
     if (slot < 0 || slot >= tileset::kMaxTilesetSlots) return;
     if (!tileset_slots_[slot].loaded) return;
-    if (vulkan_) vulkan_->wait_idle();
     for (auto& channel : tileset_slots_[slot].channels)
         destroy_tileset_image(channel);
     tileset_slots_[slot] = TilesetSlotGpu{};
-    write_tileset_params_buffer();
-    for (auto& frame : frames_)
-        write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
-    // WP-D/E: the compositor must stop sampling views this call just
-    // destroyed. wait_idle above already retired every in-flight fill, so the
-    // rebind on the next vt_begin_frame is safe -- but the views are dangling
-    // until then, so push it immediately instead of deferring.
+    ++vt_tileset_revisions_[slot];
+    stage_tileset_params();
+    // Frame-owned source bindings are refreshed only when that slot retires.
+    // Stage the unloaded source immediately so later page fills use fallback
+    // inputs. Earlier batches retain their source allocations until retirement.
     vt_inputs_dirty_ = true;
     push_vt_compositor_inputs();
 }
@@ -8770,7 +9753,7 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     writes[11].descriptorCount = 1;
     writes[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[11].pBufferInfo = &material_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 12, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 12, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::update_local_light_descriptor(FrameResources& frame) {
@@ -8792,7 +9775,7 @@ void VkSceneRenderer::update_local_light_descriptor(FrameResources& frame) {
         writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[binding].pBufferInfo = &infos[binding];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 5, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 5, writes, 0, nullptr);
 }
 
 bool VkSceneRenderer::upload_local_lights(FrameResources& frame,
@@ -9031,7 +10014,7 @@ bool VkSceneRenderer::record_primary_light_cull(
         if (i == 0) writes[i].pImageInfo = &depth_info;
         else writes[i].pBufferInfo = &buffer_infos[i - 1];
     }
-    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    update_descriptor_sets(device, 4, writes, 0, nullptr);
     // The slot owns this persistent descriptor pool until frame-resource
     // replacement/renderer teardown, both of which wait for device idle. Do
     // not also place its raw-device deleter in VulkanFrame::retained: those
@@ -9691,7 +10674,7 @@ bool VkSceneRenderer::update_environment_descriptor(
     writes[6].descriptorCount = 1;
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[6].pBufferInfo = &buffer;
-    vkUpdateDescriptorSets(vulkan_->device(), 7, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 7, writes, 0, nullptr);
     if (cloud_shadows_) cloud_shadows_->commit_generation();
     return true;
 }
@@ -9708,7 +10691,7 @@ void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &image_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 1, &write, 0, nullptr);
 }
 
 void VkSceneRenderer::note_command_layout_rebuild() {
@@ -10050,9 +11033,33 @@ bool VkSceneRenderer::init(std::string& error) {
     const VkDeviceSize index_reserve = std::max<VkDeviceSize>(
         sizeof(uint32_t),
         static_reserve_bytes("MATTER_VK_STATIC_RESERVE_INDEX_MB", 256));
+    // CPU staging is separate from the Vulkan host-visible reservation. The
+    // high-density stream reaches about 1.5 GB of vertices and 270 MB of
+    // indices; geometric std::vector growth copied the entire live array in
+    // publish.vulkan, producing multi-second frames even after GPU growth was
+    // made incremental. Reserve address space before streaming. Do not resize
+    // to pre-touch it: that would commit and zero gigabytes for small worlds.
+    // Unused capacity is never drawable geometry. The env values may be set
+    // to zero on memory-constrained hosts.
+    try {
+        const auto reserve_staging = [](auto& values, VkDeviceSize bytes) {
+            const size_t count = static_cast<size_t>(bytes / sizeof(values[0]));
+            if (count > values.capacity()) values.reserve(count);
+        };
+        reserve_staging(vertex_staging_,
+            static_reserve_bytes("MATTER_VK_CPU_RESERVE_VERTEX_MB", 2048));
+        reserve_staging(index_staging_,
+            static_reserve_bytes("MATTER_VK_CPU_RESERVE_INDEX_MB", 384));
+    } catch (const std::exception& exception) {
+        error = std::string("CPU raster staging reservation failed: ") + exception.what();
+        destroy_pipeline();
+        return false;
+    }
     initialized_ =
         ensure_buffer(clusters_, cluster_reserve,
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) &&
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                          VK_BUFFER_USAGE_TRANSFER_DST_BIT, error) &&
         ensure_vertex_buffer(vertex_reserve, error) &&
         ensure_index_buffer(index_reserve, error);
     if (initialized_) {
@@ -10082,6 +11089,7 @@ bool VkSceneRenderer::init(std::string& error) {
         velocity_.reset();
         material_instance_.reset();
         reactivity_.reset();
+    vt_feedback_.reset();
         depth_.reset();
         hdr_.reset();
         raster_extent_ = {};
@@ -10156,7 +11164,38 @@ bool VkSceneRenderer::project_solid_face(
             return false;
         }
     }
-    return gpu_solid_face_projector_->project(job, result, stats, error, control);
+    return gpu_solid_face_projector_->prepare(job, result, stats, error, control);
+}
+
+bool VkSceneRenderer::bake_face_material(const gpu_meshing::FaceMaterialJob& job,
+    gpu_meshing::FaceMaterialPatch& result,gpu_meshing::FaceStats& stats,
+    gpu_meshing::Error& error,const gpu_meshing::BuildControl& control) {
+    if (!vulkan_) {error={gpu_meshing::ErrorCode::Unavailable,"face material renderer has no device"};return false;}
+    if (!gpu_face_material_baker_)
+        gpu_face_material_baker_=std::make_unique<gpu_meshing::GpuFaceMaterialBaker>(*vulkan_);
+    return gpu_face_material_baker_->bake(job,result,stats,error,control);
+}
+
+bool VkSceneRenderer::publish_part_surface(std::shared_ptr<const part_surface::Prepared> source,
+                                          std::string& error) {
+    if (!source || !source->part_hash || source->base_program.empty() ||
+        (source->kind==part_surface::Prepared::Kind::Finite && !source->sources)) {
+        error="cannot publish incomplete part surface";return false;
+    }
+    const auto live=slot_of_.find(source->part_hash);
+    if (live!=slot_of_.end()) {
+        const auto& old=parts_[live->second].finite_surface;
+        const auto content_hash=[](const auto& p){return p->sources?p->sources->content_hash:0;};
+        if (!old || old->kind!=source->kind || content_hash(old)!=content_hash(source) || old->base_hash!=source->base_hash ||
+            old->material!=source->material ||
+            old->periodic_hash!=source->periodic_hash) {
+            error="finite source must be published before its immutable receiver";return false;
+        }
+    }
+    for (auto it=part_surfaces_.begin();it!=part_surfaces_.end();)
+        if (it->second.expired()) it=part_surfaces_.erase(it); else ++it;
+    part_surfaces_[source->part_hash]=source;
+    error.clear();return true;
 }
 
 // Registers a part's geometry with the renderer and returns its part SLOT, or
@@ -10184,6 +11223,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     if (fail_if_poisoned(error)) return -1;
     const auto existing = slot_of_.find(part.part_hash);
     if (existing != slot_of_.end()) return existing->second;
+    const auto publish_started = std::chrono::steady_clock::now();
     if (part.clusters.empty()) {
         error = "VkScenePart requires at least one cluster";
         return -1;
@@ -10231,7 +11271,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         error = "VkScenePart exceeds uint32_t raster vertex capacity";
         return -1;
     }
+    size_t lod_count = 0;
     for (const auto& cluster : part.clusters) {
+        lod_count += cluster.lods.size();
         if (cluster.lods.empty() || cluster.lods.size() > kVkMaxLod) {
             error = "VkSceneCluster LOD count must be in [1, kVkMaxLod]";
             return -1;
@@ -10251,6 +11293,11 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             }
         }
     }
+    if (part.rt_material_ids_prepared &&
+        part.rt_lod_material_ids.size() != lod_count) {
+        error = "VkScenePart prepared RT material set count mismatch";
+        return -1;
+    }
     // Validate that all index values are in-range for the vertex array (one pass).
     if (!part.indices.empty() && !part.vertices.empty()) {
         for (uint32_t idx : part.indices) {
@@ -10260,45 +11307,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             }
         }
     }
-    std::shared_ptr<matter::VkBufferResource> rt_geometry;
-    std::shared_ptr<matter::VkBufferResource> rt_index;
-    if (vulkan_->ray_tracing_available() && !part.vertices.empty()) {
-        rt_geometry = std::make_shared<matter::VkBufferResource>();
-        const VkDeviceSize bytes =
-            static_cast<VkDeviceSize>(part.vertices.size()) *
-            sizeof(VkRasterVertex);
-        if (!matter::create_buffer(
-                *vulkan_, bytes,
-                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *rt_geometry, error) ||
-            !matter::map_buffer(*rt_geometry, error)) {
-            return -1;
-        }
-        std::memcpy(rt_geometry->mapped, part.vertices.data(),
-                    static_cast<size_t>(bytes));
-        if (!matter::flush_buffer(*rt_geometry, 0, bytes, error)) return -1;
-    }
-    if (vulkan_->ray_tracing_available() && !part.indices.empty()) {
-        rt_index = std::make_shared<matter::VkBufferResource>();
-        const VkDeviceSize index_bytes =
-            static_cast<VkDeviceSize>(part.indices.size()) * sizeof(uint32_t);
-        if (!matter::create_buffer(
-                *vulkan_, index_bytes,
-                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *rt_index, error) ||
-            !matter::map_buffer(*rt_index, error)) {
-            return -1;
-        }
-        std::memcpy(rt_index->mapped, part.indices.data(),
-                    static_cast<size_t>(index_bytes));
-        if (!matter::flush_buffer(*rt_index, 0, index_bytes, error)) return -1;
-    }
+    const auto validated_at = std::chrono::steady_clock::now();
     // Place the part's geometry: reuse a settled freed range when one fits
     // (steady-state streaming: an evicted sector's range carries the next
     // one), otherwise extend the tail as before.
@@ -10308,9 +11317,11 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     if (!part.vertices.empty())
         std::copy(part.vertices.begin(), part.vertices.end(),
                   vertex_staging_.begin() + vertex_base);
+    const auto vertices_at = std::chrono::steady_clock::now();
     if (!part.impostors.empty())
         adopt_part_impostors(part, static_cast<uint32_t>(parts_.size()),
                              vertex_base);
+    const auto impostors_at = std::chrono::steady_clock::now();
     const uint32_t index_base =
         allocate_index_range(static_cast<uint32_t>(part.indices.size()));
     if (!part.indices.empty())
@@ -10318,21 +11329,28 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
                   index_staging_.begin() + index_base);
     const uint32_t cluster_base =
         allocate_cluster_range(static_cast<uint32_t>(part.clusters.size()));
+    const auto staged_at = std::chrono::steady_clock::now();
     const int slot = static_cast<int>(parts_.size());
     PartRecord record{};
     record.hash = part.part_hash;
+    record.geometry_raster_only = part.geometry_raster_only;
+    record.blas_cache_directory = part.blas_cache_directory;
+    record.blas_cache_content = part.blas_cache_content;
+    record.geometry_budget_claim = part.geometry_budget_claim;
+    if (!record.geometry_raster_only && !record.blas_cache_directory.empty() && !blas_cache_)
+        blas_cache_ = std::make_unique<VkBlasCache>(*vulkan_);
+    const auto finite=part_surfaces_.find(part.part_hash);
+    if (finite!=part_surfaces_.end()) record.finite_surface=finite->second.lock();
     record.water_binding_slot = part.water_field_binding.slot;
     record.water_generation = part.water_field_binding.generation;
     record.raster_water_surface = part.raster_water_surface;
     record.cluster_start = cluster_base;
     record.cluster_count = static_cast<uint32_t>(part.clusters.size());
-    record.vertex_start = vertex_base;   // kept for Task 4 vertexOffset
+    record.vertex_start = vertex_base;   // shared raster/RT vertex base
     record.vertex_count = static_cast<uint32_t>(part.vertices.size());
     record.index_start = index_base;
     record.index_count = static_cast<uint32_t>(part.indices.size());
     record.live = true;
-    record.rt_geometry = std::move(rt_geometry);
-    record.rt_index = std::move(rt_index);
     record.rt_cluster_lod_offsets =
         vk_scene_detail::dense_rt_lod_offsets(part);
     // M2.5: the RT lane's per-cluster rung ceiling. Computed once here, off
@@ -10411,7 +11429,10 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             rt_lod.first_index = lod.first_index;
             rt_lod.index_count = lod.index_count;
             rt_lod.primitive_count = lod.index_count / 3;
-            if (!part.indices.empty() && !part.vertices.empty()) {
+            if (part.rt_material_ids_prepared) {
+                rt_lod.material_ids =
+                    part.rt_lod_material_ids[record.rt_lods.size()];
+            } else if (!part.indices.empty() && !part.vertices.empty()) {
                 for (uint32_t k = 0; k < lod.index_count; ++k) {
                     const uint32_t material =
                         part.vertices[part.indices[lod.first_index + k]]
@@ -10420,24 +11441,31 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
                         rt_lod.material_ids.push_back(material);
                 }
             }
-            std::sort(rt_lod.material_ids.begin(),
-                      rt_lod.material_ids.end());
-            rt_lod.material_ids.erase(
-                std::unique(rt_lod.material_ids.begin(),
-                            rt_lod.material_ids.end()),
-                rt_lod.material_ids.end());
+            if (!part.rt_material_ids_prepared) {
+                std::sort(rt_lod.material_ids.begin(),
+                          rt_lod.material_ids.end());
+                rt_lod.material_ids.erase(
+                    std::unique(rt_lod.material_ids.begin(),
+                                rt_lod.material_ids.end()),
+                    rt_lod.material_ids.end());
+            }
             record.rt_lods.push_back(std::move(rt_lod));
         }
     }
-    record.material_ids.reserve(part.vertices.size());
-    for (const VkRasterVertex& vertex : part.vertices) {
-        if (vertex.material_index != UINT32_MAX)
-            record.material_ids.push_back(vertex.material_index);
+    if (part.rt_material_ids_prepared) {
+        record.material_ids = part.rt_material_ids;
+    } else {
+        record.material_ids.reserve(part.vertices.size());
+        for (const VkRasterVertex& vertex : part.vertices) {
+            if (vertex.material_index != UINT32_MAX)
+                record.material_ids.push_back(vertex.material_index);
+        }
+        std::sort(record.material_ids.begin(), record.material_ids.end());
+        record.material_ids.erase(
+            std::unique(record.material_ids.begin(), record.material_ids.end()),
+            record.material_ids.end());
     }
-    std::sort(record.material_ids.begin(), record.material_ids.end());
-    record.material_ids.erase(
-        std::unique(record.material_ids.begin(), record.material_ids.end()),
-        record.material_ids.end());
+    const auto rt_at = std::chrono::steady_clock::now();
     for (size_t i = 0; i < part.clusters.size(); ++i) {
         const auto& source = part.clusters[i];
         GpuCluster cluster{};
@@ -10480,6 +11508,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         cluster_lods_[cluster_base + i] = std::move(lods);
     }
     parts_.push_back(record);
+    pending_triangle_parts_.push_back(static_cast<uint32_t>(slot));
     slot_of_[part.part_hash] = slot;
     // Retires the flat lookup mirror and update_instances()' input snapshot in
     // one integer (see slot_of_version_).
@@ -10488,13 +11517,29 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // runtime on first use). A part with no charts leaves vt_slots all zero,
     // which is exactly the legacy path.
     register_vt_part(slot, part);
-    vt_draw_slots_dirty_ = true;
-    // A new slot lengthens the per-slot override table (and may itself carry
-    // an override); no-op work when nothing is overridden.
-    part_draw_overrides_dirty_ = true;
-    // Likewise for the occlusion-class table -- and the new part's own class
-    // has to be resolved against the current material table.
-    part_occluder_dirty_ = true;
+    const auto vt_at = std::chrono::steady_clock::now();
+    // Registration without a live VT variant only adds neutral draw buckets.
+    // Preserve an already-current table instead of rescanning the whole world.
+    // Reused cluster ranges must be cleared too, not only appended capacity.
+    if(!vt_draw_slots_dirty_) {
+        const size_t count=cluster_staging_.size()*kVkMaxLod;
+        vk_perf::reserve_geometric(vt_draw_slot_table_,count);
+        if(vt_draw_slot_table_.size()<count) vt_draw_slot_table_.resize(count,vt::kVtNoSlot);
+        const size_t first=size_t(record.cluster_start)*kVkMaxLod;
+        std::fill_n(vt_draw_slot_table_.begin()+first,size_t(record.cluster_count)*kVkMaxLod,vt::kVtNoSlot);
+    }
+    if(!part_draw_overrides_dirty_ && !part_draw_override_entries_.empty()) {
+        if(part_draw_override_table_.size()<parts_.size())
+            part_draw_override_table_.resize(parts_.size(),matter::PartDrawOverrideGpu{});
+        const auto entry=std::lower_bound(part_draw_override_entries_.begin(),part_draw_override_entries_.end(),record.hash,
+            [](const matter::PartDrawOverrideEntry& e,uint64_t hash){return e.part_hash<hash;});
+        part_draw_override_table_[slot]=entry!=part_draw_override_entries_.end() && entry->part_hash==record.hash
+            ? entry->value : matter::PartDrawOverrideGpu{};
+    }
+    if(!part_occluder_dirty_) {
+        if(part_occluder_table_.size()<parts_.size()) part_occluder_table_.resize(parts_.size(),1u);
+        part_occluder_table_[slot]=part_occluder_class(slot);
+    }
     // Record the written ranges (interior when a freed range was reused, tail
     // otherwise) for the ranged upload path.
     if (record.cluster_count != 0)
@@ -10509,12 +11554,33 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // rebuild (in update_instances' layout path or flush_command_template)
     // instead of one per part.
     command_template_dirty_ = true;
+    command_metadata_dirty_cluster_ = std::min(command_metadata_dirty_cluster_,size_t(cluster_base));
     ++static_generation_;
     // Ranged write: an interior (reused) range is safe to write in place
     // because its old bytes went unreferenced for a full in-flight window
     // before the allocator handed it out; a tail range is safe because no
     // recorded frame reads past its old size.
     mark_static_append();
+    const auto finished_at = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    const double publish_ms = elapsed_ms(publish_started, finished_at);
+    if (publish_ms > 100.0)
+        MATTER_LOGW("vk", "slow part registration hash=%016llx vertices=%zu "
+            "indices=%zu clusters=%zu prepared=%u ms=%.3f "
+            "validate=%.3f vertex=%.3f impostor=%.3f index=%.3f "
+            "rt=%.3f vt=%.3f tail=%.3f",
+            static_cast<unsigned long long>(part.part_hash),
+            part.vertices.size(), part.indices.size(), part.clusters.size(),
+            part.rt_material_ids_prepared ? 1u : 0u, publish_ms,
+            elapsed_ms(publish_started, validated_at),
+            elapsed_ms(validated_at, vertices_at),
+            elapsed_ms(vertices_at, impostors_at),
+            elapsed_ms(impostors_at, staged_at),
+            elapsed_ms(staged_at, rt_at),
+            elapsed_ms(rt_at, vt_at),
+            elapsed_ms(vt_at, finished_at));
     return slot;
 }
 
@@ -10700,7 +11766,7 @@ bool VkSceneRenderer::update_materials(
     // WP-D/E: the compositor bakes albedo/ORM and the detail-slot binding into
     // pages, so a material table change has to reach it too. Deferred to the
     // next vt_begin_frame (the setter wants the device idle w.r.t. fills).
-    vt_inputs_dirty_ = true;
+    vt_inputs_dirty_ = vt_inputs_dirty_ || data_changed;
     if (!first_upload && (shading_changed || geometry_changed)) {
         gi_history_reset_pending_ = true;
         local_direct_history_state_.reset_pending = true;
@@ -10722,13 +11788,132 @@ bool VkSceneRenderer::rt_geometry_classification_dirty(
                .rt_geometry_classification_dirty;
 }
 
+bool VkSceneRenderer::geometry_page_upload_cost(const VkScenePart& page, uint64_t& bytes,
+                                                uint64_t& scratch, std::string& error) const {
+    if ((!page.geometry_raster_only && !vulkan_->ray_tracing_available()) || page.vertices.empty() || page.indices.empty() ||
+        page.vertices.size() > UINT32_MAX || page.indices.size() > UINT32_MAX || page.indices.size() % 3) {
+        error = "invalid geometry page upload quote"; return false;
+    }
+    if (page.geometry_raster_only) {
+        bytes = page.vertices.size()*sizeof(VkRasterVertex) + page.indices.size()*sizeof(uint32_t);
+        scratch = 0; error.clear(); return true;
+    }
+    // This quote depends on counts, formats/usages and this renderer's device,
+    // not vertex contents. Both opacity modes are included in the cached max.
+    const uint64_t key=(uint64_t(page.vertices.size())<<32)|uint64_t(page.indices.size());
+    const auto cached=geometry_page_cost_cache_.find(key);
+    if(cached!=geometry_page_cost_cache_.end()){bytes=cached->second[0];scratch=cached->second[1];error.clear();return true;}
+    const auto get_sizes = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(
+        vkGetDeviceProcAddr(vulkan_->device(), "vkGetAccelerationStructureBuildSizesKHR"));
+    if (!get_sizes) { error = "BLAS sizing unavailable"; return false; }
+    VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    auto& triangles = geometry.geometry.triangles;
+    triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    triangles.vertexStride = sizeof(VkRasterVertex);
+    triangles.maxVertex = static_cast<uint32_t>(page.vertices.size() - 1);
+    triangles.indexType = VK_INDEX_TYPE_UINT32;
+    VkAccelerationStructureBuildGeometryInfoKHR build{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+    build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    build.geometryCount = 1; build.pGeometries = &geometry;
+    const uint32_t primitives = static_cast<uint32_t>(page.indices.size() / 3);
+    VkDeviceSize blas_size = 0, scratch_size = 0;
+    for (auto flags : {VkGeometryFlagsKHR(0), VkGeometryFlagsKHR(VK_GEOMETRY_OPAQUE_BIT_KHR)}) {
+        geometry.flags = flags;
+        VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        get_sizes(vulkan_->device(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build, &primitives, &sizes);
+        blas_size = std::max(blas_size, sizes.accelerationStructureSize);
+        scratch_size = std::max(scratch_size, sizes.buildScratchSize);
+    }
+    const uint64_t vertices = page.vertices.size() * sizeof(VkRasterVertex);
+    const uint64_t indices = page.indices.size() * sizeof(uint32_t);
+    bytes = vertices + indices;
+    const VkBufferUsageFlags input = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    const std::pair<VkDeviceSize,VkBufferUsageFlags> allocations[] = {
+        {vertices, input},
+        {indices, input | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT},
+        {blas_size, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT}
+    };
+    for (const auto& allocation : allocations) {
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.size = allocation.first; info.usage = allocation.second; info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer buffer = VK_NULL_HANDLE;
+        if (vkCreateBuffer(vulkan_->device(), &info, nullptr, &buffer) != VK_SUCCESS) { error = "geometry memory requirement query failed"; return false; }
+        VkMemoryRequirements requirements{}; vkGetBufferMemoryRequirements(vulkan_->device(), buffer, &requirements);
+        vkDestroyBuffer(vulkan_->device(), buffer, nullptr); bytes += requirements.size;
+    }
+    const uint64_t alignment = std::max<uint64_t>(1, vulkan_->ray_tracing_properties().min_acceleration_structure_scratch_offset_alignment);
+    scratch = ((scratch_size + alignment - 1) / alignment + 1) * alignment;
+    if(geometry_page_cost_cache_.size()<8192)geometry_page_cost_cache_[key]={bytes,scratch};
+    error.clear(); return true;
+}
+bool VkSceneRenderer::queue_geometry_page_warmup(uint64_t hash, std::string& error) {
+    const auto found = slot_of_.find(hash);
+    if (poisoned() || found == slot_of_.end()) {
+        error = "geometry page warmup requires a registered part"; return false;
+    }
+    const auto& part = parts_[static_cast<size_t>(found->second)];
+    if (part.geometry_raster_only) { error.clear(); return true; }
+    if (!vulkan_->ray_tracing_available()) { error = "RT geometry page requires native RT"; return false; }
+    if (part.cluster_count != 1 || part.rt_lods.size() != 1 || !part.rt_lods[0].primitive_count) {
+        error = "geometry page warmup requires one triangle group"; return false;
+    }
+    // A newly registered BLAS cannot be ready. Avoid rebuilding the flat
+    // part lookup after every registration; the publication pass does it once.
+    if ((part.rt_lods[0].built && geometry_page_render_ready(hash)) ||
+        std::find(geometry_page_warmups_.begin(), geometry_page_warmups_.end(), hash) != geometry_page_warmups_.end()) return true;
+    if (geometry_page_warmups_.size() >= 128) { error = "geometry page warmup queue full"; return false; }
+    geometry_page_warmups_.push_back(hash); return true;
+}
+bool VkSceneRenderer::geometry_page_render_ready(uint64_t hash) const {
+    const int slot=part_slot_lookup(hash);
+    return slot>=0 && geometry_page_render_ready_slot(static_cast<uint32_t>(slot));
+}
+bool VkSceneRenderer::resolve_geometry_page(VkGeometryCutNode& node) const {
+    const int slot=part_slot_lookup(node.ready_part_hash);
+    if(slot<0 || parts_[slot].cluster_count!=1 || !geometry_page_render_ready_slot(static_cast<uint32_t>(slot))) return false;
+    node.ready_slot=static_cast<uint32_t>(slot);
+    node.ready=1;node.cluster=parts_[slot].cluster_start;
+    return true;
+}
+bool VkSceneRenderer::geometry_page_render_ready_slot(uint32_t slot) const {
+    if (poisoned() || slot >= parts_.size()) return false;
+    const auto& part = parts_[slot];
+    const bool raster_ready = part.live && part.triangle_resident &&
+        part.vertex_count && part.index_count &&
+        uint64_t(part.vertex_start) + part.vertex_count <= uploaded_vertex_count_ &&
+        uint64_t(part.index_start) + part.index_count <= uploaded_index_count_;
+    return raster_ready && (part.geometry_raster_only ||
+        (vertices_.address && indices_.address && part.rt_lods.size() == 1 &&
+         part.rt_lods[0].built && !part.rt_lods[0].candidate_serial &&
+         !part.rt_geometry_classification_dirty));
+}
+
+std::shared_ptr<const void> VkSceneRenderer::geometry_page_resources(uint64_t hash) const {
+    if (!geometry_page_render_ready(hash)) return {};
+    const auto& part = parts_[static_cast<size_t>(slot_of_.at(hash))];
+    auto retained = std::make_shared<std::vector<std::shared_ptr<void>>>();
+    if (!part.geometry_raster_only) {
+        // The shared source buffers are owned by the renderer and retained by
+        // each frame that reads them. Holding them for a page's whole residency
+        // would pin every retired capacity rung after a growth.
+        retained->push_back(part.rt_lods[0].blas->lifetime);
+    }
+    return retained;
+}
+
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 VkDeviceAddress VkSceneRenderer::test_rt_geometry_address(
     uint64_t part_hash) const {
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return 0;
     const PartRecord& part = parts_[static_cast<size_t>(found->second)];
-    return part.rt_geometry ? part.rt_geometry->address : 0;
+    return !part.geometry_raster_only && part.vertex_count && vertices_.address
+        ? vertices_.address + VkDeviceSize{part.vertex_start} * sizeof(VkRasterVertex)
+        : 0;
 }
 
 bool VkSceneRenderer::record_test_surface_ray(
@@ -11822,7 +13007,7 @@ bool VkSceneRenderer::test_dispatch_animation_skin_fixture(
         writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[index].pBufferInfo = &infos[index];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), static_cast<uint32_t>(writes.size()),
+    update_descriptor_sets(vulkan_->device(), static_cast<uint32_t>(writes.size()),
                            writes.data(), 0, nullptr);
 
     struct Record {
@@ -12054,7 +13239,7 @@ bool VkSceneRenderer::record_gi_temporal_signal(
                 : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[binding].pImageInfo = &infos[binding];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 22, writes, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 22, writes, 0, nullptr);
     VulkanGiTemporalConstants constants{};
     constants.temporal_extent[0] = signal_extent.width;
     constants.temporal_extent[1] = signal_extent.height;
@@ -12270,7 +13455,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
         writes[9].descriptorCount = 1;
         writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[9].pImageInfo = &reactivity_info;
-        vkUpdateDescriptorSets(vulkan_->device(), 10, writes, 0, nullptr);
+        update_descriptor_sets(vulkan_->device(), 10, writes, 0, nullptr);
     }
 
     constexpr uint32_t steps[5] = {1, 2, 4, 8, 16};
@@ -12352,9 +13537,23 @@ bool VkSceneRenderer::record_gi_atrous_signal(
 // candidates and leaves the slot to rebuild. Nothing here bumps the geometry
 // epoch: the build that produced a candidate already did, and bumping again
 // would retire the TLAS built alongside it, which is still perfectly valid.
+std::array<uint64_t, 4> VkSceneRenderer::blas_cache_stats() const {
+    return blas_cache_ ? std::array<uint64_t,4>{blas_cache_->hits, blas_cache_->misses, blas_cache_->captures, blas_cache_->rejected} : std::array<uint64_t,4>{};
+}
+
 void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
                                                bool succeeded) {
+    if (blas_cache_) blas_cache_->finish(frame_serial, succeeded);
     if (frame_serial == 0) return;
+    for (auto& frame : frames_) if (frame.geometry_feedback_pending_serial == frame_serial) {
+        frame.geometry_feedback_valid = succeeded;
+        frame.geometry_feedback_serial = succeeded ? frame_serial : 0;
+        frame.geometry_feedback_pending_serial = 0;
+    }
+    if(sparse_candidate_serial_==frame_serial) {
+        if(succeeded) {sparse_presented_=sparse_candidate_;sparse_presented_index_=sparse_candidate_index_;}
+        sparse_candidate_.reset();sparse_candidate_serial_=0;
+    }
     auto& direct = local_direct_history_state_;
     if (direct.candidate_serial == frame_serial) {
         if (succeeded) {
@@ -12513,11 +13712,11 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
         matter::sun_disc_cos_core(lighting_.sun_angular_diameter_deg);
     lighting_initialized_ = true;
     // Task 11: mirror the fresh sun direction/intensity into the tileset UBO
-    // every frame -- write_tileset_params_buffer() no-ops until
+    // every frame -- stage_tileset_params() no-ops until
     // ensure_tileset_infra() has run, and re-derives the (cheap) slot table
     // from tileset_slots_ each call, so this stays a plain memcpy+flush.
     if (changes != matter::kAtmosphereChangeNone || physical_source_changed)
-        write_tileset_params_buffer();
+        stage_tileset_params();
 }
 
 void VkSceneRenderer::set_atmosphere_settings(
@@ -12817,20 +14016,21 @@ bool VkSceneRenderer::cloud_shadow_environment_image_is_clear_for_test(
 void VkSceneRenderer::set_tileset_pom_settings(
     const matter::TilesetPomSettings& s) {
     tileset_pom_settings_ = s;
-    // write_tileset_params_buffer() no-ops until ensure_tileset_infra() has
+    if (vt_encoded_geometry_only_) tileset_pom_settings_.enabled = false;
+    // stage_tileset_params() no-ops until ensure_tileset_infra() has
     // run and re-derives the (cheap) slot table from tileset_slots_ every
     // call, same pattern as the per-frame sun_dir_intensity mirror in
     // set_lighting -- calling it here keeps the UBO in lockstep with the
     // settings the instant they change rather than waiting for the next
     // lighting update.
-    write_tileset_params_buffer();
+    stage_tileset_params();
 }
 
 void VkSceneRenderer::set_vt_near_band_settings(
     const matter::VtNearBandSettings& s) {
     vt_near_band_settings_ = s;
     // Same UBO, same lockstep rationale as set_tileset_pom_settings above.
-    write_tileset_params_buffer();
+    stage_tileset_params();
 }
 
 // ---- Free-range recycling ------------------------------------------------
@@ -12921,7 +14121,22 @@ uint32_t VkSceneRenderer::allocate_vertex_range(uint32_t count) {
     const uint32_t reused = free_vertices_.allocate(count);
     if (reused != UINT32_MAX) return reused;
     const uint32_t start = static_cast<uint32_t>(vertex_staging_.size());
+    const bool grows = vertex_staging_.size() + count > vertex_staging_.capacity();
+    static const bool profile_growth = std::getenv("MATTER_GEOMETRY_PAGES_PROFILE") != nullptr;
+    const size_t old_capacity = vertex_staging_.capacity();
+    const bool log_growth = grows &&
+        (profile_growth || old_capacity * sizeof(vertex_staging_[0]) >=
+            64ull * 1024 * 1024);
+    const auto begin = log_growth ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
     vertex_staging_.resize(vertex_staging_.size() + count);
+    if (log_growth) {
+        const double ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+        MATTER_LOGI("geometry", "raster_staging_growth channel=vertex old_bytes=%llu new_bytes=%llu live_bytes=%llu ms=%.3f",
+            (unsigned long long)(old_capacity*sizeof(vertex_staging_[0])),
+            (unsigned long long)(vertex_staging_.capacity()*sizeof(vertex_staging_[0])),
+            (unsigned long long)(vertex_staging_.size()*sizeof(vertex_staging_[0])), ms);
+    }
     return start;
 }
 
@@ -12929,7 +14144,22 @@ uint32_t VkSceneRenderer::allocate_index_range(uint32_t count) {
     const uint32_t reused = free_indices_.allocate(count);
     if (reused != UINT32_MAX) return reused;
     const uint32_t start = static_cast<uint32_t>(index_staging_.size());
+    const bool grows = index_staging_.size() + count > index_staging_.capacity();
+    static const bool profile_growth = std::getenv("MATTER_GEOMETRY_PAGES_PROFILE") != nullptr;
+    const size_t old_capacity = index_staging_.capacity();
+    const bool log_growth = grows &&
+        (profile_growth || old_capacity * sizeof(index_staging_[0]) >=
+            64ull * 1024 * 1024);
+    const auto begin = log_growth ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
     index_staging_.resize(index_staging_.size() + count);
+    if (log_growth) {
+        const double ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+        MATTER_LOGI("geometry", "raster_staging_growth channel=index old_bytes=%llu new_bytes=%llu live_bytes=%llu ms=%.3f",
+            (unsigned long long)(old_capacity*sizeof(index_staging_[0])),
+            (unsigned long long)(index_staging_.capacity()*sizeof(index_staging_[0])),
+            (unsigned long long)(index_staging_.size()*sizeof(index_staging_[0])), ms);
+    }
     return start;
 }
 
@@ -12949,17 +14179,22 @@ uint32_t VkSceneRenderer::allocate_index_range(uint32_t count) {
 // The slot index itself is never reused (cluster part_slot values and rt_lods
 // refer to it); the emptied record simply stops matching every liveness test.
 void VkSceneRenderer::release_part(uint64_t part_hash) {
+    geometry_page_warmups_.erase(std::remove(geometry_page_warmups_.begin(),
+        geometry_page_warmups_.end(), part_hash), geometry_page_warmups_.end());
     if (poisoned()) return;
     // Releasing a part destroys its bottom-level structures, so no cached TLAS
     // may keep referencing them.
     ++rt_geometry_epoch_;
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return;
+    if (blas_cache_) for (const auto& lod : parts_[found->second].rt_lods)
+        if (lod.cache_ticket) blas_cache_->disk.cancel(lod.cache_ticket);
     // Belt and braces for update_instances()' fast path: the slot_of_ erase is
     // caught by its snapshot compare, but this rewrites instance_staging_
     // directly, so retire the snapshot outright rather than relying on that.
     instance_snapshot_valid_ = false;
     const uint32_t released_slot = static_cast<uint32_t>(found->second);
+    set_vt_part_prewarm(part_hash, false);
     slot_of_.erase(found);
     // Covers both the erase and the `parts_[released_slot] = {}` below; nothing
     // reads the version in between (see slot_of_version_).
@@ -12979,6 +14214,22 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
         }
     }
     PartRecord& record = parts_[released_slot];
+    // A partially uploaded part can be evicted before its remaining ranges
+    // drain. Cancel them before the recycler can hand those bytes to a new
+    // owner; otherwise a later transfer could race that owner's draws.
+    const auto cancel_upload = [](auto& ranges, uint32_t start, uint32_t count) {
+        if (!count) return;
+        const uint64_t end = uint64_t{start} + count;
+        ranges.erase(std::remove_if(ranges.begin(), ranges.end(),
+            [&](const auto& range) {
+                return range.first < end &&
+                    uint64_t{range.first} + range.second > start;
+            }), ranges.end());
+    };
+    cancel_upload(dirty_cluster_ranges_, record.cluster_start, record.cluster_count);
+    cancel_upload(dirty_vertex_ranges_, record.vertex_start, record.vertex_count);
+    cancel_upload(dirty_index_ranges_, record.index_start, record.index_count);
+    command_metadata_dirty_cluster_ = std::min(command_metadata_dirty_cluster_,size_t(record.cluster_start));
     // Return the geometry ranges to the recycler. No compaction and no static
     // re-upload: the bytes stay where they are, unreferenced (the instance
     // filter below removes every reader), until a later registration reuses
@@ -13005,17 +14256,15 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
         cluster_staging_[record.cluster_start + i] = GpuCluster{};
         cluster_lods_[record.cluster_start + i].clear();
     }
-    // WP-E: drop the variant's indirection layer, pinned tail and CPU mesh
-    // copies before the record goes away. The compositor's GPU mesh cache for
-    // the same variant is dropped later (see vt_pending_invalidate_): a fill
-    // recorded this frame may still be reading those buffers.
+    // Residency drops aliases and notifies producers when the last owner is
+    // released. Producer retirement keeps captured GPU resources alive.
+    static const bool log_vt_events = std::getenv("MATTER_VT_EVENT_LOG") != nullptr;
+    if (log_vt_events && std::any_of(record.vt_slots.begin(), record.vt_slots.end(),
+            [](uint32_t slot) { return slot != vt::kVtNoSlot; }))
+        MATTER_LOGI("vt-owner-retire", "demand_frame=%llu part=%016llx reason=part_release wanted_mask=%u",
+            static_cast<unsigned long long>(vt_demand_frame_),
+            static_cast<unsigned long long>(part_hash), record.vt_cached_wanted_mask);
     if (vt_) vt_->release_variant(part_hash);
-    // WP-H: the enricher caches the same streams plus the variant's own
-    // acceleration structure and has the same kMaxBatchesInFlight retirement
-    // horizon, so it rides the same deferred invalidation.
-    if (vt_compositor_ || vt_enricher_)
-        vt_pending_invalidate_.emplace_back(part_hash,
-                                            vt_invalidate_retire_serial());
     vt_draw_slots_dirty_ = true;
     part_draw_overrides_dirty_ = true;
     part_occluder_dirty_ = true;
@@ -13364,7 +14613,10 @@ bool VkSceneRenderer::update_instances(
         // part_slot_lookup answers the identical question in one probe of a
         // flat table derived from the same map (see slot_of_version_).
         const int found_slot = part_slot_lookup(source.part_hash);
-        if (found_slot < 0) continue;
+        if (found_slot < 0) {
+            if (geometry_cut_words_[0]) { error = "geometry dispatch instance has no registered part"; return false; }
+            continue;
+        }
         const PartRecord& part = parts_[static_cast<size_t>(found_slot)];
         GpuInstance instance{};
         instance.object_to_world = pack_glsl_mat4(source.object_to_world);
@@ -13403,6 +14655,7 @@ bool VkSceneRenderer::update_instances(
         if (source.ray_traced) {
             RtInstance rt{};
             rt.part_hash = source.part_hash;
+            rt.vt_source_hash = source.rt_vt_source_hash;
             std::memcpy(rt.transform, source.object_to_world.m,
                         sizeof(rt.transform));
             candidate_rt.push_back(rt);
@@ -13542,6 +14795,23 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
         }
         ++per_part[slot];
     }
+    // GPU hierarchy pages use their controller transform. Reserve their
+    // draw buckets directly instead of manufacturing static proxy instances.
+    for (size_t slot = 0; slot < geometry_page_capacities_.size(); ++slot) {
+        if (slot >= per_part.size() || !checked_u32_add(per_part[slot],
+                geometry_page_capacities_[slot], per_part[slot],
+                "geometry page instance bucket", error)) return false;
+    }
+    // Reuse commands before the earliest changed geometry or bucket count.
+    size_t first_changed = std::min(command_metadata_dirty_cluster_,command_template_.size()/kVkMaxLod);
+    first_changed = std::min(first_changed,raster_command_enabled_.size()/kVkMaxLod);
+    first_changed = std::min(first_changed,cluster_staging_.size());
+    for(size_t slot=0;slot<per_part.size();++slot) {
+        const uint32_t previous=slot<part_instance_counts_.size()?part_instance_counts_[slot]:0;
+        if(previous!=per_part[slot] && parts_[slot].cluster_count)
+            first_changed=std::min(first_changed,size_t(parts_[slot].cluster_start));
+    }
+    uint32_t prefix_instances = 0, raster_commands = 0;
     uint32_t first_instance = 0;
     for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
          ++cluster_index) {
@@ -13550,6 +14820,8 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
             error = "cluster part bucket is outside the active part table";
             return false;
         }
+        if(cluster_index==first_changed) prefix_instances=first_instance;
+        if(parts_[cluster.part_slot].vertex_count) raster_commands+=cluster.lod_count;
         // GpuCluster::lod_count IS cluster_lods_[i].size(): ensure_part writes
         // both from the same source.lods (and admission caps it at kVkMaxLod),
         // release_part zeroes both, reset() clears both, and
@@ -13564,6 +14836,7 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
             }
         }
     }
+    if(first_changed==cluster_staging_.size()) prefix_instances=first_instance;
     VkDeviceSize transform_bytes = 0;
     if (!vk_scene_detail::checked_mul_to_device_size(
             first_instance, sizeof(GpuMat4), transform_bytes,
@@ -13575,15 +14848,16 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
         return false;
     }
 
-    // Geometric growth: assign() sizes the block exactly, so a streaming fill
-    // that adds clusters every frame reallocated the whole command template
-    // (clusters x 9 x 20 B) and its enable mask on every frame.
+    // Geometric growth retains storage across streaming appends. Resize keeps
+    // the unchanged prefix; only the invalidated suffix is cleared below.
     vk_perf::reserve_geometric(command_template_,
                                static_cast<size_t>(command_count));
     vk_perf::reserve_geometric(raster_command_enabled_,
                                static_cast<size_t>(command_count));
-    command_template_.assign(static_cast<size_t>(command_count), {});
-    raster_command_enabled_.assign(static_cast<size_t>(command_count), 0);
+    command_template_.resize(static_cast<size_t>(command_count));
+    raster_command_enabled_.resize(static_cast<size_t>(command_count));
+    std::fill(command_template_.begin()+first_changed*kVkMaxLod,command_template_.end(),DrawCommand{});
+    std::fill(raster_command_enabled_.begin()+first_changed*kVkMaxLod,raster_command_enabled_.end(),0);
     std::vector<PartCommandRange> next_part_ranges;
     next_part_ranges.reserve(parts_.size());
     for (uint32_t slot = 0; slot < parts_.size(); ++slot) {
@@ -13596,9 +14870,9 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
              part.cluster_count * kVkMaxLod, slot,
              part.raster_water_surface});
     }
-    raster_draw_command_count_ = 0;
-    uint32_t command_first_instance = 0;
-    for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
+    raster_draw_command_count_ = raster_commands;
+    uint32_t command_first_instance = prefix_instances;
+    for (size_t cluster_index = first_changed; cluster_index < cluster_staging_.size();
          ++cluster_index) {
         const GpuCluster& cluster = cluster_staging_[cluster_index];
         const auto& lods = cluster_lods_[cluster_index];
@@ -13614,7 +14888,6 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
                 if (parts_[cluster.part_slot].vertex_count != 0) {
                     raster_command_enabled_[cluster_index * kVkMaxLod + lod] =
                         1;
-                    ++raster_draw_command_count_;
                 }
                 if (!checked_u32_add(command_first_instance,
                                      per_part[cluster.part_slot],
@@ -13650,6 +14923,7 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     part_command_ranges_ = std::move(next_part_ranges);
     // Any successful rebuild covers every deferred registration.
     command_template_dirty_ = false;
+    command_metadata_dirty_cluster_ = cluster_staging_.size();
     return true;
 }
 
@@ -13677,6 +14951,8 @@ bool VkSceneRenderer::flush_command_template(std::string& error) {
 // across frames and reproduces rebuild_command_template()'s exact output when
 // no dynamic instances are active (which restores the static layout).
 bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
+    // Dynamic offsets do not belong to the reusable static prefix.
+    command_metadata_dirty_cluster_ = 0;
     if (command_template_.size() !=
             cluster_staging_.size() * static_cast<size_t>(kVkMaxLod) ||
         part_instance_counts_.size() != parts_.size()) {
@@ -13806,12 +15082,11 @@ VkSceneRenderer::StaticUploadCensus VkSceneRenderer::static_upload_census() {
 // arrays, instances, the draw-command template, the VT slot / draw-override /
 // occlusion-class tables, and the skin transform tail.
 //
-// The static arrays take one of two paths. kAppend writes only the dirty
-// ranges in place and costs O(new parts); kFull recreates all three buffers
-// and rewrites O(world) into fresh host-visible memory -- a 366 ms frame in one
-// captured trace. kFull is reached only when a buffer outgrew its reservation,
-// and the diagnostic printed there gives the numbers needed to raise it (see
-// static_reserve_bytes in init()).
+// Static appends write only dirty ranges. Capacity growth allocates only the
+// undersized buffers, copies their unchanged uploaded ranges on the GPU, then
+// writes the dirty ranges into the replacement. The legacy kFull path remains
+// for fault tests and the standalone cull API, which has no frame command
+// buffer in which to record a copy.
 //
 // The command template is re-uploaded UNCONDITIONALLY every frame: cull.comp
 // writes instance_count into those records on the GPU, so the CPU copy has to
@@ -13820,8 +15095,10 @@ VkSceneRenderer::StaticUploadCensus VkSceneRenderer::static_upload_census() {
 // On failure most paths call poison() -- by then the buffers have been partly
 // replaced or partly written and cannot be unwound.
 bool VkSceneRenderer::upload_scene_buffers(
-    FrameResources& frame, VkCommandBuffer material_command_buffer,
+    FrameResources& frame, const matter::VulkanFrame* upload_frame,
     bool reset_stats, std::string& error) {
+    const VkCommandBuffer material_command_buffer =
+        upload_frame ? upload_frame->command_buffer : VK_NULL_HANDLE;
     VkDeviceSize cluster_bytes = 0;
     VkDeviceSize instance_bytes = 0;
     VkDeviceSize command_bytes = 0;
@@ -13913,6 +15190,47 @@ bool VkSceneRenderer::upload_scene_buffers(
                             VkDeviceSize size) {
         return upload_at(buffer, data, size, 0);
     };
+    // Frame-slot staging is retained until its submission completes. Record
+    // copies into the caller's frame instead of issuing synchronous transfers
+    // from prepare_frame(), including animated skin/water transform tails.
+    // The standalone cull test API has no open command buffer and uses the
+    // existing synchronous upload contract.
+    const auto upload_gpu = [&](matter::VkBufferResource& destination,
+                                matter::VkBufferResource& staging,
+                                const void* data, VkDeviceSize size,
+                                VkDeviceSize offset = 0, bool fill_staging = true) {
+        if (size == 0) return true;
+        if (offset > destination.size || size > destination.size - offset) {
+            error = "scene GPU upload exceeds destination buffer";
+            return poison(error);
+        }
+        if (material_command_buffer == VK_NULL_HANDLE)
+            return upload_at(destination, data, size, offset);
+        if (fill_staging) {
+            if (!ensure_buffer(staging, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, error) ||
+                !upload(staging, data, size)) return poison(error);
+        } else if (staging.buffer == VK_NULL_HANDLE || staging.size < size) {
+            error = "reused scene staging does not contain the requested range";
+            return poison(error);
+        }
+        const VkBufferCopy copy{0, offset, size};
+        vkCmdCopyBuffer(material_command_buffer, staging.buffer,
+                        destination.buffer, 1, &copy);
+        VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = destination.buffer;
+        barrier.offset = offset;
+        barrier.size = size;
+        vkCmdPipelineBarrier(material_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            0, 0, nullptr, 1, &barrier, 0, nullptr);
+        return true;
+    };
     frame.pending_material_bytes = 0;
     if (frame.material_generation != material_generation_) {
         const VkDeviceSize required =
@@ -13970,6 +15288,109 @@ bool VkSceneRenderer::upload_scene_buffers(
     }
     matter::profile::Scope static_scope(engine_prof::id(engine_prof::kPfUploadStatic));
     const auto su_append_t0 = std::chrono::steady_clock::now();
+    const auto upload_ranges =
+        [&](matter::VkBufferResource& buffer,
+            matter::VkBufferResource* staging,
+            const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
+            const void* base, size_t element_size,
+            uint64_t* upload_counter) {
+        const bool gpu_staging = staging && material_command_buffer != VK_NULL_HANDLE &&
+            (buffer.memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0;
+        VkDeviceSize staged_bytes = 0;
+        const auto staging_start = std::chrono::steady_clock::now();
+        if (gpu_staging) {
+            for (const auto& range : ranges) {
+                const VkDeviceSize bytes = VkDeviceSize{range.second} * element_size;
+                if (bytes > limits_.max_buffer_size - staged_bytes) {
+                    error = "static upload staging exceeds Vulkan maxBufferSize";
+                    return false;
+                }
+                staged_bytes += bytes;
+            }
+            if (staged_bytes && !ensure_buffer(*staging, staged_bytes,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT, error)) return false;
+        }
+        const auto staging_ready = std::chrono::steady_clock::now();
+        VkDeviceSize staged_offset = 0;
+        for (const auto& range : ranges) {
+            const VkDeviceSize offset = VkDeviceSize{range.first} * element_size;
+            const VkDeviceSize size = VkDeviceSize{range.second} * element_size;
+            if (gpu_staging) {
+                if (!upload_at(*staging, static_cast<const char*>(base) + offset,
+                               size, staged_offset)) return false;
+                const VkBufferCopy copy{staged_offset, offset, size};
+                vkCmdCopyBuffer(material_command_buffer, staging->buffer,
+                                buffer.buffer, 1, &copy);
+                staged_offset += size;
+            } else if (!upload_at(buffer,
+                                  static_cast<const char*>(base) + offset,
+                                  size, offset)) return false;
+        }
+        if (gpu_staging && staged_bytes) {
+            if (staged_bytes >= 64ull * 1024ull * 1024ull) {
+                MATTER_LOGI("vk", "static dirty stage bytes=%llu MiB reserve=%.2f ms copy=%.2f ms flags=%u\n",
+                    static_cast<unsigned long long>(staged_bytes >> 20),
+                    std::chrono::duration<double, std::milli>(
+                        staging_ready - staging_start).count(),
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - staging_ready).count(),
+                    static_cast<unsigned int>(staging->memory_properties));
+            }
+            VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.buffer = buffer.buffer;
+            barrier.offset = 0;
+            barrier.size = VK_WHOLE_SIZE;
+            vkCmdPipelineBarrier(material_command_buffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                0, 0, nullptr, 1, &barrier, 0, nullptr);
+        }
+        if (!ranges.empty() && upload_counter) ++*upload_counter;
+        return true;
+    };
+    // Bound the CPU bus work even when one registration adds hundreds of MiB.
+    // The budget belongs to the submission serial, so repeated preparation of
+    // the same frame cannot spend it twice. The standalone test API drains
+    // synchronously because it has no subsequent production frames to service.
+    if (upload_frame && static_upload_budget_serial_ != upload_frame->serial) {
+        static_upload_budget_serial_ = upload_frame->serial;
+        static_upload_frame_bytes_ = 0;
+    }
+    VkDeviceSize remaining_budget = upload_frame
+        ? static_upload_budget_bytes_ - std::min(static_upload_budget_bytes_, static_upload_frame_bytes_)
+        : std::numeric_limits<VkDeviceSize>::max();
+    using UploadRanges = std::vector<std::pair<uint32_t, uint32_t>>;
+    UploadRanges selected_vertices, selected_indices, remaining_vertices, remaining_indices;
+    const auto select_ranges = [&](const UploadRanges& source, size_t element_size,
+                                   UploadRanges& selected, UploadRanges& remaining) {
+        for (const auto& range : source) {
+            const auto count = static_cast<uint32_t>(std::min<VkDeviceSize>(
+                range.second, remaining_budget / element_size));
+            if (count) selected.emplace_back(range.first, count);
+            if (count < range.second)
+                remaining.emplace_back(range.first + count, range.second - count);
+            remaining_budget -= VkDeviceSize{count} * element_size;
+        }
+    };
+    // Indices are small and servicing them first lets completed vertex ranges
+    // become visible immediately, without waiting behind later vertices.
+    select_ranges(dirty_index_ranges_, sizeof(uint32_t), selected_indices, remaining_indices);
+    select_ranges(dirty_vertex_ranges_, sizeof(VkRasterVertex), selected_vertices, remaining_vertices);
+    const auto finish_ranges = [&] {
+        for (const auto& range : selected_vertices)
+            static_upload_frame_bytes_ += VkDeviceSize{range.second} * sizeof(VkRasterVertex);
+        for (const auto& range : selected_indices)
+            static_upload_frame_bytes_ += VkDeviceSize{range.second} * sizeof(uint32_t);
+        dirty_cluster_ranges_.clear();
+        dirty_vertex_ranges_ = std::move(remaining_vertices);
+        dirty_index_ranges_ = std::move(remaining_indices);
+        static_upload_dirty_ = dirty_vertex_ranges_.empty() && dirty_index_ranges_.empty()
+            ? StaticUpload::kClean : StaticUpload::kAppend;
+    };
+    bool capacity_growth = false;
     if (static_upload_dirty_ == StaticUpload::kAppend) {
         // Streaming fast path. Every static mutation since the last upload
         // was a register_part() ranged write — into a recycled interior range
@@ -13982,75 +15403,38 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (clusters_.size >= cluster_bytes &&
             vertices_.size >= vertex_bytes &&
             indices_.size >= index_bytes) {
-            const auto upload_ranges =
-                [&](matter::VkBufferResource& buffer,
-                    const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
-                    const void* base, size_t element_size,
-                    uint64_t* upload_counter) {
-                for (const auto& range : ranges) {
-                    const VkDeviceSize offset =
-                        VkDeviceSize{range.first} * element_size;
-                    const VkDeviceSize size =
-                        VkDeviceSize{range.second} * element_size;
-                    if (!upload_at(buffer,
-                                   static_cast<const char*>(base) + offset,
-                                   size, offset))
-                        return false;
-                }
-                if (!ranges.empty() && upload_counter) ++*upload_counter;
-                return true;
-            };
-            if (!upload_ranges(clusters_, dirty_cluster_ranges_,
+            if (!upload_ranges(clusters_, nullptr, dirty_cluster_ranges_,
                                cluster_staging_.data(), sizeof(GpuCluster),
                                &upload_counters_.cluster_uploads) ||
-                !upload_ranges(vertices_, dirty_vertex_ranges_,
+                !upload_ranges(vertices_, &frame.static_vertex_upload,
+                               selected_vertices,
                                vertex_staging_.data(), sizeof(VkRasterVertex),
                                &upload_counters_.vertex_uploads) ||
-                !upload_ranges(indices_, dirty_index_ranges_,
+                !upload_ranges(indices_, &frame.static_index_upload,
+                               selected_indices,
                                index_staging_.data(), sizeof(uint32_t),
                                nullptr)) {
                 return false;
             }
             ++upload_counters_.static_append_uploads;
-            dirty_cluster_ranges_.clear();
-            dirty_vertex_ranges_.clear();
-            dirty_index_ranges_.clear();
+            finish_ranges();
             uploaded_cluster_count_ =
                 static_cast<uint32_t>(cluster_staging_.size());
             uploaded_vertex_count_ =
                 static_cast<uint32_t>(vertex_staging_.size());
             uploaded_index_count_ =
                 static_cast<uint32_t>(index_staging_.size());
-            static_upload_dirty_ = StaticUpload::kClean;
             su_note(g_su_append_count, g_su_append_us, nullptr,
                     (uint64_t)std::chrono::duration_cast<
                         std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - su_append_t0).count());
         } else {
-            // A buffer outgrew its capacity.
-            //
-            // THIS IS THE PATH WE ARE TRYING TO MAKE UNREACHABLE. It escalates
-            // to the recreate + full-rewrite below, which allocates three fresh
-            // host-visible buffers and memcpys the ENTIRE resident world into
-            // them on the render thread. A 2026-08-08 capture caught it at
-            // 366 ms in one frame -- the largest single render-thread event in
-            // the trace, against a 32 ms median.
-            //
-            // The intended answer is the reservation applied in
-            // static_reserve_bytes() below: size the buffers once, generously,
-            // at first allocation, so a streaming load never crosses a capacity
-            // boundary mid-flight. This branch is what tells you the
-            // reservation was too small -- loudly, with the numbers needed to
-            // pick a better one, instead of silently eating a third of a
-            // second.
-            //
-            // It is NOT commented out yet, and deliberately so: doing that
-            // without a growth path in place converts a hitch into either a
-            // dead frame or geometry reading uninitialised memory, which in
-            // this subsystem means a device fault. See the report accompanying
-            // this change for the GPU-copy growth path and the dirty-range
-            // ordering hazard it has to solve first.
+            // A buffer outgrew its capacity. Keep the diagnostic, then copy
+            // unchanged ranges from the old GPU allocation into the new one.
+            // Only the ranges registered since the last upload need a host
+            // write; they are excluded from the GPU copy below.
             ++upload_counters_.static_capacity_overflows;
+            capacity_growth = true;
             // STAGING vs LIVE vs FREE is the whole diagnosis, and the reason
             // this prints three numbers per buffer rather than one.
             //
@@ -14079,7 +15463,7 @@ bool VkSceneRenderer::upload_scene_buffers(
                 live_indices += p.index_count;
             }
             MATTER_LOGW("vk",
-                "STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead.\n"
+                "STATIC CAPACITY GROWTH -- copying unchanged GPU ranges.\n"
                 "     bytes    clusters %llu/%llu  vertices %llu/%llu  "
                 "indices %llu/%llu\n"
                 "     elements clusters staging %llu live %llu free %llu | "
@@ -14087,7 +15471,7 @@ bool VkSceneRenderer::upload_scene_buffers(
                 "indices staging %llu live %llu free %llu  (parts %llu)\n"
                 "     live ~= staging -> raise MATTER_VK_STATIC_RESERVE_"
                 "{CLUSTER,VERTEX,INDEX}_MB. live << staging with large free "
-                "-> fragmented tail growth, a bigger reserve only delays it.\n",
+                "-> fragmented tail growth.\n",
                 (unsigned long long)cluster_bytes,
                 (unsigned long long)clusters_.size,
                 (unsigned long long)vertex_bytes,
@@ -14108,11 +15492,142 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_upload_dirty_ = StaticUpload::kFull;
         }
     }
+    if (static_upload_dirty_ == StaticUpload::kFull && capacity_growth &&
+        upload_frame) {
+        // Host writes to the new allocation happen before submission. A copy
+        // of the old uploaded prefix would overwrite any recycled interior
+        // range, so copy only the complement of this frame's dirty ranges.
+        // The source allocation is retained by this frame until the copy and
+        // all consumers of the replacement have finished.
+        const auto grow_or_upload =
+            [&](matter::VkBufferResource& buffer, VkDeviceSize required,
+                VkBufferUsageFlags usage, const char* label,
+                matter::VkBufferResource* staging,
+                const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
+                const void* base, size_t element_size,
+                uint32_t uploaded_count, uint64_t* upload_counter) {
+            if (buffer.size >= required)
+                return upload_ranges(buffer, staging, ranges, base, element_size,
+                                     upload_counter);
+            VkDeviceSize capacity = 0;
+            if (!vk_scene_detail::checked_grown_capacity(
+                    buffer.size, std::max<VkDeviceSize>(required, 1),
+                    limits_.max_buffer_size, capacity, label, error))
+                return false;
+            if (!allow_replacement()) return false;
+            matter::VkBufferResource replacement;
+            const auto allocation_start = std::chrono::steady_clock::now();
+            if (!matter::create_buffer(
+                    *vulkan_, capacity,
+                    usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    staging ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                            : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                    staging ? 0u : (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
+                    replacement, error))
+                return false;
+            const auto allocation_end = std::chrono::steady_clock::now();
+            ++replacements;
+            if (!upload_ranges(replacement, staging, ranges, base, element_size,
+                               upload_counter))
+                return false;
+            const auto upload_end = std::chrono::steady_clock::now();
+            if (VkDeviceSize{uploaded_count} * element_size > buffer.size) {
+                error = std::string(label) + " uploaded prefix exceeds old buffer";
+                return false;
+            }
+            if (!vulkan_->retain_for_frame(
+                    *upload_frame, {buffer.lifetime}, error))
+                return false;
+            std::vector<std::pair<VkDeviceSize, VkDeviceSize>> dirty;
+            dirty.reserve(ranges.size());
+            for (const auto& range : ranges) {
+                const VkDeviceSize begin = std::min<VkDeviceSize>(
+                    range.first, uploaded_count);
+                const VkDeviceSize end = std::min<VkDeviceSize>(
+                    VkDeviceSize{range.first} + range.second, uploaded_count);
+                if (begin < end) dirty.emplace_back(begin, end);
+            }
+            std::sort(dirty.begin(), dirty.end());
+            VkDeviceSize cursor = 0;
+            bool copied = false;
+            const auto copy_interval = [&](VkDeviceSize begin,
+                                           VkDeviceSize end) {
+                if (begin >= end) return;
+                const VkBufferCopy copy{begin * element_size,
+                                        begin * element_size,
+                                        (end - begin) * element_size};
+                vkCmdCopyBuffer(material_command_buffer, buffer.buffer,
+                                replacement.buffer, 1, &copy);
+                copied = true;
+            };
+            for (const auto& interval : dirty) {
+                copy_interval(cursor, interval.first);
+                cursor = std::max(cursor, interval.second);
+            }
+            copy_interval(cursor, uploaded_count);
+            if (copied) {
+                VkBufferMemoryBarrier barrier{
+                    VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+                barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.buffer = replacement.buffer;
+                barrier.offset = 0;
+                barrier.size = VK_WHOLE_SIZE;
+                vkCmdPipelineBarrier(material_command_buffer,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                    0, nullptr, 1, &barrier, 0, nullptr);
+            }
+            buffer = std::move(replacement);
+            MATTER_LOGI("vk", "static growth %s capacity=%llu MiB allocate=%.2f ms dirty_stage=%.2f ms\n",
+                label, static_cast<unsigned long long>(capacity >> 20),
+                std::chrono::duration<double, std::milli>(allocation_end - allocation_start).count(),
+                std::chrono::duration<double, std::milli>(upload_end - allocation_end).count());
+            return true;
+        };
+        if (!grow_or_upload(clusters_, cluster_bytes,
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                            "cluster buffer", nullptr, dirty_cluster_ranges_,
+                            cluster_staging_.data(), sizeof(GpuCluster),
+                            uploaded_cluster_count_,
+                            &upload_counters_.cluster_uploads) ||
+            !grow_or_upload(vertices_, vertex_bytes,
+                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                static_rt_input_usage(*vulkan_),
+                            "vertex buffer", &frame.static_vertex_upload,
+                            selected_vertices,
+                            vertex_staging_.data(), sizeof(VkRasterVertex),
+                            uploaded_vertex_count_,
+                            &upload_counters_.vertex_uploads) ||
+            !grow_or_upload(indices_, index_bytes,
+                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                static_rt_input_usage(*vulkan_),
+                            "index buffer", &frame.static_index_upload,
+                            selected_indices,
+                            index_staging_.data(), sizeof(uint32_t),
+                            uploaded_index_count_, nullptr))
+            return poison(error);
+        ++upload_counters_.static_growth_uploads;
+        finish_ranges();
+        uploaded_cluster_count_ = static_cast<uint32_t>(cluster_staging_.size());
+        uploaded_vertex_count_ = static_cast<uint32_t>(vertex_staging_.size());
+        uploaded_index_count_ = static_cast<uint32_t>(index_staging_.size());
+        MATTER_LOGI("vk", "static growth publish=%.2f ms\n",
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - su_append_t0).count());
+        su_note(g_su_append_count, g_su_append_us, nullptr,
+                (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - su_append_t0).count());
+    }
     const auto su_full_t0 = std::chrono::steady_clock::now();
     if (static_upload_dirty_ == StaticUpload::kFull) {
-        // The reservation lives in init(), which is the only point all three
-        // buffers are created empty -- see static_reserve_bytes(). Growth from
-        // here keeps the plain doubling policy.
+        // Standalone cull and forced fault tests still use this synchronous
+        // fallback. Production frames take the GPU-copy growth path above.
         const auto replacement_capacity = [&](VkDeviceSize current,
                                               VkDeviceSize required,
                                               const char* label,
@@ -14142,7 +15657,10 @@ bool VkSceneRenderer::upload_scene_buffers(
         matter::VkBufferResource next_indices;
         if (!allow_replacement()) return false;
         if (!matter::create_buffer(
-                *vulkan_, cluster_capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                *vulkan_, cluster_capacity,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -14155,7 +15673,8 @@ bool VkSceneRenderer::upload_scene_buffers(
                 *vulkan_, vertex_capacity,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    static_rt_input_usage(*vulkan_),
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -14167,8 +15686,10 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (!matter::create_buffer(
                 *vulkan_, index_capacity,
                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    static_rt_input_usage(*vulkan_),
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -14207,6 +15728,43 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_cast<uint32_t>(index_staging_.size());
     }
 
+    // Publish residency only after BOTH triangle streams have their copies
+    // recorded. The barriers above make those copies visible to this frame's
+    // draws and BLAS builds. Prefix counts describe allocation coverage only;
+    // recycled interior ranges require this per-owner gate as well.
+    const auto overlaps = [](const UploadRanges& ranges, uint32_t start, uint32_t count) {
+        return std::any_of(ranges.begin(), ranges.end(), [&](const auto& range) {
+            return uint64_t{range.first} < uint64_t{start} + count &&
+                uint64_t{range.first} + range.second > start;
+        });
+    };
+    bool residency_changed = false;
+    bool instance_residency_changed = false;
+    pending_triangle_parts_.erase(std::remove_if(
+        pending_triangle_parts_.begin(), pending_triangle_parts_.end(),
+        [&](uint32_t slot) {
+            PartRecord& part = parts_[slot];
+            if (!part.live) return true;
+            if (overlaps(dirty_vertex_ranges_, part.vertex_start, part.vertex_count) ||
+                overlaps(dirty_index_ranges_, part.index_start, part.index_count)) return false;
+            part.triangle_resident = true;
+            residency_changed = true;
+            instance_residency_changed |= std::any_of(
+                instance_staging_.begin(), instance_staging_.end(),
+                [slot](const GpuInstance& instance) { return instance.part_slot == slot; });
+            return true;
+        }), pending_triangle_parts_.end());
+    if (instance_residency_changed)
+        ++instance_generation_;  // refresh this slot's masked GPU instances
+    if (residency_changed)
+        ++rt_geometry_epoch_;   // the traced instance set may now grow
+    if (upload_frame && (capacity_growth || static_upload_frame_bytes_ != 0)) {
+        MATTER_LOGI("vk", "static upload frame bytes=%llu pending_parts=%zu publish=%.2f ms",
+            static_cast<unsigned long long>(static_upload_frame_bytes_),
+            pending_triangle_parts_.size(),
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - su_append_t0).count());
+    }
     static_scope.stop();
     if (frame.static_generation != static_generation_) {
         update_descriptor(frame.descriptor_sets[1], 0,
@@ -14216,17 +15774,17 @@ bool VkSceneRenderer::upload_scene_buffers(
     bool descriptors_changed = false;
     bool replaced = false;
     if (!ensure_buffer(frame.instances, instance_bytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced, true))
         return poison(error);
     descriptors_changed |= replaced;
     if (!ensure_buffer(frame.commands, command_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                       error, &replaced))
+                       error, &replaced, true))
         return poison(error);
     descriptors_changed |= replaced;
     if (!ensure_buffer(frame.draw_transforms, transform_bytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced, true))
         return poison(error);
     descriptors_changed |= replaced;
     // The ID pass's own draw list (M4). Same shapes as the pair above because
@@ -14238,11 +15796,11 @@ bool VkSceneRenderer::upload_scene_buffers(
     if (!ensure_buffer(frame.vis_commands, command_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                       error, &replaced))
+                       error, &replaced, true))
         return poison(error);
     descriptors_changed |= replaced;
     if (!ensure_buffer(frame.vis_draw_transforms, transform_bytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced, true))
         return poison(error);
     descriptors_changed |= replaced;
     if (!ensure_buffer(frame.stats, sizeof(VkCullStats),
@@ -14283,7 +15841,41 @@ bool VkSceneRenderer::upload_scene_buffers(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
         return poison(error);
     descriptors_changed |= replaced;
+    const auto geometry_static_count = static_cast<uint32_t>(static_instance_count_);
+    const auto geometry_dynamic_count = static_cast<uint32_t>(instance_staging_.size() - static_instance_count_);
+    // The neutral descriptor header is shared layout infrastructure. Static
+    // scene growth must not publish VG cut versions while paging is inactive.
+    if (geometry_cut_words_[0] &&
+        (geometry_cut_words_[4] != geometry_static_count || geometry_cut_words_[5] != geometry_dynamic_count)) {
+        geometry_cut_words_[4] = geometry_static_count;
+        geometry_cut_words_[5] = geometry_dynamic_count;
+        ++geometry_cut_generation_;
+    }
+    const VkDeviceSize geometry_bytes = geometry_cut_words_.size() * sizeof(uint32_t);
+    if (!ensure_buffer(frame.geometry_cut, geometry_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced)) return poison(error);
+    descriptors_changed |= replaced;
     if (descriptors_changed) update_frame_descriptors(frame);
+    // Each frame slot owns a fenced buffer. Once it has this hierarchy version,
+    // the immutable words can stay in place until the cut/header changes. A
+    // replacement allocation must always be initialized, even at the same version.
+    if (replaced || frame.geometry_cut_generation != geometry_cut_generation_) {
+        if (!upload(frame.geometry_cut, geometry_cut_words_.data(), geometry_bytes)) return false;
+        frame.geometry_cut_generation = geometry_cut_generation_;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        ++test_geometry_cut_uploads_;
+#endif
+    }
+    const VkDeviceSize geometry_selected_bytes = geometry_cut_words_[0]
+        ? 32ull + uint64_t(draw_transform_slots_) * 16 + 1024*8 : 32ull;
+    if (!storage_size_ok(geometry_selected_bytes, "geometry selection work")) return false;
+    if (geometry_cut_words_[0] && uint64_t(draw_transform_slots_) > uint64_t(limits_.max_dispatch_group_count_x)*64) {
+        error = "geometry selected work exceeds indirect dispatch limits"; return false;
+    }
+    if (!ensure_buffer(frame.geometry_selected, geometry_selected_bytes,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        error, &replaced, true)) return poison(error);
+    if (replaced) update_frame_descriptors(frame);
     // Both of these tables are read in cull.comp under a `slot <
     // buffer.length()` bound, and length() is the BUFFER's element count, not
     // the table's. ensure_buffer never shrinks and rounds capacity up -- a
@@ -14357,8 +15949,18 @@ bool VkSceneRenderer::upload_scene_buffers(
         matter::profile::Scope instances_scope(
             engine_prof::id(engine_prof::kPfUploadInstances));
         if (frame.instance_generation != instance_generation_) {
-            if (!upload(frame.instances, instance_staging_.data(),
-                        instance_bytes))
+            const GpuInstance* instances = instance_staging_.data();
+            if (!pending_triangle_parts_.empty()) {
+                resident_instance_scratch_ = instance_staging_;
+                for (auto& instance : resident_instance_scratch_) {
+                    if (instance.part_slot < parts_.size() &&
+                        !parts_[instance.part_slot].triangle_resident)
+                        instance.cluster_count = 0;
+                }
+                instances = resident_instance_scratch_.data();
+            }
+            if (!upload_gpu(frame.instances, frame.instance_upload,
+                            instances, instance_bytes))
                 return false;
             if (instance_bytes != 0) ++upload_counters_.instance_uploads;
             frame.instance_generation = instance_generation_;
@@ -14391,9 +15993,8 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_cast<VkDeviceSize>(skin_transform_base_) *
             sizeof(GpuDrawTransform);
         if (tail_bytes != 0 &&
-            !matter::upload_buffer(*vulkan_, frame.draw_transforms,
-                                   skin_transform_staging_.data(), tail_bytes,
-                                   tail_offset, error))
+            !upload_gpu(frame.draw_transforms, frame.skin_transform_upload,
+                        skin_transform_staging_.data(), tail_bytes, tail_offset))
             return false;
     }
     // The animated surface is baked in the same local space as its immutable
@@ -14427,10 +16028,9 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_cast<VkDeviceSize>(water_animation_transform_base_) *
             sizeof(GpuDrawTransform);
         if (water_tail_bytes != 0u &&
-            !matter::upload_buffer(*vulkan_, frame.draw_transforms,
-                                   skin_transform_staging_.data(),
-                                   water_tail_bytes, water_tail_offset,
-                                   error))
+            !upload_gpu(frame.draw_transforms, frame.water_transform_upload,
+                        skin_transform_staging_.data(), water_tail_bytes,
+                        water_tail_offset))
             return false;
     }
     matter::profile::Scope commands_scope(engine_prof::id(engine_prof::kPfUploadCommands));
@@ -14438,11 +16038,15 @@ bool VkSceneRenderer::upload_scene_buffers(
         frame.command_generation = command_generation_;
     // Unconditional by design: cull.comp writes instance_count into these
     // records on the GPU, so the CPU template has to be restored every frame.
-    if (!upload(frame.commands, command_template_.data(), command_bytes))
+    if (!upload_gpu(frame.commands, frame.command_upload,
+                    command_template_.data(), command_bytes))
         return false;
     // The ID pass's list gets the same restore for the same reason: cull.comp
     // writes instance_count into it too.
-    if (!upload(frame.vis_commands, command_template_.data(), command_bytes))
+    // Both destinations copy identical bytes from this frame's same staging.
+    // Reuse the first CPU fill; the frame fence retains it for both GPU reads.
+    if (!upload_gpu(frame.vis_commands, frame.command_upload,
+                    command_template_.data(), command_bytes, 0, false))
         return false;
     if (command_bytes != 0) ++upload_counters_.command_uploads;
     if (reset_stats) {
@@ -14636,6 +16240,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                                     matter::Float3 camera_eye,
                                     float pixel_budget, std::string& error) {
     error.clear();
+    frame_descriptors_written_ = 0;
     if (fail_if_poisoned(error)) return false;
     if (!initialized_ && !init(error)) return false;
     if (frame.frame_slot >= frame.frame_slot_count) {
@@ -14644,6 +16249,11 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+    if (blas_cache_) blas_cache_->begin(frame);
+    if (!consume_geometry_feedback(selected, error)) return false;
+    selected.geometry_feedback_pending_serial = 0;
+    selected.geometry_node_pages = geometry_node_pages_;
+    selected.geometry_job_owners = geometry_job_owners_;
     if (!upload_local_lights(selected, error)) return false;
     // The acquired slot's previous submission has retired. Start its new use
     // from raster ownership; only a successfully recorded direct trace for
@@ -14685,6 +16295,24 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     test_last_rt_geometry_records_.clear();
     test_last_rt_blas_build_count_ = 0;
 #endif
+    if (selected.raster_stats_pool != VK_NULL_HANDLE) {
+        if (selected.raster_stats_written) {
+            // Query bits are returned in increasing bit order, then availability.
+            uint64_t counts[5]{};
+            const VkResult result = vkGetQueryPoolResults(vulkan_->device(),
+                selected.raster_stats_pool, 0, 1, sizeof(counts), counts,
+                sizeof(counts), VK_QUERY_RESULT_64_BIT |
+                                VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (result == VK_SUCCESS && counts[4])
+                MATTER_LOGI("gbuffer-workload",
+                    "frame=%llu primitives=%llu vertices=%llu clipped=%llu fragments=%llu",
+                    (unsigned long long)frame.serial,
+                    (unsigned long long)counts[0], (unsigned long long)counts[1],
+                    (unsigned long long)counts[2], (unsigned long long)counts[3]);
+        }
+        vkCmdResetQueryPool(frame.command_buffer, selected.raster_stats_pool, 0, 1);
+        selected.raster_stats_written = false;
+    }
     // GPU timestamp readback, reset, and begin of the 'total' zone.
     // Must happen outside any render pass (vkCmdResetQueryPool requirement).
     if (gpu_timers_supported_ && selected.ts_pool != VK_NULL_HANDLE) {
@@ -14726,6 +16354,10 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                     gpu_last_ms_[z] = ms;
                     gpu_sample_valid_mask_ |= 1u << z;
                     gpu_smoothed_ms_[z] = gpu_smoothed_ms_[z] * 0.9f + ms * 0.1f;
+                    if (z == kGpuZoneVtFill && vt_)
+                        vt_->observe_gpu_fill_ms(ms, selected.vt_recorded_fills, selected.vt_fill_tiles);
+                    if (z == kGpuZoneVtEnrich && vt_)
+                        vt_->observe_gpu_enrich_ms(ms, selected.vt_enrich_tiles);
                 }
             }
         }
@@ -14830,7 +16462,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         return false;
     }
     anim_scope.stop();
-    if (!upload_scene_buffers(selected, frame.command_buffer, false, error))
+    if (!upload_scene_buffers(selected, &frame, false, error))
         return false;
     {
         matter::profile::Scope constants_scope(
@@ -14876,7 +16508,16 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         selected.commands.lifetime,
         selected.draw_transforms.lifetime,
         selected.stats.lifetime,
+        selected.vis_commands.lifetime,
+        selected.vis_draw_transforms.lifetime,
+        selected.instance_upload.lifetime,
+        selected.command_upload.lifetime,
+        selected.skin_transform_upload.lifetime,
+        selected.water_transform_upload.lifetime,
         selected.animation_bounds.lifetime,
+        selected.geometry_cut.lifetime,
+        selected.geometry_selected.lifetime,
+        selected.geometry_feedback.lifetime,
         selected.material_upload.lifetime,
         selected.materials.lifetime,
         albedo_.lifetime,
@@ -14894,6 +16535,17 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         instance_staging_.size(), cluster_staging_.size(), parts_.size(),
         command_template_.size());
     PROFILE_FRAME();
+    if (retained && !geometry_page_warmups_.empty()) {
+        const auto get_sizes = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(
+            vkGetDeviceProcAddr(vulkan_->device(), "vkGetAccelerationStructureBuildSizesKHR"));
+        const auto cmd_build = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(
+            vkGetDeviceProcAddr(vulkan_->device(), "vkCmdBuildAccelerationStructuresKHR"));
+        if (!get_sizes || !cmd_build) { error = "geometry warmup requires native BLAS commands"; return false; }
+        std::vector<RtBuildSel> ignored_selection;
+        std::vector<RtBlasPending> pending;
+        if (!build_ray_geometry(frame, camera_eye, pixel_budget, get_sizes, cmd_build,
+                                ignored_selection, pending, error, true)) return false;
+    }
     return retained;
 }
 
@@ -14910,9 +16562,9 @@ void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
     const uint32_t command_count = frame.lod_trace_command_count;
     const uint32_t slot_count = frame.lod_trace_transform_slots;
     if (command_count == 0 || slot_count == 0) return;
-    // Both buffers are created HOST_VISIBLE by ensure_buffer, so readback_buffer
-    // takes its map/invalidate/memcpy path: no submit, no wait, no ordering
-    // hazard beyond the fence begin_frame already waited on for this slot.
+    // This opt-in diagnostic reads GPU-local arrays through staging, after
+    // begin_frame waited for this slot. Normal frames never perform these
+    // synchronous readbacks; they consume only the small mapped stats record.
     std::string error;
     std::vector<DrawCommand> commands(command_count);
     if (!matter::readback_buffer(
@@ -15019,6 +16671,22 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         }
+        // Pre-record eligibility can find scene instances even when distance
+        // or LOD selection leaves no traceable geometry. In that case the
+        // volume pass will not initialize its output. Turning off vol_enabled
+        // alone does not remove this statically used sampled descriptor: bind
+        // the initialized neutral volume before the composite set's first use.
+        // This frame slot has retired; no recorded pass has bound this set yet.
+        const VkDescriptorImageInfo neutral_volume{
+            vol_linear_sampler_, vol_dummy_3d_.view,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = frames_[frame.frame_slot].composite_descriptor_set;
+        write.dstBinding = 9;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &neutral_volume;
+        update_descriptor_sets(vulkan_->device(), 1, &write, 0, nullptr);
     };
     const bool native_trace_enabled =
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available()
@@ -15103,8 +16771,6 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                                        cmd_trace, error))
             return false;
     }
-    for (auto& item : pending)
-        item.lod->candidate_serial = frame.serial;
     return true;
 }
 
@@ -15130,7 +16796,7 @@ bool VkSceneRenderer::build_ray_geometry(
     PFN_vkCmdBuildAccelerationStructuresKHR cmd_build,
     std::vector<RtBuildSel>& selected_geometry,
     std::vector<RtBlasPending>& pending,
-    std::string& error) {
+    std::string& error, bool warmup_only) {
     FrameResources& selected = frames_[frame.frame_slot];
     VkDeviceSize scratch_size = 1;
     const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
@@ -15144,7 +16810,13 @@ bool VkSceneRenderer::build_ray_geometry(
     // counter so the win is measurable and a regression (it silently stopping
     // firing) is visible rather than merely slow.
     uint64_t rt_instances_skipped = 0;
+    // Times the per-instance rung pick only; stopped before the BLAS lookups
+    // and builds that consume its selection.
+    PROFILE_SCOPE_NAMED(rung_select_scope, "rt.rung_select");
+    size_t rt_scanned = 0;
     for (const RtInstance& source : rt_instances_) {
+        if (warmup_only) break;
+        ++rt_scanned;
         // Same flat mirror update_instances() uses -- this WAS a per-instance
         // std::map descent (slot_of_.find()); part_slot_lookup answers the
         // identical question in one open-addressed probe. The per-frame cost of
@@ -15153,6 +16825,7 @@ bool VkSceneRenderer::build_ray_geometry(
         const int found_slot = part_slot_lookup(source.part_hash);
         if (found_slot < 0) continue;
         PartRecord& part = parts_[static_cast<size_t>(found_slot)];
+        if (!part.triangle_resident) continue;
         // ---- Per-module draw overrides, the RT half -------------------------
         //
         // cull.comp reads this same table (by cluster.part_slot, which is the
@@ -15418,17 +17091,76 @@ bool VkSceneRenderer::build_ray_geometry(
             }
         }
     }
+    rung_select_scope.stop();
+    PROFILE_COUNT("instances.rt_scanned", rt_scanned);
+    // Warm pages build through the same triangle BLAS path, but never enter
+    // the TLAS until the owner publishes a complete replacement cut.
+    const size_t visible_selection_count = selected_geometry.size();
+    if (warmup_only) for (auto it = geometry_page_warmups_.begin(); it != geometry_page_warmups_.end();) {
+        const auto found = slot_of_.find(*it);
+        if (found == slot_of_.end() || geometry_page_render_ready(*it)) {
+            it = geometry_page_warmups_.erase(it); continue;
+        }
+        auto& part = parts_[static_cast<size_t>(found->second)];
+        if (!part.triangle_resident) { ++it; continue; }
+        if (part.rt_lods.size() == 1) {
+            auto& lod = part.rt_lods.front();
+            if(lod.candidate_serial!=0){++it;continue;}
+            selected_geometry.push_back({&part, &lod, nullptr,
+                rt_material_ids_are_opaque(material_staging_, lod.material_ids)});
+        }
+        ++it;
+    }
+    // Start/collect every eligible lookup before GPU-work budgets. A cache
+    // miss or slow read at the front must not serialize the rest of the queue.
+    for (const RtBuildSel& selected_lod : selected_geometry) {
+        auto& part = *selected_lod.part;
+        auto& lod = *selected_lod.lod;
+        if (!part.vertex_count || !part.index_count ||
+            !vertices_.address || !indices_.address || lod.candidate_serial != 0 ||
+            (lod.built && lod.geometry_opaque == selected_lod.opaque)) continue;
+        if (blas_cache_ && blas_cache_->available() &&
+            !part.blas_cache_directory.empty() && part.rt_lods.size() == 1) {
+            const auto key = blas_cache_->key(part.blas_cache_content, selected_lod.opaque);
+            if (key != lod.cache_key) {
+                if (lod.cache_ticket) blas_cache_->disk.cancel(lod.cache_ticket);
+                lod.cache_key = key; lod.cache_ticket = 0; lod.cache_checked = false;
+                lod.cached_blas.reset();
+            }
+            if (!lod.cache_checked && blas_cache_->disk.poll(
+                    part.blas_cache_directory, key, lod.cache_ticket, lod.cached_blas)) {
+                lod.cache_checked = true;
+                if (!lod.cached_blas) ++blas_cache_->misses;
+            }
+        }
+    }
+    uint64_t warm_build_bytes = 0, warm_restore_bytes = 0;
+    double warm_build_ms = 0, warm_restore_ms = 0;
     for (const RtBuildSel& selected_lod : selected_geometry) {
         PartRecord& part = *selected_lod.part;
         RtLodRecord& lod = *selected_lod.lod;
-        if (!part.rt_geometry || !part.rt_index ||
+        if (!part.vertex_count || !part.index_count ||
+            !vertices_.address || !indices_.address ||
             lod.candidate_serial != 0 ||
             (lod.built && lod.geometry_opaque == selected_lod.opaque) ||
             std::any_of(pending.begin(), pending.end(),
-                        [&lod](const RtBlasPending& item) {
-                            return item.lod == &lod;
-                        }))
+                        [&lod](const RtBlasPending& item) { return item.lod == &lod; }))
             continue;
+        const bool cache_enabled = blas_cache_ && blas_cache_->available() &&
+            !part.blas_cache_directory.empty() && part.rt_lods.size() == 1;
+        if (cache_enabled && !lod.cache_checked) continue;
+        const bool restoring = bool(lod.cached_blas);
+        const uint64_t bytes = restoring ? lod.cached_blas->size() :
+            uint64_t(part.vertex_count)*sizeof(VkRasterVertex) +
+            uint64_t(lod.primitive_count)*3*sizeof(uint32_t);
+        auto& used_bytes = restoring ? warm_restore_bytes : warm_build_bytes;
+        auto& used_ms = restoring ? warm_restore_ms : warm_build_ms;
+        const uint64_t byte_budget = restoring ? (32ull << 20) : (4ull << 20);
+        if (warmup_only && used_bytes &&
+            (used_ms >= 4.0 || bytes > byte_budget - std::min(used_bytes, byte_budget)))
+            continue;
+        const auto work_start = std::chrono::steady_clock::now();
+        auto cached_blas = std::move(lod.cached_blas);
         RtBlasPending item{};
         item.part = &part;
         item.lod = &lod;
@@ -15436,16 +17168,15 @@ bool VkSceneRenderer::build_ray_geometry(
         triangles.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
         triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-        triangles.vertexData.deviceAddress = part.rt_geometry->address;   // part base, no LOD offset
+        triangles.vertexData.deviceAddress = vertices_.address +
+            VkDeviceSize{part.vertex_start} * sizeof(VkRasterVertex);
         triangles.vertexStride = sizeof(VkRasterVertex);
         triangles.maxVertex = part.vertex_count - 1;
         triangles.indexType = VK_INDEX_TYPE_UINT32;
-        // lod.first_index is part-local (stored that way in RtLodRecord to
-        // remain compaction-invariant); use it directly as the byte offset
-        // into the per-part rt_index buffer.
+        // The LOD index is part-local; add the part's shared index range.
         triangles.indexData.deviceAddress =
-            part.rt_index->address +
-            static_cast<VkDeviceSize>(lod.first_index) * sizeof(uint32_t);
+            indices_.address +
+            (VkDeviceSize{part.index_start} + lod.first_index) * sizeof(uint32_t);
         item.geometry.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         item.geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
@@ -15501,8 +17232,19 @@ bool VkSceneRenderer::build_ray_geometry(
         item.scratch_size =
             (sizes.buildScratchSize + scratch_alignment - 1) /
             scratch_alignment * scratch_alignment;
+        if (cached_blas) {
+            item.restored = blas_cache_->restore(frame, cached_blas, *item.target, sizes.accelerationStructureSize, error);
+            if (!item.restored) error.clear(); // optional derived cache: rebuild on any miss
+            else item.scratch_size = 0;
+        }
+        used_bytes += bytes;
+        used_ms += std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-work_start).count();
         pending.push_back(item);
     }
+    PROFILE_COUNT("rt.warm_build_input_bytes", warm_build_bytes);
+    PROFILE_COUNT("rt.warm_restore_bytes", warm_restore_bytes);
+    selected_geometry.resize(visible_selection_count);
     // Builds within a batch get disjoint scratch regions so the GPU can
     // overlap them; the budget chunks first-load spikes into several batches
     // instead of growing the scratch buffer without bound.
@@ -15537,7 +17279,7 @@ bool VkSceneRenderer::build_ray_geometry(
     // structure). Retire every slot's cached TLAS so none can reference stale
     // or superseded bottom-level data.
     if (has_blas_work) ++rt_geometry_epoch_;
-    if (has_blas_work)
+    if (has_blas_work && !warmup_only)
         write_gpu_timestamp(frame.command_buffer, kGpuZoneBlas, false, selected);
     for (const size_t batch_end : batch_ends) {
         if (batch_end == batch_begin) continue;
@@ -15545,13 +17287,14 @@ bool VkSceneRenderer::build_ray_geometry(
         batch_ranges.clear();
         for (size_t i = batch_begin; i < batch_end; ++i) {
             RtBlasPending& item = pending[i];
+            if (item.restored) continue;
             item.build.pGeometries = &item.geometry;
             item.build.scratchData.deviceAddress =
                 blas_scratch_address + item.scratch_offset;
             batch_builds.push_back(item.build);
             batch_ranges.push_back(&item.range);
         }
-        cmd_build(frame.command_buffer,
+        if (!batch_builds.empty()) cmd_build(frame.command_buffer,
                   static_cast<uint32_t>(batch_builds.size()),
                   batch_builds.data(), batch_ranges.data());
         VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -15570,11 +17313,23 @@ bool VkSceneRenderer::build_ray_geometry(
         vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
         batch_begin = batch_end;
     }
-    if (has_blas_work)
+    if (has_blas_work && !warmup_only)
         write_gpu_timestamp(frame.command_buffer, kGpuZoneBlas, true, selected);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
-    test_last_rt_blas_build_count_ = static_cast<uint32_t>(pending.size());
+    test_last_rt_blas_build_count_ += static_cast<uint32_t>(std::count_if(pending.begin(), pending.end(), [](const RtBlasPending& item) { return !item.restored; }));
 #endif
+    if (!pending.empty()) {
+        std::vector<std::shared_ptr<void>> retained{selected.rt_scratch.lifetime};
+        for (auto& item : pending) {
+            item.lod->candidate_serial = frame.serial;
+            if (!item.restored && blas_cache_ && !item.part->blas_cache_directory.empty())
+                blas_cache_->capture(frame, item.part->blas_cache_directory, item.lod->cache_key, item.target, item.part->geometry_budget_claim);
+            retained.push_back(item.target->lifetime);
+            retained.push_back(vertices_.lifetime);
+            retained.push_back(indices_.lifetime);
+        }
+        if (!vulkan_->retain_for_frame(frame, std::move(retained), error)) return false;
+    }
     PROFILE_COUNT("rt.instances_skipped", rt_instances_skipped);
     return true;
 }
@@ -15692,7 +17447,8 @@ bool VkSceneRenderer::emit_ray_instances(
         const RtLodRecord& lod = *selected_lod.lod;
         const RtInstance& source = *selected_lod.source;
         const auto& traced_blas = lod.candidate ? lod.candidate : lod.blas;
-        if (!traced_blas || !part.rt_geometry || !part.rt_index) continue;
+        if (!traced_blas || !part.vertex_count || !part.index_count ||
+            !vertices_.address || !indices_.address) continue;
         if (part_records.size() >= kTlasCustomIndexMax) {
             error = "RT geometry table exceeds TLAS custom-index capacity";
             return false;
@@ -15710,10 +17466,11 @@ bool VkSceneRenderer::emit_ray_instances(
         instance.accelerationStructureReference = traced_blas->address;
         instances.push_back(instance);
         GpuRtPartRecord record{};
-        record.vertex_address = part.rt_geometry->address;    // part base
+        record.vertex_address = vertices_.address +
+            VkDeviceSize{part.vertex_start} * sizeof(VkRasterVertex);
         record.index_address =
-            part.rt_index->address +
-            static_cast<uint64_t>(lod.first_index) * sizeof(uint32_t);
+            indices_.address +
+            (VkDeviceSize{part.index_start} + lod.first_index) * sizeof(uint32_t);
         record.vertex_stride = sizeof(viewer::VkRasterVertex);
         record.vertex_count = part.vertex_count;
         record.primitive_count = lod.primitive_count;
@@ -15724,6 +17481,12 @@ bool VkSceneRenderer::emit_ray_instances(
         record.vt_slot =
             vt_slot_for_lod(part, part.cluster_start + lod.cluster_index,
                             lod.lod_index);
+        if (source.vt_source_hash) {
+            const int source_slot = part_slot_lookup(source.vt_source_hash);
+            record.vt_slot = source_slot >= 0 && parts_[source_slot].live
+                ? vt_slot_for_lod(parts_[source_slot], parts_[source_slot].cluster_start, 0)
+                : 0;
+        }
         record.water_binding_slot = part.water_binding_slot;
         record.water_generation = part.water_generation;
         part_records.push_back(record);
@@ -15921,12 +17684,15 @@ bool VkSceneRenderer::emit_ray_instances(
 // then GI lighting at its diffuse and reflection/transmission extents, followed
 // by record_gi_temporal + record_gi_atrous.
 //
-// The whole 22-write descriptor array is rebuilt every frame rather than
-// patched, so a tileset slot load or a VT state change needs no separate "on
-// change" write for the RT set -- and bindings 15-19 are built from exactly
-// the same live/dummy state write_vt_descriptors_for_frame() uses, so a ray
-// and a fragment always resolve against the identical pool, indirection and
-// variant table.
+// The descriptor array is rebuilt every frame rather than patched, so a VT
+// state change needs no separate "on change" write for the RT set -- and
+// bindings 17-19 are built from exactly the same live/dummy state
+// write_vt_descriptors_for_frame() uses, so a ray and a fragment always
+// resolve against the identical pool, indirection and variant table. The one
+// exception is the tileset group (15/16/28): it names only this slot's own
+// tileset_image_infos and buffers, so it is written only when
+// tileset_descriptor_revision_ says write_tileset_descriptors_for_frame()
+// changed them since this slot's RT set last received them.
 bool VkSceneRenderer::record_ray_trace_dispatch(
     const matter::VulkanFrame& frame,
     const FrameMatrices& matrices,
@@ -15934,6 +17700,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     PFN_vkCmdTraceRaysKHR cmd_trace,
     std::string& error) {
     FrameResources& selected = frames_[frame.frame_slot];
+    // This target exists even without VT/extraction. Order color writes and
+    // any extraction layout transition before primary RT storage reads.
+    transition_for_use(frame.command_buffer, vt_feedback_, VK_IMAGE_LAYOUT_GENERAL,
+                       VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
     if (primary_light_audit_) {
         if (!matter::map_buffer(selected.rt_test_output, error)) return false;
         auto* words = static_cast<uint32_t*>(selected.rt_test_output.mapped);
@@ -15966,6 +17738,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     // Primary motion vectors cannot reveal an off-screen shadow/reflection
     // change. Both diffuse GI and rough reflection therefore compare actual
     // emitted TLAS records against their last successfully submitted scene.
+    PROFILE_SCOPE_NAMED(tlas_hash_scope, "rt.tlas_hash");
     uint64_t key = 14695981039346656037ull;
     const auto hash_bytes = [&key](const void* data, size_t size) {
         const auto* bytes = static_cast<const unsigned char*>(data);
@@ -15982,8 +17755,10 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     hash_bytes(&material_shading_revision_, sizeof(material_shading_revision_));
     hash_bytes(&material_geometry_revision_, sizeof(material_geometry_revision_));
     hash_bytes(&ray_tracing_settings_.bias, sizeof(ray_tracing_settings_.bias));
+    hash_bytes(&ray_tracing_settings_.max_normal_bias, sizeof(ray_tracing_settings_.max_normal_bias));
     hash_bytes(&gi_settings_.enabled, sizeof(gi_settings_.enabled));
     gi_candidate_scene_key_ = key;
+    tlas_hash_scope.stop();
     // Validate history against this frame's emitted scene BEFORE selecting ray
     // counts. A changed off-screen blocker is invisible to primary velocity.
     const bool primary_history_valid = !temporal_frame_.reset &&
@@ -16067,22 +17842,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                       selected.rt_error_counter.size};
     VkDescriptorBufferInfo test_output_info{selected.rt_test_output.buffer, 0,
                                             selected.rt_test_output.size};
-    // Phase 1 tileset Vulkan port (Task 6): bindings 15/16 mirror raster set
-    // 1's bindings 6/7. Rebuilt from current renderer state (loaded slots or
-    // dummies) every frame here, the same way the rest of this array already
-    // is — no separate "on slot load" write is needed for the RT set.
-    VkDescriptorImageInfo
-        tileset_image_infos[tileset::kMaxTilesetSlots * kTilesetChannelCount]{};
-    for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
-        for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
-            VkDescriptorImageInfo& info =
-                tileset_image_infos[slot * kTilesetChannelCount + channel];
-            info.sampler = tileset_sampler_;
-            info.imageView = tileset_channel_view(slot, channel);
-            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        }
-    }
-    VkDescriptorBufferInfo tileset_params_info{tileset_params_.buffer, 0,
+    // Phase 1 tileset Vulkan port (Task 6): bindings 15/16 (and 28 below)
+    // mirror raster set 1's bindings 6/7/26, from the infos
+    // write_tileset_descriptors_for_frame() captured for this slot. Skipped
+    // below while tileset_descriptor_revision_ is unchanged.
+    const auto& tileset_image_infos = selected.tileset_image_infos;
+    VkDescriptorBufferInfo tileset_params_info{selected.tileset_params.buffer, 0,
                                                sizeof(TilesetParamsGpu)};
     // WP-G: bindings 17/18/19 mirror raster set 1's VT bindings 10/11/12,
     // built from exactly the same live/dummy state
@@ -16106,7 +17871,13 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     VkDescriptorBufferInfo vt_variants_info{
         vt_live ? vt_->variant_buffer() : vt_dummy_storage_.buffer, 0,
         vt_live ? vt_->variant_buffer_size() : VkDeviceSize{64}};
-    VkWriteDescriptorSet writes[22]{};
+    VkDescriptorBufferInfo vt_input_info{
+        vt_live ? vt_->input_snapshot_buffer() : vt_dummy_storage_.buffer, 0,
+        vt_live ? vt_->input_snapshot_buffer_size() : VkDeviceSize{64}};
+    VkDescriptorBufferInfo vt_draw_info{selected.vt_draw_inputs.buffer, 0, selected.vt_draw_inputs.size};
+    VkDescriptorImageInfo primary_input_info{
+        VK_NULL_HANDLE, vt_feedback_.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[25]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_write;
     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
@@ -16165,9 +17936,9 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[15].dstSet = rt_descriptor_sets_[frame.frame_slot];
     writes[15].dstBinding = 15;
     writes[15].descriptorCount =
-        tileset::kMaxTilesetSlots * kTilesetChannelCount;
+        kTilesetSourceDescriptors;
     writes[15].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[15].pImageInfo = tileset_image_infos;
+    writes[15].pImageInfo = tileset_image_infos.data();
     writes[16].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[16].dstSet = rt_descriptor_sets_[frame.frame_slot];
     writes[16].dstBinding = 16;
@@ -16200,7 +17971,35 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[21].descriptorCount = 1;
     writes[21].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[21].pImageInfo = &raw_local_direct_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 22, writes, 0, nullptr);
+    for (uint32_t i = 22; i < 24; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = rt_descriptor_sets_[frame.frame_slot];
+        writes[i].dstBinding = i + 5u;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[i].pBufferInfo = i == 22 ? &vt_input_info : &vt_draw_info;
+    }
+    writes[24].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[24].dstSet = rt_descriptor_sets_[frame.frame_slot];
+    writes[24].dstBinding = 29;
+    writes[24].descriptorCount = 1;
+    writes[24].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[24].pImageInfo = &primary_input_info;
+    // This slot's RT set already holds the current tileset group unless
+    // write_tileset_descriptors_for_frame() rebuilt some slot's infos since:
+    // drop those three writes (432 samplers + 2 buffers) from the update.
+    uint32_t write_count = 25;
+    if (selected.rt_tileset_descriptor_revision == tileset_descriptor_revision_) {
+        write_count = static_cast<uint32_t>(
+            std::remove_if(std::begin(writes), std::end(writes),
+                           [](const VkWriteDescriptorSet& write) {
+                               return write.dstBinding == 15 ||
+                                      write.dstBinding == 16 ||
+                                      write.dstBinding == 28;
+                           }) - std::begin(writes));
+    }
+    update_descriptor_sets(vulkan_->device(), write_count, writes, 0, nullptr);
+    selected.rt_tileset_descriptor_revision = tileset_descriptor_revision_;
     if (rt_primary_adaptive_) {
         VkWriteDescriptorSet history_writes[8]{};
         for (uint32_t i = 0; i < 8; ++i) {
@@ -16212,7 +18011,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             write.pImageInfo = &primary_history_infos[i];
         }
-        vkUpdateDescriptorSets(vulkan_->device(), 8, history_writes, 0, nullptr);
+        update_descriptor_sets(vulkan_->device(), 8, history_writes, 0, nullptr);
     }
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
@@ -16225,7 +18024,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         // the sun direction for materials that carry a ground tileset
         // detail slot. Sourced from the LIVE tileset POM settings so the
         // tuning UI's relief-cap slider keeps working (see
-        // write_tileset_params_buffer's identical pom_max_relief_m source).
+        // stage_tileset_params's identical pom_max_relief_m source).
         float pom_lift;
         // Sun angular size as a multiple of the shipped default, scaling the
         // radius of the cone the shadow rays are jittered inside. EXACTLY
@@ -16233,7 +18032,10 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         // shader's `0.002 * sun_cone_scale` is bit-identical to the 0.002 it
         // used to hardcode. See matter/sun_angles.h.
         float sun_cone_scale;
+        float max_normal_bias;
     } constants{};
+    static_assert(offsetof(ShadowConstants,max_normal_bias)==100);
+    constants.max_normal_bias=ray_tracing_settings_.max_normal_bias;
     constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
     constants.to_sun_max_distance[0] =
         atmosphere_replay_constants_.rt_to_sun.x;
@@ -16410,13 +18212,20 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                     kGiDispatchBit | scene_gi_state | mask;
                 vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                    VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
-                cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
+                VkStridedDeviceAddressRegionKHR signal_raygen = gi_raygen;
+                if (rt_specialize_gi_) {
+                    signal_raygen.deviceAddress = mask == kDiffuseOnlyBit
+                        ? rt_sbt_diffuse_raygen_address_ : rt_sbt_reflection_raygen_address_;
+                }
+                cmd_trace(frame.command_buffer, &signal_raygen, &miss, &hit, &callable,
                           extent.width, extent.height, 1);
                 ++last_rt_trace_dispatches_;
             };
             if (raw_diffuse_extent_.width == raw_reflection_extent_.width &&
-                raw_diffuse_extent_.height == raw_reflection_extent_.height) {
-                // Identical extents retain the original combined dispatch.
+                raw_diffuse_extent_.height == raw_reflection_extent_.height &&
+                !lighting_detail_timers_enabled() && !rt_specialize_gi_) {
+                // The reference option retains the original combined dispatch
+                // at equal extents unless detailed profiling requests a split.
                 trace_signal(raw_diffuse_extent_, 0u);
             } else {
                 // These dispatches write disjoint signal images. Their shared
@@ -16525,13 +18334,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         selected.rt_tlas_scratch.lifetime,
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
         selected.rt_error_counter.lifetime, selected.materials.lifetime,
-        selected.rt_test_output.lifetime, rt_sbt_.lifetime};
+        selected.rt_test_output.lifetime, rt_sbt_.lifetime,
+        vertices_.lifetime, indices_.lifetime};
     if (rt_primary_adaptive_)
         for (const auto* image : primary_history_inputs)
             retained.push_back(image->lifetime);
     for (const auto& part : parts_) {
-        if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
-        if (part.rt_index) retained.push_back(part.rt_index->lifetime);
         for (const auto& lod : part.rt_lods) {
             if (lod.candidate)
                 retained.push_back(lod.candidate->lifetime);
@@ -16625,12 +18433,15 @@ bool VkSceneRenderer::record_cull_and_render(
     // render call) and reclaim lingering variants. Before prepare_frame so a
     // release lands in this frame's vt_draw_slots upload.
     {
-        // O(static instances x clusters) CPU mirror of cull.comp's LOD pick.
-        // The counters are what tell a slow frame here apart from a big one.
+        // CPU mirror of cull.comp's LOD pick. This precedes vt_begin_frame;
+        // keep its timing separate so that hook cannot overwrite it.
         PROFILE_SCOPE("cull.vt_demand");
         PROFILE_COUNT("cull.instances", instance_staging_.size());
         PROFILE_COUNT("cull.clusters", cluster_staging_.size());
+        const auto demand_start = std::chrono::steady_clock::now();
         update_vt_demand(camera_eye, pixel_budget);
+        vt_cpu_demand_ms_ = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - demand_start).count();
     }
     const VkExtent2D internal_extent =
         temporal_frame_.internal_extent.width != 0
@@ -16726,7 +18537,7 @@ bool VkSceneRenderer::record_cull_and_render(
     PROFILE_SCOPE_NAMED(z_retain, "cull.retain");
     std::vector<std::shared_ptr<void>> attachments{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        material_instance_.lifetime, reactivity_.lifetime,
+        material_instance_.lifetime, reactivity_.lifetime, vt_feedback_.lifetime,
         selected.materials.lifetime,
         selected.local_light_records.lifetime,
         selected.local_light_cells.lifetime,
@@ -16744,6 +18555,8 @@ bool VkSceneRenderer::record_cull_and_render(
         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
         gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime,
         gi_trans_atrous_[0].lifetime, gi_trans_atrous_[1].lifetime};
+    if (sparse_voxels_) attachments.push_back(sparse_voxels_->lifetime());
+    if (sparse_shadows_) attachments.push_back(sparse_shadows_->lifetime());
     const WaterAnimationGpuFrame* retained_water_frame =
         water_animation_schedule_.frame(frame.frame_slot);
     if (retained_water_frame && !retained_water_frame->draws.empty() &&
@@ -16807,7 +18620,7 @@ bool VkSceneRenderer::record_cull_and_render(
 
     uint32_t group_count = 0;
     if (!vk_scene_detail::checked_dispatch_groups(
-            static_cast<uint32_t>(instance_staging_.size()),
+            geometry_cull_instance_count(),
             max_clusters_per_instance_, limits_.max_dispatch_group_count_x,
             group_count, error)) {
         return false;
@@ -16827,10 +18640,17 @@ bool VkSceneRenderer::record_cull_and_render(
         // at the coarsest rung, which is what keeps the trade worth making.
         if (visibility_reduce_ && vis_pipeline_ != VK_NULL_HANDLE) {
             PROFILE_SCOPE("cull.vis_dispatch");
-            const CullDispatchRecord vis_dispatch{
-                vis_pipeline_, pipeline_layout_,
+            CullDispatchRecord vis_dispatch{
+                geometry_cut_words_[0] ? geometry_vis_pipeline_ : vis_pipeline_, pipeline_layout_,
                 {selected.descriptor_sets[0], selected.descriptor_sets[1]},
                 group_count};
+            if (geometry_cut_words_[0]) {
+                vis_dispatch.indirect_buffer = selected.geometry_selected.buffer;
+                vis_dispatch.selection_pipeline = geometry_select_pipeline_;
+                vis_dispatch.selection_jobs = geometry_cull_instance_count();
+                vis_dispatch.selection_capacity = draw_transform_slots_;
+                vis_dispatch.feedback_buffer = selected.geometry_feedback.buffer;
+            }
             // The barrier inside this helper already publishes the writes to
             // DRAW_INDIRECT and VERTEX_SHADER, which is exactly what the ID
             // pass reads them as.
@@ -16853,10 +18673,19 @@ bool VkSceneRenderer::record_cull_and_render(
         }
         PROFILE_SCOPE("cull.dispatch");
         write_gpu_timestamp(frame.command_buffer, kGpuZoneCull, false, selected);
-        const CullDispatchRecord dispatch{
-            pipeline_, pipeline_layout_,
+        CullDispatchRecord dispatch{
+            geometry_cut_words_[0] ? geometry_pipeline_ : pipeline_, pipeline_layout_,
             {selected.descriptor_sets[0], selected.descriptor_sets[1]},
             group_count};
+        if (geometry_cut_words_[0]) {
+            dispatch.indirect_buffer = selected.geometry_selected.buffer;
+            if (!visibility_reduce_ || vis_pipeline_ == VK_NULL_HANDLE) {
+                dispatch.selection_pipeline = geometry_select_pipeline_;
+                dispatch.selection_jobs = geometry_cull_instance_count();
+                dispatch.selection_capacity = draw_transform_slots_;
+                dispatch.feedback_buffer = selected.geometry_feedback.buffer;
+            }
+        }
         record_cull_dispatch_commands(frame.command_buffer, dispatch);
         write_gpu_timestamp(frame.command_buffer, kGpuZoneCull, true, selected);
     }
@@ -16954,6 +18783,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         &velocity_,
                         &material_instance_,
                         &reactivity_,
+                        &vt_feedback_,
                         &depth_,
                         &hdr_,
                         &visibility_,
@@ -17015,7 +18845,18 @@ bool VkSceneRenderer::record_cull_and_render(
                         kGpuZoneVolIntegrate,
                         &selected.rt_tlas,
                         this,              // WP-E: vt_hooks
-                        kGpuZoneVt};       // WP-E: vt_zone
+                        kGpuZoneVt,         // WP-E: vt_zone
+                        kGpuZoneVtFeedbackReadback};
+    record.raster_stats_pool = selected.raster_stats_pool;
+    selected.raster_stats_written = selected.raster_stats_pool != VK_NULL_HANDLE;
+    record.sparse_voxels = sparse_voxels_.get();
+    record.sparse_voxel_matrices = &matrices;
+    record.sparse_temporal=sparse_temporal();
+    record.sparse_shadows=sparse_shadows_.get();
+    record.sparse_shadow_bias=ray_tracing_settings_.bias;
+    record.sparse_shadow_distance=ray_tracing_settings_.max_distance;
+    sparse_candidate_=sparse_voxels_;sparse_candidate_serial_=frame.serial;
+    sparse_candidate_index_=temporal_frame_.presented_frame_index;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     record.recorded_water_draw_count = &recorded_water_draw_count_;
 #endif
@@ -17103,6 +18944,10 @@ bool VkSceneRenderer::record_cull_and_render(
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
     selected.stats_valid = true;
+    if (geometry_cut_words_[0]) {
+        selected.geometry_feedback_pending_serial = frame.serial;
+        selected.geometry_feedback_view_revision = geometry_view_revision_;
+    }
     // M1d: same publication contract as stats_valid — a slot only carries a
     // readable cull result once the frame that dispatched culling recorded
     // through to here. The counts travel with the flag; see FrameResources.
@@ -17147,6 +18992,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
                                        float pixel_budget,
                                        std::string& error) {
     error.clear();
+    frame_descriptors_written_ = 0;
     if (fail_if_poisoned(error)) return false;
     if (!initialized_ && !init(error)) return false;
     if (limits_.max_draw_indirect_count < 1) {
@@ -17154,6 +19000,8 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
             "Vulkan maxDrawIndirectCount cannot support per-call drawCount=1";
         return false;
     }
+    sparse_voxel_test_matrices_ = frame;
+    sparse_voxel_test_pixel_budget_ = pixel_budget;
     // Test-path frame progression for the range recycler (no VulkanFrame
     // serial here; each dispatch is its own settled frame in practice).
     ++static_frame_serial_;
@@ -17161,14 +19009,14 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     if (!validate_draw_command_regions(error)) return false;
     uint32_t group_count = 0;
     if (!vk_scene_detail::checked_dispatch_groups(
-            static_cast<uint32_t>(instance_staging_.size()),
+            geometry_cull_instance_count(),
             max_clusters_per_instance_, limits_.max_dispatch_group_count_x,
             group_count, error)) {
         return false;
     }
     if (!ensure_frame_resources(1, error)) return false;
     FrameResources& selected = frames_[0];
-    if (!upload_scene_buffers(selected, VK_NULL_HANDLE, true, error))
+    if (!upload_scene_buffers(selected, nullptr, true, error))
         return false;
     if (!upload_frame_constants(selected, frame, camera_eye, pixel_budget,
                                 error))
@@ -17179,7 +19027,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     active_frame_index_ = 0;
     if (instance_staging_.empty() || max_clusters_per_instance_ == 0)
         return true;
-    CullDispatchRecord dispatch{pipeline_, pipeline_layout_,
+    CullDispatchRecord dispatch{geometry_cut_words_[0] ? geometry_pipeline_ : pipeline_, pipeline_layout_,
                                 {selected.descriptor_sets[0],
                                  selected.descriptor_sets[1]},
                                 group_count,
@@ -17187,8 +19035,15 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
                                 selected.materials.buffer,
                                 selected.pending_material_bytes,
                                 &selected.material_upload_record_count};
+    if (geometry_cut_words_[0]) {
+        dispatch.indirect_buffer = selected.geometry_selected.buffer;
+        dispatch.selection_pipeline = geometry_select_pipeline_;
+        dispatch.selection_jobs = geometry_cull_instance_count();
+        dispatch.selection_capacity = draw_transform_slots_;
+    }
     std::vector<std::shared_ptr<void>> dependencies{
         selected.frame_constants.lifetime, clusters_.lifetime,
+        selected.geometry_cut.lifetime, selected.geometry_selected.lifetime,
         selected.instances.lifetime, selected.commands.lifetime,
         selected.draw_transforms.lifetime, selected.stats.lifetime,
         selected.material_upload.lifetime, selected.materials.lifetime};
@@ -17331,6 +19186,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         velocity_.image != VK_NULL_HANDLE &&
         material_instance_.image != VK_NULL_HANDLE &&
         reactivity_.image != VK_NULL_HANDLE &&
+        vt_feedback_.image != VK_NULL_HANDLE &&
         hdr_.image != VK_NULL_HANDLE &&
         opaque_hdr_.image != VK_NULL_HANDLE &&
         opaque_depth_.image != VK_NULL_HANDLE &&
@@ -17364,6 +19220,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource velocity;
     matter::VkImageResource material_instance;
     matter::VkImageResource reactivity;
+    matter::VkImageResource vt_feedback;
     matter::VkImageResource depth;
     matter::VkImageResource hdr;
     matter::VkImageResource opaque_hdr;
@@ -17433,6 +19290,13 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                               gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                               reactivity, error) ||
+        !matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
+                              vt::kVtFeedbackFormat, extent,
+                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                  VK_IMAGE_USAGE_STORAGE_BIT,
+                              VK_IMAGE_ASPECT_COLOR_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                              vt_feedback, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_D32_SFLOAT, extent,
             depth_usage,
@@ -17554,6 +19418,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     velocity_ = std::move(velocity);
     material_instance_ = std::move(material_instance);
     reactivity_ = std::move(reactivity);
+    vt_feedback_ = std::move(vt_feedback);
     depth_ = std::move(depth);
     // The identity-buffer reduction's source is the material_instance_
     // attachment replaced just below, so its descriptors have to be rewritten.
@@ -17693,6 +19558,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.velocity = &velocity_;
     record.material_instance = &material_instance_;
     record.reactivity = &reactivity_;
+    record.vt_feedback = &vt_feedback_;
     record.depth = &depth_;
     record.hdr = &hdr_;
     record.visibility = &visibility_;
@@ -17750,7 +19616,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         lighting.debug_view = composite_debug_override_;
         return lighting;
     }();
-    record.pixel_budget = 1.0f;
+    record.pixel_budget = sparse_voxel_test_pixel_budget_;
     WaterForwardRecord water_forward{};
     water_forward.extent = raster_extent_;
     water_forward.hdr = &hdr_;
@@ -17786,10 +19652,17 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     // and the vt smoke mode would only ever see empty pages. submit_immediate
     // waits for completion, so consuming this slot's readback is safe.
     record.vt_hooks = this;
+    record.sparse_voxels = sparse_voxels_.get();
+    record.sparse_voxel_matrices = &sparse_voxel_test_matrices_;
+    record.sparse_temporal=sparse_temporal();
+    record.sparse_shadows=sparse_shadows_.get();
+    record.sparse_shadow_bias=ray_tracing_settings_.bias;
+    record.sparse_shadow_distance=ray_tracing_settings_.max_distance;
+    record.error = &error;
     vt_begin_frame(selected, 0);
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        material_instance_.lifetime, reactivity_.lifetime, depth_.lifetime,
+        material_instance_.lifetime, reactivity_.lifetime, vt_feedback_.lifetime, depth_.lifetime,
         hdr_.lifetime, opaque_hdr_.lifetime, opaque_depth_.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime, raw_specular_.lifetime,
         raw_transmission_.lifetime, raw_local_direct_.lifetime,
@@ -17797,6 +19670,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         selected.frame_constants.lifetime, selected.draw_transforms.lifetime,
         selected.materials.lifetime,
         selected.water_forward_constants.lifetime};
+    if (sparse_voxels_) dependencies.push_back(sparse_voxels_->lifetime());
+    if (sparse_shadows_) dependencies.push_back(sparse_shadows_->lifetime());
     raster_attachments_ready_ = false;
     if (!matter::submit_immediate(
             *vulkan_, record_raster_and_water, &record, error,
@@ -17920,7 +19795,7 @@ bool VkSceneRenderer::test_dispatch_environment_sampling_fixture(
     image_write.descriptorCount = 1;
     image_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     image_write.pImageInfo = &image_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &image_write, 0, nullptr);
+    update_descriptor_sets(vulkan_->device(), 1, &image_write, 0, nullptr);
     matter::write_storage_buffer_descriptor(pipeline, 1, uv_buffer, 0,
                                             uv_bytes);
     matter::write_storage_buffer_descriptor(pipeline, 2, output_buffer, 0,
@@ -18020,7 +19895,7 @@ bool VkSceneRenderer::test_dispatch_display_transform_fixture(
     input_write.descriptorCount = 1;
     input_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     input_write.pImageInfo = &input_info;
-    vkUpdateDescriptorSets(graphics.device, 1, &input_write, 0, nullptr);
+    update_descriptor_sets(graphics.device, 1, &input_write, 0, nullptr);
 
     VkShaderModule vertex = VK_NULL_HANDLE;
     VkShaderModule fragment = VK_NULL_HANDLE;
@@ -18509,20 +20384,246 @@ bool VkSceneRenderer::record_composite_to_swapchain(
 
 VkRasterAttachments VkSceneRenderer::raster_attachments() const {
     if (poisoned() || !raster_attachments_ready_) return {};
-    return {{albedo_.image, albedo_.format},
-            {normal_.image, normal_.format},
-            {orm_.image, orm_.format},
-            {velocity_.image, velocity_.format},
-            {material_instance_.image, material_instance_.format},
-            {reactivity_.image, reactivity_.format},
-            {depth_.image, depth_.format},
-            {hdr_.image, hdr_.format},
+    return {{albedo_.image, albedo_.format, albedo_.layout},
+            {normal_.image, normal_.format, normal_.layout},
+            {orm_.image, orm_.format, orm_.layout},
+            {velocity_.image, velocity_.format, velocity_.layout},
+            {material_instance_.image, material_instance_.format, material_instance_.layout},
+            {reactivity_.image, reactivity_.format, reactivity_.layout},
+            {depth_.image, depth_.format, depth_.layout},
+            {hdr_.image, hdr_.format, hdr_.layout},
             raster_extent_};
 }
 
 // ---------------------------------------------------------------------------
 // GPU pick: single-pixel readback of the identity attachment.
 // ---------------------------------------------------------------------------
+bool VkSceneRenderer::queue_evaluation_channels(
+    const matter::VulkanFrame& frame, std::string& error) {
+    error.clear();
+    if (evaluation_pending_) {
+        error = "evaluation channels are already queued";
+        return false;
+    }
+    if (fail_if_poisoned(error)) return false;
+    const uint64_t pixels = uint64_t(raster_extent_.width) * raster_extent_.height;
+    if (!raster_attachments_ready_ || pixels == 0 || pixels > 2048u * 2048u ||
+        material_instance_.image == VK_NULL_HANDLE || hdr_.image == VK_NULL_HANDLE) {
+        error = "evaluation channels require a rendered raster extent of at most 2048x2048 pixels";
+        return false;
+    }
+    VkDeviceSize total = 0;
+    for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i) {
+        evaluation_offsets_[i] = total;
+        total += pixels * matter::EvaluationChannels::bytes_per_pixel[i];
+    }
+    if (!matter::create_buffer(
+            *vulkan_, total, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            evaluation_readback_, error))
+        return false;
+    matter::VkImageResource* images[] = {
+        &material_instance_, &depth_, &normal_, &hdr_, &albedo_, &orm_};
+    std::vector<std::shared_ptr<void>> retained{evaluation_readback_.lifetime};
+    for (auto* image : images) retained.push_back(image->lifetime);
+    if (!vulkan_->retain_for_frame(frame, std::move(retained), error))
+        return false;
+    for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i) {
+        const VkImageAspectFlags aspect = i == matter::EvaluationChannels::DepthF32
+            ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        transition_for_use(frame.command_buffer, *images[i],
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_READ_BIT, aspect);
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = evaluation_offsets_[i];
+        copy.imageSubresource.aspectMask = aspect;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {raster_extent_.width, raster_extent_.height, 1};
+        vkCmdCopyImageToBuffer(frame.command_buffer, images[i]->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               evaluation_readback_.buffer, 1, &copy);
+    }
+    VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    evaluation_frame_serial_ = frame.serial;
+    evaluation_pending_ = true;
+    return true;
+}
+
+bool VkSceneRenderer::finish_evaluation_channels(
+    uint64_t frame_serial, matter::EvaluationChannels& out,
+    std::string& error) {
+    out = {};
+    if (!evaluation_pending_ || evaluation_frame_serial_ != frame_serial) {
+        error = "evaluation channel readback does not match the completed frame";
+        return false;
+    }
+    evaluation_pending_ = false;
+    out.width = raster_extent_.width;
+    out.height = raster_extent_.height;
+    const uint64_t pixels = uint64_t(out.width) * out.height;
+    for (unsigned i = 0; i < matter::EvaluationChannels::Count; ++i) {
+        auto& plane = out.planes[i];
+        plane.resize(static_cast<size_t>(pixels *
+            matter::EvaluationChannels::bytes_per_pixel[i]));
+        if (!matter::readback_buffer(*vulkan_, evaluation_readback_,
+                                     plane.data(), plane.size(),
+                                     evaluation_offsets_[i], error)) {
+            out = {};
+            return false;
+        }
+    }
+    return true;
+}
+
+bool VkSceneRenderer::evaluation_detail_report(
+    const matter::EvaluationChannels& channels, uint32_t desired_max_lod,
+    bool require_rt, matter::VisibleDetailReport& report,
+    std::string& error) {
+    report = {};
+    report.desired_max_lod = desired_max_lod;
+    error.clear();
+    const uint64_t pixels = uint64_t(channels.width) * channels.height;
+    if (!pixels || channels.planes[matter::EvaluationChannels::IdentityRg32u].size()
+                       != pixels * 8 || frames_.empty()) {
+        error = "visible detail requires the completed frame identity plane";
+        return false;
+    }
+    std::set<uint32_t> visible_tokens;
+    const auto& identity = channels.planes[matter::EvaluationChannels::IdentityRg32u];
+    for (uint64_t pixel = 0; pixel < pixels; ++pixel) {
+        uint32_t token = UINT32_MAX;
+        std::memcpy(&token, identity.data() + pixel * 8 + 4, 4);
+        if (token != UINT32_MAX && token != 0) visible_tokens.insert(token);
+    }
+    report.visible_instances = static_cast<uint32_t>(visible_tokens.size());
+    if (uploaded_command_count_ > 1u << 20 ||
+        uploaded_transform_slots_ > 1u << 20) {
+        error = "visible detail draw census exceeds its capture bound";
+        return false;
+    }
+    FrameResources& selected = frames_[active_frame_index_];
+    std::vector<DrawCommand> commands(uploaded_command_count_);
+    std::vector<GpuDrawTransform> transforms(uploaded_transform_slots_);
+    if ((!commands.empty() && !matter::readback_buffer(
+            *vulkan_, selected.commands, commands.data(),
+            commands.size() * sizeof(DrawCommand), 0, error)) ||
+        (!transforms.empty() && !matter::readback_buffer(
+            *vulkan_, selected.draw_transforms, transforms.data(),
+            transforms.size() * sizeof(GpuDrawTransform), 0, error)))
+        return false;
+    std::unordered_map<uint32_t, const GpuInstance*> instances;
+    std::set<uint32_t> duplicate_tokens;
+    for (const GpuInstance& instance : instance_staging_)
+        if (instance.instance_token != 0 && instance.instance_token != UINT32_MAX &&
+            !instances.emplace(instance.instance_token, &instance).second)
+            duplicate_tokens.insert(instance.instance_token);
+    std::set<uint32_t> drawn_tokens;
+    for (size_t command_index = 0; command_index < commands.size();
+         ++command_index) {
+        const DrawCommand& command = commands[command_index];
+        if (!command.instance_count) continue;
+        const size_t cluster_index = command_index / kVkMaxLod;
+        for (uint32_t i = 0; i < command.instance_count; ++i) {
+            const uint64_t slot = uint64_t(command.first_instance) + i;
+            if (slot >= transforms.size()) break;
+            const GpuDrawTransform& transform = transforms[static_cast<size_t>(slot)];
+            if (!visible_tokens.count(transform.instance_token)) continue;
+            drawn_tokens.insert(transform.instance_token);
+            if (transform.selected_lod > desired_max_lod) ++report.coarse_draws;
+            report.max_selected_lod =
+                std::max(report.max_selected_lod, transform.selected_lod);
+            const auto found = instances.find(transform.instance_token);
+            if (found == instances.end() || found->second->part_slot >= parts_.size() ||
+                cluster_index < found->second->cluster_start ||
+                cluster_index >= uint64_t(found->second->cluster_start) +
+                                 found->second->cluster_count ||
+                cluster_index >= cluster_lods_.size() ||
+                transform.selected_lod >= cluster_lods_[cluster_index].size()) {
+                ++report.unmatched_tokens;
+                continue;
+            }
+            const PartRecord& part = parts_[found->second->part_slot];
+            if (require_rt) {
+                const uint32_t local_cluster = static_cast<uint32_t>(
+                    cluster_index - part.cluster_start);
+                const bool blas_ready = !part.geometry_raster_only &&
+                    std::any_of(part.rt_lods.begin(), part.rt_lods.end(),
+                        [&](const RtLodRecord& lod) {
+                            return lod.cluster_index == local_cluster &&
+                                lod.lod_index == transform.selected_lod &&
+                                lod.built && lod.blas;
+                        });
+                if (!blas_ready) ++report.missing_blas;
+            }
+            const uint32_t rung =
+                cluster_lods_[cluster_index][transform.selected_lod].chart_rung;
+            if (rung < 32u && (part.vt_expected_rung_mask & (1u << rung))) {
+                const uint32_t expected_slot = rung < part.vt_slots.size()
+                    ? part.vt_slots[rung] : vt::kVtNoSlot;
+                if (vt_unavailable_ || !vt_ ||
+                    expected_slot == vt::kVtNoSlot ||
+                    !vt_->slot_active(expected_slot) ||
+                    transform.vt_slot != expected_slot)
+                    ++report.missing_vt;
+            }
+        }
+    }
+    std::unordered_map<uint64_t, size_t> part_rows;
+    for (uint32_t token : visible_tokens) {
+        if (duplicate_tokens.count(token)) ++report.unmatched_tokens;
+        if (!drawn_tokens.count(token)) ++report.missing_draws;
+        const auto found = instances.find(token);
+        if (found == instances.end() || found->second->part_slot >= parts_.size()) {
+            ++report.unmatched_tokens;
+            continue;
+        }
+        const PartRecord& part = parts_[found->second->part_slot];
+        if (!part.live) {
+            ++report.unmatched_tokens;
+            continue;
+        }
+        matter::EvaluationObjectIdentity identity;
+        identity.frame_token = token;
+        identity.part_hash = part.hash;
+        report.identities.push_back(identity);
+        auto row = part_rows.find(part.hash);
+        if (row == part_rows.end()) {
+            matter::VisiblePartResource resource;
+            resource.part_hash = part.hash;
+            resource.vertex_count = part.vertex_count;
+            resource.index_count = part.index_count;
+            resource.blas_rungs_total = static_cast<uint32_t>(part.rt_lods.size());
+            for (const RtLodRecord& lod : part.rt_lods)
+                if (lod.built && lod.blas) ++resource.blas_rungs_ready;
+            for (size_t rung = 0; rung < part.vt_slots.size(); ++rung) {
+                if (rung >= 32u ||
+                    !(part.vt_expected_rung_mask & (1u << rung))) continue;
+                ++resource.vt_rungs_total;
+                const uint32_t slot = part.vt_slots[rung];
+                if (vt_ && slot != vt::kVtNoSlot && vt_->slot_active(slot))
+                    ++resource.vt_rungs_active;
+            }
+            const size_t index = report.parts.size();
+            report.parts.push_back(resource);
+            row = part_rows.emplace(part.hash, index).first;
+        }
+        ++report.parts[row->second].visible_instances;
+    }
+    report.observed = true;
+    return true;
+}
+
 namespace {
 struct PickReadbackRecord {
     matter::VkImageResource* image;
@@ -18991,6 +21092,10 @@ void VkSceneRenderer::reset() {
     // is routing the whole pre-reset extent through FreeRangeList::pending at
     // static_frame_serial_ (which does survive this function).
     if (vulkan_) vulkan_->wait_idle();
+    sparse_voxels_.reset();
+    sparse_shadows_.reset();
+    shared_forest_catalog_.clear();shared_forest_shadow_catalog_.clear();
+    sparse_presented_.reset();sparse_candidate_.reset();sparse_candidate_serial_=0;sparse_presented_index_=UINT64_MAX;
     if (full_reset) {
         destroy_pipeline();
         clusters_.reset();
@@ -19002,6 +21107,7 @@ void VkSceneRenderer::reset() {
         velocity_.reset();
         material_instance_.reset();
         reactivity_.reset();
+    vt_feedback_.reset();
         depth_.reset();
         hdr_.reset();
         raster_extent_ = {};
@@ -19018,11 +21124,17 @@ void VkSceneRenderer::reset() {
     gi_candidate_scene_key_ = 0;
     ++local_light_generation_;
     if (local_light_generation_ == 0u) local_light_generation_ = 1u;
+    blas_cache_.reset();
     parts_.clear();
     slot_of_.clear();
     ++slot_of_version_;
     vt_deferred_parts_ = 0;
     vt_rung_requests_.clear();
+    vt_demand_entries_.clear();
+    vt_prewarm_parts_.clear();
+    vt_demand_cache_valid_ = false;
+    vt_demand_registrations_pending_ = true;
+    vt_demand_linger_pending_ = true;
     cluster_staging_.clear();
     cluster_lods_.clear();
     free_clusters_.clear();
@@ -19032,6 +21144,10 @@ void VkSceneRenderer::reset() {
     dirty_vertex_ranges_.clear();
     dirty_index_ranges_.clear();
     instance_staging_.clear();
+    pending_triangle_parts_.clear();
+    resident_instance_scratch_.clear();
+    static_upload_budget_serial_ = UINT64_MAX;
+    static_upload_frame_bytes_ = 0;
     instance_part_slots_.clear();
     // The part table below is being discarded, so dynamic slots holding part
     // indices into it cannot survive the reset. The ECS bridge will rebind
@@ -19065,6 +21181,12 @@ void VkSceneRenderer::reset() {
     raster_command_enabled_.clear();
     uploaded_raster_command_enabled_.clear();
     rt_instances_.clear();
+    geometry_page_warmups_.clear();
+    geometry_page_cost_cache_.clear();
+    geometry_page_capacities_.clear();
+    geometry_cut_words_.assign(8, 0); ++geometry_cut_generation_;
+    geometry_node_pages_.clear(); geometry_job_owners_.clear(); geometry_page_requests_.clear();
+    for (auto& frame : frames_) { frame.geometry_feedback_valid = false; frame.geometry_feedback_pending_serial = 0; }
     static_rt_instance_count_ = 0;
     vertex_staging_.clear();
     index_staging_.clear();

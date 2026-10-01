@@ -5,20 +5,30 @@
 namespace matter {
 // Append-only query indices, matching VkSceneRenderer. Unwritten/unavailable
 // queries are NOT zero-duration measurements. Atmosphere uses a separate pool.
-inline constexpr std::array<const char*, 25> kGpuTimingNames{{
+inline constexpr uint32_t kGpuTimingVt = 10;
+inline constexpr uint32_t kGpuTimingVtFeedbackReadback = 25;
+inline constexpr uint32_t kGpuTimingVtFill = 26;
+inline constexpr uint32_t kGpuTimingVtEnrich = 27;
+inline constexpr std::array<const char*, 28> kGpuTimingNames{{
     "total", "cull", "gbuffer", "blas", "tlas", "rt_sun_shadow",
     "denoise", "dlss", "composite", "volumetrics", "vt", "rt_gi",
     "atmosphere", "cloud_shadows", "vol_density", "vol_scatter",
     "vol_integrate", "water_decode", "water_forward", "water_direct_draw",
     "rt_local_direct", "hdr_lighting", "rt_gi_diffuse",
-    "rt_gi_reflection_transmission", "primary_light_cull"}};
+    "rt_gi_reflection_transmission", "primary_light_cull", "vt_feedback_readback",
+    "vt_fill", "vt_enrich"}};
 static_assert(kGpuTimingNames.size() <= 32, "GPU timing validity mask capacity");
 // composite: final swapchain display transform; hdr_lighting: HDR reconstruction.
 // rt_gi is the aggregate of all GI dispatches. Its two child zones are written
-// only when diffuse and reflection/transmission execute at separate extents.
-// Equal extents use one inseparable dispatch (rt_gi only); absent child queries
-// stay unavailable, never synthetic zero measurements. Do not sum children
+// when detailed lighting profiling is enabled; it splits equal extents too.
+// Without profiling equal extents use one combined dispatch (rt_gi only);
+// absent child queries stay unavailable, never synthetic zero measurements.
+// Do not sum children
 // with rt_gi. Reflection and transmission share a dispatch and cannot be split.
+// vt is the page/indirection/enrichment pre-pass. vt_fill and vt_enrich are
+// child intervals of vt; their remaining time includes table transfers and
+// layout transitions. vt_feedback_readback is a
+// child interval of gbuffer; sum it with vt for cache work, not with gbuffer.
 struct GpuTimingSample {
     uint64_t sequence = 0; // changes only on a fresh query-pool readback
     uint32_t valid_mask = 0; // both timestamps written and available

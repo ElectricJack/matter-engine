@@ -62,6 +62,6 @@ for(const shell of layout.shells)emitSurfaceShell(reference,shell,{body:shell.ma
 emitSiteSurfaceMasonry(recorder(actualBuckets),m,{stoneMaterial:123});
 assert.deepEqual(actualBuckets,expectedBuckets,'batching preserves every attributed vertex exactly');
 assert.throws(()=>layoutSiteSurfaceMasonry({...m,curves:[{}]}),/radial adapter/);
-const source=fs.readFileSync(new URL('../objects/CastleWingSurfaceMasonry.js',import.meta.url),'utf8');
+const source=fs.readFileSync(new URL('../objects/castle/structure/CastleWingSurfaceMasonry.js',import.meta.url),'utf8');
 assert.match(source,/static requires\(\) \{ return \[\]; \}/);
 console.log('castle_site_surface_masonry_tests: PASS '+JSON.stringify(total));

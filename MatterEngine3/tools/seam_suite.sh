@@ -13,7 +13,7 @@
 # rather than living in tests/ and calling a function.
 #
 # THE WORLD IS THE INSTRUMENT. It runs against SeamLab
-# (projects/world_demo/scenes/SeamLab), whose density is a cave-free
+# (projects/world_demo/scenes/texturing/virtual_texture/SeamLab), whose density is a cave-free
 # heightfield: every solid point below the surface is solid to yMin, so a camera
 # above the terrain has nothing legitimate to see except the surface. That is
 # what makes check 1 exact rather than heuristic. Pointing this suite at

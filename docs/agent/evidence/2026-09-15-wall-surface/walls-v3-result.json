@@ -1,0 +1,26 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 33.56296290700266,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,walls-v3-group,active=1,variants=14/32768,rejected=0,mesh=83.2/3512.0 MiB,pool=186/25600,pinned=14,queue=0,fills=187,evictions=0,ind=0.01/64 MiB",
+    "STATSVT,walls-v3-close,active=1,variants=14/32768,rejected=0,mesh=83.2/3512.0 MiB,pool=365/25600,pinned=14,queue=0,fills=366,evictions=0,ind=0.01/64 MiB",
+    "STATSVT,walls-v3-grazing,active=1,variants=14/32768,rejected=0,mesh=83.2/3512.0 MiB,pool=417/25600,pinned=14,queue=0,fills=418,evictions=0,ind=0.01/64 MiB",
+    "STATSVT,walls-v3-rt,active=1,variants=14/32768,rejected=0,mesh=83.2/3512.0 MiB,pool=417/25600,pinned=14,queue=0,fills=418,evictions=0,ind=0.01/64 MiB",
+    "STATSVT,walls-v3-albedo,active=1,variants=14/32768,rejected=0,mesh=83.2/3512.0 MiB,pool=417/25600,pinned=14,queue=0,fills=418,evictions=0,ind=0.01/64 MiB",
+    "STATSVT,walls-v3-normals,active=1,variants=14/32768,rejected=0,mesh=83.2/3512.0 MiB,pool=417/25600,pinned=14,queue=0,fills=418,evictions=0,ind=0.01/64 MiB",
+    "STATSVT,walls-v3-wireframe,active=1,variants=14/32768,rejected=0,mesh=83.2/3512.0 MiB,pool=891/25600,pinned=14,queue=0,fills=892,evictions=0,ind=0.01/64 MiB"
+  ],
+  "images": {
+    "walls-v3-group.png": "17c2fd3cffc0ae64dcdddef77c8d54dd93c56d0ad20dc8c8946ab9b69a2c587b",
+    "walls-v3-close.png": "ad5c5c14e38bd5949fc291e78c009b6c0ac0a392aa3e5a10443eb5d65c9d26af",
+    "walls-v3-grazing.png": "4f873d37c93b12f5de3d4081267e6b8075d267e6a6b0ad104ae1b1b71dac657e",
+    "walls-v3-rt.png": "9705bed177318efac145628070bbad6a6699303205ac5842fc85a9a6751b15bd",
+    "walls-v3-albedo.png": "4e16c73bb95766b896d814b60049a32ff56ff8408b6fc138021c64fa8b520e2f",
+    "walls-v3-normals.png": "f105a8881c90c4efbc6b0f3d4ee0596fca412641ffb2b4057d67b95d5cc0e7b6",
+    "walls-v3-wireframe.png": "e2006443d2b657dea3fd070b4649e65fbb64c2d8ce1f8214df4247a0859d2c20"
+  },
+  "passed": true
+}

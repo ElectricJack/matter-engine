@@ -10,6 +10,7 @@
 #include "async_bake.h"
 #include "matter/log.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -180,6 +181,7 @@ std::shared_ptr<CancelToken> CommandQueue::push(Command c) {
         }
         pending_.clear();
         ch_.shut_down();
+        service_cv_.notify_all();
         return tok;
     }
 
@@ -199,6 +201,7 @@ std::shared_ptr<CancelToken> CommandQueue::push(Command c) {
     // RebakeCone (and the superseding BakeAll/Reload) enqueue FIFO.
     ch_.push(std::move(c));
     pending_.push_back(tok);
+    service_cv_.notify_one();
     return tok;
 }
 
@@ -238,33 +241,40 @@ bool CommandQueue::pop(Command& out) {
 // non-blocking attempt.
 bool CommandQueue::pop_wait(Command& out, int ms, bool& out_timed_out) {
     out_timed_out = false;
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, ms));
+    std::unique_lock<std::mutex> lock(m_);
     for (;;) {
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now());
-        if (remaining.count() < 0) remaining = std::chrono::milliseconds(0);
-
+        if (!service_cv_.wait_until(lock, deadline, [&] { return shut_down_ || !pending_.empty() || idle_wake_; })) {
+            out_timed_out = true; return false;
+        }
+        if (shut_down_) return false;
+        // Command priority is decided under the same lock as producers. A
+        // wake cannot slip ahead of a queued reload or shutdown command.
+        if (pending_.empty()) { idle_wake_ = false; out_timed_out = true; return false; }
         Command tmp;
-        const matter::evt::WaitResult r = ch_.wait_pop_for(tmp, remaining);
-        if (r == matter::evt::WaitResult::Timeout) {
-            out_timed_out = true;
-            return false;
+        if (!ch_.try_pop(tmp)) {
+            // pending_ says a command exists but the channel is empty. That is
+            // a mirror drift, not a reason to spin: resynchronise and report
+            // the wait as idle so the caller re-enters with a fresh budget.
+            pending_.clear(); idle_wake_ = false; out_timed_out = true; return false;
         }
-        if (r == matter::evt::WaitResult::ShutDown) {
-            return false;  // out_timed_out stays false: shutdown/drained
-        }
-        // WaitResult::Item
-        std::lock_guard<std::mutex> lk(m_);
-        if (!pending_.empty()) pending_.pop_front();
+        pending_.pop_front();
         if (tmp.token && tmp.token->is_cancelled()) {
-            // Superseded — skip within the remaining time budget.
+            if (std::chrono::steady_clock::now() >= deadline) {
+                idle_wake_ = false;
+                out_timed_out = true;
+                return false;
+            }
             continue;
         }
-        in_flight_ = tmp.token;
-        out = std::move(tmp);
-        return true;
+        in_flight_ = tmp.token; out = std::move(tmp); return true;
     }
+}
+void CommandQueue::wake_idle() {
+    std::lock_guard<std::mutex> lock(m_);
+    if(shut_down_)return;
+    idle_wake_=true;
+    service_cv_.notify_one();
 }
 
 // Terminal and safe to call twice (Channel::shut_down early-returns). Cancels
@@ -281,6 +291,7 @@ void CommandQueue::shut_down() {
     }
     pending_.clear();
     ch_.shut_down();
+    service_cv_.notify_all();
 }
 
 // ---------------------------------------------------------------------------

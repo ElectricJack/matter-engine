@@ -1,5 +1,6 @@
 // Shared implementation for the fixed lighting and primary-only adaptive stages.
 #include "rt_surface_common.glsl"
+#include "rt_primary_inputs.glsl"
 #define WATER_SET 0
 #define WATER_A_BINDING 21
 #define WATER_B_BINDING 22
@@ -61,6 +62,11 @@ layout(constant_id = 1) const uint walk_alpha_test = 0u;
 // Budgets are process-fixed. Unlimited pipelines can remove the complete
 // selection branch and its dynamically indexed private arrays at compile time.
 layout(constant_id = 6) const uint enable_local_light_selection = 1u;
+// Compile each indirect lane independently without changing its estimator.
+// 0 retains the original dispatch-mask path, 1 owns diffuse, 2 owns reflection
+// and transmission. Removing the other lane also removes its private state
+// and call graph from the driver's raygen compilation.
+layout(constant_id = 11) const uint gi_signal = 0u;
 #ifdef MATTER_PRIMARY_LIGHT_AUDIT
 layout(constant_id = 10) const uint audit_primary_culling = 0u;
 // Invocation-private audit accumulation avoids a global atomic per candidate.
@@ -298,8 +304,10 @@ vec3 primary_proxy_position(ivec2 pixel, ivec2 extent) {
     vec3 p=unproject(uv,texelFetch(depth_texture,pixel,0).x);
     uint identity=texelFetch(identity_texture,pixel,0).x;
     uint material=impostor_identity_material(identity);
-    if (!impostor_identity_is_card(identity) && material < rt_materials.length() &&
-        (rt_materials[material].flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) != 0u) {
+    RtMaterialGpu displayed;
+    if (!impostor_identity_is_card(identity) &&
+        (rt_primary_composed_height(pixel) || (rt_primary_material(pixel, material, displayed) &&
+        (displayed.flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) != 0u))) {
         float ray_t=texelFetch(orm_texture,pixel,0).a;
         if (!isnan(ray_t) && !isinf(ray_t) && ray_t > 0.0)
             p -= normalize(p-unproject(uv,1.0))*ray_t;
@@ -344,7 +352,7 @@ vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
     transmission_weight = 0.0;
     if ((surface.flags & RT_SURFACE_VALID) == 0u) return vec3(0.0);
     if (surface.material_index >= rt_materials.length()) return vec3(0.0);
-    RtMaterialGpu material = rt_materials[surface.material_index];
+    RtMaterialGpu material = rt_surface_material(surface);
     roughness = clamp(material.base_roughness.w, 0.02, 1.0);
     metallic = clamp(material.metal_opacity_spec_coat.x, 0.0, 1.0);
     transmission_weight = clamp(material.transmission.x, 0.0, 1.0);
@@ -892,7 +900,7 @@ vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun,
     vec3 sun_normal = (surface.flags & RT_SURFACE_DETAIL_APPLIED) != 0u
         ? surface.vt_normal_basis[2] : surface.normal;
     if (surface.material_index < rt_materials.length()) {
-        RtMaterialGpu sun_material = rt_materials[surface.material_index];
+        RtMaterialGpu sun_material = rt_surface_material(surface);
         if ((sun_material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
             WaterSurfaceState water_state;
             if (water_evaluate_surface(
@@ -1001,9 +1009,10 @@ void main() {
     const bool gi_dispatch = false;
     const bool local_direct_enabled = true;
 #else
-    const bool gi_dispatch = (constants.shadow_samples & 0x80000000u) != 0u;
+    const bool gi_dispatch = gi_signal != 0u ||
+        (constants.shadow_samples & 0x80000000u) != 0u;
     const bool local_direct_enabled =
-        (constants.shadow_samples & 0x40000000u) != 0u;
+        gi_signal == 0u && (constants.shadow_samples & 0x40000000u) != 0u;
 #endif
     const bool scene_gi_enabled =
         (constants.shadow_samples & 0x20000000u) != 0u;
@@ -1012,8 +1021,10 @@ void main() {
     const bool specular_only =
         (constants.shadow_samples & 0x08000000u) != 0u;
     // With neither selector set, retain the combined GI dispatch contract.
-    const bool owns_diffuse = gi_dispatch && !specular_only;
-    const bool owns_specular = gi_dispatch && !diffuse_only;
+    const bool owns_diffuse = gi_signal == 1u ||
+        (gi_signal == 0u && gi_dispatch && !specular_only);
+    const bool owns_specular = gi_signal == 2u ||
+        (gi_signal == 0u && gi_dispatch && !diffuse_only);
     float depth;
     vec4 albedo;
     ivec2 source_extent = textureSize(depth_texture, 0);
@@ -1030,13 +1041,9 @@ void main() {
     float normal_length_squared = dot(normal_sample, normal_sample);
     vec4 orm = texelFetch(orm_texture, source_pixel, 0);
     uvec2 identity = texelFetch(identity_texture, source_pixel, 0).rg;
-    // .x carries the material index in its low bits and gbuffer.frag's impostor
-    // marker in bit 31. Derive the index ONCE here; every rt_materials[] lookup
-    // below uses this and never identity.x directly. Reading the raw word would
-    // not crash -- the `< rt_materials.length()` guards would simply all fail --
-    // it would quietly drop subsurface, the POM roof escape, the reflection
-    // lane, the metal floor and transmission on impostor pixels, which is the
-    // kind of wrong that looks like a plausible material instead of a bug.
+    // Keep the original logical material index for identity and water lookup.
+    // Bit 31 marks impostor cards. Primary shading selects the captured row
+    // separately from the same G-buffer source pixel below.
     const uint material_id = impostor_identity_material(identity.x);
     // Reversed-Z: far/cleared background is now 0.0 (was 1.0 under standard-Z).
     if (depth <= 0.0 || albedo.a <= 0.0 || normal_length_squared < 0.5) {
@@ -1052,6 +1059,9 @@ void main() {
             imageStore(raw_local_direct_image, pixel, vec4(0.0));
         return;
     }
+    RtMaterialGpu displayed_material;
+    const bool has_displayed_material =
+        rt_primary_material(source_pixel, material_id, displayed_material);
     vec3 normal = normal_sample * inversesqrt(normal_length_squared);
     vec4 world_h = constants.clip_to_world *
                    vec4(source_uv.x * 2.0 - 1.0,
@@ -1089,8 +1099,8 @@ void main() {
     bool primary_surface_detail = false;
     WaterSurfaceState primary_water_state;
     bool primary_water_evaluated = false;
-    if (material_id < rt_materials.length()) {
-        RtMaterialGpu roof_mat = rt_materials[material_id];
+    if (has_displayed_material) {
+        RtMaterialGpu roof_mat = displayed_material;
         if ((roof_mat.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
             primary_water_evaluated = water_evaluate_surface_for_material(
                 material_id, shading_world.xz, normal,
@@ -1099,7 +1109,8 @@ void main() {
         }
         ground_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
         if (!impostor_identity_is_card(identity.x) &&
-            (roof_mat.flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) != 0u) {
+            (rt_primary_composed_height(source_pixel) ||
+             (roof_mat.flags_misc.x & RT_SURFACE_DETAIL_MATERIAL_FLAG) != 0u)) {
             primary_surface_detail = true;
             world = primary_proxy_position(source_pixel,source_extent);
             if (local_direct_enabled)
@@ -1125,8 +1136,8 @@ void main() {
     vec3 direct_normal = primary_water_evaluated
         ? primary_water_state.shading_normal : normal;
     float primary_transmission = 0.0;
-    if (material_id < rt_materials.length()) {
-        RtMaterialGpu primary_material = rt_materials[material_id];
+    if (has_displayed_material) {
+        RtMaterialGpu primary_material = displayed_material;
         primary_transmission = clamp(
             primary_material.transmission.x, 0.0, 1.0);
         if (primary_water_evaluated) {
@@ -1300,7 +1311,7 @@ void main() {
                 ? hit.surface.vt_normal_basis[2] : hit.surface.normal;
             if (hit.surface.material_index < rt_materials.length()) {
                 RtMaterialGpu hit_material =
-                    rt_materials[hit.surface.material_index];
+                    rt_surface_material(hit.surface);
                 if ((hit_material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
                     WaterSurfaceState water_state;
                     if (water_evaluate_surface(
@@ -1404,9 +1415,9 @@ void main() {
     // regression gate).
     float texel_metallic = clamp(orm.y, 0.0, 1.0);
     if (constants.reflection_multiplier != 0.0 &&
-        material_id < rt_materials.length() && orm.x <=
+        has_displayed_material && orm.x <=
         constants.max_reflection_roughness) {
-        RtMaterialGpu primary = rt_materials[material_id];
+        RtMaterialGpu primary = displayed_material;
         vec3 base_color = mix(primary.base_roughness.rgb, albedo.rgb,
                               clamp(albedo.a, 0.0, 1.0));
         float base_roughness = clamp(primary.base_roughness.w, 0.02, 1.0);
@@ -1492,7 +1503,7 @@ void main() {
                                 roughness);
         }
     } else if (constants.reflection_multiplier != 0.0 &&
-               material_id < rt_materials.length() && texel_metallic > 0.0) {
+               has_displayed_material && texel_metallic > 0.0) {
         // Reflection lane capped off (orm.x > max_reflection_roughness) but
         // the texel is metallic: diffuse is killed by orm.y everywhere, so
         // without this the texel goes black. Tier-1 floor, no rays: the same
@@ -1501,7 +1512,7 @@ void main() {
         // continuously at metalness 0 (where skipping the lane is the
         // legitimate legacy behaviour). primary_view was computed above off
         // the (possibly POM-lifted) shading point.
-        RtMaterialGpu primary = rt_materials[material_id];
+        RtMaterialGpu primary = displayed_material;
         vec3 base_color = mix(primary.base_roughness.rgb, albedo.rgb,
                               clamp(albedo.a, 0.0, 1.0));
         float n_dot_v = max(dot(normal, primary_view), 1e-4);
@@ -1525,8 +1536,8 @@ void main() {
     // Denoiser aux lane: (hit distance, lobe roughness), same contract as
     // specular_aux above. Stays (0, 0) for pixels with no transmission.
     vec2 transmission_aux = vec2(0.0);
-    if (material_id < rt_materials.length()) {
-        RtMaterialGpu trans_material = rt_materials[material_id];
+    if (has_displayed_material) {
+        RtMaterialGpu trans_material = displayed_material;
         transmission_weight = clamp(trans_material.transmission.x, 0.0, 1.0);
         if (primary_water_evaluated) {
             float clear_coherent = max(
@@ -1615,7 +1626,7 @@ void main() {
                         // direction inside rough_refract.
                         float exit_roughness =
                             hit.surface.material_index < rt_materials.length()
-                                ? clamp(rt_materials[hit.surface.material_index]
+                                ? clamp(rt_surface_material(hit.surface)
                                             .base_roughness.w, 0.0, 1.0)
                                 : 0.0;
                         if (exit_roughness >= RT_SMOOTH_TRANSMISSION_ROUGHNESS)

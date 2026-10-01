@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEngine3 Vulkan world viewer. The production path creates a GLFW
 // NO_API window and presents genuine WorldSession data through VkSceneRenderer.
 // MATTER_CAM, MATTER_WORLD, MATTER_SCREENSHOT and FIFO commands are retained
@@ -181,6 +182,7 @@
 #include "camera_orbit.h"
 #include "editor_model.h"
 #include "editor_props.h"
+#include "vt_trace.h"
 #include "image_preview.h"
 #include "issue_reporter.h"
 #include "profile.h"
@@ -218,6 +220,7 @@
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 #include "viewport_capture.h"
+#include "camera_calibration.h"
 #include "viewport_pick.h"
 #include "viewport_pick_command.h"
 #include "dsl_bindings.h"
@@ -1139,7 +1142,8 @@ void emit_registration_census(
 // `frame_times` is taken BY VALUE and sorted in place (milliseconds per frame,
 // end-to-end loop cadence). The median and p95 come out of that sorted vector;
 // p95 is element ceil(0.95 * n) - 1, so a one-frame run reports that frame for
-// both.
+// both. `frame_times_ms` repeats the unsorted samples in capture order, so a
+// reader (tools/frame_attribution.py) can take p99 or look for a time pattern.
 //
 // Two different time bases live in the output and mixing them up is the usual
 // mistake: the `*_delta` fields are end-minus-start over the whole sampling
@@ -1164,6 +1168,7 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
         error = "no performance frames were sampled";
         return false;
     }
+    const std::vector<double> frame_times_in_order = frame_times;
     std::sort(frame_times.begin(), frame_times.end());
     const double median_frame_ms = median_of_sorted(frame_times);
     const size_t p95_index = static_cast<size_t>(
@@ -1319,6 +1324,10 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_timers_supported\":" << (frame_stats.gpu_timers_supported ? "true" : "false")
            << ",\"raster_width\":" << frame_stats.raster_width
            << ",\"raster_height\":" << frame_stats.raster_height
+           << ",\"gbuffer_profile_mode\":\""
+           << json_string(std::getenv("MATTER_GBUFFER_PROFILE_MODE")
+                              ? std::getenv("MATTER_GBUFFER_PROFILE_MODE")
+                              : "full") << "\""
            << ",\"pom_enabled\":" << (loop_stats.tileset_pom.enabled ? "true" : "false")
            << ",\"pom_steps\":" << loop_stats.tileset_pom.steps
            << ",\"pom_max_distance_m\":" << loop_stats.tileset_pom.max_distance_m
@@ -1352,6 +1361,13 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"max_ms\":" << present_intervals.back()
            << ",\"stddev_ms\":" << std::sqrt(present_variance / present_intervals.size())
            << '}';
+    output << ",\"frame_times_ms\":[";
+    for (size_t i = 0; i < frame_times_in_order.size(); ++i) {
+        if (i) output << ',';
+        if (std::isfinite(frame_times_in_order[i])) output << frame_times_in_order[i];
+        else output << "null";
+    }
+    output << ']';
     if (!frame_trace.rows.empty()) frame_trace.append_json(output);
     output << "}\n";
     if (!output) {
@@ -1416,7 +1432,8 @@ int main() {
     if (((registration_census_mode || perf.enabled) && !force_visible) ||
         (hide_window_env && std::strcmp(hide_window_env, "1") == 0))
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    if (perf.enabled)
+    const char* vt_trace_path = std::getenv("MATTER_VT_TRACE");
+    if (perf.enabled || (vt_trace_path && vt_trace_path[0]))
         glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     int initial_window_width = replay.valid && replay.frame_width > 0
         ? static_cast<int>(replay.frame_width) : 1280;
@@ -2645,6 +2662,9 @@ int main() {
     // buffer with tomorrow's pose.
     matter::CameraDesc presented_camera = camera;
     bool presented_camera_available = false;
+    matter::CameraDesc previous_evaluation_camera = camera;
+    bool previous_evaluation_camera_available = false;
+    uint32_t stable_camera_frames = 0;
     bool presented_production_view = false;
     uint64_t presented_session_generation = 0;
     // viewport.capture's one in-flight request. A screenshot is the only agent
@@ -2763,8 +2783,6 @@ int main() {
     // -- see the fifo_quit_pending resolution after end_frame below.
     bool fifo_quit_pending = false;
 
-    matter::RenderPath fifo_render_path = matter::RenderPath::GpuDriven;
-    bool fifo_render_path_override = false;
     stats.session_status.native_rt_available =
         vulkan->ray_tracing_available();
     bool quit_requested = false;
@@ -2796,6 +2814,8 @@ int main() {
     std::vector<double> perf_water_animation_times;
     viewer::PerfGpuStats perf_gpu_pass_stats;
     PerfFrameTrace perf_frame_trace;
+    editor::VtTrace vt_trace(vt_trace_path);
+    const auto vt_trace_start = std::chrono::steady_clock::now();
     auto perf_previous_frame_start = std::chrono::steady_clock::now();
     auto perf_previous_present = perf_previous_frame_start;
     viewer::FramePacer frame_pacer;
@@ -2916,6 +2936,14 @@ int main() {
          {"limit", "integer", false, "Rows to return, 1 through 200 (default 100)"}},
         "object", false, {}});
     agent_protocol.add_command({
+        "asset.export", "Export a completed static asset as OBJ/MTL, GLB and PBR/height PNG maps in a new folder",
+        {{"directory", "string", true, "New output folder; existing folders are refused"},
+         {"source", "string", false, "world (default) or workbench"},
+         {"module", "string", false, "Published world root module; required unless part_hash is supplied"},
+         {"part_hash", "string", false, "Decimal root part hash; selects one variant of a repeated module"},
+         {"lod", "integer", false, "Mesh LOD 0 through 15, default 0; children use their nearest available LOD"}},
+        "object", true, {}});
+    agent_protocol.add_command({
         "scene.get_object",
         "Inspect one object by typed id: naming, placement, visibility, "
         "selection, provenance availability and supported operations",
@@ -3034,7 +3062,13 @@ int main() {
         {{"path", "string", true,
           "Absolute .png path; the same safety rules the shot_now FIFO verb applies"},
          {"annotate_selection", "boolean", false,
-          "Also return each selected object's typed id and projected image rectangle"}},
+          "Also return each selected object's typed id and projected image rectangle"},
+         {"export_channels", "boolean", false,
+          "Write synchronized raw identity, depth, normal, linear color and material planes"},
+         {"desired_max_lod", "number", false,
+          "Highest accepted visible VG LOD index; 0 requires finest"},
+         {"require_rt", "boolean", false,
+          "Require native RT and ready visible BLAS resources"}},
         "object", false, {}});
     agent_protocol.add_command({
         "view.focus",
@@ -3043,6 +3077,20 @@ int main() {
         {{"object", "object_id", false,
           "{kind,id} pair to frame; omitted frames the current selection"}},
         "object", false, {}});
+    agent_protocol.add_command({
+        "view.set_camera",
+        "Set a complete calibrated pinhole camera for the next presented frame",
+        {{"position", "array", true, "Eye in world meters, [x,y,z]"},
+         {"target", "array", true, "Look target in world meters, [x,y,z]"},
+         {"up", "array", true, "Nonparallel up direction, [x,y,z]"},
+         {"vertical_fov_radians", "number", true, "Vertical field of view [0.05,3.0]"},
+         {"near_plane", "number", true, "Near clip in meters, at least 0.001"},
+         {"far_plane", "number", true, "Far clip in meters, above near and at most 1e7"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "render.reset_temporal",
+        "Reset presentation histories before a controlled capture sequence",
+        {}, "object", false, {}});
     // Regeneration job control (regen_jobs.h). `seed` and `job_id` are decimal
     // STRINGS for the same reason every other id here is: a 64-bit seed does
     // not survive an IEEE-754 double. Ranges and the per-operation seed rules
@@ -3388,6 +3436,58 @@ int main() {
         return viewer::scenediff::capture(inventory_snapshot, measured, context,
                                           inputs, std::move(label));
     };
+
+    auto reg_asset_export = registry.must_register_handler<viewer::AssetExport>(
+        matter::evt::CommandScope::App,app_lane,[&](const viewer::AssetExport& command){
+            using Value=matter::jsondoc::Value;
+            viewer::AgentPayload payload;
+            const auto invalid=[&](const std::string& why){payload.status=viewer::agent::Status::InvalidInput;payload.message=why;return viewer::AssetExport::Result::succeeded(std::move(payload));};
+            std::string directory,module,source="world";uint32_t lod=0;uint64_t requested_hash=0;
+            for(const auto& [key,value]:command.arguments.obj){
+                if(key=="lod"){
+                    if(value.kind!=Value::Kind::Number || !std::isfinite(value.num) || value.num<0 || value.num>15 || std::floor(value.num)!=value.num)
+                        return invalid("lod must be an integer between 0 and 15");
+                    lod=uint32_t(value.num);
+                } else {
+                    if(value.kind!=Value::Kind::String || value.str.size()>4096 || value.str.find('\0')!=std::string::npos)
+                        return invalid("export text arguments must be bounded strings without NUL characters");
+                    if(key=="directory")directory=value.str;else if(key=="module")module=value.str;else if(key=="source")source=value.str;
+                    else if(key=="part_hash") {
+                        if(value.str.empty())return invalid("part_hash must be a decimal uint64 string");
+                        for(char digit:value.str){if(digit<'0'||digit>'9'||requested_hash>(UINT64_MAX-uint32_t(digit-'0'))/10)return invalid("part_hash must be a decimal uint64 string");requested_hash=requested_hash*10+uint32_t(digit-'0');}
+                        if(!requested_hash)return invalid("part_hash cannot be zero");
+                    }
+                    else return invalid("unknown asset.export argument");
+                }
+            }
+            if(directory.empty() || (source!="world" && source!="workbench"))return invalid("directory is required; source must be world or workbench");
+            matter::AssetExportReceipt receipt;std::string error;bool ok=false;
+            if(source=="workbench"){
+                if(requested_hash)return invalid("part_hash is only accepted for source=world");
+                if(!module.empty() && module!=bake_lab.workbench().module_name())return invalid("module does not match the open workbench asset");
+                ok=bake_lab.workbench().export_current(directory,lod,receipt,error);
+            } else {
+                if(module.empty() && !requested_hash)return invalid("module or part_hash is required when exporting from the world");
+                part_graph_snapshot::Snapshot graph;uint64_t hash=0;
+                if(session && session->graph_snapshot(graph))for(const auto& [key,node]:graph.nodes)
+                    if(node.is_root && (module.empty() || key==module || node.module==module) && (!requested_hash || node.resolved_hash==requested_hash)){
+                        if(hash && hash!=node.resolved_hash)return invalid("module selects more than one root variant");hash=node.resolved_hash;
+                    }
+                if(!hash)error="module has no published root in the current world";
+                else ok=session->export_asset(hash,lod,directory,receipt,error);
+            }
+            if(!ok){payload.status=viewer::agent::Status::ExecutionFailure;payload.message=error;}
+            else {
+                payload.value.kind=Value::Kind::Object;
+                const auto text_value=[](const std::string& s){Value v;v.kind=Value::Kind::String;v.str=s;return v;};
+                const auto number_value=[](uint64_t n){Value v;v.kind=Value::Kind::UInt64;v.uint64_value=n;return v;};
+                payload.value.set("directory",text_value(receipt.directory));payload.value.set("source_hash",text_value(std::to_string(receipt.source_hash)));
+                payload.value.set("lod",number_value(receipt.lod));payload.value.set("triangles",number_value(receipt.triangles));
+                payload.value.set("vertices",number_value(receipt.vertices));payload.value.set("materials",number_value(receipt.materials));
+                Value files;files.kind=Value::Kind::Array;for(const auto& f:receipt.files)files.arr.push_back(text_value(f));payload.value.set("files",std::move(files));
+            }
+            return viewer::AssetExport::Result::succeeded(std::move(payload));
+        });
 
     auto reg_scene_list_objects =
         registry.must_register_handler<viewer::SceneListObjects>(
@@ -4070,6 +4170,64 @@ int main() {
             return viewer::ViewFocus::Result::succeeded(std::move(payload));
         });
 
+    auto reg_view_set_camera =
+        registry.must_register_handler<viewer::ViewSetCamera>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ViewSetCamera& command) {
+                viewer::AgentPayload payload;
+                std::string error;
+                if (!viewer::camera_calibration::valid(command.camera, error)) {
+                    payload.status = viewer::agent::Status::InvalidInput;
+                    payload.message = error;
+                    return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+                }
+                if (!session) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message = "no world session is loaded";
+                    return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+                }
+                camera = command.camera;
+                // camera.prefs pushes this field into CameraDesc every frame.
+                camera_prefs.far_plane = camera.far_plane;
+                auto value = viewer::agent::json::object();
+                value.set("applies_at", viewer::agent::json::string(
+                    "next_presented_frame"));
+                value.set("position", viewer::agent::json::vec3(
+                    camera.position.x, camera.position.y, camera.position.z));
+                value.set("target", viewer::agent::json::vec3(
+                    camera.target.x, camera.target.y, camera.target.z));
+                value.set("up", viewer::agent::json::vec3(
+                    camera.up.x, camera.up.y, camera.up.z));
+                value.set("vertical_fov_radians", viewer::agent::json::number(
+                    camera.vertical_fov_radians));
+                value.set("near_plane", viewer::agent::json::number(camera.near_plane));
+                value.set("far_plane", viewer::agent::json::number(camera.far_plane));
+                payload.value = std::move(value);
+                return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+            });
+    auto reg_render_reset_temporal =
+        registry.must_register_handler<viewer::RenderResetTemporal>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::RenderResetTemporal&) {
+                viewer::AgentPayload payload;
+                if (!session) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message = "no world session is loaded";
+                    return viewer::RenderResetTemporal::Result::succeeded(
+                        std::move(payload));
+                }
+                session->request_atmosphere_history_reset();
+                stable_camera_frames = 0;
+                previous_evaluation_camera_available = false;
+                auto value = viewer::agent::json::object();
+                value.set("applies_at", viewer::agent::json::string(
+                    "next_presented_frame"));
+                value.set("minimum_stable_frames", viewer::agent::json::number(3));
+                payload.value = std::move(value);
+                return viewer::RenderResetTemporal::Result::succeeded(
+                    std::move(payload));
+            });
+
     // --- regeneration job control (regen_jobs.h) ---------------------------
     // job.start ACCEPTS: it records a ledger entry and returns. The heavy
     // session operation runs at the post-frame seam below, because destroying
@@ -4455,8 +4613,16 @@ int main() {
                     return viewer::FifoRenderPath::Result::failed(
                         "native RT unavailable");
                 }
-                fifo_render_path = cmd.requested;
-                fifo_render_path_override = true;
+                // Use the checkbox's live property. A separate FIFO override
+                // makes later UI changes silently ineffective for this session.
+                const auto result = viewer::fifo_set_property(
+                    editor_props.registry(), "render.gpu.ray_tracing",
+                    cmd.requested == matter::RenderPath::Raytrace ? "true"
+                                                                : "false");
+                if (!result.success) {
+                    std::printf("render_path: %s\n", result.line.c_str());
+                    return viewer::FifoRenderPath::Result::failed(result.line);
+                }
                 stats.session_status.render_path =
                     cmd.requested == matter::RenderPath::Raytrace
                         ? viewer::ViewerRenderPathStatus::NativeRt
@@ -5156,6 +5322,9 @@ int main() {
                     if (begun.request.command == "agent.commands") {
                         attach_agent_ticket(registry.dispatch(viewer::AgentCommands{}),
                                             metadata_terminal);
+                    } else if (begun.request.command == "asset.export") {
+                        viewer::AssetExport command;command.arguments=begun.request.arguments;
+                        attach_agent_ticket(registry.dispatch(std::move(command)),payload_terminal);
                     } else if (begun.request.command == "scene.list_objects") {
                         // Range/enum validation happens HERE so a bad limit or
                         // an unknown kind is invalid_input rather than a handler
@@ -5398,6 +5567,9 @@ int main() {
                                 viewer::capture::Clock::now() +
                                 std::chrono::milliseconds(begun.request.timeout_ms);
                             const bool annotate = arguments.annotate;
+                            const bool export_channels = arguments.export_channels;
+                            const uint32_t desired_max_lod = arguments.desired_max_lod;
+                            const bool require_rt = arguments.require_rt;
                             const std::string path = arguments.path;
                             auto ticket = registry.dispatch(std::move(command));
                             const uint64_t ticket_id = ticket.id();
@@ -5410,6 +5582,7 @@ int main() {
                                 ticket.then(
                                     app_lane,
                                     [&, request_id, ticket_id, path, annotate,
+                                     export_channels, desired_max_lod, require_rt,
                                      deadline](const auto& result) {
                                         // Unlike every other agent command, a
                                         // Success here is NOT a terminal answer:
@@ -5442,6 +5615,9 @@ int main() {
                                         pending.ticket_id = ticket_id;
                                         pending.path = path;
                                         pending.annotate = annotate;
+                                        pending.export_channels = export_channels;
+                                        pending.desired_max_lod = desired_max_lod;
+                                        pending.require_rt = require_rt;
                                         pending.deadline = deadline;
                                         if (!agent_capture.arm(std::move(pending))) {
                                             agent_protocol.complete(
@@ -5463,6 +5639,23 @@ int main() {
                                             std::chrono::steady_clock::now();
                                     });
                             }
+                        }
+                    } else if (begun.request.command == "render.reset_temporal") {
+                        attach_agent_ticket(
+                            registry.dispatch(viewer::RenderResetTemporal{}),
+                            payload_terminal);
+                    } else if (begun.request.command == "view.set_camera") {
+                        viewer::ViewSetCamera command;
+                        std::string camera_error;
+                        if (!viewer::camera_calibration::parse(
+                                begun.request.arguments, command.camera,
+                                camera_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                camera_error);
+                        } else {
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
                         }
                     } else if (begun.request.command == "view.focus") {
                         // `object` is OPTIONAL here, so unlike scene.get_object
@@ -5800,11 +5993,8 @@ int main() {
                     // module's source, mirroring how the browser scopes its rows.
                     std::string project_dir;
                     for (const viewer::WorldEntry& w : worlds) {
-                        std::error_code probe_ec;
-                        if (std::filesystem::is_regular_file(
-                                std::filesystem::path(w.project_dir) / "objects" /
-                                    (std::string(word) + ".js"),
-                                probe_ec)) {
+                        if (!matter::project_layout::object_source(
+                                {(std::filesystem::path(w.project_dir) / "objects").string()}, word).empty()) {
                             project_dir = w.project_dir;
                             break;
                         }
@@ -6029,6 +6219,7 @@ int main() {
         // and the camera snapshot — so a FIFO `cam`/`budget` applies to THIS
         // frame's render exactly as the old inline handling did.
         registry.pump(app_lane, 5.0);
+        bake_lab.workbench().process_pending_export();
         // The armed capture's deadline, checked BEFORE the protocol's generic
         // expiry so the capture-specific timeout message is the one that lands
         // in the ordinary case. Both deadlines are the same request's, so
@@ -6890,10 +7081,7 @@ int main() {
         // — and are cleared again for the Part Workbench's isolation session,
         // which has its own world and its own authored fog and sun.
         matter::RenderOptions options;
-        const bool native_rt_requested =
-            fifo_render_path_override
-                ? fifo_render_path == matter::RenderPath::Raytrace
-                : editor_props.gpu_prefs().ray_tracing;
+        const bool native_rt_requested = editor_props.gpu_prefs().ray_tracing;
         const bool native_rt_enabled =
             vulkan->ray_tracing_available() && native_rt_requested;
         options.path = native_rt_enabled ? matter::RenderPath::Raytrace
@@ -6936,6 +7124,8 @@ int main() {
         options.pixel_budget = stats.pixel_budget;
         options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
+        options.vulkan_forest_history_reset =
+            editor_props.gpu_prefs().forest_history_reset;
         options.vulkan_lighting = stats.lighting;
         // ViewerStats index -> composite.frag mode. The two numberings differ
         // and always have; keep this in step with kDebugViewLabels
@@ -7129,6 +7319,21 @@ int main() {
         // The long assignment block further down copies it field-by-field into
         // ViewerStats, which is what the HUD and every panel actually read.
         const matter::FrameStats& frame_stats = session->frame_stats();
+        // Cache audit uses actual streaming activity, not only a plateau in
+        // resident count while a long-running worker is still cooking.
+        static const bool cache_audit = std::getenv("MATTER_TERRAIN_CACHE_AUDIT") != nullptr;
+        static auto cache_audit_last = std::chrono::steady_clock::now();
+        if (cache_audit && std::chrono::duration<double>(std::chrono::steady_clock::now()-cache_audit_last).count() >= 1.0) {
+            cache_audit_last = std::chrono::steady_clock::now();
+            const auto state = session->streaming_status();
+            std::printf("CACHE_AUDIT state=%u resident=%u inflight=%u bake_ready=%u\n",
+                unsigned(state.state), state.resident_sectors, state.inflight_sectors, unsigned(bake_ready));
+            std::printf("CACHE_VISIBLE_SECTORS revision=%llu valid=%u desired=%u pending=%u\n",
+                (unsigned long long)state.view_revision, unsigned(state.visible_sectors_valid),
+                state.visible_sectors, state.visible_sectors_pending);
+            std::fflush(stdout);
+        }
+
         // QA timeline: wait_idle / wait_event release checks. Here (frame_stats
         // just refreshed, and bake_ready reflects this frame's poll_event
         // drain above) so both waits observe up-to-date state once per frame;
@@ -7492,9 +7697,23 @@ int main() {
                 mark_device_fatal(error);
             }
         }
+        const bool numeric_requested = capture &&
+            agent_capture.owns(capture_path) &&
+            agent_capture.request().export_channels;
+        bool numeric_queued = false;
+        std::string numeric_error;
+        matter::EvaluationChannels numeric_channels;
+        if (numeric_requested) {
+            numeric_queued = session->queue_evaluation_channels(frame, numeric_error);
+        }
         bool frame_presented = false;
         const bool frame_completed =
             vulkan->end_frame(frame, frame_presented, error);
+        if (numeric_queued &&
+            !session->finish_evaluation_channels(
+                frame.serial, frame_completed, numeric_channels, numeric_error)) {
+            numeric_queued = false;
+        }
         session->finish_vulkan_frame(
             frame.serial, frame_presented && !fatal_error);
         const viewer::FifoPresentUpdate fifo_present_update =
@@ -7507,6 +7726,22 @@ int main() {
             presented_camera_available = true;
             presented_production_view = !show_isolation;
             presented_session_generation = binding.current_generation();
+            const auto same_vec = [](const matter::Float3& a,
+                                     const matter::Float3& b) {
+                return a.x == b.x && a.y == b.y && a.z == b.z;
+            };
+            const bool same_camera = previous_evaluation_camera_available &&
+                same_vec(render_camera.position, previous_evaluation_camera.position) &&
+                same_vec(render_camera.target, previous_evaluation_camera.target) &&
+                same_vec(render_camera.up, previous_evaluation_camera.up) &&
+                render_camera.vertical_fov_radians ==
+                    previous_evaluation_camera.vertical_fov_radians &&
+                render_camera.near_plane == previous_evaluation_camera.near_plane &&
+                render_camera.far_plane == previous_evaluation_camera.far_plane;
+            stable_camera_frames = same_camera
+                ? std::min(stable_camera_frames + 1u, 1000000u) : 1u;
+            previous_evaluation_camera = render_camera;
+            previous_evaluation_camera_available = true;
         }
         stats.session_status.presented_frame_serial =
             fifo_present.presented_frame_serial();
@@ -7529,6 +7764,12 @@ int main() {
         const double perf_present_interval_ms = std::chrono::duration<double, std::milli>(
             perf_present_time - perf_previous_present).count();
         perf_previous_present = perf_present_time;
+        if (frame_presented && vt_trace.enabled()) {
+            vt_trace.record(frame.serial,
+                std::chrono::duration<double, std::milli>(
+                    perf_present_time - vt_trace_start).count(),
+                frame_stats, stats_label);
+        }
         const double perf_frame_cadence_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - perf_frame_start).count();
         hud_frame_ms = hud_frame_ms <= 0.0
@@ -7848,8 +8089,24 @@ int main() {
                             nullptr, nullptr);
                     fatal_error = true;
                 } else {
-                    bool completion_written = true;
-                    if (capture_path == shot_path || fifo_immediate_capture) {
+                    bool numeric_failed = false;
+                    const std::string numeric_path =
+                        capture_path + ".channels.bin";
+                    if (numeric_requested) {
+                        if (!numeric_queued || !numeric_error.empty()) {
+                            numeric_failed = true;
+                        } else if (!viewer::capture::write_channel_bundle(
+                                       numeric_path, numeric_channels,
+                                       numeric_error)) {
+                            numeric_failed = true;
+                        }
+                        if (numeric_failed)
+                            MATTER_LOGE("capture", "numeric channels failed: %s\n",
+                                        numeric_error.c_str());
+                    }
+                    bool completion_written = !numeric_failed;
+                    if (completion_written &&
+                        (capture_path == shot_path || fifo_immediate_capture)) {
                         const std::string done = capture_path + ".done";
                         completion_written =
                             viewer::write_screenshot_completion_marker(done);
@@ -7863,7 +8120,7 @@ int main() {
                             resolve_agent_capture(
                                 viewer::capture::Resolution::WriteFailed, nullptr,
                                 nullptr, nullptr);
-                        fatal_error = true;
+                        if (!numeric_failed) fatal_error = true;
                     } else {
                         screenshot_failures = 0;
                         std::printf("screenshot written to %s\n",
@@ -7893,6 +8150,54 @@ int main() {
                             geometry.image_origin_x = out_origin_x;
                             geometry.image_origin_y = out_origin_y;
                             geometry.production_view = !show_isolation;
+                            if (numeric_requested) {
+                                geometry.channels_path = numeric_path;
+                                geometry.channels_width = numeric_channels.width;
+                                geometry.channels_height = numeric_channels.height;
+                                auto& readiness = geometry.readiness_input;
+                                readiness.production_view = geometry.production_view;
+                                readiness.scene_ready = bake_ready;
+                                readiness.gpu_jobs_idle = session->gpu_jobs_idle();
+                                readiness.require_rt = agent_capture.request().require_rt;
+                                readiness.rt_available = frame_stats.vk_rt_available;
+                                readiness.rt_effective = frame_stats.vk_rt_effective;
+                                readiness.stable_camera_frames = stable_camera_frames;
+                                readiness.vt_queue_depth = frame_stats.vt_queue_depth +
+                                    frame_stats.vt_enrich_queue_depth;
+                                readiness.vt_dirty_pages = frame_stats.vt_dirty_pages;
+                                readiness.vt_rejected_variants =
+                                    frame_stats.vt_rejected_variants;
+                                const auto streaming = session->streaming_status();
+                                if (streaming.state ==
+                                    matter::streaming::SectorStreamingState::Active) {
+                                    readiness.visible_streaming_known =
+                                        streaming.visible_sectors_valid;
+                                    readiness.visible_sectors_pending =
+                                        streaming.visible_sectors_pending;
+                                } else if (streaming.state !=
+                                           matter::streaming::SectorStreamingState::Detached) {
+                                    readiness.visible_streaming_known = false;
+                                }
+                                if (!session->evaluation_detail_report(
+                                        numeric_channels,
+                                        agent_capture.request().desired_max_lod,
+                                        readiness.require_rt, readiness.detail,
+                                        readiness.detail_error)) {
+                                    MATTER_LOGW("capture", "visible detail census: %s",
+                                                readiness.detail_error.c_str());
+                                }
+                                const auto pending_refinement =
+                                    session->pending_refinement_parts();
+                                for (const auto& part : readiness.detail.parts) {
+                                    if (std::find(pending_refinement.begin(),
+                                                  pending_refinement.end(),
+                                                  part.part_hash) !=
+                                        pending_refinement.end())
+                                        ++readiness.visible_refinement_pending;
+                                }
+                                geometry.readiness =
+                                    viewer::capture::evaluate_readiness(readiness);
+                            }
                             // The same batched bounds the selection overlay
                             // draws from, so an annotation rectangle and the
                             // box on screen describe one box.
@@ -8126,7 +8431,9 @@ int main() {
             std::fprintf(stderr,
                         "STATSVT,%s,active=%d,variants=%u/%u,rejected=%u,"
                         "mesh=%.1f/%.1f MiB,pool=%u/%u,pinned=%u,queue=%u,"
-                        "fills=%llu,evictions=%llu,ind=%.2f/%.0f MiB\n",
+                        "fills=%llu,evictions=%llu,ind=%.2f/%.0f MiB,material_pages=%u,shared_material_refs=%u,"
+                        "coverage_only_pages=%u,occlusion_pages=%u,occlusion_retained_pages=%u,"
+                        "occlusion_allocated_bytes=%llu,enrich_deferred=%llu\n",
                         stats_label.c_str(),
                         frame_stats.vt_active ? 1 : 0,
                         frame_stats.vt_variants,
@@ -8150,7 +8457,14 @@ int main() {
                             (1024.0 * 1024.0),
                         static_cast<double>(
                             frame_stats.vt_indirection_capacity_bytes) /
-                            (1024.0 * 1024.0));
+                            (1024.0 * 1024.0),
+                        frame_stats.vt_material_pages,
+                        frame_stats.vt_shared_material_references,
+                        frame_stats.vt_coverage_only_pages,
+                        frame_stats.vt_occlusion_pages,
+                        frame_stats.vt_occlusion_retained_pages,
+                        static_cast<unsigned long long>(frame_stats.vt_occlusion_allocated_bytes),
+                        static_cast<unsigned long long>(frame_stats.vt_enrich_deferred_total));
             std::fflush(stderr);
             stats_label.clear();
         }
@@ -8472,6 +8786,10 @@ int main() {
                 MATTER_LOGW("profile", "profile: could not write trace to %s\n",
                              trace_path);
         }
+    }
+    if (vt_trace.enabled()) {
+        if (vt_trace.write()) std::printf("vt-trace: wrote capture\n");
+        else MATTER_LOGW("vt", "vt-trace: could not write capture\n");
     }
     // Flush a debounced User-scope autosave that the last frames did not reach.
     // World scope stays explicit-save (plus the automatic flush at every
