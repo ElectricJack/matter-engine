@@ -61,7 +61,10 @@ const FOREST_MATERIALS = {
 
 
 class StreamMountain extends World {
-  static params = { worldSeed: 20260722, terrainOnly: false };
+  // geometryRockStress swaps the three-rock detailed inspection site for the
+  // 1,283-rock stress benchmark (shared-lib/mountain_geometry_site.js). It is
+  // a benchmark profile only; the shipped scene keeps it off.
+  static params = { worldSeed: 20260722, terrainOnly: false, geometryRockStress: false };
   static world = { sectorSize: 64, yMin: -96, yMax: 704 };
 
   static camera = {
@@ -379,6 +382,7 @@ class StreamMountain extends World {
       __terrain: { material: "dirt" },
       __terrainOnly: StreamMountain.params.terrainOnly,
       __geometryRocks: {material:GEOMETRY_ROCK},
+      __geometryRockStress: StreamMountain.params.geometryRockStress,
       __vegetation: StreamMountain.params.terrainOnly ? undefined :
         { profile: MOUNTAIN_FOREST_PROFILE, materials: FOREST_MATERIALS },
       foothills: { rocks: 16 },

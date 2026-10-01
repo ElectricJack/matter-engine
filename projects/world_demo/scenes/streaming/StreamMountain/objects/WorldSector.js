@@ -45,6 +45,10 @@ const P_PLACE    = pslot('sector.place');
 const P_ROCKS    = pslot('sector.rocks');
 const VEGETATION_MIN_LOD = MOUNTAIN_FOREST_MIN_LOD;
 
+// The detailed-rock site is the three-rock inspection site unless the world
+// explicitly opts into the high-density stress benchmark.
+const geometrySite = table => ({stress: table.__geometryRockStress === true});
+
 // `biomesJson` is this world's biomes() table (the same string build() gets
 // as p.biomes) -- world-level, so every sector of a given world sees the same
 // string and therefore the same variant list, which is what the child-hash
@@ -53,10 +57,11 @@ function assetVariants(biomesJson) {
   let table = null;
   try { table = biomesJson ? JSON.parse(biomesJson) : null; } catch (e) {}
   if (table?.__terrainOnly) return table.__geometryRocks
-    ? mountainGeometryCatalog(table.__geometryRocks.material) : [];
+    ? mountainGeometryCatalog(table.__geometryRocks.material, geometrySite(table)) : [];
   const req = mountainRockCatalog();
   req.push(...mountainForestCatalog(table?.__vegetation?.materials));
-  if(table?.__geometryRocks)req.push(...mountainGeometryCatalog(table.__geometryRocks.material));
+  if(table?.__geometryRocks)
+    req.push(...mountainGeometryCatalog(table.__geometryRocks.material, geometrySite(table)));
   return req;
 }
 
@@ -156,7 +161,8 @@ class WorldSector extends Part {
     const seed = p.worldSeed >>> 0;
     // A unique half-open XYZ owner at every sector level. These assets use the
     // same streamer as the surrounding mountain, including eviction/re-entry.
-    if(table.__geometryRocks)for(const sample of mountainGeometrySamples(table.__geometryRocks.material)) {
+    if(table.__geometryRocks)for(const sample of mountainGeometrySamples(
+      table.__geometryRocks.material, geometrySite(table))) {
       if(sample.x<tileOx||sample.x>=tileOx+TILE||sample.z<tileOz||sample.z>=tileOz+TILE)continue;
       const y=this.heightAt(sample.x,sample.z);
       if(volumetric&&(y<tileOy||y>=tileOy+TILE))continue;
@@ -165,7 +171,7 @@ class WorldSector extends Part {
       this.popMatrix();
     }
 
-    if (table.__terrainOnly) return; // detailed rock stress site, without forest
+    if (table.__terrainOnly) return; // detailed rock site, without forest
 
     // One 64 m cell. A function rather than an inlined loop body so the
     // VEGETATION_MIN_LOD gate below stays a `return` -- it reads as "this

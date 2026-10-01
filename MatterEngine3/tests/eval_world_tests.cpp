@@ -760,6 +760,11 @@ class TapePlain extends World {
         // Report the world-load failure instead of dereferencing an empty
         // material vector and losing the diagnostic to an access violation.
         if (!mtn.ok) return check_summary();
+        // The shipped world places the three-rock detailed inspection site;
+        // the 1,283-rock stress grid is an explicit benchmark opt-in.
+        CHECK(mtn.biomes_json.find("\"__geometryRocks\":{\"material\":") != std::string::npos &&
+                  mtn.biomes_json.find("\"__geometryRockStress\":false") != std::string::npos,
+              "StreamMountain ships the restored detailed-rock density");
         CHECK(!mtn.surface_program.empty(), "StreamMountain records a tape");
         terrain_field::SurfaceProgram sp;
         std::string serr;
