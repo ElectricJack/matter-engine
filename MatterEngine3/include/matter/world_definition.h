@@ -577,6 +577,55 @@ inline bool operator!=(const WorldPropSpec& a, const WorldPropSpec& b) {
     return !(a == b);
 }
 
+// Authored GI lightmap bake request (docs/bake-gi.md), declared by the world
+// script's `giBake({...})` call. Every field is optional in the script and
+// defaults to the bake's own default here; the CLI's flags override these.
+// The world script chooses WHETHER a bake is meaningful for this world and
+// its default quality; the CLI (`matter bake gi`) is what actually runs it.
+struct GiBakeSettings {
+    std::uint32_t samples = 64;        // paths per texel
+    std::uint32_t bounces = 2;         // diffuse interreflections
+    float texel_density = 8.0f;        // lightmap texels per metre
+    std::uint32_t seed = 0x5EEDu;
+    bool denoise = true;
+    bool prelit = false;               // also emit albedo x lightmap textures
+    std::string out;                   // output directory, "" = the CLI decides
+};
+
+// One `World.exports` entry: a standing request to write this world's Parts out
+// in an interchange format. THE ENGINE NEVER ACTS ON THIS BY ITSELF — nothing
+// in a world load or a frame reads it. It is authoring metadata for the offline
+// exporter (`matter export obj <scene>`, MatterEngine3/src/export/export_cli.h),
+// which uses it as the DEFAULTS for a scene export so the settings a scene was
+// tuned with live next to the scene instead of in someone's shell history. Any
+// flag the caller passes still wins.
+//
+// The loader validates and rejects rather than clamping: an out-of-range
+// textureSize or an unknown textureFormat fails the world load with the
+// authored property path, because a silently substituted value would produce an
+// export nobody asked for and nobody could explain.
+struct WorldExportRequest {
+    // Interchange format. "obj" is the only value the exporter implements;
+    // the loader accepts no other, so a typo is caught at load time.
+    std::string format = "obj";
+    // Output directory, as authored. Relative paths are resolved against the
+    // PROJECT directory by the exporter, not against the process cwd.
+    std::string out_dir;
+    // Rung index into the part's LOD ladder, 0 = finest.
+    std::uint32_t lod = 0;
+    // Atlas edge in texels, 16..8192.
+    std::uint32_t texture_size = 2048;
+    // "png", "ktx2" (reserved, not implemented) or "none" (geometry only).
+    std::string texture_format = "png";
+    // Chart segmentation normal-cone half-angle in degrees, 0 < x < 90.
+    float chart_cone_deg = 45.0f;
+    // "smooth" (the glTF/three.js convention) or "flat". See
+    // MatterEngine3/src/export/texture_bake.h's NORMAL SPACE note.
+    std::string normal_space = "smooth";
+    // Root modules to export. Empty = every root of the world.
+    std::vector<std::string> modules;
+};
+
 // Everything one successful world load produced. Filled by
 // load_world_definition (world_definition_loader.cpp) and then treated as
 // immutable by its consumers; a reload or a live-edit rebake builds a fresh
@@ -597,6 +646,11 @@ struct WorldDefinition {
     std::optional<HydrologyWorldSettings> hydrology;
     std::optional<RiverNetworkDefinition> river_network;
     std::optional<TerrainCollisionDefinition> terrain_collision;
+    // Present when the script called giBake({...}); absent = the CLI defaults.
+    std::optional<GiBakeSettings> gi_bake;
+    // World.exports declaration order. Empty when the world declares none,
+    // which is every world that does not want an offline export.
+    std::vector<WorldExportRequest> exports;
 };
 
 // The inputs to one world load. EngineContext::open_world derives these from
