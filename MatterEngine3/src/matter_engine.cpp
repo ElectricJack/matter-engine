@@ -149,6 +149,7 @@
 #include "render/vertex_cache_order.h"
 #include "render/impostor_mips.h"
 #include "render/geometry_world_runtime.h"
+#include "geometry/geometry_options.h"
 #include "render/chart_static_surface.h"
 #include "render/vt_surface_topology.h"
 #include "render/vk_lighting_controls.h"
@@ -941,8 +942,7 @@ struct WorldSession::Impl {
     std::vector<viewer::VkSceneInstance> vk_ordinary_instances;
     viewer::GeometryWorldRuntime vk_geometry_pages;
     std::vector<viewer::VkSceneInstance> vk_geometry_instances;
-    bool vk_geometry_pages_enabled = std::getenv("MATTER_GEOMETRY_PAGES") &&
-        std::string(std::getenv("MATTER_GEOMETRY_PAGES")) == "1";
+    bool vk_geometry_pages_enabled = geometry::pages_requested();
     uint64_t vk_geometry_temporal_revision = UINT64_MAX;
     std::map<uint64_t,vt::VtWorldReceiverFrame> vk_world_receiver_frames;
     uint64_t vk_receiver_state_version=UINT64_MAX, vk_receiver_tape_hash=UINT64_MAX;
@@ -4747,7 +4747,8 @@ void WorldSession::Impl::publish_pipeline(
             engine->render_device && (engine->render_device->ray_tracing_available() ||
             (std::getenv("MATTER_GEOMETRY_RASTER_ONLY") &&
              std::string(std::getenv("MATTER_GEOMETRY_RASTER_ONLY")) == "1")));
-        if (const char* module = std::getenv("MATTER_GEOMETRY_MODULE")) {
+        if (const char* module = reset_out->new_store->geometry_pages_enabled()
+                ? std::getenv("MATTER_GEOMETRY_MODULE") : nullptr) {
             std::set<uint64_t> hashes;
             { std::lock_guard<std::mutex> lock(draw_override_mutex);
               for (const auto& entry : draw_catalog_staged) if (entry.second == module) hashes.insert(entry.first); }
@@ -9509,7 +9510,7 @@ void WorldSession::Impl::bake_and_stage_sector(
         std::shared_ptr<viewer::PartStore::StagedPart> prepared_load;
         std::string prepared_policy;
         const char* prepared_switch = std::getenv("MATTER_PREPARED_SECTOR_CACHE");
-        const bool prepared_enabled = store && sector_child_hashes.empty() &&
+        const bool prepared_enabled = store && store->geometry_pages_enabled() && sector_child_hashes.empty() &&
             std::getenv("MATTER_GEOMETRY_TERRAIN") && std::string(std::getenv("MATTER_GEOMETRY_TERRAIN"))=="1" &&
             (!prepared_switch || std::string(prepared_switch)!="0");
         const auto prepared_start = std::chrono::steady_clock::now();
@@ -13744,7 +13745,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     false);
         }
     }
-    if (impl_->vk_geometry_pages_enabled) {
+    if (impl_->vk_geometry_pages_enabled && impl_->store->geometry_pages_enabled()) {
         PROFILE_SCOPE("geometry.update");
         if (!impl_->vk_geometry_pages.update(*impl_->store, *impl_->vk_scene,
                 *impl_->engine->render_device, frame, cam, budget, *instance_view,

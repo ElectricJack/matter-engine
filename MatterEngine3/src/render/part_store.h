@@ -505,6 +505,8 @@ public:
     const std::string& cache_root() const { return cache_root_; }
     // Configure before staging begins. Opt-in while native acceptance expands.
     void set_geometry_pages_enabled(bool enabled);
+    bool geometry_pages_enabled() const { return geometry_pages_enabled_; }
+    asset_store::PageCacheStats geometry_root_stats() const { return geometry_roots_.stats(); }
     void set_geometry_page_filter(std::set<uint64_t> hashes) {
         geometry_filter_active_ = true; geometry_filter_ = std::move(hashes);
     }

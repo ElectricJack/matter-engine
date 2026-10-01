@@ -455,6 +455,7 @@ static void part_cache_checks(const std::filesystem::path& directory) {
         std::string cache_error;
         CHECK(store.save_prepared_sector(staged,"policy-a",cache_error),cache_error.c_str());
         viewer::PartStore fresh(path);
+        fresh.set_geometry_pages_enabled(true);
         auto restored=fresh.load_prepared_sector(hash,"policy-a",cache_error);
         CHECK(restored.ok,cache_error.c_str());
         if(restored.ok){

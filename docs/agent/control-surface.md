@@ -5,6 +5,48 @@ The complete external control surface of `MatterEditor/build/windows/editor.exe`
 
 ## a) How control works
 
+### Virtual geometry startup policy
+
+Ordinary editor startup and scene presets, including StreamMountain, use the
+static/source geometry path. Virtual geometry (VG) is a development opt-in:
+only the exact startup value `MATTER_GEOMETRY_PAGES=1` requests it. Unset,
+empty, `0`, and other values keep it disabled. `MATTER_GEOMETRY_TERRAIN=1`,
+module filters, budgets and profiling variables do not enable it themselves.
+The store also requires native RT support or an explicit
+`MATTER_GEOMETRY_RASTER_ONLY=1` opt-in.
+
+Disabled sessions start no VG paging worker lanes, commit no VG root or page
+payload banks, scan no VG admitted-instance/cut lists, and load no prepared
+paged terrain in the world-streaming path. Ordinary source-sector streaming,
+static mesh uploads, terrain materials, VT and RT/GI remain active according
+to their own settings. The common Vulkan descriptor layout retains small
+neutral geometry bindings; inactive headers do not republish on source
+instance-count changes. POM remains off by default independently of VG.
+
+For the explicit raster development demo, run
+`tools/launch-mountain-geometry.ps1` (optionally `-Build`) from native
+PowerShell. It sets the master/terrain/module switches and disables RT
+lighting, GI and POM for its inspection view. For matched production-shading
+measurements use `PAGED_TERRAIN=1 VARIANTS=pom_off
+tools/streammountain_attribution.sh C:/tmp/vg-opt-in`; without `PAGED_TERRAIN=1`
+that driver explicitly selects the source path even in a VG-configured shell.
+From WSL, forward any custom launch variables through `WSLENV` as shown below.
+
+VG coverage, material/detail parity and pacing remain development limitations;
+the [September 30 decision](../findings/hdgeo-performance-pass-2026-09-30.md)
+does not authorize default promotion. Retained historical stress-site timings
+do not establish performance for a changed rock population.
+
+Build the focused regression binaries with
+`./tools/build-windows-from-wsl.sh RelWithDebInfo geometry_default_off_checks`.
+Run CTest with `-j 1 -R
+'^(geometry_runtime_tests|geometry_runtime_gpu_tests|partstore_tests|geometry_hierarchy_tests|geometry_cut_tests|geometry_pages_gpu_tests)$'`
+against the RelWithDebInfo preset build directory. The runtime GPU test covers
+disabled forwarding, preparation-only mode, lazy first use and reset/reuse;
+the geometry-pages smoke checks real raster/RT cuts and source-draw header
+inactivity. These are correctness checks, not StreamMountain performance or
+visual-parity acceptance.
+
 `main()` in `MatterEditor/src/main.cpp` takes **no arguments** — there is no
 argv-based CLI. Every startup and runtime behavior is driven by:
 

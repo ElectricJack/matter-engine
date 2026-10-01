@@ -118,6 +118,18 @@ inline void run(matter::VulkanDevice& vulkan) {
             CHECK(ok, error.c_str()); return ok;
         };
         if (!frame()) return;
+        // Default source draws use only a neutral geometry descriptor. Changes
+        // to static instance counts must not upload inactive paging headers.
+        for (int recycle = 0; recycle < 4; ++recycle) if (!frame()) return;
+        const auto inactive_uploads = renderer.test_geometry_cut_uploads();
+        CHECK(renderer.update_instances({{100, viewer::mat4_identity(), 100},
+                                         {100, viewer::mat4_identity(), 101}}, error), error.c_str());
+        for (int recycle = 0; recycle < 4; ++recycle) if (!frame()) return;
+        CHECK(renderer.test_geometry_cut_uploads() == inactive_uploads,
+              "source instance growth does not publish inactive VG headers");
+        CHECK(renderer.take_geometry_page_requests().empty(), "source draws emit no geometry page requests");
+        CHECK(renderer.update_instances({{100, viewer::mat4_identity(), 100}}, error), error.c_str());
+        if (!frame()) return;
         viewer::VkRasterPixel reference_pixel;
         auto extent = renderer.test_opaque_extent();
         CHECK(renderer.readback_raster_pixel(extent.width/2, extent.height/2, reference_pixel, error), error.c_str());

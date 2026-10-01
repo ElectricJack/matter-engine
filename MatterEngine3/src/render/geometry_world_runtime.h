@@ -45,6 +45,8 @@ struct GeometryPagingProfile {
 // loading without blocking rendering or the world-streaming coordinator.
 class GeometryWorldRuntime {
 public:
+    // Inert until the first update with a paging-enabled PartStore. Disabled
+    // sessions allocate no page bank and start no paging worker lanes.
     GeometryWorldRuntime();
     ~GeometryWorldRuntime();
     // App/renderer owner lane only.

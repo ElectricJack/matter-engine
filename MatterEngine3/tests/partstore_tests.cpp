@@ -3,6 +3,7 @@
 #include "part_bundle.h"   // M4: the part body is the REP0 section
 #include "part_render_policy.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 
 #include "render/lod_distance.h"
 #include "render/part_store.h"
+#include "geometry/geometry_options.h"
 #include "render/prepared_sector_cache.h"
 #include "render/raster_cull.h"
 #include "part_asset_v2.h"
@@ -70,11 +72,18 @@ static void test_partstore_construction_commits_no_banks(const std::filesystem::
     std::printf("[test_partstore_construction_commits_no_banks]\n");
     const ScopedEnvironmentOverride unset("MATTER_PREPARED_SECTOR_CACHE", nullptr);
     viewer::PartStore store((root / "lazy").string());
+    CHECK(!store.geometry_pages_enabled(), "PartStore defaults to static geometry");
+    CHECK(store.geometry_root_stats().bank.backing_allocations == 0,
+          "PartStore construction allocates no geometry root bank");
     CHECK(!store.prepared_sector_cache_active(),
           "PartStore does not commit a 128 MiB prepared-sector bank at construction");
     store.set_geometry_pages_enabled(false);
+    CHECK(store.geometry_root_stats().bank.capacity == 0,
+          "disabled geometry reserves no root payload bytes");
     CHECK(!store.prepared_sector_cache_active(), "disabled geometry leaves prepared cache inactive");
     store.set_geometry_pages_enabled(true);
+    CHECK(store.geometry_root_stats().bank.capacity == 0,
+          "geometry opt-in defers root bank allocation until demand");
     CHECK(store.prepared_sector_cache_active(), "geometry opt-in activates the prepared cache");
 
     const ScopedEnvironmentOverride disabled("MATTER_PREPARED_SECTOR_CACHE", "0");
@@ -84,6 +93,16 @@ static void test_partstore_construction_commits_no_banks(const std::filesystem::
     const ScopedEnvironmentOverride enabled("MATTER_PREPARED_SECTOR_CACHE", "1");
     viewer::PartStore opted_in((root / "lazy-opt-in").string());
     CHECK(opted_in.prepared_sector_cache_active(), "environment opt-in activates the prepared cache");
+}
+
+static void test_geometry_startup_requires_exact_opt_in() {
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    const ScopedEnvironmentOverride profile("MATTER_GEOMETRY_PAGES_PROFILE", "1");
+    for (const char* value : std::array<const char*, 8>{nullptr, "0", "", "true", "01", "1 ", "2", "1"}) {
+        const ScopedEnvironmentOverride pages("MATTER_GEOMETRY_PAGES", value);
+        CHECK(geometry::pages_requested() == (value && std::strcmp(value, "1") == 0),
+              "only exact master opt-in enables geometry; terrain/profile cannot enable it");
+    }
 }
 
 static void test_prepared_sector_bank_failure_is_deferred() {
@@ -221,6 +240,19 @@ static void test_terrain_page_success_keeps_static_fallback() {
     const auto baked = host.bake_source(source, "{}", options);
     CHECK(baked.error.ok && baked.geometry, "paged terrain fixture bakes");
     if (!baked.geometry) return;
+    {
+        viewer::PartStore ordinary(options.parts_dir);
+        auto static_part = ordinary.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                                   0, true);
+        CHECK(static_part.ok && !static_part.lp.geometry_pages && !static_part.lp.geometry_source_vt,
+              "terrain option alone keeps ordinary static source geometry");
+        CHECK(!static_part.lp.lod_mesh_data.empty() &&
+              static_part.lp.lod_mesh_data.front().indices.size() == 128 * 3,
+              "default terrain retains its full source mesh");
+        CHECK(ordinary.geometry_root_stats().bank.capacity == 0 &&
+              !fs::exists(root / "geometry-pages") && !ordinary.prepared_sector_cache_active(),
+              "static terrain stages without paging banks, disk cache or prepared owner");
+    }
     viewer::PartStore store(options.parts_dir);
     store.set_geometry_pages_enabled(true);
     auto staged = store.stage_from_bake(baked.resolved_hash, *baked.geometry,
@@ -236,6 +268,21 @@ static void test_terrain_page_success_keeps_static_fallback() {
         CHECK(staged.lp.lod_charts.front().tri_order.size() ==
               staged.lp.lod_mesh_data.front().indices.size() / 3,
               "paged fallback chart order matches its triangles");
+    std::string prepared_error;
+    CHECK(store.save_prepared_sector(staged, "opt-in-test", prepared_error),
+          "paged terrain fixture saves a prepared archive");
+    {
+        viewer::PartStore disabled(options.parts_dir);
+        const auto rejected = disabled.load_prepared_sector(baked.resolved_hash, "opt-in-test", prepared_error);
+        CHECK(!rejected.ok && prepared_error.find("requires virtual geometry opt-in") != std::string::npos,
+              "disabled store refuses a warm prepared paged archive");
+        CHECK(disabled.geometry_root_stats().bank.capacity == 0 &&
+              disabled.geometry_root_stats().requests == 0,
+              "rejected prepared geometry performs no geometry root I/O or allocation");
+        auto static_part = disabled.stage_from_bake(baked.resolved_hash, *baked.geometry, 0, true);
+        CHECK(static_part.ok && !static_part.lp.geometry_pages,
+              "warm geometry cache cannot enable paging on the source path");
+    }
     CHECK(store.commit_staged(std::move(staged)), "paged terrain fixture commits");
     store.release(baked.resolved_hash);
     CHECK(store.blas().live_count() == 0,
@@ -1524,6 +1571,7 @@ static void test_authored_vt_density() {
 }
 
 int main() {
+    test_geometry_startup_requires_exact_opt_in();
     test_partstore_construction_commits_no_banks(std::filesystem::temp_directory_path());
     test_prepared_sector_bank_failure_is_deferred();
     test_prepared_sector_concurrent_first_use();

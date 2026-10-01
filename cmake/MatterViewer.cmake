@@ -118,6 +118,25 @@ matter_apply_project_defaults(matter_engine_viewer_objects)
 add_dependencies(matter_engine_viewer_objects matter_embedded_spirv)
 
 if(BUILD_TESTING)
+    add_executable(geometry_runtime_tests MatterEngine3/tests/geometry_runtime_tests.cpp)
+    matter_engine_include_directories(geometry_runtime_tests PRIVATE)
+    target_include_directories(geometry_runtime_tests BEFORE PRIVATE
+        "${CMAKE_BINARY_DIR}/MatterEngine3" "${matter_vulkan_include}"
+        "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include")
+    target_compile_definitions(geometry_runtime_tests PRIVATE
+        NOMINMAX MATTER_VULKAN_ONLY MATTER_HAVE_STREAMLINE=${matter_streamline_enabled}
+        "MATTER_VK_TEST_LAYER_PATH=\"${matter_vulkan_runtime}\"")
+    target_link_libraries(geometry_runtime_tests PRIVATE
+        matter_engine_viewer_objects gdi32 winmm user32 shell32 ws2_32 dbghelp)
+    matter_apply_project_defaults(geometry_runtime_tests)
+    matter_apply_test_assertion_policy(geometry_runtime_tests)
+    add_test(NAME geometry_runtime_tests COMMAND geometry_runtime_tests)
+    set_tests_properties(geometry_runtime_tests PROPERTIES LABELS cpu)
+    add_test(NAME geometry_runtime_gpu_tests COMMAND geometry_runtime_tests --gpu)
+    set_tests_properties(geometry_runtime_gpu_tests PROPERTIES LABELS vulkan
+        ENVIRONMENT "MATTER_GEOMETRY_CPU_MB=1;MATTER_GEOMETRY_ROOT_MB=1"
+        PASS_REGULAR_EXPRESSION "ALL PASS" FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*")
+
     # Manual native visual probe: use the real device/Streamline path and the
     # same bounded source fixtures as the sparse comparison tests.
     add_executable(sparse_forest_preview MatterEngine3/tests/sparse_forest_preview.cpp)
@@ -378,6 +397,16 @@ if(BUILD_TESTING)
         FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
+    add_test(NAME geometry_pages_gpu_tests COMMAND vulkan_smoke_tests)
+    set_tests_properties(geometry_pages_gpu_tests PROPERTIES
+        LABELS vulkan
+        ENVIRONMENT "MATTER_VK_SMOKE_MODE=geometry-pages"
+        PASS_REGULAR_EXPRESSION "ALL PASS"
+        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    add_custom_target(geometry_default_off_checks DEPENDS
+        matter_editor geometry_runtime_tests partstore_tests
+        geometry_hierarchy_tests geometry_cut_tests vulkan_smoke_tests)
 
     add_test(NAME vt_feedback_visibility_tests COMMAND vulkan_smoke_tests)
     set_tests_properties(vt_feedback_visibility_tests PROPERTIES

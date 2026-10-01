@@ -15843,7 +15843,10 @@ bool VkSceneRenderer::upload_scene_buffers(
     descriptors_changed |= replaced;
     const auto geometry_static_count = static_cast<uint32_t>(static_instance_count_);
     const auto geometry_dynamic_count = static_cast<uint32_t>(instance_staging_.size() - static_instance_count_);
-    if (geometry_cut_words_[4] != geometry_static_count || geometry_cut_words_[5] != geometry_dynamic_count) {
+    // The neutral descriptor header is shared layout infrastructure. Static
+    // scene growth must not publish VG cut versions while paging is inactive.
+    if (geometry_cut_words_[0] &&
+        (geometry_cut_words_[4] != geometry_static_count || geometry_cut_words_[5] != geometry_dynamic_count)) {
         geometry_cut_words_[4] = geometry_static_count;
         geometry_cut_words_[5] = geometry_dynamic_count;
         ++geometry_cut_generation_;

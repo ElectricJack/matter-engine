@@ -2184,6 +2184,7 @@ PartStore::StagedPart PartStore::load_prepared_sector(uint64_t hash,const std::s
         if(out.part_hash!=hash)throw std::runtime_error("prepared sector identity");
         const auto roots_start=std::chrono::steady_clock::now();
         if(!geometry_key.empty()){
+            if (!geometry_pages_enabled_) throw std::runtime_error("prepared geometry requires virtual geometry opt-in");
             const auto lookup_start=std::chrono::steady_clock::now();
             out.lp.geometry_pages=geometry_roots_.load(geometry_key,error);
             if(!out.lp.geometry_pages || out.lp.geometry_pages->manifest->hash!=manifest)throw std::runtime_error("prepared geometry dependency unavailable or changed");
@@ -2203,6 +2204,9 @@ PartStore::StagedPart PartStore::load_prepared_sector(uint64_t hash,const std::s
 }
 bool PartStore::save_prepared_sector(StagedPart& s,const std::string& policy,std::string& error) {
     const auto& p=s.lp;
+    if (p.geometry_pages && !geometry_pages_enabled_) {
+        error = "prepared geometry requires virtual geometry opt-in"; return false;
+    }
     if(!s.ok || !s.staging || !p.children.empty() || p.animation_asset || p.shared_surface || !p.rigid_lod_mesh_data.empty() ||
        !p.flat_refs.empty() || !p.impostors.empty() || !p.render_policy.child_overrides.empty() || p.render_policy.shared_surfaces ||
        (!p.lod_mesh_data.empty() && !p.geometry_pages)){error="unsupported prepared sector";return false;}

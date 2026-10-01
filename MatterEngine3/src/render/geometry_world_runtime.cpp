@@ -63,6 +63,7 @@ geometry::ResidencyConfig geometry_config() {
 }
 }
 struct GeometryWorldRuntime::Impl {
+    Impl();
     struct Asset {
         geometry::AssetLease lease;
         std::shared_ptr<const geometry::CachedAsset> source;
@@ -306,8 +307,8 @@ struct GeometryWorldRuntime::Impl {
         }
     }
 };
-GeometryWorldRuntime::GeometryWorldRuntime() : d_(new Impl) {
-    auto* state=d_.get();
+GeometryWorldRuntime::Impl::Impl() {
+    auto* state=this;
     state->scene_pipeline=std::make_unique<streaming::AsyncStagePipeline<Impl::SceneBuild>>(
         1,1,[](auto&){},[state](auto& work){
             const auto start=PagingClock::now();Impl::assemble_scene(work);
@@ -326,8 +327,10 @@ GeometryWorldRuntime::GeometryWorldRuntime() : d_(new Impl) {
         [state](auto& result){state->prepare_page(result);},
         [](auto& result,const char* error){result.page.reset();result.status=asset_store::PageStatus::IoError;result.error=error;});
 }
+GeometryWorldRuntime::GeometryWorldRuntime() = default;
 GeometryWorldRuntime::~GeometryWorldRuntime() = default;
 void GeometryWorldRuntime::reset(VkSceneRenderer& renderer) {
+    if (!d_) return;
     auto& d = *d_;
     for (const auto& item : d.assets) d.residency.detach(item.second.lease);
     d.invalidate_scene(); d.scene_sources.clear(); d.scene_draws.clear(); d.scene_bias.clear();
@@ -424,12 +427,18 @@ void GeometryWorldRuntime::Impl::prepare_page(ReadDone& result) {
 bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, matter::VulkanDevice& vulkan,
     const matter::VulkanFrame& frame, const matter::CameraDesc& camera, float detail_scale,
     const std::vector<VkSceneInstance>& admitted, std::vector<VkSceneInstance>& output, std::string& error) {
+    // A disabled store must retain ordinary source streaming without paging
+    // banks, worker lanes, instance scans or renderer publication.
+    if (!store.geometry_pages_enabled()) {
+        output = admitted; error.clear(); return true;
+    }
     // Preparation audit: cook/cache assets through PartStore, display source
     // receivers, and avoid registering every geometry page during the cook.
     const char* prepare_only = std::getenv("MATTER_GEOMETRY_PREPARE_ONLY");
     if (prepare_only && std::string(prepare_only) == "1") {
         output = admitted; error.clear(); return true;
     }
+    if (!d_) d_ = std::make_unique<Impl>();
     auto& d = *d_; ++d.epoch;
     bool detached = false;
     PROFILE_SCOPE_NAMED(adopt_scope, "geometry.adopt_hierarchies");
@@ -1014,12 +1023,16 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     output = std::move(selected); error.clear(); return true;
 }
 uint64_t GeometryWorldRuntime::source_part(uint64_t instance_id, uint64_t fallback) const {
+    if (!d_) return fallback;
     auto it = d_->source_by_instance.find(instance_id);
     return it == d_->source_by_instance.end() ? fallback : it->second;
 }
-uint64_t GeometryWorldRuntime::revision() const { return d_->revision; }
-geometry::ResidencyStats GeometryWorldRuntime::stats() const { return d_->residency.stats(); }
+uint64_t GeometryWorldRuntime::revision() const { return d_ ? d_->revision : 0; }
+geometry::ResidencyStats GeometryWorldRuntime::stats() const {
+    return d_ ? d_->residency.stats() : geometry::ResidencyStats{};
+}
 GeometryPagingProfile GeometryWorldRuntime::take_profile() {
+    if (!d_) return {};
     auto& d=*d_;auto result=d.profile;d.profile={};
     result.scene_pending=d.scene_pending;
     result.rejected_assets=static_cast<uint32_t>(d.rejected_admissions.size());
