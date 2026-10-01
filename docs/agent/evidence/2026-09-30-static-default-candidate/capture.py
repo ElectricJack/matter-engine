@@ -57,6 +57,10 @@ for warmup in (45, 300):
                 # Capture during wall-clock warmup, outside the timed sample.
                 if warmup_seen_at is None and 'warming for' in text:
                     warmup_seen_at = time.monotonic()
+                    # Reapply the shipped pose explicitly before both the
+                    # screenshot and timed sample; record the exact command.
+                    with (out / 'pom_off.commands.txt').open('a') as commands:
+                        commands.write('cam 380 90 1600 420 55 1420\n')
                 shot_delay = 20 if warmup == 45 else 180
                 if (not captured and warmup_seen_at is not None
                         and time.monotonic() - warmup_seen_at >= shot_delay):
