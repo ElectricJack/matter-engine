@@ -142,6 +142,10 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [VG integration provenance and rock population](findings/vg-integration-provenance-and-rock-population-2026-09-30.md)
+  pins the main/VG/clear-ridge heads, distinguishes the three-rock pilot from
+  the 1,283-rock stress site, and inventories the improvements and main-only
+  features to preserve during integration.
 - [High-density geometry performance decision](findings/hdgeo-performance-pass-2026-09-30.md)
   compares historical baseline and three current static/VG repeats at both
   warmups; recommends the static default and retains VG as opt-in development,
