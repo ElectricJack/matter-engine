@@ -34,8 +34,59 @@ transport failure, a missing production frame, or readiness blockers. The
 `provisional_no_live_visible_set_barrier` receipt label is obsolete: the native
 capture now supplies synchronized visible VG/VT/BLAS readiness.
 
-For scoring, create a frozen version 1 reference JSON with the exact `rig_sha256`
-from `candidate.json` and one entry per rig view:
+## Candidate masks are derived and audited at capture
+
+After a view's capture passes readiness, the adapter derives that view's
+candidate mask from the capture's own `MECAP001` identity plane — never from
+rendered color — and writes `<view>.mask.png` beside the image as a 0/255
+8-bit grayscale PNG at capture dimensions (1280×720 for the rock rig). A pixel
+is object coverage when it is not `UINT32_MAX` in both identity lanes, so
+background and sky stay at 0.
+
+`capture.json` records the verdict per view under
+`views.<name>.mask_audited`, with `path`, `sha256`, mask and channel
+dimensions, `object_pixels`, `coverage_fraction`, the bounding `bounds`, and one
+boolean per criterion:
+
+- `nonempty` — the mask has object pixels;
+- `inside_frame` — the recorded bounding box of those pixels lies inside the
+  frame;
+- `matches_channel_dimensions` — the mask raster grid is the channel bundle's
+  own grid, so no resampling happened between them;
+- `area_within_bounds` — coverage is at most `MAX_MASK_COVERAGE` (0.9); a
+  silhouette covering more of the frame than that is a coverage failure.
+
+`audited` is the conjunction, `failures` lists the criteria that failed. A
+failed audit fails the capture (the mask and its record are still written, so
+the evidence survives in `capture.json`) — the scorer refuses to compare a
+silhouette it cannot vouch for. If the internal raster extent differs from the
+display PNG because scaling is active, the mask is resampled onto the display
+grid, `resampled_to_image` is set, `matches_channel_dimensions` is false and
+the capture fails closed: capture at a scale where those grids agree before
+scoring.
+
+## Building a reference from a baseline run
+
+`reference-from-run` turns a completed baseline run into a version 1 reference
+without hand-writing JSON or authoring a mask. It takes the run's own
+`rig_sha256` and, per view, that view's captured image and its audited mask:
+
+```bash
+python3 tools/object_eval.py reference-from-run /mnt/d/tmp/rock-run-01 /mnt/d/tmp/rock-reference-v1.json
+```
+
+The four rig views of the rock fixture become the four reference entries. This
+is a self-reference: scoring that same run against it must return IoU 1.0 for
+every view, which is what makes it a usable baseline. Without `--output` the
+reference is written into the run directory. With `--output` elsewhere the
+pinned PNGs are copied beside the JSON, because the scorer resolves reference
+entries relative to the reference file. An incomplete run, an unaudited or
+changed mask, a changed image or a missing rig hash is refused, and an existing
+reference is never rewritten. References should still be calibrated
+same-specimen images, not different family specimens.
+
+For scoring, a reference may equally be authored by hand, with the exact
+`rig_sha256` from `candidate.json` and one entry per rig view:
 
 ```json
 {
@@ -47,23 +98,23 @@ from `candidate.json` and one entry per rig view:
       "image_sha256": "<SHA-256>",
       "reference_mask": "front-mask.png",
       "reference_mask_sha256": "<SHA-256>",
-      "candidate_mask": "front-mask.png"
+      "candidate_mask": "front.mask.png"
     }
   }
 }
 ```
 
-The same entry shape is required for every requested view. Masks are audited
-8-bit grayscale binary 0/255 PNGs at capture dimensions and must be nonempty.
-The numeric identity plane can propose a mask, but inspect its alignment with
-the PNG and reference before treating it as audited. Candidate masks
-live in the run directory; reference images/masks live beside the reference
-JSON. References should be calibrated same-specimen images, not different
-family specimens. Scoring never infers masks from rendered color and never
-returns a quality score for a failed capture. It reports per-view silhouette
-IoU, symmetric contour distance normalized by image diagonal, worst and mean
-IoU, and color difference over agreed foreground pixels
-as a diagnostic. It is a provisional scorer; no image-quality acceptance
+The same entry shape is required for every requested view, and every entry must
+be a plain PNG filename in its own directory. Masks are audited 8-bit grayscale
+binary 0/255 PNGs at capture dimensions and must be nonempty. `candidate_mask`
+must name this run's audited `<view>.mask.png`: the scorer verifies the receipt
+recorded that exact audit and hash, and never scores a hand-supplied or stale
+mask. Reference images and reference masks live beside the reference JSON;
+candidate masks live in the run directory. Scoring never infers masks from
+rendered color and never returns a quality score for a failed capture. It
+reports per-view silhouette IoU, symmetric contour distance normalized by image
+diagonal, worst and mean IoU, and color difference over agreed foreground
+pixels as a diagnostic. It is a provisional scorer; no image-quality acceptance
 threshold is encoded.
 
 ```bash
