@@ -1341,6 +1341,17 @@ build/test_asset_browser_ids.exe: tests/test_asset_browser_ids.cpp \
 run-test-asset-browser-ids: build/test_asset_browser_ids.exe
 	./build/test_asset_browser_ids.exe
 
+# Asset-root search order: asset_root.cpp is <filesystem> plus the
+# executable-path call, so this links with no engine archive and no ImGui.
+build/test_asset_root.exe: tests/test_asset_root.cpp src/asset_root.cpp src/asset_root.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_asset_root.cpp src/asset_root.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Isrc
+
+.PHONY: run-test-asset-root
+run-test-asset-root: build/test_asset_root.exe
+	./build/test_asset_root.exe
+
 # Animation panel model headless test: animation_panel_model.cpp holds the
 # ImGui-free presentation logic (animation_panel.cpp does the drawing), so this
 # links with no ImGui and no engine archive -- only the public debug headers.
@@ -1397,7 +1408,7 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 run-test-issue-reporter: build/test_issue_reporter.exe
 	./build/test_issue_reporter.exe
 
-.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders embedded-spirv build-engine-lib viewer-lib linux-viewer-lib vulkan-instancing-perf linux check-animation-production-sources
+.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders embedded-spirv build-engine-lib viewer-lib linux-viewer-lib vulkan-instancing-perf linux check-animation-production-sources run-test-asset-root
 
 # The editor's engine TU list moved into MatterEngine3's viewer-lib, so the
 # source half of this check moved with it: MatterEngine3's own

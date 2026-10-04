@@ -12,10 +12,10 @@ set(matter_editor_sources_unique ${matter_editor_sources})
 list(REMOVE_DUPLICATES matter_editor_sources_unique)
 list(LENGTH matter_editor_sources matter_editor_source_count)
 list(LENGTH matter_editor_sources_unique matter_editor_unique_source_count)
-if(NOT matter_editor_source_count EQUAL 47 OR
-        NOT matter_editor_unique_source_count EQUAL 47)
+if(NOT matter_editor_source_count EQUAL 48 OR
+        NOT matter_editor_unique_source_count EQUAL 48)
     message(FATAL_ERROR
-        "editor.sources must provide exactly 47 unique editor C++ sources; "
+        "editor.sources must provide exactly 48 unique editor C++ sources; "
         "count=${matter_editor_source_count}, unique=${matter_editor_unique_source_count}")
 endif()
 
@@ -239,6 +239,22 @@ if(BUILD_TESTING)
     matter_apply_test_assertion_policy(viewport_capture_tests)
     add_test(NAME viewport_capture_tests COMMAND viewport_capture_tests)
     set_tests_properties(viewport_capture_tests PROPERTIES LABELS "editor;cpu")
+
+    # Asset-root search order. asset_root.cpp is <filesystem> plus the
+    # executable-path call and nothing else, so this needs no engine archive --
+    # the order matters for automation (one shared build, cwd set to the
+    # author's checkout), which is exactly what a pure-fs test can pin.
+    add_executable(asset_root_tests
+        MatterEditor/tests/test_asset_root.cpp
+        MatterEditor/src/asset_root.cpp
+    )
+    target_include_directories(asset_root_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+    )
+    matter_apply_project_defaults(asset_root_tests)
+    matter_apply_test_assertion_policy(asset_root_tests)
+    add_test(NAME asset_root_tests COMMAND asset_root_tests)
+    set_tests_properties(asset_root_tests PROPERTIES LABELS "editor;cpu")
 
     add_test(NAME matter_agent_client_tests
         COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}

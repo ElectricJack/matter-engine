@@ -165,6 +165,7 @@
 //   passed persist=false and ImGui's IniFilename is cleared, so a headless
 //   capture can neither inherit nor overwrite an interactive session's files.
 #include "matter/engine_context.h"
+#include "asset_root.h"
 #include "perf_gpu_stats.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_session.h"
@@ -807,58 +808,16 @@ bool write_png(const std::string& path, const std::vector<uint8_t>& rgba,
                           static_cast<int>(width * 4)) != 0;
 }
 
-// Directory holding this executable, or empty if it cannot be determined.
-static std::filesystem::path executable_dir() {
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH];
-    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return {};
-    return std::filesystem::path(buf, buf + n).parent_path();
-#else
-    std::error_code ec;
-    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (ec) return {};
-    return p.parent_path();
-#endif
-}
-
 // Locate an asset directory by NAME rather than by a fixed number of "../".
 //
-// Three layouts have to work and they sit at different depths:
-//   dev, launched from MatterEditor/      -> ../projects
-//   dev, launched beside the binary       -> ../../../projects  (build/windows/)
-//   a packaged build (`make dist`)        -> ./projects         (next to the exe)
-//
-// Hard-coding "../" for one breaks the others -- which is exactly what happened
-// when the binary moved from MatterEditor/ into MatterEditor/build/windows/.
-// Search next to the executable first (so a package always wins), then upward
-// from the executable, then upward from the working directory.
-static std::string resolve_asset_root(const char* name) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
+// The search order -- exe-adjacent first (so `make dist` keeps winning), then
+// the working directory's checkout, then the exe dir's tree, then the bare
+// name -- lives in asset_root.cpp, along with the reasoning that put the
+// working directory ahead of the exe walk-up. examples_root(),
+// issues_root() and shared_lib_root() below are its three callers and share
+// that order verbatim; tests/test_asset_root.cpp pins it.
 
-    auto walk_up = [&](fs::path dir) -> std::string {
-        for (int depth = 0; depth < 8 && !dir.empty(); ++depth) {
-            const fs::path candidate = dir / name;
-            if (fs::is_directory(candidate, ec))
-                return candidate.string();
-            const fs::path parent = dir.parent_path();
-            if (parent == dir) break;   // reached the filesystem root
-            dir = parent;
-        }
-        return {};
-    };
-
-    if (const fs::path exe = executable_dir(); !exe.empty())
-        if (std::string hit = walk_up(exe); !hit.empty()) return hit;
-
-    if (fs::path cwd = fs::current_path(ec); !ec)
-        if (std::string hit = walk_up(cwd); !hit.empty()) return hit;
-
-    return name;   // preserve the old string so the failure message stays familiar
-}
-
-std::string examples_root() { return resolve_asset_root("projects"); }
+std::string examples_root() { return viewer::assets::resolve_asset_root("projects"); }
 
 // Repo-root issues/ directory, resolved the same way as the asset roots above.
 // issues/ has been gitignored since 0cbb5e92 (untracked, not committed), so
@@ -866,15 +825,17 @@ std::string examples_root() { return resolve_asset_root("projects"); }
 // developers who have generated reports into it; the MatterEditor/ fallback
 // covers a tree where it is absent.
 std::string issues_root() {
-    if (std::string hit = resolve_asset_root("issues"); hit != "issues")
+    if (std::string hit = viewer::assets::resolve_asset_root("issues"); hit != "issues")
         return hit;
-    if (std::string editor = resolve_asset_root("MatterEditor");
+    if (std::string editor = viewer::assets::resolve_asset_root("MatterEditor");
         editor != "MatterEditor")
         return (std::filesystem::path(editor).parent_path() / "issues").string();
     return "issues";
 }
 
-std::string shared_lib_root() { return resolve_asset_root("MatterEngine3/shared-lib"); }
+std::string shared_lib_root() {
+    return viewer::assets::resolve_asset_root("MatterEngine3/shared-lib");
+}
 
 // A timed performance run, configured entirely by MATTER_PERF_OUTPUT /
 // MATTER_PERF_WARMUP_SECONDS / MATTER_PERF_SAMPLE_SECONDS — all three or none

@@ -28,9 +28,9 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(REMOVE_DUPLICATES editor_sources_unique)
         list(LENGTH editor_sources editor_count)
         list(LENGTH editor_sources_unique editor_unique_count)
-        if(NOT editor_count EQUAL 47 OR NOT editor_unique_count EQUAL 47)
+        if(NOT editor_count EQUAL 48 OR NOT editor_unique_count EQUAL 48)
             message(FATAL_ERROR
-                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=47")
+                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=48")
         endif()
         assert_list_contains("${editor_sources}" MatterEditor/src/agent_protocol.cpp
             "editor agent protocol source is missing")
