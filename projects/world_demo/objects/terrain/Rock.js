@@ -89,6 +89,40 @@ class Rock extends Part {
       this.popMatrix();
     }
 
+    // Surface detail: small spalls chipped off the faceted body. Each is a
+    // bounded box (not a plane) seated a shallow depth below a probed surface
+    // point, so it scallops a patch instead of re-cutting a whole facet. Its
+    // own rng stream leaves every blob and facet draw above unchanged for a
+    // given seed.
+    const rd = rng(7000 + p.seed);
+    const chips = Math.min(12, Math.max(2, Math.round((4 + rd.int(4)) * Math.max(0.6, Math.sqrt(S)))));
+    for (let i = 0; i < chips; ++i) {
+      const az = rd.range(0, Math.PI * 2);
+      const el = rd.range(-0.05, 0.85);
+      const horiz = Math.sqrt(Math.max(0, 1 - el * el));
+      const dir = [Math.cos(az) * horiz, el, Math.sin(az) * horiz];
+
+      const hit = this.raycast(add(C, vscale(dir, 3 * S)), vscale(dir, -1));
+      if (!hit) continue;
+
+      const m = normalize(add(hit.normal,
+        [rd.range(-0.3, 0.3), rd.range(-0.3, 0.3), rd.range(-0.3, 0.3)]));
+      const hitDist = length(sub(hit.point, C));
+      const t = Math.min(S * rd.range(0.03, 0.07), 0.2 * hitDist);
+      const h = S * rd.range(0.10, 0.18); // chip half-width
+
+      const q = sub(hit.point, vscale(m, t));
+      const c = add(q, vscale(m, h));
+      const up = Math.abs(m[1]) > 0.95 ? [1, 0, 0] : [0, 1, 0];
+      this.pushMatrix();
+      this.translate(c[0], c[1], c[2]);
+      this.lookAt(sub(c, m), up);
+      this.rotateZ(rd.range(0, Math.PI * 2));
+      this.box([0, 0, 0], [h, h * rd.range(0.6, 1.0), h]);
+      this.difference();
+      this.popMatrix();
+    }
+
     this.endVoxels();
     this.endModifier([
       // retopo is off for now. It cost ~65 ms when it worked, but ~1.5 s on the
