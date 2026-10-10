@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "parent": {
+    "required_checks": {
+      "version": "matter-engine-ci-v1",
+      "names": [
+        "Native Windows build and tests",
+        "Linux foundation build and tests"
+      ],
+      "producer_id": null
+    },
+    "admission": "reviewed",
+    "authorized_task_ids": [],
+    "repair": {
+      "primary_seconds": 1800,
+      "primary_attempts": 3,
+      "debug_seconds": 3600,
+      "debug_attempts": 3,
+      "debug_intelligence_class": "standard-high",
+      "conflict_scope": "member",
+      "on_exhausted": "human",
+      "source_ci": false
+    },
+    "route": {
+      "playbook_id": null,
+      "scope": "project",
+      "scope_identifier": "matter-engine-cpp",
+      "activation_id": null,
+      "artifact": {
+        "playbook_id": null,
+        "artifact_sha256": null,
+        "schema_generation": null,
+        "contract_fingerprint": null,
+        "source_digest": null,
+        "compiler_build": null,
+        "compiled_at": null,
+        "version": null
+      }
+    },
+    "primary_intelligence_class": "standard-high",
+    "verifier_intelligence_class": "standard-high"
+  },
+  "root": {
+    "required_checks": {
+      "version": "matter-engine-ci-v1",
+      "names": [
+        "Native Windows build and tests",
+        "Linux foundation build and tests"
+      ],
+      "producer_id": null
+    },
+    "admission": "reviewed",
+    "authorized_task_ids": [],
+    "repair": {
+      "primary_seconds": 1800,
+      "primary_attempts": 3,
+      "debug_seconds": 3600,
+      "debug_attempts": 3,
+      "debug_intelligence_class": "standard-high",
+      "conflict_scope": "batch",
+      "on_exhausted": "human",
+      "source_ci": true
+    },
+    "route": {
+      "playbook_id": null,
+      "scope": "project",
+      "scope_identifier": "matter-engine-cpp",
+      "activation_id": null,
+      "artifact": {
+        "playbook_id": null,
+        "artifact_sha256": null,
+        "schema_generation": null,
+        "contract_fingerprint": null,
+        "source_digest": null,
+        "compiler_build": null,
+        "compiled_at": null,
+        "version": null
+      }
+    },
+    "primary_intelligence_class": "standard-high",
+    "verifier_intelligence_class": "standard-high"
+  },
+  "branchless_parent": "verifier",
+  "on_failed_child": "block",
+  "on_main_moved": "rebuild",
+  "cleanup": {
+    "max_attempts": 5,
+    "retry_base_seconds": 30.0,
+    "retry_max_seconds": 3600.0,
+    "successful_source_refs": "delete",
+    "failed_work_retention_seconds": 604800
+  },
+  "ci": {
+    "source": "hosted"
+  }
+}

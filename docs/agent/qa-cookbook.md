@@ -745,6 +745,9 @@ The repository administrator sets `AQ_INTEGRATION_ATTESTATION_APP_ID` and
 `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` to the identities/version generated
 from the bound AQ policy. Manifest identities and the policy's required checks
 must come from the supported `aq integration trust-manifest` operator path.
+The [promotion trust proposal](aq-promotion/README.md) records the full policy
+override draft, proposed check version, and unresolved operator inputs when the
+bound DevelopmentPolicy does not provide hosted CI trust.
 After the manifest and workflows reach `dev`, the local operator validates and
 activates the prepared flow:
 
