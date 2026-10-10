@@ -708,6 +708,67 @@ PNG at native size and record the visual verdict in
 `docs/findings/animated-water-section-continuity-acceptance-2026-08-29.md`.
 Task 10 remains blocked unless that finding says `handoffVisualGate: pass`.
 
+## 15. Promotion CI and attestation audit
+
+`.github/workflows/native-windows.yml` runs on AQ source/candidate/promotion
+branches and pull requests to `dev`, `staging`, or `main`. It also supports
+`workflow_call`. Its canonical checks are:
+
+| Check | Gate |
+| --- | --- |
+| `Native Windows build and tests` | MSVC build, CPU CTest, distribution and package validation through `tools/ci-windows.ps1` |
+| `Linux foundation build and tests` | Attestation verifier, MemoryLib sanitizer tests, MeshChartingLib tests, AssetStoreLib build/tests |
+
+Run the Linux gate from the repository root:
+
+```bash
+python3 -m unittest discover -s tools/tests -p test_aq_attestation.py -v
+make -C libs/MemoryLib -j2 test
+make -C libs/MeshChartingLib/tests -j2 run
+make -C libs/AssetStoreLib -j2 test
+```
+
+The Linux gate covers portable foundations; editor acceptance still uses MSVC.
+`.github/workflows/main-attestation.yml` audits delivery pushes to `dev`,
+`staging`, and `main`. It checks the trusted App's integration proof on `dev`,
+staging promotion proof on `staging`, and release promotion proof on `main`.
+Successful proof verification skips redundant CI. Missing configuration,
+missing/invalid proof, or a failed audit job invokes both checks through
+`unattested-ci`. The reusable checks then have full names
+`unattested-ci / Native Windows build and tests` and
+`unattested-ci / Linux foundation build and tests`; the committed trust
+manifest must list these in `check_sets.promotion-source-audit` for source
+admission. The daemon publishes the named attestations; this read-only workflow
+verifies them and cannot issue them.
+
+The repository administrator sets `AQ_INTEGRATION_ATTESTATION_APP_ID` and
+`AQ_INTEGRATION_REQUIRED_CHECK_VERSION` to the identities/version generated
+from the bound AQ policy. Manifest identities and the policy's required checks
+must come from the supported `aq integration trust-manifest` operator path.
+After the manifest and workflows reach `dev`, the local operator validates and
+activates the prepared flow:
+
+```bash
+aq promote validate --project matter-engine-cpp \
+  --file "$HOME/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json"
+aq project set matter-engine-cpp promotion-flow \
+  "$HOME/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json" \
+  --expected-integration-generation <current-generation>
+aq policy apply "$HOME/.agent-queue/policy-profiles/agent-queue-2026-10-11" \
+  --project matter-engine-cpp \
+  --only playbook:project:promotion-continuous \
+  --only playbook:project:promotion-request \
+  --set default_branch=dev --set branch_4=staging --set branch_5=main
+```
+
+Use the current generation from AQ's integration status, and activate the
+imported project playbooks with their reviewed artifact hashes through
+`aq playbook activate`. Flow activation creates a missing `staging` from
+`dev` with a create-only push. It preserves release `approval: operator`.
+Repository changes alone do not activate this flow. Report the first automatic
+promotion only after `aq promote status --project matter-engine-cpp --step
+staging` records delivery of the exact source SHA.
+
 ---
 
 ## Traps

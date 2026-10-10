@@ -1,0 +1,42 @@
+name: Main attestation
+# AQ publishes the trusted App check before delivering a tested SHA. This
+# read-only audit verifies that proof; unattested pushes run the required CI.
+# The workflow never publishes or impersonates the daemon's attestations.
+on:
+  push:
+    branches: [dev, staging, main]
+permissions:
+  contents: read
+  checks: read
+jobs:
+  attestation:
+    name: Main attestation
+    runs-on: ubuntu-latest
+    outputs:
+      attested: ${{ steps.verify.outputs.attested }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: tools/aq_attestation.py
+          sparse-checkout-cone-mode: false
+      - id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          SHA: ${{ github.sha }}
+          APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}
+          CHECK_VERSION: ${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}
+          ATTESTATION_NAME: ${{ github.ref_name == 'staging' && 'Agent Queue Promotion Attestation (staging)' || github.ref_name == 'main' && 'Agent Queue Promotion Attestation (release)' || 'Agent Queue Integration Attestation' }}
+          STEP: ${{ github.ref_name == 'staging' && 'staging' || github.ref_name == 'main' && 'release' || '' }}
+          TARGET_REF: ${{ github.ref }}
+        run: python3 tools/aq_attestation.py
+  unattested-ci:
+    needs: attestation
+    # A verifier/checkout failure also needs CI. Missing configuration never
+    # makes a delivery SHA look tested. Keep the caller id: AQ trusts these
+    # exact 'unattested-ci / <check name>' fallback check names.
+    if: ${{ always() && needs.attestation.outputs.attested != 'true' }}
+    uses: ./.github/workflows/native-windows.yml
