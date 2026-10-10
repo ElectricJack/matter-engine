@@ -5,13 +5,29 @@ Review draft for `fleet-ridge-94`, prepared following supervisor message
 escalation `c9c9fe72`. The authorization covers preparing CI trust inputs.
 The project remains in `development` mode; activation and delivery are pending.
 
+Supervisor scope extension `msg-77f1a0eef5634947904e6d836731eb76` also requires
+automatic task-to-epic-to-`dev` delivery through the git-first train and proof
+that a refactor lands without a hand merge. The
+[train migration proposal](train-migration.md) records the supported cutover
+commands, origin/admission checks, and completion evidence. Its complete
+[train-policy.proposal.json](train-policy.proposal.json) uses source-pinned
+shared system routes and passes AQ's published value schema. It is awaiting
+operator route review, installation/health checks and guarded project binding;
+source validation does not establish those approvals.
+
+The complete proposal also supplies valid inputs for the existing supported
+`trust-manifest --policy` generator, subject to supervisor/operator review.
+This can obtain authoritative identities before the minimal-input deployment.
+Neither proposal changes the installed project configuration.
+
 [hosted-check-policy.json](hosted-check-policy.json) contains the minimal CI
 inputs for the published `--hosted-check-policy` bootstrap path: the reviewed
 version, ordered platform checks, verified producer and source-audit aliases.
 Supervisor message `msg-40c17359a22347fdbbdd268963b75bb0` requested this input
 after agent-queue published `d8d4642b4c58a3eda1be2a078be5b4799320b636` / PR1343.
 Local `aq integration trust-manifest --help` still lacks the new option at
-preparation time. Generation awaits supported CLI/daemon deployment.
+preparation time. Generation through this minimal-input path awaits supported
+CLI/daemon deployment.
 
 [policy.draft.json](policy.draft.json) retains the earlier full
 `HierarchicalIntegrationPolicy` proposal with unresolved route references;

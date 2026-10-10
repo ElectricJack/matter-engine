@@ -748,6 +748,12 @@ supported `aq integration trust-manifest` operator path.
 The [promotion trust proposal](aq-promotion/README.md) records the reviewed
 minimal hosted-check input, retained full-policy draft, and unresolved operator
 inputs when the bound DevelopmentPolicy does not provide hosted CI trust.
+The [git-first train migration](aq-promotion/train-migration.md) adds a complete
+source-pinned policy proposal, guarded operator cutover and proof of automatic
+task-to-epic-to-`dev` delivery. Its valid full policy can also supply the existing
+`trust-manifest --policy` generator before minimal-input deployment. Activating
+the train still requires reviewed available routes, authoritative trust and
+passing CI; a project mode change alone does not prove a refactor landed.
 After the manifest and workflows reach `dev`, the local operator validates and
 activates the prepared flow:
 
