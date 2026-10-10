@@ -5,14 +5,24 @@ Review draft for `fleet-ridge-94`, prepared following supervisor message
 escalation `c9c9fe72`. The authorization covers preparing CI trust inputs.
 The project remains in `development` mode; activation and delivery are pending.
 
-[policy.draft.json](policy.draft.json) contains the full
-`HierarchicalIntegrationPolicy` structure required by the supported manifest
-generator's `--policy` override. [trust-manifest.draft.json](trust-manifest.draft.json)
-shows repository trust, promotion names, and the source-audit check set.
-Required unresolved fields contain JSON `null`, so the drafts deliberately fail
-the AQ policy/manifest schemas. Resolve and review those inputs before passing a
-completed policy to the generator or installing the generated manifest at
-`.github/agent-queue-integration.json`.
+[hosted-check-policy.json](hosted-check-policy.json) contains the minimal CI
+inputs for the published `--hosted-check-policy` bootstrap path: the reviewed
+version, ordered platform checks, verified producer and source-audit aliases.
+Supervisor message `msg-40c17359a22347fdbbdd268963b75bb0` requested this input
+after agent-queue published `d8d4642b4c58a3eda1be2a078be5b4799320b636` / PR1343.
+Local `aq integration trust-manifest --help` still lacks the new option at
+preparation time. Generation awaits supported CLI/daemon deployment.
+
+[policy.draft.json](policy.draft.json) retains the earlier full
+`HierarchicalIntegrationPolicy` proposal with unresolved route references;
+it is not required by the minimal bootstrap path.
+[trust-manifest.draft.json](trust-manifest.draft.json) shows repository trust,
+promotion names, and source-audit checks, with the attestation App unresolved.
+The two drafts deliberately fail their AQ schemas on required JSON `null`
+fields. The CI-only input cannot supply repository or attestation App identity
+or activate integration. Install a manifest at
+`.github/agent-queue-integration.json` only after authoritative generation and
+review of those identities.
 
 ## Verified repository inputs
 
@@ -76,19 +86,20 @@ own required checks; the observation does not establish Windows CI success or
 identify the AQ attestation App. The supervisor found no applicable project
 parent/root integration routes, so their required references remain null.
 
-## Inputs still required
+## Inputs and deployment still required
 
 | Unresolved input | Draft fields | Required authority |
 | --- | --- | --- |
 | Numeric AQ attestation App ID | Manifest `attestation_app_id` | Supported daemon/App identity and generator output; distinct from the CI producer |
-| Parent/root routing snapshots | Each `route.playbook_id` and required `artifact` fields | Supervisor-selected, reviewed playbook references; IDs and hashes must belong to the selected project or system routes |
+| Bootstrap deployment | CLI `--hosted-check-policy` and daemon implementation | Supported publication/deployment evidence; the published source alone does not provide a running capability |
 
 Policy producer IDs are decimal **strings**; manifest App IDs are positive JSON
 **integers**. No App identity is inferred from a fixture, a slug, another
 repository or the numeric repository ID. Worker access to `aq playbook list`
 was refused with `out_of_scope: list_playbooks`; the supervisor subsequently
-confirmed that project listing exposes no applicable routes. Each artifact's
-`playbook_id` must match its route's ID.
+confirmed that project listing exposes no applicable routes. The minimal
+hosted-check input does not require them. In the retained full-policy draft,
+each artifact's `playbook_id` must match its route's ID.
 `activation_id` and `compiled_at` are optional nulls; the required artifact
 fields remain unresolved.
 
@@ -99,6 +110,12 @@ This override is a review/generation input; the bound DevelopmentPolicy and
 integration mode remain in place. No playbook has been imported or activated.
 
 ## Draft validation
+
+The minimal CI input validates offline against `HostedCheckPolicy` from the
+exact published agent-queue commit above. The check also confirms that its
+ordered names, version, producer and source-audit aliases match the reviewed
+policy and manifest drafts. This offline check does not run the new CLI,
+deploy the daemon, obtain App identity or generate a production manifest.
 
 An offline check against AQ's current `HierarchicalIntegrationPolicy` and
 `IntegrationTrustManifest` models rejected exactly the 16 unresolved policy
@@ -111,28 +128,30 @@ identity, reviewed route authority or hosted Windows CI success.
 
 ## Operator handoff
 
-After resolving and reviewing the override, the supervisor/operator uses the
-read-only generator with `--policy` pointing to the completed file. It obtains
-repository and attestation App identities from the authenticated binding.
-For example, with a reviewed resolved policy in the current directory:
+After supported deployment, the supervisor/operator uses the read-only
+generator with the reviewed minimal hosted-check input. The bound
+DevelopmentPolicy remains in place. The generator obtains repository and
+attestation App identities from the authenticated binding; no hierarchical
+routes need to be synthesized. From the repository root:
 
 ```bash
 aq integration trust-manifest matter-engine-cpp \
   --repository-id matter-engine-cpp \
-  --policy policy.reviewed.json \
+  --hosted-check-policy docs/agent/aq-promotion/hosted-check-policy.json \
   --write agent-queue-integration.generated.json --json
 ```
 
-The current generator reads promotion names from the **bound** flow and named
-check sets from a valid **committed** manifest. At preparation time the flow is
-unbound and the repository has no manifest. Add this proposal's reviewed
-promotion-name list and source-audit check set to the initial generated copy
-before review, landing and flow validation. Otherwise
+The published bootstrap generator reads promotion names from the **bound**
+flow and accepts named check sets directly from the minimal input, preserving
+other valid committed sets. At preparation time the flow is unbound and the
+repository has no manifest. Add this proposal's reviewed promotion-name list
+to the initial generated copy before review, landing and flow validation; verify
+the source-audit set is retained from the minimal input. Otherwise
 `attestation_not_in_manifest` remains. Preserve the generator's verified
 identities and required-check version. Later runs preserve committed named sets
 and obtain promotion names from the activated flow.
 
-Return the authoritative generated output and reviewed route disposition
+Return the authoritative generated output and supported deployment evidence
 to the worker on `fleet-ridge-94:authoritative-manifest`. Repository
 administration must set the App and check-version Actions variables. Hosted
 Windows CI must pass before delivery is verified. Landing on `dev`, validating
