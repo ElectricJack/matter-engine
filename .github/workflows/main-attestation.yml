@@ -38,5 +38,5 @@ jobs:
     # A verifier/checkout failure also needs CI. Missing configuration never
     # makes a delivery SHA look tested. Keep the caller id: AQ trusts these
     # exact 'unattested-ci / <check name>' fallback check names.
-    if: ${{ always() && needs.attestation.outputs.attested != 'true' }}
+    if: ${{ always() && (needs.attestation.result != 'success' || needs.attestation.outputs.attested != 'true') }}
     uses: ./.github/workflows/native-windows.yml
