@@ -27,11 +27,13 @@ completed policy to the generator or installing the generated manifest at
 The repository ID does not identify either App. The operator must read the
 current generation before any later guarded change.
 
-## Proposed initial checks
+## Reviewed initial checks
 
-The proposed version is **`matter-engine-ci-v1`**, subject to review. Both policy
-boundaries and the manifest use the same ordered checks and version. Version
-approval does not assert that hosted CI has passed.
+The supervisor accepted **`matter-engine-ci-v1`**, the Windows/Linux check pair,
+and the source-audit aliases for this proposal in review message
+`msg-a219cd54256c41ea9463b0101a75df39`. Both policy boundaries and the manifest
+use the same ordered checks and version. This review does not make the draft an
+activatable policy or assert that both hosted checks have passed.
 
 | Required check | Workflow and coverage |
 | --- | --- |
@@ -56,20 +58,37 @@ The draft permits `Agent Queue Promotion Attestation (staging)` for continuous
 operator-approved `staging -> main`. The daemon App publishes the proofs; the
 workflow verifies them.
 
+## Verified CI producer evidence
+
+The supervisor's authenticated GitHub API read of check runs on exact commit
+`74e5631273a28d8f0922ad65fb2d9c2f90160cca` verified `app.id = 15368` for both
+required checks. Review message `msg-a219cd54256c41ea9463b0101a75df39` authorized
+recording that value as a decimal string in both policy boundaries and an
+integer in the manifest draft.
+
+| Check | Check-run ID | Observed status/conclusion |
+| --- | --- | --- |
+| `Linux foundation build and tests` | `114334226391` | Completed / success |
+| `Native Windows build and tests` | `114334226524` | Queued / no success yet |
+
+This is evidence for that exact SHA at review time. A later commit needs its
+own required checks; the observation does not establish Windows CI success or
+identify the AQ attestation App. The supervisor found no applicable project
+parent/root integration routes, so their required references remain null.
+
 ## Inputs still required
 
 | Unresolved input | Draft fields | Required authority |
 | --- | --- | --- |
-| Numeric CI producer App ID | Both policy `required_checks.producer_id` fields and manifest `ci_producer_app_id` | Supported verification of real repository check runs: exact names, SHA, `app.id`, check-run and suite IDs; the same producer on both boundaries |
 | Numeric AQ attestation App ID | Manifest `attestation_app_id` | Supported daemon/App identity and generator output; distinct from the CI producer |
 | Parent/root routing snapshots | Each `route.playbook_id` and required `artifact` fields | Supervisor-selected, reviewed playbook references; IDs and hashes must belong to the selected project or system routes |
-| Check-set version approval | Both boundaries and manifest `required_checks.version` | Review of proposed `matter-engine-ci-v1` and both workflow jobs |
 
 Policy producer IDs are decimal **strings**; manifest App IDs are positive JSON
 **integers**. No App identity is inferred from a fixture, a slug, another
 repository or the numeric repository ID. Worker access to `aq playbook list`
-was refused with `out_of_scope: list_playbooks`, leaving routing snapshots for
-supervisor review. Each artifact's `playbook_id` must match its route's ID.
+was refused with `out_of_scope: list_playbooks`; the supervisor subsequently
+confirmed that project listing exposes no applicable routes. Each artifact's
+`playbook_id` must match its route's ID.
 `activation_id` and `compiled_at` are optional nulls; the required artifact
 fields remain unresolved.
 
@@ -82,8 +101,9 @@ integration mode remain in place. No playbook has been imported or activated.
 ## Draft validation
 
 An offline check against AQ's current `HierarchicalIntegrationPolicy` and
-`IntegrationTrustManifest` models rejected exactly the 18 unresolved policy
-fields and two unresolved manifest App IDs, with no other field errors. It also
+`IntegrationTrustManifest` models rejected exactly the 16 unresolved policy
+route fields and one unresolved manifest attestation App ID, with no other
+field errors. It also
 confirmed that the workflow job names match the canonical pair, both boundaries
 match the manifest's ordered checks/version, and source-audit aliases match the
 reusable caller. This verifies draft consistency; it does not establish App
@@ -112,7 +132,7 @@ before review, landing and flow validation. Otherwise
 identities and required-check version. Later runs preserve committed named sets
 and obtain promotion names from the activated flow.
 
-Return the authoritative generated output and reviewed route/version disposition
+Return the authoritative generated output and reviewed route disposition
 to the worker on `fleet-ridge-94:authoritative-manifest`. Repository
 administration must set the App and check-version Actions variables. Hosted
 Windows CI must pass before delivery is verified. Landing on `dev`, validating

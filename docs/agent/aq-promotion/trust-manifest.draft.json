@@ -8,7 +8,7 @@
       "unattested-ci / Linux foundation build and tests"
     ]
   },
-  "ci_producer_app_id": null,
+  "ci_producer_app_id": 15368,
   "full_name": "ElectricJack/matter-engine",
   "promotion_attestation_names": [
     "Agent Queue Promotion Attestation (staging)",
