@@ -710,7 +710,7 @@ Task 10 remains blocked unless that finding says `handoffVisualGate: pass`.
 
 ## 15. Promotion CI and attestation audit
 
-`.github/workflows/native-windows.yml` runs on AQ source/candidate/promotion
+`.github/workflows/tests.yml` runs on AQ source/candidate/promotion
 branches and pull requests to `dev`, `staging`, or `main`. It also supports
 `workflow_call`. Its canonical checks are:
 
@@ -741,13 +741,18 @@ manifest must list these in `check_sets.promotion-source-audit` for source
 admission. The daemon publishes the named attestations; this read-only workflow
 verifies them and cannot issue them.
 
-The repository administrator sets `AQ_INTEGRATION_ATTESTATION_APP_ID` and
-`AQ_INTEGRATION_REQUIRED_CHECK_VERSION` to the resolved App identity and reviewed
-required-check version. Render the manifest from reviewed CI inputs through the
-supported `aq integration trust-manifest` operator path.
+The repository administrator sets `AQ_INTEGRATION_ATTESTATION_APP_ID` to
+`5075923` and `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` to `matter-engine-ci-v1`,
+matching the authoritative manifest. Supervisor message
+`msg-2cb6f0692e0a41af9181581475259d3b` supplied the supported generator output.
+The real Windows/Linux workflow was renamed from `native-windows.yml` to
+`tests.yml` because the deployed cutover preview reads that literal path.
+Its job names, runner, commands and triggers are unchanged, and the attestation
+fallback calls the renamed workflow. The local operator must rerun the preview
+against the exact delivered `dev` head; this rename does not prove readiness.
 The [promotion trust proposal](aq-promotion/README.md) records the reviewed
-minimal hosted-check input, retained full-policy draft, and unresolved operator
-inputs when the bound DevelopmentPolicy does not provide hosted CI trust.
+minimal hosted-check input, retained historical drafts, authoritative production
+manifest, and remaining operator gates.
 The [git-first train migration](aq-promotion/train-migration.md) adds a complete
 source-pinned policy proposal, guarded operator cutover and proof of automatic
 task-to-epic-to-`dev` delivery. Its valid full policy can also supply the existing

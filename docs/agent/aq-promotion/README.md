@@ -1,9 +1,32 @@
-# AQ promotion trust proposal
+# AQ promotion trust and operator handoff
 
 Review draft for `fleet-ridge-94`, prepared following supervisor message
 `msg-716bab7ae7d843469245316071786433` and reported human authorization on
 escalation `c9c9fe72`. The authorization covers preparing CI trust inputs.
 The project remains in `development` mode; activation and delivery are pending.
+
+Supervisor message `msg-2cb6f0692e0a41af9181581475259d3b` supplied authoritative
+identity from the supported `trust-manifest --policy` generator and authorized
+preparing [.github/agent-queue-integration.json](../../../.github/agent-queue-integration.json).
+Its base canonical SHA256 is
+`73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1`.
+The committed-form manifest preserves every generated field and adds only the
+reviewed promotion names and source-audit aliases. Its file SHA256 is
+`4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13`.
+The attestation App is **`5075923`**, distinct from CI producer **`15368`**.
+These identities come from this project's authenticated generation.
+
+The production manifest passes the published AQ trust schema and matches both
+policy boundaries and workflow check names. Its presence on this task branch
+does not establish delivery, hosted Windows success, review approval or
+operator activation. The earlier null-field drafts below remain historical.
+
+The real Windows/Linux workflow is now `tests.yml`, renamed from
+`native-windows.yml` with its reusable caller updated. The deployed cutover
+preview reads the literal `tests.yml` path and has no path override. The rename
+preserves the workflow name, jobs, required check names, runners, commands,
+permissions and triggers. After delivery, the operator must regenerate the
+preview and resolve its actual blockers; no preview success has been observed.
 
 Supervisor scope extension `msg-77f1a0eef5634947904e6d836731eb76` also requires
 automatic task-to-epic-to-`dev` delivery through the git-first train and proof
@@ -18,7 +41,8 @@ source validation does not establish those approvals.
 The complete proposal also supplies valid inputs for the existing supported
 `trust-manifest --policy` generator, subject to supervisor/operator review.
 This can obtain authoritative identities before the minimal-input deployment.
-Neither proposal changes the installed project configuration.
+Neither proposal changes the installed project configuration. Authoritative
+full-policy generation has now succeeded without minimal-input deployment.
 
 [hosted-check-policy.json](hosted-check-policy.json) contains the minimal CI
 inputs for the published `--hosted-check-policy` bootstrap path: the reviewed
@@ -26,19 +50,18 @@ version, ordered platform checks, verified producer and source-audit aliases.
 Supervisor message `msg-40c17359a22347fdbbdd268963b75bb0` requested this input
 after agent-queue published `d8d4642b4c58a3eda1be2a078be5b4799320b636` / PR1343.
 Local `aq integration trust-manifest --help` still lacks the new option at
-preparation time. Generation through this minimal-input path awaits supported
-CLI/daemon deployment.
+preparation time. Generation through this alternative minimal-input path awaits
+supported CLI/daemon deployment; it is no longer required to resolve this manifest.
 
 [policy.draft.json](policy.draft.json) retains the earlier full
 `HierarchicalIntegrationPolicy` proposal with unresolved route references;
 it is not required by the minimal bootstrap path.
 [trust-manifest.draft.json](trust-manifest.draft.json) shows repository trust,
 promotion names, and source-audit checks, with the attestation App unresolved.
-The two drafts deliberately fail their AQ schemas on required JSON `null`
+The two historical drafts deliberately fail their AQ schemas on required JSON `null`
 fields. The CI-only input cannot supply repository or attestation App identity
-or activate integration. Install a manifest at
-`.github/agent-queue-integration.json` only after authoritative generation and
-review of those identities.
+or activate integration. The production manifest uses the authoritative
+identities supplied above, rather than these unresolved draft fields.
 
 ## Verified repository inputs
 
@@ -63,8 +86,8 @@ activatable policy or assert that both hosted checks have passed.
 
 | Required check | Workflow and coverage |
 | --- | --- |
-| `Native Windows build and tests` | `native-windows.yml`, self-hosted MSVC build, CPU CTest, distribution/package validation through `tools/ci-windows.ps1` |
-| `Linux foundation build and tests` | `native-windows.yml`, verifier tests, MemoryLib sanitizer tests, MeshChartingLib and AssetStoreLib tests |
+| `Native Windows build and tests` | `tests.yml`, self-hosted MSVC build, CPU CTest, distribution/package validation through `tools/ci-windows.ps1` |
+| `Linux foundation build and tests` | `tests.yml`, verifier tests, MemoryLib sanitizer tests, MeshChartingLib and AssetStoreLib tests |
 
 `check_sets.promotion-source-audit` contains:
 
@@ -102,12 +125,14 @@ own required checks; the observation does not establish Windows CI success or
 identify the AQ attestation App. The supervisor found no applicable project
 parent/root integration routes, so their required references remain null.
 
-## Inputs and deployment still required
+## Remaining operator gates
 
-| Unresolved input | Draft fields | Required authority |
+| Pending gate | Prepared input | Required authority |
 | --- | --- | --- |
-| Numeric AQ attestation App ID | Manifest `attestation_app_id` | Supported daemon/App identity and generator output; distinct from the CI producer |
-| Bootstrap deployment | CLI `--hosted-check-policy` and daemon implementation | Supported publication/deployment evidence; the published source alone does not provide a running capability |
+| Exact-head hosted CI and delivery | Production manifest and real `tests.yml` workflow | Windows and Linux checks from producer `15368`, configured integration owner |
+| Cutover inventory and train readiness | Complete train policy and migration review | User review, fresh supported preview, ready shared routes, guarded project configuration |
+| App variables and branch protection | Attestation App `5075923`, version `matter-engine-ci-v1` | Repository administrator and supported App verification |
+| Promotion flow and routes | Reviewed staging/release names and source-audit aliases | Local flow activation and reviewed promotion playbook activation |
 
 Policy producer IDs are decimal **strings**; manifest App IDs are positive JSON
 **integers**. No App identity is inferred from a fixture, a slug, another
@@ -142,7 +167,7 @@ match the manifest's ordered checks/version, and source-audit aliases match the
 reusable caller. This verifies draft consistency; it does not establish App
 identity, reviewed route authority or hosted Windows CI success.
 
-## Operator handoff
+## Alternative minimal-input generation
 
 After supported deployment, the supervisor/operator uses the read-only
 generator with the reviewed minimal hosted-check input. The bound
@@ -167,8 +192,8 @@ the source-audit set is retained from the minimal input. Otherwise
 identities and required-check version. Later runs preserve committed named sets
 and obtain promotion names from the activated flow.
 
-Return the authoritative generated output and supported deployment evidence
-to the worker on `fleet-ridge-94:authoritative-manifest`. Repository
+Full-policy generation already supplied the authoritative identity. Return
+further operator evidence to the worker on `fleet-ridge-94:train-migration`. Repository
 administration must set the App and check-version Actions variables. Hosted
 Windows CI must pass before delivery is verified. Landing on `dev`, validating
 and activating the flow, importing and activating reviewed promotion playbooks,

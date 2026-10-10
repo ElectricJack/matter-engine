@@ -56,6 +56,49 @@ activation health or operator approval of this project's cutover. The
 supervisor previously found no applicable project routes. If different bundles
 are selected, revise and revalidate the policy before binding it.
 
+## Authoritative manifest and preview refusal
+
+Supervisor reply `msg-2cb6f0692e0a41af9181581475259d3b` records successful
+authenticated generation using this full policy, `--repository-id
+matter-engine-cpp --print --json`. The generated base canonical SHA256 is
+`73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1`.
+Its verified fields are schema `aq.integration-trust.v1`, canonical repository
+`matter-engine-cpp`, GitHub repository `1266132968`, full name
+`ElectricJack/matter-engine`, CI App `15368`, attestation App `5075923`,
+integration attestation name, and the ordered Windows/Linux `matter-engine-ci-v1`
+checks. Reconstructing those exact fields matches the supplied canonical hash.
+The production manifest adds only the already-reviewed promotion names and
+source-audit check set. Its file SHA256 is
+`4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13`.
+
+The same reply records a refused cutover preview at `dev`
+`81166c7bd29a8126026a5b9a2f0bec95c9d9f744`: `git show` could not read
+`.github/workflows/tests.yml`. The manifest was also absent there. Published
+AQ `src/integration/cutover.py`, `CutoverGit.observe`, reads the literal
+`tests.yml` path and extracts explicit `pull_request.branches`; its command
+contract has no workflow-path override. `promotion_workflow_triggers` in
+`promotion_steps.py` emits the same path. This is a repository-specific
+filename assumption, not evidence that Matter Engine lacks the platform jobs.
+
+The supported repository preparation renames the **real** Windows/Linux
+workflow from `native-windows.yml` to `tests.yml` and updates the attestation
+caller's `uses` path. The workflow bytes, name, jobs, check names, permissions,
+runners and triggers are preserved. Its explicit PR list already includes
+`dev`, `staging`, and `main`, and its `aq/**` push pattern covers candidate and
+promotion branches. No placeholder workflow is added. Retaining the former
+filename would instead require a separately reviewed and deployed AQ change
+to discover/configure the real check-producing workflow; no current flag
+provides that behavior.
+
+Delivery of the manifest and renamed workflow is required before the operator
+reruns `cutover-plan`. The rename addresses the observed file-read refusal;
+it does not supply the missing remote inventory, clear live-owner barriers,
+approve this review or prove train readiness. Record the fresh result and
+reconcile every actual blocker before the configuration steps below. The
+supervisor also reports that `app-setup` without an override still attempts
+to parse the bound `DevelopmentPolicy`; preserve the reviewed full-policy
+override and guarded disabled-mode binding procedure.
+
 ## Trust and route preparation
 
 1. The supervisor/operator reviews this proposal and selects a refactor canary
@@ -100,8 +143,11 @@ are selected, revise and revalidate the policy before binding it.
    `trust-manifest.draft.json` / `hosted-check-policy.json` to its output for
    review. Preserve all generated identities and the required-check version.
    Never copy the draft's unresolved App field into production.
+   The supervisor has completed this generation as recorded above; another run
+   is unnecessary unless the authenticated binding or reviewed inputs change.
 4. Commit and publish the authoritative manifest with this task's workflows,
-   verifier and license, then deliver them to `dev` through the configured
+   verifier and license, including the real workflow's rename to `tests.yml`,
+   then deliver them to `dev` through the configured
    owner. During bootstrap the supervisor owns the expressly authorized hand
    merges. A worker does not merge into `dev`. Verify the exact delivered SHA
    and Windows/Linux checks; a queued Windows job is still pending. The
