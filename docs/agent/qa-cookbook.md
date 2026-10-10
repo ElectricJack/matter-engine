@@ -759,6 +759,11 @@ task-to-epic-to-`dev` delivery. Its valid full policy can also supply the existi
 `trust-manifest --policy` generator before minimal-input deployment. Activating
 the train still requires reviewed available routes, authoritative trust and
 passing CI; a project mode change alone does not prove a refactor landed.
+The [Windows runner handoff](aq-promotion/train-migration.md#windows-ci-runner-blocker-and-operator-setup)
+records the observed empty runner inventory, exact pinned native toolchain,
+all required labels and supported repository-owner registration procedure.
+Runner provisioning/availability remains an operator blocker; queued Windows
+CI does not satisfy either delivery or promotion admission.
 After the manifest and workflows reach `dev`, the local operator validates and
 activates the prepared flow:
 

@@ -125,6 +125,14 @@ own required checks; the observation does not establish Windows CI success or
 identify the AQ attestation App. The supervisor found no applicable project
 parent/root integration routes, so their required references remain null.
 
+Supervisor message `msg-a9dd9f7c77be481891bf8327517b7311` subsequently verified
+exact source `a2186ec3f352426c0f79dcd2a24a6745b657ca96`: Linux check
+`114342288807` succeeded and Windows check `114342288627` remains queued,
+both from App `15368`. The authenticated repository runner inventory returned
+no runners. The [Windows runner handoff](train-migration.md#windows-ci-runner-blocker-and-operator-setup)
+records the concrete availability blocker, pinned tools, required labels and
+supported owner setup. It does not authorize this worker to provision a host.
+
 ## Remaining operator gates
 
 | Pending gate | Prepared input | Required authority |

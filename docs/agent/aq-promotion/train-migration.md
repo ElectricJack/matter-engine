@@ -158,6 +158,96 @@ override and guarded disabled-mode binding procedure.
    The integration owner performs any necessary exact-head refresh; the worker
    never edits an unheld task's branch.
 
+## Windows CI runner blocker and operator setup
+
+Supervisor message `msg-a9dd9f7c77be481891bf8327517b7311` independently verified
+the production manifest and unchanged workflow rename on exact source
+`a2186ec3f352426c0f79dcd2a24a6745b657ca96`. Both check runs have producer
+App `15368`:
+
+| Required check | Run ID | Observed state |
+| --- | --- | --- |
+| `Linux foundation build and tests` | `114342288807` | Completed / success |
+| `Native Windows build and tests` | `114342288627` | Queued / no conclusion |
+
+The authenticated repository `actions/runners` request succeeded and returned
+no runners. Windows runner availability is a concrete external blocker.
+`dev` remains `81166c7bd29a8126026a5b9a2f0bec95c9d9f744`; no landing or
+activation was performed. These are observations for that source SHA only.
+Later commits require their own check evidence. Do not repeat the cutover
+preview against unchanged `dev`, remove the Windows gate, relabel an unsuitable
+host or treat the queued run as success.
+
+The repository owner/operator selects an authorized existing Windows machine
+and sets up its runner. This worker supplies instructions; it does not provision
+another host or perform runner registration. The real job in
+`tests.yml` requires **all** labels `self-hosted`, `Windows`, `X64`, and
+`matter-engine-msvc`, runs native `powershell`, allows 90 minutes, and sets
+CMake build parallelism to four and CTest parallelism to two.
+
+The checked-in resolver and build graph require these installed inputs:
+
+| Input | Requirement in this source tree |
+| --- | --- |
+| Host and workspace | Windows x64, native PowerShell, Git for Windows on PATH, writable local Windows drive; UNC checkout roots are rejected |
+| Visual Studio | **Visual Studio 2022 Community**, locatable through `vswhere`, with `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`; other VS product IDs are rejected |
+| Compiler | MSVC v143 tools **`14.44.35207`**, including `Hostx64/x64/cl.exe` |
+| Windows SDK | **`10.0.26100.0`**, installed headers and UM/UCRT x64 libraries |
+| Build tools | Visual Studio-bundled CMake and Ninja at the resolver's paths; root CMake requires at least 3.25 |
+| Python | Native Windows **`3.13.14`**, discoverable by the actual runner account via `py.exe -3.13` or `python.exe`; CMake rejects other patch versions |
+| Vulkan SDK | **`1.4.357.0`** at `C:\VulkanSDK\1.4.357.0`, including headers, `vulkan-1.lib`, validation-layer manifest and `Bin\glslc.exe` |
+
+These pins come from `tools/windows/MatterWindowsToolchain.psm1`,
+`tools/build-windows.ps1`, `CMakeLists.txt` and `tools/ci-windows.ps1`.
+The wrapper enters `VsDevCmd.bat` itself. Install dependencies so that the
+chosen service account can discover/read them and write its workspace.
+
+Operator procedure:
+
+1. Before starting the listener, from a separate native checkout of the intended
+   source under the actual runner account, verify installed tools and paths:
+
+   ```powershell
+   & ./tools/build-windows.ps1 -Config RelWithDebInfo -PreflightOnly
+   ```
+
+   Preflight resolves the toolchain; it does not run the build or hosted CI.
+2. In `ElectricJack/matter-engine`, open **Settings → Actions → Runners →
+   New self-hosted runner**, select **Windows / x64**, and use GitHub's current
+   download, extraction and registration instructions on the selected host.
+   Use a runner directory such as `C:\actions-runner`, outside AQ worktree
+   slots. Obtain the short-lived registration token locally through this
+   owner/admin surface; do not put it in the repository or AQ messages.
+   GitHub's [runner setup instructions](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)
+   describe this supported path.
+3. Preserve the automatically assigned OS/architecture/default labels and add
+   `matter-engine-msvc` during registration with `--labels matter-engine-msvc`,
+   or through that runner's label editor. Confirm all four required labels on
+   the registered host, per [GitHub's label instructions](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels).
+4. For a persistent Windows runner, select service installation during
+   `config.cmd` in an administrator shell. Select the account that has the
+   pinned tools and local workspace access; verify its service in Windows
+   Services or with `Get-Service 'actions.runner.*'`. Alternatively run the
+   registered runner interactively with `run.cmd` under that account while
+   it remains available. Windows service setup is part of registration,
+   per [GitHub's service instructions](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/configure-the-application).
+5. Verify **online / idle** status and repository access, with outbound HTTPS
+   on port 443 to GitHub's documented runner, action-download and artifact
+   endpoints. A matching online runner can accept a queued job; registration
+   alone does not establish availability. See [GitHub's runner requirements](https://docs.github.com/en/actions/reference/runners/self-hosted-runners).
+6. The supervisor returns the authorized runner's name, labels, online state,
+   service-account preflight result, and completed latest-source Windows and
+   Linux check IDs/conclusions. If the queued run expires or fails, the
+   repository owner reruns that failed workflow through GitHub's supported
+   Actions UI after fixing availability. Delivery and a fresh cutover preview
+   follow passing exact-head checks and the existing review/authority gates.
+
+The actual workflow runs `./tools/ci-windows.ps1`, which builds, runs CTest,
+builds `matter_dist`, and validates the distribution. It uploads `artifacts/ci/`
+containing `native-windows.log`, `toolchain.json`, and `ctest.xml` under
+`native-windows-<github.sha>-<run_attempt>`. A local preflight or build does
+not substitute for the exact-head hosted check from App `15368`.
+
 ## Bind and activate the project
 
 The worker prepares and verifies repository artifacts. LOCAL or a live named
