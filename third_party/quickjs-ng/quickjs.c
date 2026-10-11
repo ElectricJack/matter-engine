@@ -21862,7 +21862,7 @@ static void skip_shebang(const uint8_t **pp, const uint8_t *buf_end)
 }
 
 static inline int get_prev_opcode(JSFunctionDef *fd) {
-    if (fd->last_opcode_pos < 0)
+    if (fd->last_opcode_pos < 0 || dbuf_error(&fd->byte_code))
         return OP_invalid;
     else
         return fd->byte_code.buf[fd->last_opcode_pos];
@@ -21923,7 +21923,11 @@ static void emit_op(JSParseState *s, uint8_t val)
 
 static void emit_atom(JSParseState *s, JSAtom name)
 {
-    emit_u32(s, JS_DupAtom(s->ctx, name));
+    DynBuf *bc = &s->cur_func->byte_code;
+    if (dbuf_realloc(bc, bc->size + 4))
+        return; /* not enough memory : don't duplicate the atom */
+    put_u32(bc->buf + bc->size, JS_DupAtom(s->ctx, name));
+    bc->size += 4;
 }
 
 static int update_label(JSFunctionDef *s, int label, int delta)
@@ -21937,29 +21941,33 @@ static int update_label(JSFunctionDef *s, int label, int delta)
     return ls->ref_count;
 }
 
-static int new_label_fd(JSFunctionDef *fd, int label)
+static int new_label_fd(JSFunctionDef *fd)
 {
+    int label;
     LabelSlot *ls;
 
-    if (label < 0) {
-        if (js_resize_array(fd->ctx, (void *)&fd->label_slots,
+    if (js_resize_array(fd->ctx, (void *)&fd->label_slots,
                             sizeof(fd->label_slots[0]),
                             &fd->label_size, fd->label_count + 1))
-            return -1;
-        label = fd->label_count++;
-        ls = &fd->label_slots[label];
-        ls->ref_count = 0;
-        ls->pos = -1;
-        ls->pos2 = -1;
-        ls->addr = -1;
-        ls->first_reloc = NULL;
-    }
+        return -1;
+    label = fd->label_count++;
+    ls = &fd->label_slots[label];
+    ls->ref_count = 0;
+    ls->pos = -1;
+    ls->pos2 = -1;
+    ls->addr = -1;
+    ls->first_reloc = NULL;
     return label;
 }
 
 static int new_label(JSParseState *s)
 {
-    return new_label_fd(s->cur_func, -1);
+    int label;
+    label = new_label_fd(s->cur_func);
+    if (unlikely(label < 0)) {
+        dbuf_set_error(&s->cur_func->byte_code);
+    }
+    return label;
 }
 
 /* don't update the last opcode and don't emit line number info */
@@ -21987,8 +21995,11 @@ static int emit_label(JSParseState *s, int label)
 static int emit_goto(JSParseState *s, int opcode, int label)
 {
     if (js_is_live_code(s)) {
-        if (label < 0)
+        if (label < 0) {
             label = new_label(s);
+            if (label < 0)
+                return -1;
+        }
         emit_op(s, opcode);
         emit_u32(s, label);
         s->cur_func->label_slots[label].ref_count++;
@@ -24123,6 +24134,8 @@ static __exception int get_lvalue(JSParseState *s, int *popcode, int *pscope,
         switch(opcode) {
         case OP_scope_get_var:
             label = new_label(s);
+            if (label < 0)
+                return -1;
             emit_op(s, OP_scope_make_ref);
             emit_atom(s, name);
             emit_u32(s, label);
@@ -24158,6 +24171,8 @@ static __exception int get_lvalue(JSParseState *s, int *popcode, int *pscope,
         switch(opcode) {
         case OP_scope_get_var:
             label = new_label(s);
+            if (label < 0)
+                return -1;
             emit_op(s, OP_scope_make_ref);
             emit_atom(s, name);
             emit_u32(s, label);
@@ -29966,6 +29981,8 @@ static void free_bytecode_atoms(JSRuntime *rt,
         case OP_FMT_atom_u16:
         case OP_FMT_atom_label_u8:
         case OP_FMT_atom_label_u16:
+            if ((pos + 1 + 4) > bc_len)
+                break; /* may happen if there is not enough memory when emiting bytecode */
             atom = get_u32(bc_buf + pos + 1);
             JS_FreeAtomRT(rt, atom);
             break;
@@ -30783,7 +30800,13 @@ static void var_object_test(JSContext *ctx, JSFunctionDef *s,
 {
     dbuf_putc(bc, get_with_scope_opcode(op));
     dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
-    *plabel_done = new_label_fd(s, *plabel_done);
+    if (*plabel_done < 0) {
+        *plabel_done = new_label_fd(s);
+        if (*plabel_done < 0) {
+            dbuf_set_error(bc);
+            return;
+        }
+    }
     dbuf_put_u32(bc, *plabel_done);
     dbuf_putc(bc, is_with);
     update_label(s, *plabel_done, 1);
@@ -31827,7 +31850,11 @@ static void instantiate_hoisted_definitions(JSContext *ctx, JSFunctionDef *s, Dy
        evaluating the module so that the exported functions are
        visible if there are cyclic module references */
     if (s->module) {
-        label_next = new_label_fd(s, -1);
+        label_next = new_label_fd(s);
+        if (label_next < 0) {
+            dbuf_set_error(bc);
+            return;
+        }
 
         /* if 'this' is true, initialize the global variables and return */
         dbuf_putc(bc, OP_push_this);
@@ -33776,6 +33803,13 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     int stack_size, scope, idx;
     int function_size, byte_code_offset, cpool_offset;
     int closure_var_offset, vardefs_offset;
+
+    /* Matter: a failed emission may leave a truncated instruction. Never
+       pass that buffer to variable/label resolution, even if parsing ended. */
+    if (dbuf_error(&fd->byte_code)) {
+        JS_ThrowOutOfMemory(ctx);
+        goto fail;
+    }
 
     /* recompute scope linkage */
     for (scope = 0; scope < fd->scope_count; scope++) {

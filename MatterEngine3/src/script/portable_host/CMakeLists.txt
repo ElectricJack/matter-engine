@@ -73,5 +73,18 @@ if(BUILD_TESTING)
   add_test(NAME matter_host_quickjs_controls COMMAND matter_host_quickjs_tests)
   add_test(NAME matter_host_quickjs_parity COMMAND "${MATTER_HOST_NODE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.mjs" "$<TARGET_FILE:matter_host_quickjs_tests>")
-  set_tests_properties(matter_host_quickjs_controls matter_host_quickjs_parity PROPERTIES TIMEOUT 60)
+  add_executable(matter_host_quickjs_parser_oom_tests tests/parser_oom_tests.c)
+  # The test includes vendor quickjs.c for private parser access. The static
+  # archive supplies only the support objects; its VM object is not extracted.
+  target_link_libraries(matter_host_quickjs_parser_oom_tests PRIVATE matter_quickjs)
+  if(MSVC)
+    target_compile_options(matter_host_quickjs_parser_oom_tests PRIVATE /utf-8 /w)
+    target_compile_definitions(matter_host_quickjs_parser_oom_tests PRIVATE WIN32_LEAN_AND_MEAN)
+  else()
+    target_compile_definitions(matter_host_quickjs_parser_oom_tests PRIVATE _GNU_SOURCE)
+  endif()
+  set_target_properties(matter_host_quickjs_parser_oom_tests PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED YES)
+  add_test(NAME matter_host_quickjs_parser_oom COMMAND matter_host_quickjs_parser_oom_tests)
+  set_tests_properties(matter_host_quickjs_controls matter_host_quickjs_parity
+    matter_host_quickjs_parser_oom PROPERTIES TIMEOUT 60)
 endif()
