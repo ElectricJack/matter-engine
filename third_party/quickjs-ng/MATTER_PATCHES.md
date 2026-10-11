@@ -69,12 +69,77 @@ suites. These tests do not claim exhaustive safety for arbitrary JavaScript or
 all VM allocation sites. Exploratory full-compilation sweeps also exposed a
 later `resolve_variables`/`resolve_labels` cleanup failure and an unchecked
 filename-atom allocation in `js_new_function_def`. Those separate issues are
-not fixed by this emitter backport; follow-up task `fleet-apex-25` tracks them.
+not fixed by the emitter backport itself; the local compiler fixes below address
+them.
 
-Run all three portable-host suites under GCC AddressSanitizer, including leak
+Run all portable-host suites under GCC AddressSanitizer, including leak
 detection, and native MSVC using the commands in the portable host README.
 
 Validated on 2026-10-11: all three suites passed with GCC AddressSanitizer
 (`detect_leaks=1:halt_on_error=1`) and native MSVC RelWithDebInfo. The parser
 regression exercises 53 allocation failures across its four fixtures on both
 toolchains, plus successful compilation/execution and runtime recovery.
+
+
+## Compiler passes and function initialization (fleet-apex-25)
+
+These are **local Matter fixes**, not additional hunks attributed to the upstream
+emitter backport. The audit compared the compiler paths with quickjs-ng commit
+`c359cac36372e71daade8602908d29bdc259b41e`: that snapshot still has unchecked
+filename acquisition and the unsafe later-pass cleanup addressed here.
+
+- `js_new_function_def` acquires the filename atom before linking the function
+  into its parent's child list. Failure frees the unlinked definition.
+- `cutils.c` makes a DynBuf error stop subsequent reservations and writes even
+  when the remaining capacity would suffice. Otherwise a failed operand write
+  could be followed by smaller writes that create malformed bytecode.
+- Variable resolution transfers each atom reference to output or frees it when
+  the output write fails. Duplicated atoms follow the same rule. Errors raised
+  on the input buffer remain visible after replacement. Closure, pseudo-variable
+  and eval-binding allocation failures now propagate to function-tree cleanup.
+- Label resolution reserves its output upper bound before transferring atoms
+  or patching jumps. On relocation failure, output owns the consumed prefix;
+  the original buffer owns the unconsumed suffix. Cleanup releases those two
+  disjoint sets and every outstanding relocation entry.
+- Optional compressed source-map allocation uses the non-throwing runtime
+  allocator and discards an incomplete map. Successful compilation must not
+  leave a pending OOM exception or an incomplete encoded debug record.
+- Class and switch bytecode patches reject failed emission before writing
+  placeholders. Class initializer/constructor and function constant-pool
+  allocation failures propagate; a failed pool insertion releases its value.
+  Parser scope-allocation failures stop parsing before any subsequent scope use.
+- Speculative parenthesis lookahead clears its discarded lexical exception
+  before rewinding. The real parse still reports persistent errors; a recovered
+  scan must not leave a pending exception on successful compilation.
+
+The portable host's vendor SHA-256 guard is updated; its generated backtrace
+retention patch remains unchanged.
+
+### Public compiler regression
+
+`tests/compiler_oom_tests.c` registers `matter_host_quickjs_compiler_oom` against
+the same QuickJS library used by the portable host. Injection starts only after
+`JS_NewRuntime2` and `JS_NewContext`. Each fault-free baseline determines the
+allocation count; subsequent fresh runtimes fail each growing realloc in turn,
+then each malloc/calloc/growing realloc in turn. Shrinks and setup allocations
+are excluded. The parser regression shares the allocator in `oom_allocator.h`.
+
+The eleven fixtures cover branches, object atoms, the original loop reproducer,
+nested functions, closures, dead code, with scopes, private class fields, direct
+eval/arguments, switch labels and finally blocks. A direct DynBuf test checks
+that failed writes stay stopped. Each compile failure must carry an exception.
+Optional debug or recovered lookahead failures may compile successfully only with no pending exception and
+bytecode identical to the baseline after stripping source/debug data; that code
+must execute to the expected result. Every run checks context reuse and zero
+live allocator blocks after teardown.
+
+This is a bounded compiler regression, not an exhaustive VM OOM audit. It does
+not inject runtime/context setup, arbitrary module loading or execution-time
+allocation failures.
+
+Validated on 2026-10-11: all four portable-host suites passed with GCC
+AddressSanitizer (`detect_leaks=1:halt_on_error=1`) and native MSVC
+RelWithDebInfo. On each toolchain the public compiler test exercises 407
+growing-realloc failures and 739 malloc/calloc/growing-realloc failures, with
+87 optional/recovered successes meeting the bytecode and exception checks.
+The separate parser regression still covers 53 injected failures.
