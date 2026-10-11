@@ -2,7 +2,7 @@
   "task_id": "sound-impact-80.2",
   "source_sha": "35289874a52630a6439353666ed26179dd334ab2",
   "source_tree": "0af92e1426511d01bec9e15c1851502f6c728115",
-  "checked_at_utc": "2026-10-11T02:30:06.558624+00:00",
+  "checked_at_utc": "2026-10-11T02:50:40.119237+00:00",
   "actor": {
     "github_api_login": "ElectricJack",
     "host": "DESKTOP-EB8UOME",
@@ -158,10 +158,10 @@
       "head_branch": "aq/fleet-ridge-94",
       "head_sha": "35289874a52630a6439353666ed26179dd334ab2",
       "workflow_name": "Native Windows",
-      "status": "in_progress",
-      "conclusion": null,
+      "status": "completed",
+      "conclusion": "failure",
       "started_at": "2026-10-11T02:11:49Z",
-      "completed_at": null,
+      "completed_at": "2026-10-11T02:42:16Z",
       "runner_id": 22,
       "runner_name": "DESKTOP-EB8UOME-matter-msvc",
       "labels": [
@@ -183,18 +183,23 @@
         },
         {
           "name": "Build, test and validate package",
-          "status": "in_progress",
-          "conclusion": null
+          "status": "completed",
+          "conclusion": "failure"
         },
         {
           "name": "Upload test evidence",
-          "status": "pending",
-          "conclusion": null
+          "status": "completed",
+          "conclusion": "success"
         },
         {
           "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-          "status": "pending",
-          "conclusion": null
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
         }
       ],
       "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38096419172/job/114343132642"
@@ -202,12 +207,13 @@
   ],
   "hosted_job_notes": {
     "114356556960": "aq/clear-crest-48.4.1 @25a66016 via native-windows.yml. Toolchain resolved and editor.exe built under the runner account; CTest 182/189 passed and 7 failed (obj_export_golden_tests, viewer_logic_tests, shader_source_tests, vt_feedback_visibility_tests, asset_root_tests, windows_build_wrapper_contract, editor_registration_census). These are source/test assertions (goldens, shader text, world-registration census, path lookup); windows_build_wrapper_contract fails on its WSL-from-runner leg (exit -1) and is not classified further here. Not a runner-readiness failure, and not this task's source.",
-    "114343132642": "aq/fleet-ridge-94 @35289874a via tests.yml (check run 114343132642, app 15368); the required 'Native Windows build and tests' check for the promotion source."
+    "114343132642": "aq/fleet-ridge-94 @35289874a via tests.yml (check run 114343132642, app 15368), the required 'Native Windows build and tests' check for the promotion source. Completed failure at 2026-10-11T02:42:16Z. Artifact 11689841790 native-windows-35289874a52630a6439353666ed26179dd334ab2-1: toolchain.json identical to the preflight; editor.exe built (MATTER_WINDOWS_ARTIFACT marker); CTest 182/189 passed, the same 7 suites failing as job 114356556960. Six are source/test assertions (obj_export_golden_tests golden counts, viewer_logic_tests, shader_source_tests cull.comp text assertion at shader_source_tests.cpp:88, vt_feedback_visibility_tests, asset_root_tests test_asset_root.cpp:125, editor_registration_census manifest mismatch) and are not root-caused here. windows_build_wrapper_contract failed because wsl.exe returned 'A connection attempt failed ... Error code: Wsl/Service/0x8007274c' (WSAETIMEDOUT): a runner-host WSL service timeout, not a toolchain defect."
   },
   "conclusion": {
     "runner_readiness": "pass",
     "statement": "Authorized existing runner identity, all four labels, online state and the exact toolchain preflight under the runner account are proven. Preflight is not hosted CI success; the hosted check status is recorded in hosted_jobs and must be evaluated separately.",
-    "residual_risk": "The listener is a logon-triggered scheduled task, so the runner goes offline when webde logs off or the machine sleeps; the workstation is also shared with interactive GPU/WSL work."
+    "hosted_ci": "failure: required check 'Native Windows build and tests' (job 114343132642) for 35289874a concluded failure on 7/189 CTest suites after a successful build. Hosted CI success is not established; the failures need source/test work (six suites) and a WSL-dependent contract test that timed out on the host.",
+    "residual_risk": "The listener is a logon-triggered scheduled task, so the runner goes offline when webde logs off or the machine sleeps. The workstation is shared with interactive GPU/WSL work; windows_build_wrapper_contract shells into WSL from the job and failed with Wsl/Service/0x8007274c (WSL interop on this host also timed out once during this task's probes)."
   },
   "checks": [
     {
@@ -223,7 +229,7 @@
     {
       "name": "runner_online_state",
       "result": "pass",
-      "detail": "status=online busy=True at 2026-10-11T02:30:06.558624+00:00. Busy because it is executing hosted job 114343132642 (fleet-ridge-94 @ 35289874a); an online busy runner is usable \u2014 jobs queue behind it."
+      "detail": "status=online busy=True at 2026-10-11T02:50:40.119237+00:00. busy means it is executing an assigned hosted job; an online busy runner is usable and further jobs queue behind it."
     },
     {
       "name": "repository_access",
@@ -295,6 +301,7 @@
     "runners_api": "gh api repos/ElectricJack/matter-engine/actions/runners",
     "jobs_api": "gh api repos/ElectricJack/matter-engine/actions/jobs/<job_id>",
     "artifact": "gh run download 38100939715 -R ElectricJack/matter-engine -n native-windows-25a6601606bb1ed2fc730b9a710b5bf975bc306a-1",
+    "artifact_promotion_source": "gh run download 38096419172 -R ElectricJack/matter-engine -n native-windows-35289874a52630a6439353666ed26179dd334ab2-1",
     "redactions": "No tokens, .credentials or .credentials_rsaparams were read. The .runner serverUrl tenant path is omitted."
   }
 }
