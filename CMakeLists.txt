@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
+cmake_policy(SET CMP0141 NEW)
 
 project(MatterEngine2 LANGUAGES C CXX)
 
@@ -143,4 +144,5 @@ include(cmake/MatterPackaging.cmake)
 
 if(BUILD_TESTING)
     add_subdirectory(cmake/tests/third_party_smoke)
+    include(cmake/MatterCiTests.cmake)
 endif()
