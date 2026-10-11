@@ -312,74 +312,74 @@
   "raw_local_evidence": "/tmp/sound-impact-80.3-evidence",
   "limitations": "Snapshot only. No merge, runner registration, cutover preview, route activation or repository administration performed. Local artifact downloads were inspected; URLs and file hashes permit re-verification. Local scratch paths are not durable hosted evidence.",
   "source_qualification": {
-    "observed_at_utc": "2026-10-11T14:49:25.501856+00:00",
-    "source_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+    "observed_at_utc": "2026-10-11T16:34:57.924836+00:00",
+    "source_sha": "49cafcdb3a9fada86929484cfb1acd1e73084635",
     "source_branch": "aq/fleet-ridge-94",
     "result": "pass",
     "run": {
-      "id": 38146618710,
-      "head_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+      "id": 38153782245,
+      "head_sha": "49cafcdb3a9fada86929484cfb1acd1e73084635",
       "head_branch": "aq/fleet-ridge-94",
       "status": "completed",
       "conclusion": "success",
       "run_attempt": 1,
       "path": ".github/workflows/tests.yml",
-      "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38146618710",
-      "updated_at": "2026-10-11T14:41:09Z"
+      "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38153782245",
+      "updated_at": "2026-10-11T16:28:05Z"
     },
     "checks": [
       {
-        "id": 114491219806,
-        "name": "Native Windows build and tests",
-        "head_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+        "id": 114512433676,
+        "name": "Linux foundation build and tests",
+        "head_sha": "49cafcdb3a9fada86929484cfb1acd1e73084635",
         "status": "completed",
         "conclusion": "success",
-        "started_at": "2026-10-11T14:18:07Z",
-        "completed_at": "2026-10-11T14:41:09Z",
-        "details_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38146618710/job/114491219806",
+        "started_at": "2026-10-11T16:02:23Z",
+        "completed_at": "2026-10-11T16:02:48Z",
+        "details_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38153782245/job/114512433676",
         "producer_app_id": 15368
       },
       {
-        "id": 114491219575,
-        "name": "Linux foundation build and tests",
-        "head_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+        "id": 114512433450,
+        "name": "Native Windows build and tests",
+        "head_sha": "49cafcdb3a9fada86929484cfb1acd1e73084635",
         "status": "completed",
         "conclusion": "success",
-        "started_at": "2026-10-11T14:18:08Z",
-        "completed_at": "2026-10-11T14:18:32Z",
-        "details_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38146618710/job/114491219575",
+        "started_at": "2026-10-11T16:05:03Z",
+        "completed_at": "2026-10-11T16:28:05Z",
+        "details_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38153782245/job/114512433450",
         "producer_app_id": 15368
       }
     ],
     "artifact": {
-      "id": 11705139887,
-      "node_id": "MDg6QXJ0aWZhY3QxMTcwNTEzOTg4Nw==",
-      "name": "native-windows-8f25e4b8297d8db04e992aa04f557ff10ba59183-1",
-      "size_in_bytes": 21065,
-      "url": "https://api.github.com/repos/ElectricJack/matter-engine/actions/artifacts/11705139887",
-      "archive_download_url": "https://api.github.com/repos/ElectricJack/matter-engine/actions/artifacts/11705139887/zip",
+      "id": 11708362470,
+      "node_id": "MDg6QXJ0aWZhY3QxMTcwODM2MjQ3MA==",
+      "name": "native-windows-49cafcdb3a9fada86929484cfb1acd1e73084635-1",
+      "size_in_bytes": 21095,
+      "url": "https://api.github.com/repos/ElectricJack/matter-engine/actions/artifacts/11708362470",
+      "archive_download_url": "https://api.github.com/repos/ElectricJack/matter-engine/actions/artifacts/11708362470/zip",
       "expired": false,
-      "digest": "sha256:bf323738e529e8cce537ed2550878827b1d59b72fac7b7d57079a9bf2375d551",
-      "created_at": "2026-10-11T14:41:04Z",
-      "updated_at": "2026-10-11T14:41:04Z",
-      "expires_at": "2027-01-09T14:18:05Z",
+      "digest": "sha256:2132397af2c15117214fcb0f13a25287e755a1c18e69c5ecb86c403a3e5eceb8",
+      "created_at": "2026-10-11T16:27:59Z",
+      "updated_at": "2026-10-11T16:27:59Z",
+      "expires_at": "2027-01-09T16:02:21Z",
       "workflow_run": {
-        "id": 38146618710,
+        "id": 38153782245,
         "repository_id": 1266132968,
         "head_repository_id": 1266132968,
         "head_branch": "aq/fleet-ridge-94",
-        "head_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183"
+        "head_sha": "49cafcdb3a9fada86929484cfb1acd1e73084635"
       }
     },
     "artifact_files": [
       {
         "name": "ctest.xml",
-        "sha256": "fcdeeb692a019d437deab6ee2bf9cf88168a3430d6500695abd608a4c8d3c862",
-        "bytes": 121462
+        "sha256": "8a006f471bda4a4d57830bef3f70aab5bcbc75d60600944d7db8748a04d83026",
+        "bytes": 121450
       },
       {
         "name": "native-windows.log",
-        "sha256": "5a60db0dcfd3fa6f66f64e4f6138088582b8b12bc516fb1ca8ac43bf608c8948",
+        "sha256": "61613a333ff6b454857598e4e45571894640f339e07cd0c5cb91d7ac12a7f4ef",
         "bytes": 1176
       },
       {
@@ -395,8 +395,8 @@
       "disabled": "0",
       "skipped": "0",
       "hostname": "DESKTOP-EB8UOME",
-      "time": "621",
-      "timestamp": "2026-10-11T07:29:56"
+      "time": "656",
+      "timestamp": "2026-10-11T09:16:38"
     },
     "toolchain": {
       "VisualStudioRoot": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
@@ -414,68 +414,7 @@
     "runner_account": "DESKTOP-EB8UOME\\webde",
     "jobs": [
       {
-        "id": 114491219575,
-        "name": "Linux foundation build and tests",
-        "status": "completed",
-        "conclusion": "success",
-        "runner_id": 1000028643,
-        "runner_name": "GitHub Actions 1000028643",
-        "labels": [
-          "ubuntu-latest"
-        ],
-        "steps": [
-          {
-            "name": "Set up job",
-            "status": "completed",
-            "conclusion": "success",
-            "number": 1,
-            "started_at": "2026-10-11T14:18:09Z",
-            "completed_at": "2026-10-11T14:18:09Z"
-          },
-          {
-            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-            "status": "completed",
-            "conclusion": "success",
-            "number": 2,
-            "started_at": "2026-10-11T14:18:09Z",
-            "completed_at": "2026-10-11T14:18:16Z"
-          },
-          {
-            "name": "Test the attestation verifier",
-            "status": "completed",
-            "conclusion": "success",
-            "number": 3,
-            "started_at": "2026-10-11T14:18:16Z",
-            "completed_at": "2026-10-11T14:18:16Z"
-          },
-          {
-            "name": "Build and test the portable foundations",
-            "status": "completed",
-            "conclusion": "success",
-            "number": 4,
-            "started_at": "2026-10-11T14:18:16Z",
-            "completed_at": "2026-10-11T14:18:30Z"
-          },
-          {
-            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-            "status": "completed",
-            "conclusion": "success",
-            "number": 8,
-            "started_at": "2026-10-11T14:18:30Z",
-            "completed_at": "2026-10-11T14:18:30Z"
-          },
-          {
-            "name": "Complete job",
-            "status": "completed",
-            "conclusion": "success",
-            "number": 9,
-            "started_at": "2026-10-11T14:18:30Z",
-            "completed_at": "2026-10-11T14:18:30Z"
-          }
-        ]
-      },
-      {
-        "id": 114491219806,
+        "id": 114512433450,
         "name": "Native Windows build and tests",
         "status": "completed",
         "conclusion": "success",
@@ -493,87 +432,114 @@
             "status": "completed",
             "conclusion": "success",
             "number": 1,
-            "started_at": "2026-10-11T14:18:09Z",
-            "completed_at": "2026-10-11T14:18:11Z"
+            "started_at": "2026-10-11T16:05:05Z",
+            "completed_at": "2026-10-11T16:05:07Z"
           },
           {
             "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
             "status": "completed",
             "conclusion": "success",
             "number": 2,
-            "started_at": "2026-10-11T14:18:11Z",
-            "completed_at": "2026-10-11T14:18:26Z"
+            "started_at": "2026-10-11T16:05:07Z",
+            "completed_at": "2026-10-11T16:05:18Z"
           },
           {
             "name": "Build, test and validate package",
             "status": "completed",
             "conclusion": "success",
             "number": 3,
-            "started_at": "2026-10-11T14:18:26Z",
-            "completed_at": "2026-10-11T14:41:02Z"
+            "started_at": "2026-10-11T16:05:18Z",
+            "completed_at": "2026-10-11T16:27:57Z"
           },
           {
             "name": "Upload test evidence",
             "status": "completed",
             "conclusion": "success",
             "number": 4,
-            "started_at": "2026-10-11T14:41:03Z",
-            "completed_at": "2026-10-11T14:41:04Z"
+            "started_at": "2026-10-11T16:27:57Z",
+            "completed_at": "2026-10-11T16:27:59Z"
           },
           {
             "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
             "status": "completed",
             "conclusion": "success",
             "number": 8,
-            "started_at": "2026-10-11T14:41:04Z",
-            "completed_at": "2026-10-11T14:41:07Z"
+            "started_at": "2026-10-11T16:27:59Z",
+            "completed_at": "2026-10-11T16:28:02Z"
           },
           {
             "name": "Complete job",
             "status": "completed",
             "conclusion": "success",
             "number": 9,
-            "started_at": "2026-10-11T14:41:07Z",
-            "completed_at": "2026-10-11T14:41:07Z"
+            "started_at": "2026-10-11T16:28:02Z",
+            "completed_at": "2026-10-11T16:28:02Z"
+          }
+        ]
+      },
+      {
+        "id": 114512433676,
+        "name": "Linux foundation build and tests",
+        "status": "completed",
+        "conclusion": "success",
+        "runner_id": 1000028779,
+        "runner_name": "GitHub Actions 1000028779",
+        "labels": [
+          "ubuntu-latest"
+        ],
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1,
+            "started_at": "2026-10-11T16:02:24Z",
+            "completed_at": "2026-10-11T16:02:24Z"
+          },
+          {
+            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2,
+            "started_at": "2026-10-11T16:02:24Z",
+            "completed_at": "2026-10-11T16:02:31Z"
+          },
+          {
+            "name": "Test the attestation verifier",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3,
+            "started_at": "2026-10-11T16:02:31Z",
+            "completed_at": "2026-10-11T16:02:31Z"
+          },
+          {
+            "name": "Build and test the portable foundations",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4,
+            "started_at": "2026-10-11T16:02:31Z",
+            "completed_at": "2026-10-11T16:02:46Z"
+          },
+          {
+            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8,
+            "started_at": "2026-10-11T16:02:46Z",
+            "completed_at": "2026-10-11T16:02:46Z"
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9,
+            "started_at": "2026-10-11T16:02:46Z",
+            "completed_at": "2026-10-11T16:02:46Z"
           }
         ]
       }
     ],
     "package_validation": "MSVC package: PASS (469 hashed files + manifest, 9 import(s), 0 runtime DLL(s), clean-PATH launch)",
-    "required_source_files": [
-      {
-        "path": ".github/agent-queue-integration.json",
-        "blob_sha": "68eee601b503f7fcd1fc418ecde7d6d131bf2b71"
-      },
-      {
-        "path": ".github/workflows/tests.yml",
-        "blob_sha": "f49807729e7b17f0e5370d4e5b7d59100b805de0"
-      },
-      {
-        "path": ".github/workflows/main-attestation.yml",
-        "blob_sha": "12b23908b1145eaf3f498ec5108214f724a6bf8d"
-      },
-      {
-        "path": "tools/aq_attestation.py",
-        "blob_sha": "be5ecfbde3c9ee8e596b96058b08a6b34af3beff"
-      },
-      {
-        "path": "docs/agent/aq-promotion/train-policy.proposal.json",
-        "blob_sha": "263265c2ba16db4e8b8513f1c7a1466893414111"
-      },
-      {
-        "path": "docs/agent/aq-promotion/hosted-check-policy.json",
-        "blob_sha": "8da757f3e0ab1b1ba9554ab7e57ce3e57ecfd4ff"
-      },
-      {
-        "path": "docs/agent/aq-promotion/train-migration.md",
-        "blob_sha": "c1faf1156a5f7b04acd2beefe54fcc057117fb0b"
-      },
-      {
-        "path": "tools/aq_attestation.LICENSE",
-        "blob_sha": "b8fd5625d61b6956493ca16a59e90cd204c1d8b3"
-      }
-    ],
     "ci_script_sha256": "ee5604d92dd55985278d002ee88a22a6c9e4857287e6867cb87ac9f73b353d4e",
     "ci_script_stages": [
       "build-windows.ps1 -Config RelWithDebInfo",
@@ -581,17 +547,353 @@
       "build-windows.ps1 -Config RelWithDebInfo -Target matter_dist",
       "check-windows-msvc-package.ps1 -DistPath MatterEditor/build/dist/world_demo"
     ],
-    "coordination_message": "msg-b9585d81350043ccab243b3a1c610b69",
-    "consumed_wait": "796a6bda-2314-450c-a2c1-912045c92ab7",
-    "note": "Source qualification only; does not establish delivery or exact delivered-head checks. Prior delivery/platform_checks/windows fields remain the timestamped ff3f3e5 dev snapshot; owner branch 404 there is superseded by this current source receipt.",
+    "coordination_message": "msg-c4efc71d0890452ba7ca521ae4ba5a6b",
+    "consumed_wait": "721b3b32-ab70-4463-9f22-83fb81ec7e25",
+    "note": "Latest source qualification only; actual development-path delivery and delivered-head checks remain pending. Prior dev snapshots are historical. Old bootstrap hand-merge request superseded; no cutover-plan authorized.",
     "commands": [
-      "gh api repos/ElectricJack/matter-engine/actions/runs/38146618710",
-      "gh api repos/ElectricJack/matter-engine/commits/8f25e4b8297d8db04e992aa04f557ff10ba59183/check-runs?filter=all&per_page=100",
-      "gh api repos/ElectricJack/matter-engine/actions/runs/38146618710/artifacts",
-      "gh api repos/ElectricJack/matter-engine/actions/runs/38146618710/jobs",
-      "gh api repos/ElectricJack/matter-engine/git/trees/8f25e4b8297d8db04e992aa04f557ff10ba59183?recursive=1",
-      "gh api repos/ElectricJack/matter-engine/contents/tools/ci-windows.ps1?ref=8f25e4b8297d8db04e992aa04f557ff10ba59183",
-      "gh run download 38146618710 -R ElectricJack/matter-engine -n native-windows-8f25e4b8297d8db04e992aa04f557ff10ba59183-1 -D /tmp/sound-impact-80.3-source/windows"
-    ]
-  }
+      "gh api repos/ElectricJack/matter-engine/actions/runs/38153782245",
+      "gh api repos/ElectricJack/matter-engine/commits/49cafcdb3a9fada86929484cfb1acd1e73084635/check-runs?filter=all&per_page=100",
+      "gh api repos/ElectricJack/matter-engine/actions/runs/38153782245/artifacts",
+      "gh api repos/ElectricJack/matter-engine/actions/runs/38153782245/jobs",
+      "gh api repos/ElectricJack/matter-engine/contents/tools/ci-windows.ps1?ref=49cafcdb3a9fada86929484cfb1acd1e73084635",
+      "gh run download 38153782245 -R ElectricJack/matter-engine -n native-windows-49cafcdb3a9fada86929484cfb1acd1e73084635-1 -D /tmp/sound-impact-80.3-49caf/windows",
+      "gh api repos/ElectricJack/matter-engine/contents/<inspected_source_files.path>?ref=49cafcdb3a9fada86929484cfb1acd1e73084635"
+    ],
+    "inspected_source_files": [
+      {
+        "path": ".github/agent-queue-integration.json",
+        "sha256": "4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13"
+      },
+      {
+        "path": ".github/workflows/tests.yml",
+        "sha256": "0152245bc69dfad488d1b2398f5179e74f2a3997a73d35bf28f10c8523b42833"
+      },
+      {
+        "path": ".github/workflows/main-attestation.yml",
+        "sha256": "14286d769c6b7a46dcc1dbca93f337ddac3301698ff14bce8741eadbc9c2cc69"
+      },
+      {
+        "path": "docs/agent/aq-promotion/git-first-policy.json",
+        "sha256": "e7d01545c033b00d573b74d920ec9781d2ac7e4cce95b3f6fd24aca736362cdf"
+      },
+      {
+        "path": "tools/ci-windows.ps1",
+        "sha256": "ee5604d92dd55985278d002ee88a22a6c9e4857287e6867cb87ac9f73b353d4e"
+      }
+    ],
+    "authorized_policy_sha256": "e7d01545c033b00d573b74d920ec9781d2ac7e4cce95b3f6fd24aca736362cdf",
+    "policy_note": "Current policy is git-first-policy.json; train-policy.proposal.json remains the historical plan artifact.",
+    "manifest": {
+      "attestation_app_id": 5075923,
+      "attestation_name": "Agent Queue Integration Attestation",
+      "canonical_repository_id": "matter-engine-cpp",
+      "check_sets": {
+        "promotion-source-audit": [
+          "unattested-ci / Native Windows build and tests",
+          "unattested-ci / Linux foundation build and tests"
+        ]
+      },
+      "ci_producer_app_id": 15368,
+      "full_name": "ElectricJack/matter-engine",
+      "promotion_attestation_names": [
+        "Agent Queue Promotion Attestation (staging)",
+        "Agent Queue Promotion Attestation (release)"
+      ],
+      "repository_id": 1266132968,
+      "required_checks": {
+        "names": [
+          "Native Windows build and tests",
+          "Linux foundation build and tests"
+        ],
+        "version": "matter-engine-ci-v1"
+      },
+      "schema": "aq.integration-trust.v1"
+    },
+    "caller_configured_output_present": true
+  },
+  "historical_source_qualifications": [
+    {
+      "observed_at_utc": "2026-10-11T14:49:25.501856+00:00",
+      "source_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+      "source_branch": "aq/fleet-ridge-94",
+      "result": "pass",
+      "run": {
+        "id": 38146618710,
+        "head_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+        "head_branch": "aq/fleet-ridge-94",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "path": ".github/workflows/tests.yml",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38146618710",
+        "updated_at": "2026-10-11T14:41:09Z"
+      },
+      "checks": [
+        {
+          "id": 114491219806,
+          "name": "Native Windows build and tests",
+          "head_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-10-11T14:18:07Z",
+          "completed_at": "2026-10-11T14:41:09Z",
+          "details_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38146618710/job/114491219806",
+          "producer_app_id": 15368
+        },
+        {
+          "id": 114491219575,
+          "name": "Linux foundation build and tests",
+          "head_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-10-11T14:18:08Z",
+          "completed_at": "2026-10-11T14:18:32Z",
+          "details_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38146618710/job/114491219575",
+          "producer_app_id": 15368
+        }
+      ],
+      "artifact": {
+        "id": 11705139887,
+        "node_id": "MDg6QXJ0aWZhY3QxMTcwNTEzOTg4Nw==",
+        "name": "native-windows-8f25e4b8297d8db04e992aa04f557ff10ba59183-1",
+        "size_in_bytes": 21065,
+        "url": "https://api.github.com/repos/ElectricJack/matter-engine/actions/artifacts/11705139887",
+        "archive_download_url": "https://api.github.com/repos/ElectricJack/matter-engine/actions/artifacts/11705139887/zip",
+        "expired": false,
+        "digest": "sha256:bf323738e529e8cce537ed2550878827b1d59b72fac7b7d57079a9bf2375d551",
+        "created_at": "2026-10-11T14:41:04Z",
+        "updated_at": "2026-10-11T14:41:04Z",
+        "expires_at": "2027-01-09T14:18:05Z",
+        "workflow_run": {
+          "id": 38146618710,
+          "repository_id": 1266132968,
+          "head_repository_id": 1266132968,
+          "head_branch": "aq/fleet-ridge-94",
+          "head_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183"
+        }
+      },
+      "artifact_files": [
+        {
+          "name": "ctest.xml",
+          "sha256": "fcdeeb692a019d437deab6ee2bf9cf88168a3430d6500695abd608a4c8d3c862",
+          "bytes": 121462
+        },
+        {
+          "name": "native-windows.log",
+          "sha256": "5a60db0dcfd3fa6f66f64e4f6138088582b8b12bc516fb1ca8ac43bf608c8948",
+          "bytes": 1176
+        },
+        {
+          "name": "toolchain.json",
+          "sha256": "3f8f8d5abe1ca3ca7f92c9bac146dac956fcd89e7b5b3e6ef042bda4ba3745d3",
+          "bytes": 896
+        }
+      ],
+      "ctest": {
+        "name": "Win32-ninja",
+        "tests": "189",
+        "failures": "0",
+        "disabled": "0",
+        "skipped": "0",
+        "hostname": "DESKTOP-EB8UOME",
+        "time": "621",
+        "timestamp": "2026-10-11T07:29:56"
+      },
+      "toolchain": {
+        "VisualStudioRoot": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+        "VisualStudioProductId": "Microsoft.VisualStudio.Product.Community",
+        "VsDevCmd": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+        "MsvcToolsVersion": "14.44.35207",
+        "WindowsSdkVersion": "10.0.26100.0",
+        "CMake": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+        "Ninja": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe",
+        "Python": "C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+        "PythonVersion": "Python 3.13.14",
+        "VulkanSdk": "C:\\VulkanSDK\\1.4.357.0",
+        "Glslc": "C:\\VulkanSDK\\1.4.357.0\\Bin\\glslc.exe"
+      },
+      "runner_account": "DESKTOP-EB8UOME\\webde",
+      "jobs": [
+        {
+          "id": 114491219575,
+          "name": "Linux foundation build and tests",
+          "status": "completed",
+          "conclusion": "success",
+          "runner_id": 1000028643,
+          "runner_name": "GitHub Actions 1000028643",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "steps": [
+            {
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 1,
+              "started_at": "2026-10-11T14:18:09Z",
+              "completed_at": "2026-10-11T14:18:09Z"
+            },
+            {
+              "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 2,
+              "started_at": "2026-10-11T14:18:09Z",
+              "completed_at": "2026-10-11T14:18:16Z"
+            },
+            {
+              "name": "Test the attestation verifier",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 3,
+              "started_at": "2026-10-11T14:18:16Z",
+              "completed_at": "2026-10-11T14:18:16Z"
+            },
+            {
+              "name": "Build and test the portable foundations",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 4,
+              "started_at": "2026-10-11T14:18:16Z",
+              "completed_at": "2026-10-11T14:18:30Z"
+            },
+            {
+              "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 8,
+              "started_at": "2026-10-11T14:18:30Z",
+              "completed_at": "2026-10-11T14:18:30Z"
+            },
+            {
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 9,
+              "started_at": "2026-10-11T14:18:30Z",
+              "completed_at": "2026-10-11T14:18:30Z"
+            }
+          ]
+        },
+        {
+          "id": 114491219806,
+          "name": "Native Windows build and tests",
+          "status": "completed",
+          "conclusion": "success",
+          "runner_id": 22,
+          "runner_name": "DESKTOP-EB8UOME-matter-msvc",
+          "labels": [
+            "self-hosted",
+            "Windows",
+            "X64",
+            "matter-engine-msvc"
+          ],
+          "steps": [
+            {
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 1,
+              "started_at": "2026-10-11T14:18:09Z",
+              "completed_at": "2026-10-11T14:18:11Z"
+            },
+            {
+              "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 2,
+              "started_at": "2026-10-11T14:18:11Z",
+              "completed_at": "2026-10-11T14:18:26Z"
+            },
+            {
+              "name": "Build, test and validate package",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 3,
+              "started_at": "2026-10-11T14:18:26Z",
+              "completed_at": "2026-10-11T14:41:02Z"
+            },
+            {
+              "name": "Upload test evidence",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 4,
+              "started_at": "2026-10-11T14:41:03Z",
+              "completed_at": "2026-10-11T14:41:04Z"
+            },
+            {
+              "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 8,
+              "started_at": "2026-10-11T14:41:04Z",
+              "completed_at": "2026-10-11T14:41:07Z"
+            },
+            {
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 9,
+              "started_at": "2026-10-11T14:41:07Z",
+              "completed_at": "2026-10-11T14:41:07Z"
+            }
+          ]
+        }
+      ],
+      "package_validation": "MSVC package: PASS (469 hashed files + manifest, 9 import(s), 0 runtime DLL(s), clean-PATH launch)",
+      "required_source_files": [
+        {
+          "path": ".github/agent-queue-integration.json",
+          "blob_sha": "68eee601b503f7fcd1fc418ecde7d6d131bf2b71"
+        },
+        {
+          "path": ".github/workflows/tests.yml",
+          "blob_sha": "f49807729e7b17f0e5370d4e5b7d59100b805de0"
+        },
+        {
+          "path": ".github/workflows/main-attestation.yml",
+          "blob_sha": "12b23908b1145eaf3f498ec5108214f724a6bf8d"
+        },
+        {
+          "path": "tools/aq_attestation.py",
+          "blob_sha": "be5ecfbde3c9ee8e596b96058b08a6b34af3beff"
+        },
+        {
+          "path": "docs/agent/aq-promotion/train-policy.proposal.json",
+          "blob_sha": "263265c2ba16db4e8b8513f1c7a1466893414111"
+        },
+        {
+          "path": "docs/agent/aq-promotion/hosted-check-policy.json",
+          "blob_sha": "8da757f3e0ab1b1ba9554ab7e57ce3e57ecfd4ff"
+        },
+        {
+          "path": "docs/agent/aq-promotion/train-migration.md",
+          "blob_sha": "c1faf1156a5f7b04acd2beefe54fcc057117fb0b"
+        },
+        {
+          "path": "tools/aq_attestation.LICENSE",
+          "blob_sha": "b8fd5625d61b6956493ca16a59e90cd204c1d8b3"
+        }
+      ],
+      "ci_script_sha256": "ee5604d92dd55985278d002ee88a22a6c9e4857287e6867cb87ac9f73b353d4e",
+      "ci_script_stages": [
+        "build-windows.ps1 -Config RelWithDebInfo",
+        "ctest --preset windows-msvc-relwithdebinfo --no-tests=error --output-junit artifacts/ci/ctest.xml",
+        "build-windows.ps1 -Config RelWithDebInfo -Target matter_dist",
+        "check-windows-msvc-package.ps1 -DistPath MatterEditor/build/dist/world_demo"
+      ],
+      "coordination_message": "msg-b9585d81350043ccab243b3a1c610b69",
+      "consumed_wait": "796a6bda-2314-450c-a2c1-912045c92ab7",
+      "note": "Source qualification only; does not establish delivery or exact delivered-head checks. Prior delivery/platform_checks/windows fields remain the timestamped ff3f3e5 dev snapshot; owner branch 404 there is superseded by this current source receipt.",
+      "commands": [
+        "gh api repos/ElectricJack/matter-engine/actions/runs/38146618710",
+        "gh api repos/ElectricJack/matter-engine/commits/8f25e4b8297d8db04e992aa04f557ff10ba59183/check-runs?filter=all&per_page=100",
+        "gh api repos/ElectricJack/matter-engine/actions/runs/38146618710/artifacts",
+        "gh api repos/ElectricJack/matter-engine/actions/runs/38146618710/jobs",
+        "gh api repos/ElectricJack/matter-engine/git/trees/8f25e4b8297d8db04e992aa04f557ff10ba59183?recursive=1",
+        "gh api repos/ElectricJack/matter-engine/contents/tools/ci-windows.ps1?ref=8f25e4b8297d8db04e992aa04f557ff10ba59183",
+        "gh run download 38146618710 -R ElectricJack/matter-engine -n native-windows-8f25e4b8297d8db04e992aa04f557ff10ba59183-1 -D /tmp/sound-impact-80.3-source/windows"
+      ]
+    }
+  ]
 }
