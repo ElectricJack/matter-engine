@@ -2,10 +2,12 @@
 
 `matter_contracts` is the owned, neutral recipe/asset boundary described in
 [contracts v1](../../docs/component-separation/2026-10-10-matter-component-contracts-v1.md).
-It compiles from four implementation files and public
-[`contracts.h`](include/matter/contracts/contracts.h), using only the C++17
-standard library and MathLib's neutral headers. There is no evaluator, resolver,
-cache, scheduler, graphics API, script host, ECS or domain runtime here.
+It implements data validation and service-boundary checks, using only the C++17
+standard library and MathLib's neutral headers. Public interfaces describe
+geometry, resolver/cache/host, graphics and terrain services; production
+evaluators, backends, scheduling and domain runtimes are supplied separately.
+See [service contracts](SERVICES.md) for ownership, callbacks, ABI rules,
+fixture IDs and independently selectable build scaffolds.
 
 The local CMake file works standalone and with `add_subdirectory`. Central
 registration belongs to the ordered integration work. Nothing in this target

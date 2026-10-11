@@ -2,7 +2,8 @@
 param(
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release')]
     [string]$Config = 'RelWithDebInfo',
-    [switch]$Test
+    [switch]$Test,
+    [switch]$Matrix
 )
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -19,6 +20,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($Test) {
     $ctest = Join-Path (Split-Path $toolchain.CMake) 'ctest.exe'
     & $ctest --test-dir $buildDirectory --output-on-failure -j 1
-    exit $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+if ($Matrix) {
+    $matrixScript = Join-Path $PSScriptRoot 'tests\build_matrix.py'
+    $componentMatrixCommand = '{0} && "{1}" "{2}" --cmake "{3}" --generator Ninja --make-program "{4}"' -f $developerEnvironment, $toolchain.Python, $matrixScript, $toolchain.CMake, $toolchain.Ninja
+    & $env:ComSpec /d /s /c $componentMatrixCommand
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 exit 0
