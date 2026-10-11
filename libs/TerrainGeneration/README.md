@@ -305,3 +305,169 @@ Additional fixtures in the same native wrapper/CTest suite:
 | `terrain.mesh_rollback_rejected.v1` | Separate process with native contour mode disabled; explicit unsupported result |
 | `terrain.dependencies.v1` | Exact production CPU source set, contracts-only linkage, public includes and archive symbol audit |
 | `terrain.legacy_terrain_mesher`, `terrain.legacy_contour_engine` | Original native mesher/noisy cave and transition suites, unchanged expectations |
+
+## Headless example package and independent consumer
+
+Two example programs exercise the products end to end with rendering disabled.
+Neither links a renderer, window, GPU, QuickJS, ECS or Matter world:
+
+* `matter_terrain_example_tool <out_dir> [--fault <name>]` links
+  `matter_terrain`. It generates three fixed 16 m contour tiles from one
+  sloped-fbm field tape (`tests/examples/terrain_example_tiles.h`) and writes a
+  self-describing package.
+* `matter_terrain_example_consumer <package_dir> [--expect <code>]` links
+  **only** `matter_contracts`. It reloads that package without the generator
+  or field evaluator. It exits 0 on acceptance with no failed checks, 1 on a
+  failed check and 2 on any other rejection. With `--expect <code>` it exits 0
+  only when the package is rejected with exactly that contract error code.
+
+| Region | Key | World origin (m) | Spacing / detail | Requested boundaries |
+| --- | --- | --- | --- | --- |
+| `terrain.example.west` | (-2,0,-1) | (-32,-16,-16) | 2 m / 0 | +X to east, equal detail |
+| `terrain.example.east` | (-1,0,-1) | (-16,-16,-16) | 2 m / 0 | -X to west; +Z to north at 2:1 |
+| `terrain.example.north` | (-1,0,0) | (-16,-16,0) | 4 m / 1 | -Z to east at 2:1 |
+
+The seams lie on world x = -16 (equal detail) and z = 0 (2:1). Every tile has a
+negative origin and requires `matter.terrain.collision.mesh@1` and
+`matter.terrain.boundary.contour-2m@1`.
+
+Package layout:
+
+| Path | Content |
+| --- | --- |
+| `manifest.json` | Canonical JSON (`matter.terrain.example-package.v1`). It holds the contract profile, the required capabilities, the field identity (`terrain.example.field`, revision `source.1`, SHA-256 of the tape bytes), regions with key/origin/spacing/detail and the asset file plus semantic content digests, payload digests and lengths, both seams, tolerances, and ten field-height probes |
+| `assets/<region>.json` | Encoded `AssetDocument`: mesh, material slots, typed `terrain` and `collisions` products, payload resource descriptors, the generator's required extensions and `matter.asset.terrain`/`collision` capabilities |
+| `payloads/<sha256>.bin` | Collision positions/indices and seam records, named by content |
+
+The consumer verifies the following, in order:
+* the schema, profile and every required capability; unknown capabilities fail
+  with `unsupported_capability`;
+* every payload's SHA-256 and length, and every asset's file SHA-256 and
+  semantic content digest (`invalid_input`);
+* that provenance matches the package's field revision and content
+  (`stale_result`);
+* that placement matches the manifest.
+
+It then rebuilds collision hulls from the typed buffers alone.
+
+Exact standalone commands (Linux, from the repository root; the contour profile
+needs `MATTER_CONTOUR_SEAMS=1`, and CTest sets it per test):
+
+```bash
+cmake -S libs/TerrainGeneration -B /tmp/matter-terrain-build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug -DMATTER_TERRAIN_BUILD_TESTS=ON
+cmake --build /tmp/matter-terrain-build --parallel 2
+ctest --test-dir /tmp/matter-terrain-build --output-on-failure -j 1
+ctest --test-dir /tmp/matter-terrain-build -R '^terrain\.example\.' --output-on-failure -j 1
+```
+
+Production-only (no test targets), then generate and reload by hand:
+
+```bash
+cmake -S libs/TerrainGeneration -B /tmp/matter-terrain-prod -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DMATTER_TERRAIN_BUILD_TESTS=OFF
+cmake --build /tmp/matter-terrain-prod --parallel 2
+MATTER_CONTOUR_SEAMS=1 /tmp/matter-terrain-prod/matter_terrain_example_tool /tmp/terrain-pkg
+/tmp/matter-terrain-prod/matter_terrain_example_consumer /tmp/terrain-pkg
+# Each fault package must be refused with its exact code:
+MATTER_CONTOUR_SEAMS=1 /tmp/matter-terrain-prod/matter_terrain_example_tool /tmp/terrain-stale --fault stale-source
+/tmp/matter-terrain-prod/matter_terrain_example_consumer /tmp/terrain-stale --expect stale_result
+```
+
+Native Windows (PowerShell, from the repository root). The wrapper configures
+with tests on; CTest supplies `MATTER_CONTOUR_SEAMS` to each test. Set
+`$env:MATTER_CONTOUR_SEAMS = "1"` before running the tool by hand.
+
+```powershell
+libs/TerrainGeneration/build-windows.ps1 -Config RelWithDebInfo -Test
+$env:MATTER_CONTOUR_SEAMS = "1"
+libs/TerrainGeneration/build/windows-msvc/relwithdebinfo/matter_terrain_example_tool.exe $env:TEMP\terrain-pkg
+libs/TerrainGeneration/build/windows-msvc/relwithdebinfo/matter_terrain_example_consumer.exe $env:TEMP\terrain-pkg
+```
+
+`MATTER_TERRAIN_BUILD_EXAMPLES` defaults on only when this directory is the
+top-level CMake project. A parent project that adds it with `add_subdirectory`
+gets `matter_terrain` alone unless it opts in. The examples' sources live under
+`tests/examples/`, with the other fixtures, so the component-separation probe
+sees no extra targets or unbuilt production sources.
+
+### Fixture IDs
+
+Each program prints `fixture <id>` before its checks; each CTest name is the
+fixture ID it runs.
+
+| Fixture ID | Program | Evidence |
+| --- | --- | --- |
+| `terrain.example.generate.v1` | tool | Three tiles validate against the product contract, encode with declared capabilities, and write content-addressed payloads and the manifest |
+| `terrain.example.reload.v1` | consumer | Contracts-only decode; payload, file and semantic identities; provenance and placement |
+| `terrain.example.collision_consumption.v1` | consumer | Typed collision buffers reproduce each render mesh exactly; the solver side needs no mesh or graphics owner |
+| `terrain.example.seam_equal_detail.v1` | consumer | west\|east at x=-16: canonical seam densities equal; 9 shared contour edges, one incident triangle per side |
+| `terrain.example.seam_two_to_one.v1` | consumer | east\|north at z=0, 2 m vs 4 m: densities equal; 10 shared contour edges |
+| `terrain.example.mirrored_placement.v1` | consumer | Mirrored, nonuniformly scaled placement `T(16,0,0)·S(-1,1.5,1)` is a valid winding-reversing transform: every face flips relative to its inverse-transpose normal, and reversed winding restores it |
+| `terrain.example.collision_probes.v1` | consumer | Collision ray heights versus independently sampled field heights at 10 columns (6 on seams); seam neighbours agree |
+| `terrain.example.reproducible.v1` | CMake script | A second clean generation matches all 14 package files byte for byte |
+| `terrain.example.fault_asset-capability.v1` | consumer `--expect unsupported_capability` | north's asset requires unknown `matter.terrain.example.future@1` |
+| `terrain.example.fault_package-capability.v1` | consumer `--expect unsupported_capability` | The manifest requires the unknown capability |
+| `terrain.example.fault_stale-source.v1` | consumer `--expect stale_result` | north was generated from an older field edit (`source.0`) |
+| `terrain.example.fault_tampered-payload.v1` | consumer `--expect invalid_input` | One byte of a seam payload flipped after generation |
+| `terrain.example.coordinator_adjacent.v1` | coordinator tests | Three tiles generated concurrently and completed in reverse order through `TerrainCoordinator`; published products keep source identity, separate collision leases and exact seams |
+| `terrain.example.coordinator_late_completion.v1` | coordinator tests | Source edit, eviction and demand withdrawal while work runs: late results are `stale_result`, nothing is published, credits return, one regeneration follows; a held published owner survives later edits |
+| `terrain.example.coordinator_resolution_change.v1` | coordinator tests | north refined 4 m to 2 m and back with east's boundary updated; the restore is a cache hit with byte-identical geometry rebound to the current job; a 4:1 neighbour is refused at completion with `unsupported_capability` |
+| `terrain.example.coordinator_faults.v1` | coordinator tests | Unknown required capability at define; unknown required product extension; graphics demand without a service; throwing backend then retry; tampered seam bytes; cross-region receipt; cancelled before running; operations budget below the sample count (`resource_limit` at define); elapsed deadline (`resource_limit`, nothing published) |
+
+`tests/coordinator_integration_tests.cpp` drives the contracts-only adapter
+`MatterEngine3/src/component_adapters/terrain_coordinator` over the CPU service.
+It is compiled from its source directory, without the adapter's own tests. It
+needs no Matter world, renderer or script host.
+
+### Emitted artifact identities
+
+These are the identities from `terrain.example.generate.v1` and the
+production-only Release build above. All 14 package files are byte-identical
+across GCC 13.3 Debug and Release (x86-64 Linux) and MSVC 19.44 RelWithDebInfo
+(x64 Windows, through `build-windows.ps1`), each generated from a clean
+directory. Cross-target noise bytes are not promised identical in general (see
+above), so another compiler or target must check reproducibility itself and
+record its own identities.
+
+| Artifact | SHA-256 | Size / count |
+| --- | --- | --- |
+| `manifest.json` | `7e7cc5c5d36ca6d9f80404465c97bf0689295034fb1b17bb806ad5d839d01935` | 14 package files |
+| `assets/terrain.example.west.json` | `d18e83b2f6a2e8f4b61517995de8dbb99aee0c3b1eb9f3e1c8890e89c3d60b6a` | content `5713c6ea59f5fd1dd305f1fbe1569d6076794e251f38814d3e89c12cbb58ab33`, 198 triangles |
+| `assets/terrain.example.east.json` | `a2131935f3ea7ae7e4017f3f8146012ca98801fb770431ee5fa2c09e84dfde26` | content `b3165174d117fd84bbffb0dbcb1ca08258ff1d86024a31d4204021c31ccafddd`, 204 triangles |
+| `assets/terrain.example.north.json` | `15a06b858525149a71bce0d1a42f072f26575848b1a73615c09922ccd4483a06` | content `74543a2fb89a763fe91ff68bc59e136a8927de2446f34281dd0cdb98d65f916b`, 76 triangles |
+| west `terrain.collision.positions` | `971c7d832e603950032bbce7634f9d72afeebc7d0bb4ed3a1353d90b51cb7980` | 7128 B |
+| west `terrain.collision.indices` | `8c233ed01a52148a9b56872edff6f81109b460a1c6efab27e6035f0279e4f180` | 2376 B |
+| west `terrain.face.1` | `d2b8f0dff3f3acb30fdedb4eb01457da059fe1258b9816faee6f72259206511b` | 2069 B |
+| east `terrain.collision.positions` | `3a4eb92d22e5195e1f08e0b53c9c36175a5ee2697574e5fb5f34e8241af9c3e3` | 7344 B |
+| east `terrain.collision.indices` | `aa5c6d8787dfa12d5181436f0e58da96c817ced66ae13a8972e58c22ee8365a4` | 2448 B |
+| east `terrain.face.0` | `ad62d2bad49547973cae90b4bdbc278d98e3807b95831564c07275f7fb3fb6be` | 2069 B |
+| east `terrain.face.5` | `b9e7effe9e61dad95eb2f509eec7ac00d2e73098aa1e0bc0dcc01ef5553dd44a` | 2032 B |
+| north `terrain.collision.positions` | `4a36570f49d60b2a4d3cbd460f77334c4d6a1dba9018761b7db5b977b1964d0a` | 2736 B |
+| north `terrain.collision.indices` | `3bb184617389890e24fb8e79be17fe6373934442fdd75bf94ec91318425ae533` | 912 B |
+| north `terrain.face.4` | `04ad0adfe80ddaa49b6db0496b41b095e478ea3faf02819dba45e5c4feac3fdc` | 2031 B |
+
+Recorded tolerances (in the manifest, never loosened to pass):
+
+* Collision height versus field height along a vertical ray:
+  `0.1 × sample spacing`. The measured worst case is 0.156 m on the 4 m tile
+  (0.039 × spacing). The largest ratio is 0.058 × spacing, on east at 2 m.
+* Collision height between seam neighbours: `0.0001 m`. They agree exactly.
+* Seam densities and shared contour edges: exact equality.
+
+### Integration notes
+
+* The field sampler accepts only field capabilities. A height probe therefore
+  uses a field-stage request (`matter.terrain.generate@1`, no boundaries), not
+  the meshing request.
+* `validate(TerrainRequest)` refuses an operations budget below the sample
+  count with `resource_limit` when the coordinator defines the region. A budget
+  exhausted during execution surfaces through the deadline/budget checkpoint at
+  completion.
+* An unsupported neighbour ratio (4:1) passes `define`. The service then
+  refuses it at completion with `unsupported_capability`, and nothing is
+  published. A live world should keep neighbours within 2:1 when it schedules
+  detail.
+* When rebuilding a `TerrainResult` from a product, capture the envelope first:
+  `success(product.job, std::move(product))` has unspecified argument
+  evaluation order and can read a moved-from job.
