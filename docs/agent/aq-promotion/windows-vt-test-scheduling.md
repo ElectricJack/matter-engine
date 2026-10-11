@@ -104,6 +104,23 @@ post-fix CMake regeneration and property inventory above preceded the interop
 failure. Follow-up execution and source publication are recorded in the task
 comments.
 
-Local native checks do not establish a green hosted run on `dev`. Both the
-post-fix execution and exact-`dev`-SHA native Windows acceptance remain pending
-with the integration owner; tests and timeouts stay required throughout.
+## Final native `dev` acceptance
+
+The integration owner merged the published source into `dev` at
+`72cda2a3f64f32c7562d32f33afb8114142130e8`. Native Windows run
+[38131013670](https://github.com/ElectricJack/matter-engine/actions/runs/38131013670)
+passed on 2026-10-11, including the full MSVC build, all 189 CTests and package
+validation. Its uploaded `ctest.xml` reports zero failures, disabled tests or
+skips. CTest retained parallelism six; the execution log shows all 26 GPU
+tests ran without overlapping one another while overall concurrency reached
+six. Test execution took 1060.51 seconds.
+
+| Previously failing test | Native `dev` result |
+| --- | --- |
+| `static_surface_vt_tests` | Pass, 3.08 s |
+| `smoke_vt_normal_frame` | Pass, 67.90 s |
+| `smoke_vt_module_residency` | Pass, 5.96 s |
+
+This satisfies the task's exact-`dev`-SHA native Windows acceptance without
+changing renderer behavior, test assertions or timeouts. The separate future
+CI-helper composition must still preserve the contract above.
