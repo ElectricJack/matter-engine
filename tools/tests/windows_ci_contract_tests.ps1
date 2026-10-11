@@ -7,11 +7,17 @@ function Assert-Rejects([scriptblock]$Action, [string]$Pattern) {
     catch { if ($_.Exception.Message -notmatch $Pattern) { throw } }
 }
 Assert ((Get-MatterCiTier -Ref 'refs/heads/dev') -eq 'fast') 'dev must use fast'
-Assert ((Get-MatterCiTier -Ref 'refs/heads/aq/batches/test') -eq 'fast') 'batches must use fast'
+Assert ((Get-MatterCiTier -Ref 'refs/heads/aq/batches/test') -eq 'full') 'batch v1 qualification must use full'
+Assert ((Get-MatterCiTier -Ref 'refs/heads/aq/integration/test') -eq 'full') 'integration v1 qualification must use full'
+Assert ((Get-MatterCiTier -Ref 'refs/pull/17/merge' -BaseRef dev) -eq 'full') 'PR v1 qualification must use full'
 Assert ((Get-MatterCiTier -Ref 'refs/heads/staging') -eq 'full') 'staging must use full'
 Assert ((Get-MatterCiTier -Ref 'refs/heads/main') -eq 'full') 'main must use full'
 Assert ((Get-MatterCiTier -Ref 'refs/heads/dev' -EventName schedule) -eq 'full') 'nightly must use full'
 Assert-Rejects { Get-MatterCiTier -Ref 'refs/heads/main' -Tier fast } 'require the full tier'
+Assert ((Get-MatterCiTier -Ref 'refs/pull/17/merge' -BaseRef main) -eq 'full') 'PR to main must use full'
+Assert ((Get-MatterCiTier -Ref 'refs/pull/17/merge' -BaseRef staging) -eq 'full') 'PR to staging must use full'
+Assert-Rejects { Get-MatterCiTier -Ref 'refs/pull/17/merge' -BaseRef staging -Tier fast } 'require the full tier'
+Assert-Rejects { Get-MatterCiTier -Ref 'refs/heads/dev' -Tier auto -RequireExplicitTier } 'explicit fast or full tier'
 
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('matter-ci-contract-' + [Guid]::NewGuid().ToString('N'))
 $ciRoot = Join-Path $fixture 'ci'
@@ -58,6 +64,26 @@ try {
     Assert (-not (Test-Path (Join-Path $oldEvidence 'stale.fixture'))) 'rejected tier retained stale evidence'
     $invalidSummary = Get-Content -Raw (Join-Path $oldEvidence 'run-summary.json') | ConvertFrom-Json
     Assert ($invalidSummary.status -eq 'failed' -and $invalidSummary.error -match 'require the full tier') 'rejected tier did not leave failure evidence'
+    # Exercise the real CLI with the tier argument omitted, as the pending v1
+    # reusable caller does. Stop before tool resolution/compilation and inspect
+    # the chosen tier in fresh evidence; a full check must never default to fast.
+    Set-Content -LiteralPath (Join-Path $source 'tools/windows/MatterWindowsToolchain.psm1') -Value @'
+function Resolve-MatterWindowsToolchain { param([string]$RepositoryRoot); throw 'FULL_TIER_FIXTURE_STOP' }
+Export-ModuleMember -Function Resolve-MatterWindowsToolchain
+'@
+    try {
+        $env:GITHUB_REF = 'refs/heads/aq/integration/fixture'
+        $ErrorActionPreference = 'Continue'
+        $legacyOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File (Join-Path $source 'tools/ci-windows.ps1') -CiRoot (Join-Path $fixture 'legacy-ci') 2>&1 | Out-String
+        $legacyExit = $LASTEXITCODE
+    } finally {
+        $env:GITHUB_REF = $savedRef
+        $ErrorActionPreference = $savedErrorAction
+    }
+    $legacySummary = Get-Content -Raw (Join-Path $oldEvidence 'run-summary.json') | ConvertFrom-Json
+    Assert ($legacyExit -ne 0 -and $legacySummary.error -match 'FULL_TIER_FIXTURE_STOP') "legacy fixture did not stop at tool resolution: $legacyOutput"
+    Assert ($legacySummary.tier -eq 'full') 'legacy full-check caller silently selected fast'
     $plan = Get-MatterCiBuildPlan -RepositoryRoot $source -CiRoot $ciRoot -Fingerprint 'a'
     Assert $plan.Clean 'first run must clean'
     Initialize-MatterCiBuild $plan

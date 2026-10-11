@@ -8,13 +8,17 @@ open until the owner delivers the reconciled source and retains its run artifact
 
 | Source/event | Windows tier | Check name | Packaging |
 | --- | --- | --- | --- |
-| `dev`, `aq/batches/**`, `aq/integration/**` push | fast | `Native Windows fast build and tests` | no |
+| `dev` push | fast advisory | `Native Windows fast build and tests` | no |
+| task/parent/batch/integration/promotion/backmerge AQ push; PR to dev/staging/main | full v1 qualification | `Native Windows build and tests` | yes |
 | `staging`, `main` push | full | `Native Windows build and tests` | yes |
 | nightly schedule | full, forced clean, compiler cache disabled | `Native Windows build and tests` | yes |
 | dispatch | automatic by ref, or explicitly full | corresponding name | full only |
 
-An explicit fast request on staging/main or a scheduled run fails. An invocation
-without a GitHub ref defaults to full. The fast CTest label is `ci-fast`; full is
+An explicit fast request on staging/main, a PR to staging/main or a scheduled run
+fails. The script defaults to **full** when `-Tier` is omitted, preserving the
+meaning of legacy reusable callers. Only the standalone feedback workflow
+explicitly opts into automatic dev-fast selection. Reusable callers require an
+explicit `fast`/`full` choice and reject `auto`. The fast CTest label is `ci-fast`; full is
 `ci-full`. Every registered test, including third-party subdirectory tests, receives
 the full label. The inventory has 193 tests, with 159 selected for fast.
 
@@ -95,25 +99,39 @@ attestations for this implementation:
 | Policy purpose | Exact Windows check | Linux check | Requirement |
 | --- | --- | --- | --- |
 | Existing `matter-engine-ci-v1` full source proof | `Native Windows build and tests` | `Linux foundation build and tests` | preserve full meaning; fast is never a substitute |
-| Proposed dev-fast proof, separate version | `Native Windows fast build and tests` | `Linux foundation build and tests` if Linux remains required | new policy/version scoped to dev integration only |
+| Dev-fast feedback | `Native Windows fast build and tests` | Linux remains in reusable workflow | advisory only; never satisfies the current v1 gate |
 | Staging/release source audit | `unattested-ci / Native Windows build and tests` | `unattested-ci / Linux foundation build and tests` | force full reusable-workflow input on the exact source SHA |
 | Unattested direct staging/main fallback | full check, with caller prefix if reusable | Linux foundation check | no missing/verifier-error path may select fast |
 
-The pending `tests.yml` needs typed `workflow_call` tier/clean inputs and the same
-script invocation as this branch's native workflow. `main-attestation.yml` must
-pass an explicit full tier for staging/main and for a promotion-source audit of
-dev, rather than derive it solely from the source ref. A dev-fast attestation
-must not suppress a required full source audit. Choose the new dev policy version
-only after checking the daemon's separate check-set/version support; this document
-does not assert that the existing single v1 `required_checks` field can express
-both tiers. Do not simply rename the v1 checks or replace its required names with
-fast names.
+Concrete owner composition templates are [tests.workflow.proposal.yml](tests.workflow.proposal.yml),
+[main-attestation.workflow.proposal.yml](main-attestation.workflow.proposal.yml)
+and [native-feedback.workflow.proposal.yml](native-feedback.workflow.proposal.yml).
+Install them together with the pending fleet verifier/tests/trust assets, after
+qualifying the reconciled source. They are stored outside `.github/workflows`
+and do not change current qualification or deployed policy. The reusable `tests.yml`
+defaults to full, has typed tier/clean/cache inputs, preserves both platforms and
+rejects automatic selection. The attestation caller always runs an independent
+explicit full audit on the exact dev SHA, including after a successful advisory
+proof. Staging/main fallback remains full on missing/error/invalid attestation.
 
-Reconcile workflow ownership to avoid simultaneous `native-windows.yml` and
-`tests.yml` push runs. Preserve the supervisor's scoped AQ branch filters and
-12-build/6-test parallelism unless runner measurements justify a change. The
-pending fleet source currently uses broad `aq/**` and 4/2; these are merge
-decisions, not changes to the running acceptance source. AQ App identity,
+The reviewed AQ v1 source has one global check version; named sets select names,
+not an independently authenticated version. Both current promotion gates inherit
+root checks. Keep full-v1 gating and fast advisory. A separately trusted dev-fast
+version requires demonstrated **deployed** support across daemon, generator,
+selector, payload/verifier, App/protection and reviewed bindings; published source
+alone is insufficient. Do not rename v1 checks or reinterpret existing full proofs.
+
+The composed `tests.yml` owns task (`aq/*`), `aq/parent/**`, `aq/batches/**`,
+`aq/integration/**`, `aq/promote/**`, `aq/backmerge/**` push and all protected-base
+PR qualification. These always emit plain full-v1 Windows/Linux names. The
+feedback wrapper owns dev advisory (`advisory-ci / Native Windows fast build and tests`)
+and nightly/dispatch maintenance (`maintenance-ci / Native Windows build and tests`).
+The attestation workflow owns dev source audit and staging/main fallback with the
+existing `unattested-ci /` full aliases. Replace the standalone native workflow
+when installing the templates; leaving both full producer definitions would
+duplicate jobs. Current standalone source retains full candidate/PR execution
+and 12/6 parallelism, but the pending fleet qualification source is unchanged.
+AQ App identity,
 repository/SHA, check conclusion and provenance verification remain required.
 
 ## Evidence and timing

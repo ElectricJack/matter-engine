@@ -1,9 +1,10 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('auto', 'fast', 'full')][string]$Tier = 'auto',
+    [ValidateSet('auto', 'fast', 'full')][string]$Tier = 'full',
     [string]$CiRoot = 'C:\matter-ci\matter-engine',
     [switch]$ForceClean,
-    [switch]$DisableCompilerCache
+    [switch]$DisableCompilerCache,
+    [switch]$RequireExplicitTier
 )
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -36,7 +37,8 @@ Push-Location $repositoryRoot
 try {
     Start-Transcript -Path (Join-Path $evidence 'native-windows.log') -Force | Out-Null
     $transcribing = $true
-    $selectedTier = Get-MatterCiTier -Ref $env:GITHUB_REF -EventName $env:GITHUB_EVENT_NAME -Tier $Tier
+    $selectedTier = Get-MatterCiTier -Ref $env:GITHUB_REF -BaseRef $env:GITHUB_BASE_REF `
+        -EventName $env:GITHUB_EVENT_NAME -Tier $Tier -RequireExplicitTier:$RequireExplicitTier
     $summary.tier = $selectedTier
     if ($env:GITHUB_EVENT_NAME -eq 'schedule') {
         $ForceClean = $true

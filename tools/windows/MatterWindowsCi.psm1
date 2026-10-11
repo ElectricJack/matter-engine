@@ -1,12 +1,18 @@
 Set-StrictMode -Version Latest
 
 function Get-MatterCiTier {
-    param([string]$Ref, [string]$EventName, [ValidateSet('auto', 'fast', 'full')][string]$Tier = 'auto')
-    $fullRequired = $Ref -in @('refs/heads/staging', 'refs/heads/main') -or $EventName -eq 'schedule'
+    param([string]$Ref, [string]$BaseRef, [string]$EventName,
+        [ValidateSet('auto', 'fast', 'full')][string]$Tier = 'auto', [switch]$RequireExplicitTier)
+    if ($RequireExplicitTier -and $Tier -eq 'auto') { throw 'Reusable CI requires an explicit fast or full tier.' }
+    $fullRequired = $Ref -in @('refs/heads/staging', 'refs/heads/main') -or
+        $BaseRef -in @('staging', 'main', 'refs/heads/staging', 'refs/heads/main') -or $EventName -eq 'schedule'
     if ($fullRequired -and $Tier -eq 'fast') { throw 'staging, main and scheduled runs require the full tier.' }
     if ($Tier -ne 'auto') { return $Tier }
     if ($fullRequired -or -not $Ref) { return 'full' }
-    return 'fast'
+    # Existing AQ candidate and PR qualification uses the full-v1 check set.
+    # Only the direct dev feedback run is fast/advisory until trust support exists.
+    if ($Ref -eq 'refs/heads/dev') { return 'fast' }
+    return 'full'
 }
 
 function Get-MatterCiFingerprint {

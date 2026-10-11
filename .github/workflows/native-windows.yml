@@ -1,7 +1,10 @@
 name: Native Windows
 on:
   push:
-    branches: [main, dev, staging, 'aq/batches/**', 'aq/integration/**']
+    branches: [main, dev, staging, 'aq/*', 'aq/parent/**', 'aq/batches/**', 'aq/integration/**', 'aq/promote/**', 'aq/backmerge/**']
+  pull_request:
+    branches: [dev, staging, main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       tier:
@@ -20,7 +23,7 @@ permissions:
   contents: read
 jobs:
   native:
-    name: ${{ (github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main' || github.event_name == 'schedule' || inputs.tier == 'full') && 'Native Windows build and tests' || 'Native Windows fast build and tests' }}
+    name: ${{ (github.ref != 'refs/heads/staging' && github.ref != 'refs/heads/main' && github.base_ref != 'staging' && github.base_ref != 'main' && github.event_name != 'schedule' && (inputs.tier == 'fast' || ((inputs.tier == 'auto' || !inputs.tier) && github.ref == 'refs/heads/dev'))) && 'Native Windows fast build and tests' || 'Native Windows build and tests' }}
     runs-on: [self-hosted, Windows, X64, matter-engine-msvc]
     timeout-minutes: 90
     env:
