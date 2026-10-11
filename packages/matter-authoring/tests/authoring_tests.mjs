@@ -69,6 +69,9 @@ test('SDK-DIAGNOSTICS-v1', () => {
     const malformed = structuredClone(expectedProp); malformed[key] = null; throws('invalid_input', () => validateRecipe(malformed));
   }
   const malformedNode = structuredClone(expectedProp); malformedNode.nodes[0].parameters = null; throws('invalid_input', () => validateRecipe(malformedNode));
+  for (const key of ['nodes', 'materials', 'resources', 'textures', 'asset_dependencies']) {
+    const malformed = structuredClone(expectedProp); malformed[key] = [null]; throws('invalid_input', () => validateRecipe(malformed));
+  }
   const incompleteSource = structuredClone(expectedProp); delete incompleteSource.source.content; throws('invalid_input', () => validateRecipe(incompleteSource));
   const duplicateHash = structuredClone(expectedProp); duplicateHash.source.legacy_hashes = Array.from({ length: 2 }, () => ({ namespace: 'matter.source.v1', value: '0000000000000001' })); throws('invalid_input', () => validateRecipe(duplicateHash));
   const byteBudget = builder({ services: { ...services, canonicalJson: document => helpers.canonicalJson(document, { maxBytes: 32 }) } }); byteBudget.output(byteBudget.box('box', [1, 1, 1])); throws('resource_limit', () => byteBudget.canonical());

@@ -47,7 +47,7 @@ function dependency(value) {
 function unique(values, label) {
   need(Array.isArray(values), `${label} must be an array`);
   const map = new Map();
-  for (const value of values) { id(value.id); need(!map.has(value.id), `duplicate ${label} ID ${value.id}`); map.set(value.id, value); }
+  for (const value of values) { fields(value); id(value.id); need(!map.has(value.id), `duplicate ${label} ID ${value.id}`); map.set(value.id, value); }
   return map;
 }
 export function nodeInput(reference, type = 'mesh', port = 'input') {
