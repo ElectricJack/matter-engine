@@ -121,7 +121,9 @@ void test_nested_and_sibling_resolvers_share_the_order() {
 
     CHECK(resolve("issues", built_exe, author) == author_issues.string(),
           "issues_root()'s lookup follows the cwd before the exe tree");
-    CHECK(resolve("MatterEngine3/shared-lib", built_exe, author) == author_shared.string(),
+    // A nested name contains '/', while Windows path joins use '\\'. Compare
+    // path components so separator spelling cannot obscure the selected root.
+    CHECK(fs::path(resolve("MatterEngine3/shared-lib", built_exe, author)) == author_shared,
           "shared_lib_root()'s nested lookup walks up to the cwd's engine root");
 }
 
