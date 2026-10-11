@@ -490,6 +490,35 @@ that hidden owners receive no detail requests, visible owners refine, retained
 pages survive reveal/return, and odd-size target resizes remain valid. CMake
 registers the same mode as `vt_feedback_visibility_tests`.
 
+This visibility contract uses the supported whole-page fill mode
+(`fill_budget_ms = 0`) within the fixture. Feedback transport, production
+G-buffer depth testing, and the compositor remain active. The short frame
+windows measure which owners refine and whether their completed pages survive
+reveal/return; they do not specify the production fill scheduler's completion
+latency. At the production limit of one or two row slices per frame, a page's
+680 slices cannot finish within the first 48-frame observation window. The
+fixture saves the entire live budget struct before changing only the fill
+target, then restores it with an RAII guard on normal completion and every
+renderer-init or frame-submission error return. Production defaults are unchanged.
+
+Bounded work and multi-frame completion have separate registered coverage:
+
+- `vt_residency_tests` checks the initial two-slice ceiling, immediate reduction
+  to one slice after expensive GPU samples, bounded recovery, and zero-target
+  whole-page mode.
+- `smoke_vt_queue` runs `vt_queue_tests::run_slice_publication`: unfinished
+  pages remain unpublished, continuations keep their owner, and pending work
+  preserves queue/success accounting. It also checks fill/AO budget alternation,
+  cancellation, and eventual completion of sliced AO factors.
+- `vt_compositor_tests` submits real bounded page slices across ring wraps,
+  supersedes a partial mip/revision, and compares all five completed channels
+  byte for byte with a whole-page reference. Partial writes must retain the
+  previous resident bytes; native sliced AO also matches its full-page reference.
+- `smoke_vt_normal_frame` retains production fill pacing. It waits for nonzero
+  completed fills and an empty, clean queue for five stable frames within
+  `4 * vt::kVtPageTiles` frames before asserting raster/RT directional-normal
+  correctness. This derives the completion allowance from the page's work size.
+
 `vt-feedback-pair` checks the independent receiver/material transport: GPU
 address packing, extraction from the wider visible image, cached readback,
 deduplication and real generation for both owners. It includes tagged background,
