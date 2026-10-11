@@ -18,6 +18,9 @@ def escaped(path):
     return str(path).replace("\\", "/").replace("$", "$$").replace("#", "\\#").replace(" ", "\\ ").replace(":", "\\:")
 
 paths = [(source.parent / name).resolve() for name in dependencies]
-if not paths or any(not p.is_relative_to(source.parent) or not p.is_file() for p in paths):
-    raise ValueError("Shader dependencies must remain within the shader source directory")
+graphics_shaders = Path(__file__).resolve().parent.parent / "shaders"
+allowed_roots = (source.parent, graphics_shaders)
+if not paths or any(not p.is_file() or not any(p.is_relative_to(root) for root in allowed_roots)
+                    for p in paths):
+    raise ValueError("Shader dependencies must remain within the production shader roots")
 depfile.write_text(escaped(output) + ": " + " ".join(map(escaped, paths)) + "\n")

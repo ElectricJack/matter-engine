@@ -23,6 +23,13 @@ matched image fixtures cover selected shading behavior. See the
 precise support and pending raster/RT/environment/water extraction; a composition
 consumer does not imply its product producer is available.
 
+The production raster shaders, mesh conversion and impostor helpers now live
+here, together with private G-buffer/pipeline/atlas implementation fragments.
+The existing engine host includes those fragments at their original call sites;
+this mechanical move retains native ownership and behavior. See the
+[native boundary and provenance](src/native/README.md). It does not add a
+standalone producer capability to the facade.
+
 ```cpp
 #include <matter/graphics/graphics.h>
 // Backend implementation supplies graphics allocation/scene/device operations.

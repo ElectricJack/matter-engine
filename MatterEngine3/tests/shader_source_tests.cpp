@@ -12,9 +12,28 @@
 #include <vector>
 
 static std::string read_shader(const char* path) {
-    std::ifstream file(path, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(file)),
-                       std::istreambuf_iterator<char>());
+    std::filesystem::path physical(path);
+    if (physical == "../shaders_vk/raster.vert" ||
+        physical == "../shaders_vk/gbuffer.frag")
+        physical = std::filesystem::path("../../libs/MatterGraphics/shaders") / physical.filename();
+    std::ifstream file(physical, std::ios::binary);
+    std::string source((std::istreambuf_iterator<char>(file)),
+                        std::istreambuf_iterator<char>());
+    // These private fragments are compiled in place by the renderer. Keep
+    // the existing semantic assertions over that same expanded source.
+    const std::string prefix = "#include \"../../../libs/MatterGraphics/src/native/";
+    for (size_t at = source.find(prefix); at != std::string::npos;
+         at = source.find(prefix, at)) {
+        const size_t quote = at + 10u;
+        const size_t end = source.find('"', quote);
+        assert(end != std::string::npos);
+        const auto include = physical.parent_path() / source.substr(quote, end - quote);
+        const std::string body = read_shader(include.string().c_str());
+        assert(!body.empty());
+        source.replace(at, end + 2u - at, body);
+        at += body.size();
+    }
+    return source;
 }
 
 static size_t count_occurrences(const std::string& text,
@@ -465,7 +484,12 @@ struct ShaderClosure {
 
 static void collect_shader_closure(const std::filesystem::path& relative,
                                    ShaderClosure& closure) {
-    const std::string key = relative.lexically_normal().generic_string();
+    std::filesystem::path physical = relative;
+    if (physical == "shaders_vk/raster.vert" || physical == "shaders_vk/gbuffer.frag")
+        physical = std::filesystem::path("../libs/MatterGraphics/shaders") / physical.filename();
+    if (!std::filesystem::is_regular_file(std::filesystem::path("..") / physical))
+        physical = std::filesystem::path("shaders_vk") / physical.filename();
+    const std::string key = physical.lexically_normal().generic_string();
     if (!closure.files.insert(key).second) return;
     const std::string source = read_shader(("../" + key).c_str());
     if (source.empty()) {
@@ -486,7 +510,7 @@ static void collect_shader_closure(const std::filesystem::path& relative,
                 closure.complete = false;
             else
                 collect_shader_closure(
-                    relative.parent_path() /
+                    physical.parent_path() /
                         line.substr(quote + 1u, end_quote - quote - 1u),
                     closure);
         }
@@ -593,8 +617,16 @@ static std::map<std::string, std::set<std::string>> spirv_prerequisites(
         }
         return words;
     };
+    std::string spirv_inventory;
     auto add_rule = [&](std::string logical) {
         logical = logical.substr(0, logical.find('#'));
+        if (logical.rfind("VK_SPV =", 0) == 0) {
+            spirv_inventory = logical.substr(8);
+            return;
+        }
+        const size_t inventory_at = logical.find("$(VK_SPV)");
+        if (inventory_at != std::string::npos)
+            logical.replace(inventory_at, 9, spirv_inventory);
         const std::string wildcard = "$(wildcard shaders_vk/*.glsl)";
         for (size_t at = logical.find(wildcard); at != std::string::npos;
              at = logical.find(wildcard, at))

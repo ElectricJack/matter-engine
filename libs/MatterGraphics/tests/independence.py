@@ -34,6 +34,7 @@ def audit(build):
             "composite.vert", "composite.frag", "display_transform.frag",
             "vol_common.glsl", "impostor_common.glsl", "environment_common.glsl",
             "cloud_shadow_common.glsl", "local_lighting.glsl", "local_light_types.glsl")}
+        allowed_shaders.add(root / "shaders/impostor_common.glsl")
         legacy_files.update(allowed_shaders)
     legacy_includes = {repository / "MatterEngine3/src/render", repository / "MatterEngine3/include"}
     expected = {"matter_contracts", "matter_graphics", "matter_graphics_tests",
