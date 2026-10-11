@@ -380,7 +380,16 @@ void run_part(const GoldenPart& part, const std::string& sandbox, const fs::path
     }
     compare_digest(module, expected_digest, digest);
     compare_mtl(module, read_file(mtl_path), mtl_text);
-    if (part.pin_geometry) compare_obj(module, read_file(obj_path), obj_text);
+    if (part.pin_geometry) {
+        const std::string expected_obj = read_file(obj_path);
+        if (expected_obj.empty()) {
+            printf("FAIL: golden %s: missing or empty OBJ fixture at %s\n",
+                   module.c_str(), obj_path.string().c_str());
+            ++g_failures;
+            return;
+        }
+        compare_obj(module, expected_obj, obj_text);
+    }
 }
 
 
