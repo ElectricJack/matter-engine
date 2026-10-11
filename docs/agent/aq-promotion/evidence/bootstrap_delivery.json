@@ -3,8 +3,8 @@
   "task_id": "sound-impact-80.3",
   "claim_epoch": 4,
   "observed_at_utc": "2026-10-11T19:07:14.123308+00:00",
-  "status": "delivered_head_qualified_pending_owner_execution_receipt",
-  "acceptance_satisfied": false,
+  "status": "passed_narrow_bootstrap_qualification",
+  "acceptance_satisfied": true,
   "repository": "ElectricJack/matter-engine",
   "repository_id": 1266132968,
   "authority": {
@@ -85,7 +85,8 @@
     "owner_execution_actor": null,
     "owner_execution_timestamp": null,
     "owner_execution_command": null,
-    "note": "Git delivery and byte equality verified. Actual owner execution receipt requested; actor/time/command are not inferred from commit metadata. This is bootstrap delivery, not an autonomous canary."
+    "note": "Git delivery and byte equality verified. Actual owner execution receipt requested; actor/time/command are not inferred from commit metadata. This is bootstrap delivery, not an autonomous canary.",
+    "owner_execution_receipt_status": "unavailable/requested; separately tracked by owner"
   },
   "platform_checks": {
     "head_sha": "58289c187ef2565c7d0532fe28a8cfb903023e44",
@@ -272,9 +273,7 @@
     "actual_delivered_dev_oid": "58289c187ef2565c7d0532fe28a8cfb903023e44",
     "scope": "Exact delivered dev-head CI/native/package qualification. Main attestation audit is an Actions App15368 check, not trusted App5075923 proof. Owner execution provenance, effective protection/policy/App readiness and activation, ordinary nested canary delivery, and first automatic dev-to-staging promotion remain separate pending acceptance."
   },
-  "blockers": [
-    "Actual owner execution actor/time/command receipt remains requested; source containment, bootstrap files and exact-delivered-head CI/package are verified."
-  ],
+  "blockers": [],
   "coordination": {
     "message_id": "msg-abeb1a013bac47fe9a9897059c1dc85c",
     "thread_id": "sound-impact-80.3:bootstrap-epoch4",
@@ -1170,5 +1169,15 @@
     "reused_receipt_path": "/home/jkern/.codex/worker-artifacts/fleet-ridge-94-epoch4/58289-dev-acceptance.json",
     "reused_receipt_sha256": "e6c1ae9ce1ad89e53880e20859913c27a5c77305bd7b4529b302debf5d74b87e",
     "coordination_message": "msg-939e5da6709d44bbbb65356ba6d75a6c"
+  },
+  "remaining_limitations": [
+    "Actual owner execution actor/time/command receipt remains unavailable/requested and separately tracked. No actor/time/command inferred.",
+    "This task does not establish fleet migration completion, App readiness, protection, activation, automatic canary delivery or promotion."
+  ],
+  "scope_disposition": {
+    "message_id": "msg-a49d78893b094c7e8869dac06987d319",
+    "actor": "project supervisor",
+    "created_seq": 10459,
+    "decision": "Current task/reopen scope satisfied by exact delivered-head checks, all nine bootstrap blobs, source containment and retained artifact inspection. Close with unavailable owner execution receipt explicitly disclosed; separate migration requirements remain open."
   }
 }
