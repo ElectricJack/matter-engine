@@ -9,7 +9,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--make-program")
-    parser.add_argument("--generator", default="Ninja")
+    parser.add_argument("--generator", default="Ninja", choices=["Ninja"])
     parser.add_argument("--build-root", type=Path, required=True)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[3]
@@ -17,7 +17,14 @@ def main():
         ("geometry", "ProceduralGeometry", "matter_geometry", ["-DMATTER_GEOMETRY_TESTS=OFF"]),
         ("graphics", "MatterGraphics", "matter_graphics", ["-DMATTER_GRAPHICS_VULKAN=OFF"]),
         ("archive-only", "AssetPipeline", "matter_asset_archive", [
-            "-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF"]),
+            "-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF",
+            "-DMATTER_ASSET_SURFACE=OFF", "-DMATTER_ASSET_SURFACE_NATIVE=OFF"]),
+        ("surface-portable", "AssetPipeline", "matter_asset_surface", [
+            "-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF",
+            "-DMATTER_ASSET_SURFACE=ON", "-DMATTER_ASSET_SURFACE_NATIVE=OFF"]),
+        ("surface-native", "AssetPipeline", "matter_asset_surface_native", [
+            "-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF",
+            "-DMATTER_ASSET_SURFACE=ON", "-DMATTER_ASSET_SURFACE_NATIVE=ON"]),
     ]
     for name, module, expected, options in cases:
         build = (args.build_root / name).resolve()
@@ -37,9 +44,28 @@ def main():
         names = {t["name"] for t in targets}
         assert expected in names and "matter_contracts" in names, names
         forbidden = {"matter_asset_pipeline", "matter_asset_storage", "matter_asset_gltf", "matter_asset_legacy"}
+        if name not in ("surface-portable", "surface-native"):
+            forbidden.add("matter_asset_surface")
+        if name != "surface-native":
+            forbidden.update({"matter_asset_surface_native", "matter_asset_surface_runtime"})
+        if module == "AssetPipeline":
+            forbidden.update({"matter_geometry", "matter_terrain", "matter_graphics", "matter_host_quickjs"})
         if module != "AssetPipeline":
             forbidden.add("matter_asset_archive")
         assert not names.intersection(forbidden), (name, names)
+        if name in ("surface-portable", "surface-native"):
+            allowed = {"matter_contracts", "matter_asset_archive", "matter_asset_surface"}
+            if name == "surface-native":
+                allowed.update({"matter_asset_surface_native", "matter_asset_surface_runtime"})
+            assert names == allowed, (name, names)
+            # Inspect the actual compiler dependency closure too: private
+            # inclusion of a renderer/host header counts as a dependency.
+            deps = subprocess.run([args.make_program or "ninja", "-C", str(build), "-t", "deps"],
+                                  check=True, capture_output=True, text=True).stdout
+            for line in deps.splitlines():
+                path = line.strip().replace("\\", "/").lower()
+                assert not any(part in path for part in
+                               ("/src/render/", "/vulkan/", "/quickjs", "/raylib/", "/flecs/")), line
         if module != "AssetPipeline":
             for ref in targets:
                 target = json.loads((reply / ref["jsonFile"]).read_text())
