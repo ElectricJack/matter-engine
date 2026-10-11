@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from gate_manifest import verify
 
 
 def run(command):
@@ -99,7 +100,26 @@ def main():
             executable = build / ("public_consumer.exe" if __import__("os").name == "nt" else "public_consumer")
             run([str(executable)])
         print(f"MATRIX {label}: passed (public-interface scaffold only)", flush=True)
-    print(f"{len(cases)} configurations passed; disabled components absent; graph acyclic")
+    # Independent caller/callee root compiles and runs actual boundary fixtures,
+    # rather than relying on a header probe or scaffold's interface declaration.
+    with tempfile.TemporaryDirectory(prefix="matter-contract-gate-") as temporary:
+        build = Path(temporary) / "build"
+        query = build / ".cmake/api/v1/query"
+        query.mkdir(parents=True)
+        (query / "codemodel-v2").touch()
+        command = [args.cmake, "-S", str(contracts / "tests/independent"), "-B", str(build),
+                   "-G", args.generator, "-DCMAKE_BUILD_TYPE=Debug"]
+        if args.make_program:
+            command.append(f"-DCMAKE_MAKE_PROGRAM={args.make_program}")
+        # Keep the matrix's Python in the supported native toolchain environment.
+        command.append(f"-DPython3_EXECUTABLE={__import__('sys').executable}")
+        run(command)
+        verify(build)
+        run([args.cmake, "--build", str(build), "--parallel", "2"])
+        ctest = Path(args.cmake).with_name("ctest.exe" if __import__("os").name == "nt" else "ctest")
+        run([str(ctest), "--test-dir", str(build), "--output-on-failure", "-j", "1"])
+        print("MATRIX independent-contract-gate: public-only callers/callees passed", flush=True)
+    print(f"{len(cases) + 1} configurations passed; disabled components absent; graph acyclic")
 
 
 if __name__ == "__main__":

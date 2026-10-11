@@ -19,7 +19,9 @@ From native Windows PowerShell, the local wrapper uses the repository's supporte
 `Resolve-MatterWindowsToolchain` resolver and pinned MSVC environment:
 
 ```powershell
-libs/MatterContracts/build-windows.ps1 -Config RelWithDebInfo -Test
+libs/MatterContracts/tests/prepare-test-python.ps1
+libs/MatterContracts/build-windows.ps1 -Config RelWithDebInfo -Test -Matrix `
+  -TestPython "$PWD/libs/MatterContracts/build/test-python/Scripts/python.exe"
 ```
 
 From WSL, run that same wrapper with Windows PowerShell and a Windows path:
@@ -28,7 +30,8 @@ From WSL, run that same wrapper with Windows PowerShell and a Windows path:
 /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe \
   -NoProfile -ExecutionPolicy Bypass \
   -File "$(wslpath -w "$PWD/libs/MatterContracts/build-windows.ps1")" \
-  -Config RelWithDebInfo -Test
+  -Config RelWithDebInfo -Test -Matrix \
+  -TestPython "$(wslpath -w "$PWD/libs/MatterContracts/build/test-python/Scripts/python.exe")"
 ```
 
 The standalone portability check on Unix uses:
@@ -42,10 +45,15 @@ python3 libs/MatterContracts/tests/schema_tests.py \
   --vectors /tmp/matter-contracts-build/matter_contracts_vectors
 ```
 
-The last check uses the test-only Python `jsonschema` package. It is not a library
-or build dependency. CTest always runs `matter_contracts_tests`; it also registers
-`matter_contracts_js_vectors` when Node is available. A missing Node executable
-means the JS check was unavailable, not passed. The latter launches the native
+The schema check uses the test-only Python `jsonschema` package pinned in
+`tests/requirements.txt`. It is not a library/runtime dependency. The preparation
+script creates an isolated native venv using the supported toolchain resolver;
+from WSL invoke it through native PowerShell in the same way as the build wrapper.
+With `BUILD_TESTING=ON`, Python and Node are required and CTest runs the schema,
+frozen manifest, independent native/C ABI/graphics consumers, legacy MathLib/RNG
+compatibility and existing data/service checks. Missing tools/dependencies fail
+the gate. `BUILD_TESTING=OFF` consumers do not need Python or Node.
+The JS check launches the native
 vector executable and checks actual cross-language numeric encodings, SHA-256,
 RNG words/unit draws and document digests. Both public-header consumers link only
 `matter_contracts`. The native build treats library warnings as errors.

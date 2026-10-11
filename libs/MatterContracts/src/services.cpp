@@ -229,6 +229,36 @@ data::ValidationResult validate(const data::RecipeDocument &recipe, const Resolv
       append(r, error(E::invalid_input, "resolved resource description mismatch"));
   }
   append(r, dependencies(recipe.asset_dependencies, inputs));
+  // Descriptions alone cannot validate indexed meshes. Once all payloads are
+  // verified, check the actual little-endian uint32 indices before evaluation.
+  // Do not inspect bytes after a failed length/type/digest boundary check.
+  if (!r.ok()) return r;
+  for (const auto &node : recipe.nodes) {
+    if (node.operation != "mesh.input") continue;
+    const ResolvedResource *positions = nullptr, *indices = nullptr;
+    for (const auto &input : node.inputs) {
+      auto found = std::find_if(inputs.resources.begin(), inputs.resources.end(), [&](const auto &entry) {
+        return entry.description.id == input.reference;
+      });
+      if (found == inputs.resources.end()) continue; // Already rejected above.
+      if (input.port == "positions") positions = &*found;
+      if (input.port == "indices") indices = &*found;
+    }
+    if (!positions || !indices) continue; // Structural validation requires both.
+    const auto &bytes = *indices->bytes;
+    for (size_t offset = 0; offset < bytes.size(); offset += 4) {
+      uint32_t index = uint32_t(bytes[offset]) | (uint32_t(bytes[offset + 1]) << 8) |
+                       (uint32_t(bytes[offset + 2]) << 16) | (uint32_t(bytes[offset + 3]) << 24);
+      if (index >= positions->description.element_count) {
+        data::Diagnostic d{data::Severity::error, E::invalid_input,
+                           "resolved mesh index outside positions", node.id.value, {}, {}};
+        auto source = recipe.source_map.find(node.id.value);
+        if (source != recipe.source_map.end()) d.source = source->second;
+        append(r, {{std::move(d)}});
+        break;
+      }
+    }
+  }
   return r;
 }
 data::ValidationResult validate(const QueryBatch &batch, const data::AssetDocument &asset,
