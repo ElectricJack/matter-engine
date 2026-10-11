@@ -44,3 +44,47 @@ those APIs cannot be treated as native behavior parity: for example,
 `raster_native.h` explicitly expects inverse-transpose normals to differ from
 the legacy renderer. Preserve that incompatibility in validation evidence;
 do not change production semantics or weaken those fixtures to make them pass.
+
+## VT residency and POM relocation
+
+Task `clear-crest-48.4.6` moves 25 existing C++ files into `vt/` and twelve
+VT shaders into `../../shaders/`, from reference
+`6490dbab806876631465259cdf5b397f258c5837`. The engine paths forward to these
+single implementations. Only include paths and the two compute shaders'
+version-directive placement change: their legacy entrypoint wrappers supply
+`#version 460` and enable includes. Native CMake depfiles track the forwarding
+chain; the rollback Make graph explicitly depends on the moved shader files.
+The original `vt_residency.cpp` and `vt_stub_filler.cpp` manifest entries
+compile the relocated implementations once. They are not additional sources
+of the independent `matter_graphics` or `matter_graphics_vulkan` targets.
+
+- `vt_residency.*`, `vt_feedback*`, `vt_work_budget.h`, `vt_density.h` retain
+  page resources, feedback, queue admission, eviction, generation checks,
+  frame-slot recycling and the existing production budgets.
+- `vt_types.h`, `vt_snapshot.h`, `vt_chart_gpu.h`, `vt_canonical_page.h`,
+  `vt_receiver_material.h`, `vt_material_read.h`, `vt_material_pages.h`,
+  `vt_occlusion_pages.h`, `vt_surface_boundary.h`, `vt_surface_connections.h`
+  and `vt_world_receivers.h` retain native layouts, ownership and receiver math.
+- `vt_encoded_*` retain cache identity, asynchronous storage, staging,
+  capture/upload and cancellation. `vt_stub_filler.cpp` retains the flat
+  fallback. The cache adapter still delegates misses to its injected producer.
+- Moved shaders retain feedback compaction, BC encoding, page sampling,
+  chart/triangle traversal, normal frames and connected-surface POM.
+
+This is source separation with retained host coupling. Native device/resources,
+profiling, chart/finite-surface types and property budgets remain dependencies.
+The compatibility receiver-height helper still parses legacy surface metadata;
+periodic-material preparation and surface-tape helpers remain in the engine.
+The legacy host still injects its compositor/enricher through the existing
+filler interfaces. No procedural compositor, evaluator or world/ScriptHost
+implementation was moved into graphics, and no new generation call was added.
+
+P3 `matter::asset::SurfaceProduct` owns evaluated CPU channels and height in
+metres; it does not supply the legacy BC pages, receiver/chart maps, GPU layout
+or lifetime bindings. Ordered integration `.9.4` owns that conversion and
+producer coordination; `.9.1` owns live renderer wiring. This move introduces
+no conversion algorithm or new standalone VT capability. The existing graphics
+facade dependency audit does not establish independence of this native path.
+Per Jack's directive, VT/VT-RT runtime qualification is deferred to
+`nimble-rapids-30`; build and non-VT checks remain required. Relocation and
+native evidence are recorded in `vt/relocation-evidence.md`.

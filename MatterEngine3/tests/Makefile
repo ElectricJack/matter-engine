@@ -243,7 +243,8 @@ BCENCODE_CFLAGS = -O2 -I$(BC7ENC_DIR)
 VTRESIDENCY_TARGET = build/vt_residency_tests
 VTRESIDENCY_CPP = vt_residency_tests.cpp
 VTRESIDENCY_HEADERS = check.h ../src/render/vt_residency.h \
-                      ../src/render/vt_types.h ../src/render/chart_atlas.h
+                      ../src/render/vt_types.h ../src/render/chart_atlas.h \
+                      $(wildcard ../../libs/MatterGraphics/src/native/vt/*.h)
 
 FLECS_DIR = ../../third_party/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c

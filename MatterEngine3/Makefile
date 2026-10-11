@@ -455,7 +455,8 @@ build/shaders_vk/raster_water.vert.spv: ../libs/MatterGraphics/shaders/raster.ve
 # The rollback Make graph does not use glslc depfiles. Track moved helpers
 # even through compatibility includes, after entrypoints to preserve $<.
 $(VK_SPV): ../libs/MatterGraphics/shaders/material_common.glsl \
-           ../libs/MatterGraphics/shaders/impostor_common.glsl
+           ../libs/MatterGraphics/shaders/impostor_common.glsl \
+           $(wildcard ../libs/MatterGraphics/shaders/vt_*)
 
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
 

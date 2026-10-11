@@ -96,6 +96,12 @@ The inventory below names their original engine locations; see
 [the actual paths and retained host dependencies](src/native/README.md).
 Standalone producer APIs and broader facade integration remain pending.
 
+`clear-crest-48.4.6` similarly relocates the existing VT residency/feedback,
+encoded-page upload/lifetime helpers and POM shaders. Legacy files forward to
+the graphics-owned implementation; behavior and host wiring remain intact.
+See [the VT boundary and deferred qualification](src/native/README.md#vt-residency-and-pom-relocation).
+This does not advertise a standalone VT runtime or a P3 product adapter.
+
 Follow-up owners A–E are temporary task keys in supervisor proposal
 `prop-9ef784b996c1`, vault file
 `plans/2026-10-11-graphics-producer-followups.json`. The daemon validated the
