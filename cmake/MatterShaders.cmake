@@ -100,6 +100,17 @@ function(matter_add_vulkan_shader_pipeline)
             "${CMAKE_CURRENT_BINARY_DIR}" "${shader_output}")
         file(RELATIVE_PATH shader_depfile_argument
             "${CMAKE_CURRENT_BINARY_DIR}" "${shader_depfile}")
+        set(shader_depfile_normalize_command)
+        set(shader_depfile_normalizer)
+        if(WIN32 AND shader_source_argument MATCHES "^[A-Za-z]:[/\\\\]")
+            # Different source/build drives require absolute paths. glslc -MD
+            # does not escape their spaces; normalize before CMake consumes it.
+            set(shader_depfile_normalizer
+                "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/normalize-glslc-depfile.py")
+            set(shader_depfile_normalize_command COMMAND
+                "${MATTER_SHADER_PYTHON_EXECUTABLE}" ${MATTER_SHADER_PYTHON_ARGUMENTS}
+                "${shader_depfile_normalizer}" "${shader_depfile_argument}")
+        endif()
         file(MAKE_DIRECTORY "${shader_output_directory}")
         add_custom_command(
             OUTPUT "${shader_output}"
@@ -112,7 +123,8 @@ function(matter_add_vulkan_shader_pipeline)
                 -MF "${shader_depfile_argument}"
                 "${shader_source_argument}"
                 -o "${shader_output_argument}"
-            DEPENDS "${shader_source}"
+            ${shader_depfile_normalize_command}
+            DEPENDS "${shader_source}" ${shader_depfile_normalizer}
             DEPFILE "${shader_depfile}"
             BYPRODUCTS "${shader_depfile}"
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
@@ -149,6 +161,15 @@ function(matter_add_vulkan_shader_pipeline)
             "${CMAKE_CURRENT_BINARY_DIR}" "${shader_output}")
         file(RELATIVE_PATH shader_depfile_argument
             "${CMAKE_CURRENT_BINARY_DIR}" "${shader_depfile}")
+        set(shader_depfile_normalize_command)
+        set(shader_depfile_normalizer)
+        if(WIN32 AND shader_source_argument MATCHES "^[A-Za-z]:[/\\\\]")
+            set(shader_depfile_normalizer
+                "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/normalize-glslc-depfile.py")
+            set(shader_depfile_normalize_command COMMAND
+                "${MATTER_SHADER_PYTHON_EXECUTABLE}" ${MATTER_SHADER_PYTHON_ARGUMENTS}
+                "${shader_depfile_normalizer}" "${shader_depfile_argument}")
+        endif()
         file(MAKE_DIRECTORY "${shader_output_directory}")
         add_custom_command(
             OUTPUT "${shader_output}"
@@ -162,7 +183,8 @@ function(matter_add_vulkan_shader_pipeline)
                 -MF "${shader_depfile_argument}"
                 "${shader_source_argument}"
                 -o "${shader_output_argument}"
-            DEPENDS "${shader_source}"
+            ${shader_depfile_normalize_command}
+            DEPENDS "${shader_source}" ${shader_depfile_normalizer}
             DEPFILE "${shader_depfile}"
             BYPRODUCTS "${shader_depfile}"
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"

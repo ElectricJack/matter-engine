@@ -16,7 +16,7 @@ open until the owner delivers the reconciled source and retains its run artifact
 An explicit fast request on staging/main or a scheduled run fails. An invocation
 without a GitHub ref defaults to full. The fast CTest label is `ci-fast`; full is
 `ci-full`. Every registered test, including third-party subdirectory tests, receives
-the full label. The initial inventory has 191 tests, with 157 selected for fast.
+the full label. The inventory has 193 tests, with 159 selected for fast.
 
 Fast selects existing CPU, foundation, Python, compiler-policy, third-party and
 safety labels, plus the shader input-list contract. Five measured expensive CPU
@@ -25,6 +25,9 @@ fixtures remain full: `world_definition_tests`, `viewer_logic_tests`,
 editor census, shader rebuild and package execution tests remain full. CPU tests
 with GPU-related names are still CPU contracts according to their existing
 registration. No fixture size, assertion, timeout or failure rule is reduced.
+The fast external-shader regression reuses the full shader dependency fixture on
+different source/build drives. It serializes with the original same-drive fixture
+because both create the same checkout-local source fixture.
 
 `matter_ci_fast` builds the executable targets selected by these labels; it avoids
 the editor and full-only executable targets. Shared engine dependencies still
@@ -53,6 +56,14 @@ an incomplete clean build, the first build, the first run of a new UTC day or
 or failed clean builds do not establish a reusable clean baseline. Tests always
 run, including after a prior failed test run. `-DisableCompilerCache` clears both
 compiler launchers and restores the normal PDB format.
+
+The first local warm run exposed an existing glslc depfile limitation: an external
+`C:` tree and a spaced `D:` checkout produce absolute dependency paths with
+unescaped spaces. Ninja consequently recompiled shaders on each invocation.
+`normalize-glslc-depfile.py` escapes those cross-drive paths before CMake reads
+the depfile, and rejects unexpected/missing dependencies. Native same-drive and
+cross-drive shader fixtures verify no-op stability and selective source/include
+invalidation, with complete long-path shader inventory assertions retained.
 
 `tools/windows/toolchain.lock.json` pins the native toolchain and sccache 0.18.0.
 CI rejects a version mismatch. Installation verifies SHA-256 of both the release

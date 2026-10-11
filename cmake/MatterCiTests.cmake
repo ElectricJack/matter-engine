@@ -42,6 +42,16 @@ add_test(NAME ci_test_report_tests
     COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
         "${CMAKE_SOURCE_DIR}/tools/tests/test_ci_test_report.py")
 set_tests_properties(ci_test_report_tests PROPERTIES LABELS python)
+add_test(NAME glslc_depfile_tests
+    COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+        "${CMAKE_SOURCE_DIR}/tools/tests/test_glslc_depfile.py")
+set_tests_properties(glslc_depfile_tests PROPERTIES LABELS python)
+add_test(NAME shader_external_build_tests
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_SOURCE_DIR}/cmake/tests/shader_rebuild_test.ps1" -ExternalBuild)
+set_tests_properties(shader_external_build_tests PROPERTIES
+    LABELS "compiler-policy" RESOURCE_LOCK matter-shader-fixture)
+set_tests_properties(shader_rebuild_tests PROPERTIES RESOURCE_LOCK matter-shader-fixture)
 matter_label_ci_tests("${CMAKE_SOURCE_DIR}")
 get_property(matter_ci_fast_targets GLOBAL PROPERTY MATTER_CI_FAST_TARGETS)
 add_custom_target(matter_ci_fast DEPENDS ${matter_ci_fast_targets})
