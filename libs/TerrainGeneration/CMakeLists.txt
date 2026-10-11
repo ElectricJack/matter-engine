@@ -11,10 +11,12 @@ function(matter_terrain_register_contracts)
 endfunction()
 matter_terrain_register_contracts()
 set(terrain_legacy "${CMAKE_CURRENT_LIST_DIR}/../../MatterEngine3")
+cmake_path(NORMAL_PATH terrain_legacy)
 # Compile the source of truth directly until ordered integration relocates it.
 # The overlay dependency is a neutral virtual CPU interface; no concrete
 # hydrology backend is linked into the production field library.
-add_library(matter_terrain STATIC src/field.cpp "${terrain_legacy}/src/terrain_field.cpp")
+add_library(matter_terrain STATIC src/field.cpp src/meshing.cpp
+    "${terrain_legacy}/src/terrain_field.cpp" "${terrain_legacy}/src/terrain_mesher.cpp")
 target_compile_features(matter_terrain PUBLIC cxx_std_17)
 target_link_libraries(matter_terrain PUBLIC matter_contracts)
 target_include_directories(matter_terrain PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include"
@@ -25,12 +27,46 @@ else()
     target_compile_options(matter_terrain PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 set_property(TARGET matter_terrain PROPERTY MATTER_COMPONENT_SCAFFOLD FALSE)
-option(MATTER_TERRAIN_BUILD_TESTS "Build independent field and region fixtures" ${BUILD_TESTING})
+option(MATTER_TERRAIN_BUILD_TESTS "Build independent field, region and meshing fixtures" ${BUILD_TESTING})
 if(MATTER_TERRAIN_BUILD_TESTS)
     enable_testing()
     add_executable(matter_terrain_region_tests tests/region_tests.cpp)
     target_link_libraries(matter_terrain_region_tests PRIVATE matter_terrain)
     add_test(NAME terrain.region_inputs.v1 COMMAND matter_terrain_region_tests)
+    add_executable(matter_terrain_meshing_tests tests/meshing_tests.cpp)
+    target_link_libraries(matter_terrain_meshing_tests PRIVATE matter_terrain)
+    add_test(NAME terrain.mesh_products.v1 COMMAND matter_terrain_meshing_tests)
+    add_test(NAME terrain.mesh_rollback_rejected.v1 COMMAND matter_terrain_meshing_tests rollback)
+    set_tests_properties(terrain.mesh_rollback_rejected.v1 PROPERTIES ENVIRONMENT "MATTER_CONTOUR_SEAMS=0")
+    add_executable(matter_terrain_native_parity_tests tests/native_parity_tests.cpp)
+    target_include_directories(matter_terrain_native_parity_tests PRIVATE "${terrain_legacy}/include")
+    target_link_libraries(matter_terrain_native_parity_tests PRIVATE matter_terrain)
+    add_test(NAME terrain.mesh_native_parity.v1 COMMAND matter_terrain_native_parity_tests)
+    set_tests_properties(terrain.mesh_products.v1 terrain.mesh_native_parity.v1
+        PROPERTIES ENVIRONMENT "MATTER_CONTOUR_SEAMS=1")
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terrain-graph.cmake" CONTENT
+"set(terrain_links [==[$<TARGET_PROPERTY:matter_terrain,LINK_LIBRARIES>]==])
+set(terrain_public_links [==[$<TARGET_PROPERTY:matter_terrain,INTERFACE_LINK_LIBRARIES>]==])
+set(terrain_sources [==[$<TARGET_PROPERTY:matter_terrain,SOURCES>]==])
+set(module_root [==[${CMAKE_CURRENT_SOURCE_DIR}]==])
+set(repo_root [==[${CMAKE_CURRENT_SOURCE_DIR}/../..]==])
+cmake_path(NORMAL_PATH repo_root)
+set(archive [==[$<TARGET_FILE:matter_terrain>]==])
+set(msvc ${MSVC})
+set(symbol_tool [==[$<IF:$<BOOL:${MSVC}>,${CMAKE_LINKER},${CMAKE_NM}>]==])
+")
+    add_test(NAME terrain.dependencies.v1 COMMAND "${CMAKE_COMMAND}"
+        "-DGRAPH=${CMAKE_CURRENT_BINARY_DIR}/terrain-graph.cmake"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/dependency_audit.cmake")
+    foreach(fixture terrain_mesher contour_engine)
+        add_executable(matter_terrain_${fixture}_tests "${terrain_legacy}/tests/${fixture}_tests.cpp")
+        target_include_directories(matter_terrain_${fixture}_tests PRIVATE "${terrain_legacy}/include")
+        target_link_libraries(matter_terrain_${fixture}_tests PRIVATE matter_terrain)
+        add_test(NAME terrain.legacy_${fixture} COMMAND matter_terrain_${fixture}_tests)
+    endforeach()
+    target_sources(matter_terrain_terrain_mesher_tests PRIVATE
+        "${terrain_legacy}/src/terrain_river_overlay.cpp"
+        "${terrain_legacy}/src/hydrology/river_geometry.cpp")
     add_executable(matter_terrain_legacy_field_tests
         "${terrain_legacy}/tests/terrain_field_tests.cpp"
         "${terrain_legacy}/src/terrain_river_overlay.cpp"
