@@ -50,9 +50,24 @@ foreach(_helper smin_set VertexInterpolation)
 endforeach()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/shared_surface_math.h" "${_surface_math}\n}\n")
 add_library(matter_geometry STATIC src/geometry.cpp src/profile.cpp src/session.cpp src/csg.cpp src/csg_mesh.cpp
+    src/query.cpp src/modifiers.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/shared_triangle_emit.cpp"
     "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src/polygon_triangulate.cpp"
     "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/fat_primitive.c")
+# Simplify/smooth compile the canonical MatterSurfaceLib stages. OFF drops them
+# and stops advertising their capabilities; modifier requests then fail as
+# unsupported_capability. Retopology (autoremesher/geogram/TBB) is not offered.
+option(MATTER_GEOMETRY_MODIFIERS "Compile the CPU mesh simplify/smooth modifier backend" ON)
+if(MATTER_GEOMETRY_MODIFIERS)
+    set(_modifier_sources)
+    foreach(_stage mesh_indexed mesh_simplifier mesh_smooth mesh_transform)
+        list(APPEND _modifier_sources "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/${_stage}.cpp")
+    endforeach()
+    # Allocate through raylib's malloc macros, not its windowing MemAlloc.
+    set_source_files_properties(${_modifier_sources} PROPERTIES COMPILE_DEFINITIONS MATTER_VULKAN_ONLY)
+    target_sources(matter_geometry PRIVATE ${_modifier_sources})
+    target_compile_definitions(matter_geometry PRIVATE MATTER_GEOMETRY_HAVE_MODIFIERS=1)
+endif()
 target_compile_features(matter_geometry PUBLIC cxx_std_17)
 target_link_libraries(matter_geometry PUBLIC matter_contracts)
 target_include_directories(matter_geometry PUBLIC include PRIVATE
@@ -96,6 +111,15 @@ if(MATTER_GEOMETRY_TESTS)
     target_link_libraries(matter_geometry_allocation_tests PRIVATE matter_geometry)
     add_test(NAME matter_geometry_allocation_tests COMMAND matter_geometry_allocation_tests)
     add_test(NAME matter_geometry_csg_allocation_tests COMMAND matter_geometry_allocation_tests --csg)
+    add_test(NAME matter_geometry_query_allocation_tests COMMAND matter_geometry_allocation_tests --query)
+    if(MATTER_GEOMETRY_MODIFIERS)
+        add_test(NAME matter_geometry_process_allocation_tests COMMAND matter_geometry_allocation_tests --process)
+    endif()
+    add_executable(matter_geometry_processing_tests tests/processing_tests.cpp)
+    target_link_libraries(matter_geometry_processing_tests PRIVATE matter_geometry)
+    target_compile_definitions(matter_geometry_processing_tests PRIVATE
+        MATTER_GEOMETRY_EXPECT_MODIFIERS=$<BOOL:${MATTER_GEOMETRY_MODIFIERS}>)
+    add_test(NAME matter_geometry_processing_tests COMMAND matter_geometry_processing_tests)
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/geometry-dependencies-$<CONFIG>.cmake" CONTENT
 "set(geometry_links [==[$<TARGET_PROPERTY:matter_geometry,LINK_LIBRARIES>]==])
 set(geometry_public_links [==[$<TARGET_PROPERTY:matter_geometry,INTERFACE_LINK_LIBRARIES>]==])
@@ -109,6 +133,7 @@ set(msvc [==[${MSVC}]==])
 set(module_root [==[${CMAKE_CURRENT_SOURCE_DIR}]==])
 set(repo_root [==[${MATTER_GEOMETRY_ROOT}]==])
 set(build_root [==[${CMAKE_CURRENT_BINARY_DIR}]==])
+set(modifiers [==[${MATTER_GEOMETRY_MODIFIERS}]==])
 ")
     add_test(NAME matter_geometry_dependencies COMMAND "${CMAKE_COMMAND}"
         "-DGRAPH=${CMAKE_CURRENT_BINARY_DIR}/geometry-dependencies-$<CONFIG>.cmake"
