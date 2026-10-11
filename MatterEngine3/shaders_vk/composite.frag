@@ -43,6 +43,10 @@ layout(set = 0, binding = 8) uniform sampler2D transmission_texture;
 layout(set = 0, binding = 9) uniform sampler3D vol_integrated_texture;
 layout(set = 0, binding = 10) uniform sampler2D depth_texture;
 layout(set = 0, binding = 11) uniform sampler2D local_direct_texture;
+#ifdef MATTER_EXPLICIT_EMISSION_PRODUCT
+// Standalone typed G-buffer producer; the legacy descriptor ABI is unchanged.
+layout(set = 0, binding = 12) uniform sampler2D emission_texture;
+#endif
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -561,6 +565,9 @@ void main() {
         : albedo.rgb;
     vec3 emission = emission_color * emission_strength *
                     lighting.emission_multiplier;
+#ifdef MATTER_EXPLICIT_EMISSION_PRODUCT
+    emission += texture(emission_texture, in_uv).rgb * lighting.emission_multiplier;
+#endif
     vec3 raw_diffuse = reconstruct_diffuse_light(receiver_world_pos, normal,
                        receiver_linear_depth, diffuse, ao) *
                        lighting.diffuse_rt_multiplier;

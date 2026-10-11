@@ -20,8 +20,12 @@ composition and display into an offscreen pass with explicit evaluated inputs.
 It owns images, pipelines, descriptors and GPU submissions. Fourteen native
 matched image fixtures cover selected shading behavior. See the
 [rendering contract, capability map and producer inventory](RENDERING.md) for
-precise support and pending raster/RT/environment/water extraction; a composition
-consumer does not imply its product producer is available.
+precise support and pending RT/environment/water extraction. Task
+`clear-crest-48.4.5` adds `VulkanRaster`, `VulkanSceneDraw`, and
+`VulkanSparseSurface`: real mesh/material/impostor G-buffer production, GPU
+selection/picking/overlay, and prepared sparse/proxy/query consumers.
+`raster_inputs(SceneFrame, ...)` connects retained imported/synthetic assets to
+the typed renderer; `use_gbuffer(...)` connects its output to R3 composition.
 
 ```cpp
 #include <matter/graphics/graphics.h>
@@ -123,8 +127,10 @@ cmake --build /tmp/matter-graphics-vulkan --parallel 2
 ctest --test-dir /tmp/matter-graphics-vulkan --output-on-failure -j 1
 ```
 
-The native test requires Vulkan 1.2 timeline semaphores for its deterministic
-retirement gate and fails if no suitable graphics device is available; it does
+The native test requires Vulkan 1.2 timeline semaphores, buffer device addresses,
+`VK_KHR_acceleration_structure`, `VK_KHR_deferred_host_operations` and
+`VK_KHR_ray_query` for its retirement and nested traversal fixtures. It fails
+if no suitable graphics device is available; it does
 not silently pass via a fake device. Validation is enabled when installed; set
 `MATTER_GRAPHICS_REQUIRE_VALIDATION=1` to require it (the MSVC wrapper does so).
 `BUILD_TESTING=OFF` with Vulkan disabled needs no Python/Node. The optional
@@ -133,8 +139,9 @@ With testing enabled, CMake 3.27+ and Python 3.9+ are required for the
 standard-library File API audit (no Python package dependency).
 Public headers compile individually. The audit inspects actual compiled targets,
 dependencies, sources, linker fragments and compiler-discovered headers with
-procedural/terrain/host targets absent. Only three exact legacy math source/header
-paths are admitted; adding PartStore or world/device context fails the audit.
+procedural/terrain/host targets absent. The only admitted legacy C++ inputs are the three pure math files and
+`impostor_mips.h`; shader dependencies match the exact allowlist in
+`tests/independence.py`. Adding PartStore or world/device context fails the audit.
 
 ## Concrete scene/resource backend
 
@@ -228,3 +235,45 @@ demand; repeated assembly children report one observation per coordinator ID.
 | `SCENE-LIMIT/ROLLBACK/BUDGET/PENDING-BUDGET` | Bounded expansion, stale/malformed updates, requested/allocated bytes and delayed allocation growth |
 | `SCENE-LIFETIME/SNAPSHOT/BUFFER-OWNER` | Caller/scene/frame/device release order and reclaimed/reused residency |
 | `SCENE-FAIL/CANCEL/CAPS` | Partial failure/exception cleanup, cancellation and unsupported capability rejection |
+
+## Geometry and prepared representation drawing
+
+```cpp
+#include <matter/graphics/vulkan_raster.h>
+matter::graphics::RasterInputs inputs;
+auto converted = matter::graphics::raster_inputs(frame, width, height, inputs);
+// Check converted before submitting. The camera must use reversed Z.
+matter::graphics::VulkanRaster raster(binding);
+matter::graphics::GbufferOutput gbuffer;
+auto rendered = raster.render(inputs, gbuffer);
+// Check rendered; output is unchanged on failure.
+matter::graphics::CompositionInputs lighting;
+matter::graphics::use_gbuffer(std::move(gbuffer), lighting);
+// Supply the matching camera and evaluated lighting/environment products.
+```
+
+The adapter shares each packed geometry/UV variant among placed instances in the
+snapshot and preserves semantic instance/path identities. It consumes resolved
+RGBA8 pixels; the asset pipeline owns image codecs. Portable v1 materials are
+opaque PBR; explicit module `RasterMaterial` inputs additionally select alpha
+masking and double-sided drawing. Blended transparency remains a separate
+producer. Imported normals use inverse transpose and reflected winding/tangents.
+The shared legacy raster entrypoint retains its existing model-normal semantics.
+
+`VulkanSceneDraw::select` runs the production GPU culling/LOD/geometry-cut and
+visibility-ID reduction shaders. It returns native command counts, selected
+placements and missing-node requests, plus a `RasterInputs` draw list. Its
+synchronous readback makes the result independently inspectable; it is not a
+zero-copy live indirect-render integration. Selected VT slots, previous transforms
+and water keys remain explicit products for their respective adapters. `pick`
+resolves the resulting integer identity image; `overlay` draws production
+selection lines into a transparent image.
+
+`VulkanSparseSurface` consumes fitted cells, prepared triangles/textures, LOD
+ladders and hierarchy placements. It runs the native bounded hierarchy and
+GPU-generated indirect voxel/proxy draws. Its optional ray-query path receives
+completed external acceleration structures with a retained owner; RT extraction
+owns their construction and synchronization before handoff. No procedural field,
+surface bake, animation evaluation or geometry generator enters these APIs.
+Detailed formats, limits, capabilities and native fixtures are in
+[RENDERING.md](RENDERING.md).

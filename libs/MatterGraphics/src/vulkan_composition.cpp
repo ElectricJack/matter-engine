@@ -69,11 +69,11 @@ struct Pipelines {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(binding.physical_device, &properties);
     require(properties.limits.maxPushConstantsSize >= sizeof(LightingPush) &&
-            properties.limits.maxPerStageDescriptorSamplers >= 17 &&
-            properties.limits.maxPerStageDescriptorSampledImages >= 17 &&
+            properties.limits.maxPerStageDescriptorSamplers >= 18 &&
+            properties.limits.maxPerStageDescriptorSampledImages >= 18 &&
             properties.limits.maxPerStageDescriptorStorageBuffers >= 6 &&
-            properties.limits.maxDescriptorSetSamplers >= 17 &&
-            properties.limits.maxDescriptorSetSampledImages >= 17 &&
+            properties.limits.maxDescriptorSetSamplers >= 18 &&
+            properties.limits.maxDescriptorSetSampledImages >= 18 &&
             properties.limits.maxDescriptorSetStorageBuffers >= 6,
             E::unsupported_capability, "Device lacks composition descriptor/push limits");
     VkFormatProperties fp{};
@@ -85,7 +85,7 @@ struct Pipelines {
     require((fp.optimalTilingFeatures & (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) ==
         (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT), E::unsupported_capability, "RG32UI identity format unavailable");
     for (size_t i = 0; i < sets.size(); ++i) {
-      const uint32_t count = i == 0 ? 12 : i == 1 ? 7 : i == 2 ? 5 : 1;
+      const uint32_t count = i == 0 ? 13 : i == 1 ? 7 : i == 2 ? 5 : 1;
       std::vector<VkDescriptorSetLayoutBinding> bindings;
       for (uint32_t j = 0; j < count; ++j) {
         auto type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -295,7 +295,7 @@ struct VulkanComposition::Impl {
   void render(const CompositionInputs &in, CompositionOutput &out) {
     if (!pipelines) { auto candidate = std::make_shared<Pipelines>(binding); candidate->init(); pipelines = std::move(candidate); }
     auto frame = std::make_shared<Frame>(); frame->state = pipelines;
-    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18},
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 19},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pool{}; pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool.maxSets = 4; pool.poolSizeCount = 3; pool.pPoolSizes = sizes;
@@ -304,8 +304,8 @@ struct VulkanComposition::Impl {
     sets.descriptorPool = frame->pool; sets.descriptorSetCount = 4; sets.pSetLayouts = pipelines->sets.data();
     vkcheck(vkAllocateDescriptorSets(binding.device, &sets, frame->sets.data()), "composition descriptor sets");
     const FloatImage *gbuffer[] = {&in.albedo, &in.normal, &in.orm, &in.visibility, &in.diffuse, &in.specular,
-                                 nullptr, nullptr, &in.transmission, &in.integrated_volume, &in.depth, &in.local_direct};
-    for (uint32_t i = 0; i < 12; ++i) if (gbuffer[i]) {
+                                 nullptr, nullptr, &in.transmission, &in.integrated_volume, &in.depth, &in.local_direct, &in.emission};
+    for (uint32_t i = 0; i < 13; ++i) if (gbuffer[i]) {
       const auto &src = *gbuffer[i];
       auto im = image(*frame, src.width, src.height, src.depth, i == 9, VK_FORMAT_R32G32B32A32_SFLOAT,
                       src.pixels.data(), src.pixels.size() * sizeof(Rgba));

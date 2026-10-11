@@ -56,15 +56,15 @@ data::ValidationResult validate_composition(const CompositionInputs &in, Composi
   if (!charge(uint64_t(in.materials.size()) * sizeof(ShadingMaterial)) ||
       !charge(uint64_t(in.local_lights.size()) * 64))
     return fail(E::resource_limit, "Composition input byte budget exceeded");
-  const std::array<const FloatImage *, 16> images{{
+  const std::array<const FloatImage *, 17> images{{
       &in.albedo, &in.normal, &in.orm, &in.depth, &in.visibility, &in.diffuse, &in.specular,
       &in.transmission, &in.local_direct, &in.integrated_volume, &in.environment.sky_view,
       &in.environment.irradiance_sh, &in.environment.cloud_optical_depth[0],
       &in.environment.cloud_optical_depth[1], &in.environment.cloud_optical_depth[2],
-      &in.environment.cloud_optical_depth[3]}};
+      &in.environment.cloud_optical_depth[3], &in.emission}};
   for (size_t i = 0; i < images.size(); ++i) {
     const auto &im = *images[i];
-    const bool volume = i == 9 || i >= 12;
+    const bool volume = i == 9 || (i >= 12 && i < 16);
     const uint32_t max_dim = volume ? limits.max_volume_dimension : limits.max_dimension;
     if (!im.width || !im.height || !im.depth || im.width > max_dim || im.height > max_dim ||
         im.depth > (volume ? max_dim : 1u))
@@ -94,6 +94,8 @@ data::ValidationResult validate_composition(const CompositionInputs &in, Composi
       if (!finite(p)) return fail(E::invalid_input, "Nonfinite or unbounded image value");
   for (auto p : in.albedo.pixels) if (!unit(p[0]) || !unit(p[1]) || !unit(p[2]))
     return fail(E::invalid_input, "Albedo must be linear RGB in [0,1]");
+  for (auto p : in.emission.pixels) if (p[0] < 0 || p[1] < 0 || p[2] < 0)
+    return fail(E::invalid_input, "Emission must be nonnegative linear RGB");
   for (auto p : in.orm.pixels) if (!unit(p[0]) || !unit(p[1]) || !unit(p[2]))
     return fail(E::invalid_input, "Roughness/metallic/AO must be in [0,1]");
   for (auto p : in.depth.pixels) if (!unit(p[0])) return fail(E::invalid_input, "Depth must be reversed-Z in [0,1]");

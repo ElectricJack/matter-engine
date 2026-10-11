@@ -82,7 +82,18 @@ struct NativeDevice {
     q.queueFamilyIndex = family; q.queueCount = 1; q.pQueuePriorities = &priority;
     VkDeviceCreateInfo d{}; d.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO; d.queueCreateInfoCount = 1; d.pQueueCreateInfos = &q;
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline{}; timeline.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
-    timeline.timelineSemaphore = VK_TRUE; d.pNext = &timeline;
+    VkPhysicalDeviceBufferDeviceAddressFeatures address{};address.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration{};acceleration.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    VkPhysicalDeviceRayQueryFeaturesKHR query{};query.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    timeline.pNext=&address;address.pNext=&acceleration;acceleration.pNext=&query;
+    VkPhysicalDeviceFeatures2 supported{};supported.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;supported.pNext=&timeline;
+    vkGetPhysicalDeviceFeatures2(physical,&supported);
+    check(timeline.timelineSemaphore&&address.bufferDeviceAddress&&acceleration.accelerationStructure&&query.rayQuery,"VK native query fixture features");
+    // Enable only the feature bits used by these fixtures.
+    timeline.timelineSemaphore=VK_TRUE;address.bufferDeviceAddress=VK_TRUE;address.bufferDeviceAddressCaptureReplay=address.bufferDeviceAddressMultiDevice=VK_FALSE;
+    acceleration.accelerationStructureCaptureReplay=acceleration.accelerationStructureIndirectBuild=acceleration.accelerationStructureHostCommands=acceleration.descriptorBindingAccelerationStructureUpdateAfterBind=VK_FALSE;
+    const char *device_extensions[]={VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,VK_KHR_RAY_QUERY_EXTENSION_NAME};
+    d.enabledExtensionCount=3;d.ppEnabledExtensionNames=device_extensions;d.pNext=&timeline;
     vkcheck(vkCreateDevice(physical, &d, nullptr, &device), "VK create device");
     vkGetDeviceQueue(device, family, 0, &queue);
     VkPhysicalDeviceProperties properties{}; vkGetPhysicalDeviceProperties(physical, &properties);
@@ -201,9 +212,19 @@ void exercise(const std::shared_ptr<NativeDevice> &native) {
 }
 } // namespace
 #include "composition_native.h"
+#include "raster_native.h"
+#include "imported_raster_native.h"
+#include "scene_draw_native.h"
+#include "sparse_native.h"
+#include "sparse_query_native.h"
 int main() {
   auto native = std::make_shared<NativeDevice>(); exercise(native);
   exercise_composition(native);
+  exercise_raster(native);
+  exercise_imported_raster(native);
+  exercise_scene_draw(native);
+  exercise_sparse(native);
+  exercise_sparse_query(native);
   std::weak_ptr<NativeDevice> lifetime = native;
   auto device = std::make_shared<mg::VulkanResourceDevice>(native->binding(native));
   std::shared_ptr<mg::DeviceBuffer> survivor;

@@ -65,6 +65,8 @@ struct CompositionInputs {
   IdentityImage identity;
   FloatImage visibility{1, 1, 1, {{1, 1, 1, 1}}};
   FloatImage diffuse, specular, transmission, local_direct;
+  // Evaluated emissive RGB, added once alongside native table emission.
+  FloatImage emission;
   FloatImage integrated_volume{1, 1, 1, {{0, 0, 0, 1}}};
   bool volume_enabled = false, volume_height_layer = false;
   float cloud_top_metres = 0;

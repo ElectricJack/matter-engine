@@ -12,7 +12,7 @@ if(NOT TARGET matter_contracts)
     set(BUILD_TESTING ${_graphics_testing})
 endif()
 get_filename_component(_graphics_repo "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-add_library(matter_graphics STATIC src/graphics.cpp src/scene_backend.cpp src/composition.cpp
+add_library(matter_graphics STATIC src/graphics.cpp src/scene_backend.cpp src/composition.cpp src/raster.cpp
     "${_graphics_repo}/MatterEngine3/src/render/matrix_math.cpp")
 target_compile_features(matter_graphics PUBLIC cxx_std_17)
 target_include_directories(matter_graphics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -31,6 +31,7 @@ if(MATTER_GRAPHICS_VULKAN)
         add_custom_command(OUTPUT "${output}"
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_shader.py"
                 "${MATTER_GRAPHICS_GLSLC}" "${_shader_dir}/${shader}" "${output}"
+                -DMATTER_EXPLICIT_EMISSION_PRODUCT=1
             DEPENDS "${_shader_dir}/${shader}" tools/compile_shader.py DEPFILE "${output}.d" VERBATIM)
         list(APPEND _composition_spirv "${output}")
     endforeach()
@@ -39,8 +40,53 @@ if(MATTER_GRAPHICS_VULKAN)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_shaders.py"
             "${_composition_header}" ${_composition_spirv}
         DEPENDS ${_composition_spirv} tools/embed_shaders.py VERBATIM)
-    add_library(matter_graphics_vulkan STATIC src/vulkan_resources.cpp src/vulkan_composition.cpp "${_composition_header}")
-    target_include_directories(matter_graphics_vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    set(_raster_spirv)
+    foreach(shader mesh.vert mesh.frag)
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/${shader}.spv")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_shader.py"
+                "${MATTER_GRAPHICS_GLSLC}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}" "${output}" "${_shader_dir}"
+            DEPENDS "shaders/${shader}" tools/compile_shader.py DEPFILE "${output}.d" VERBATIM)
+        list(APPEND _raster_spirv "${output}")
+    endforeach()
+    set(_raster_header "${CMAKE_CURRENT_BINARY_DIR}/raster_spirv.h")
+    add_custom_command(OUTPUT "${_raster_header}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_shaders.py"
+            "${_raster_header}" ${_raster_spirv}
+        DEPENDS ${_raster_spirv} tools/embed_shaders.py VERBATIM)
+    set(_scene_draw_spirv)
+    foreach(shader cull.comp geometry_select.comp visible_ids.comp selection_line.vert selection_line.frag)
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/${shader}.spv")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_shader.py"
+                "${MATTER_GRAPHICS_GLSLC}" "${_shader_dir}/${shader}" "${output}"
+            DEPENDS "${_shader_dir}/${shader}" tools/compile_shader.py DEPFILE "${output}.d" VERBATIM)
+        list(APPEND _scene_draw_spirv "${output}")
+    endforeach()
+    set(_scene_draw_header "${CMAKE_CURRENT_BINARY_DIR}/scene_draw_spirv.h")
+    add_custom_command(OUTPUT "${_scene_draw_header}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_shaders.py"
+            "${_scene_draw_header}" ${_scene_draw_spirv}
+        DEPENDS ${_scene_draw_spirv} tools/embed_shaders.py VERBATIM)
+    set(_sparse_surface_spirv)
+    foreach(shader sparse_voxel.vert sparse_voxel.frag sparse_voxel_select.comp sparse_hierarchy.comp
+                   surface_proxy.vert surface_proxy.frag surface_query.vert surface_query.frag)
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/${shader}.spv")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_shader.py"
+                "${MATTER_GRAPHICS_GLSLC}" "${_shader_dir}/${shader}" "${output}"
+            DEPENDS "${_shader_dir}/${shader}" tools/compile_shader.py DEPFILE "${output}.d" VERBATIM)
+        list(APPEND _sparse_surface_spirv "${output}")
+    endforeach()
+    set(_sparse_surface_header "${CMAKE_CURRENT_BINARY_DIR}/sparse_surface_spirv.h")
+    add_custom_command(OUTPUT "${_sparse_surface_header}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_shaders.py"
+            "${_sparse_surface_header}" ${_sparse_surface_spirv}
+        DEPENDS ${_sparse_surface_spirv} tools/embed_shaders.py VERBATIM)
+    add_library(matter_graphics_vulkan STATIC src/vulkan_resources.cpp src/vulkan_composition.cpp src/vulkan_raster.cpp
+        src/vulkan_scene_draw.cpp src/vulkan_sparse_surface.cpp "${_composition_header}" "${_raster_header}" "${_scene_draw_header}" "${_sparse_surface_header}")
+    target_include_directories(matter_graphics_vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${_graphics_repo}/MatterEngine3/src/render")
+    target_include_directories(matter_graphics_vulkan PRIVATE "${_graphics_repo}/MatterEngine3/include")
     target_link_libraries(matter_graphics_vulkan PUBLIC matter_graphics Vulkan::Vulkan)
     if(MSVC)
         target_compile_options(matter_graphics_vulkan PRIVATE /W4 /WX /permissive- /utf-8)
@@ -59,7 +105,7 @@ if(BUILD_TESTING)
         message(FATAL_ERROR "Graphics dependency tests require CMake 3.27+ (the supported MSVC wrapper supplies it)")
     endif()
     cmake_file_api(QUERY API_VERSION 1 CODEMODEL 2)
-    foreach(header backend graphics scene_backend composition)
+    foreach(header backend graphics scene_backend composition raster)
         set(check "${CMAKE_CURRENT_BINARY_DIR}/header-${header}.cpp")
         file(WRITE "${check}" "#include <matter/graphics/${header}.h>\n")
         add_library(matter_graphics_header_${header} OBJECT "${check}")
@@ -83,8 +129,19 @@ if(BUILD_TESTING)
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_composition.cpp" "#include <matter/graphics/vulkan_composition.h>\n")
         add_library(matter_graphics_header_vulkan_composition OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_composition.cpp")
         target_link_libraries(matter_graphics_header_vulkan_composition PRIVATE matter_graphics_vulkan)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_raster.cpp" "#include <matter/graphics/vulkan_raster.h>\n")
+        add_library(matter_graphics_header_vulkan_raster OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_raster.cpp")
+        target_link_libraries(matter_graphics_header_vulkan_raster PRIVATE matter_graphics_vulkan)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_scene_draw.cpp" "#include <matter/graphics/vulkan_scene_draw.h>\n")
+        add_library(matter_graphics_header_vulkan_scene_draw OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_scene_draw.cpp")
+        target_link_libraries(matter_graphics_header_vulkan_scene_draw PRIVATE matter_graphics_vulkan)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_sparse_surface.cpp" "#include <matter/graphics/vulkan_sparse_surface.h>\n")
+        add_library(matter_graphics_header_vulkan_sparse_surface OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_sparse_surface.cpp")
+        target_link_libraries(matter_graphics_header_vulkan_sparse_surface PRIVATE matter_graphics_vulkan)
         add_executable(matter_graphics_vulkan_tests tests/vulkan_tests.cpp)
         target_link_libraries(matter_graphics_vulkan_tests PRIVATE matter_graphics_vulkan)
+        target_compile_definitions(matter_graphics_vulkan_tests PRIVATE
+            MATTER_GRAPHICS_IMPORTED_ASSET="${CMAKE_CURRENT_SOURCE_DIR}/../MatterContracts/examples/repeated-assembly.asset.json")
         add_test(NAME matter_graphics_vulkan COMMAND matter_graphics_vulkan_tests)
         set_tests_properties(matter_graphics_vulkan PROPERTIES TIMEOUT 60)
     endif()

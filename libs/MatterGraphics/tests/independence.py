@@ -33,16 +33,25 @@ def audit(build):
         allowed_shaders = {shader_root / name for name in (
             "composite.vert", "composite.frag", "display_transform.frag",
             "vol_common.glsl", "impostor_common.glsl", "environment_common.glsl",
-            "cloud_shadow_common.glsl", "local_lighting.glsl", "local_light_types.glsl")}
+            "cloud_shadow_common.glsl", "local_lighting.glsl", "local_light_types.glsl",
+            "impostor_raster.glsl", "impostor_sample.glsl", "material_common.glsl",
+            "cull.comp", "geometry_select.comp", "visible_ids.comp", "selection_line.vert", "selection_line.frag",
+            "scene_instance.glsl", "geometry_cut.glsl", "sparse_voxel.vert", "sparse_voxel.frag",
+            "sparse_voxel_select.comp", "sparse_hierarchy.comp", "surface_proxy.vert", "surface_proxy.frag",
+            "surface_query.vert", "surface_query.frag", "sparse_voxel_common.glsl", "sparse_voxel_optics.glsl",
+            "surface_proxy_common.glsl", "surface_filter.glsl")}
+        allowed_shaders.update(root / "shaders" / name for name in ("mesh.vert", "mesh.frag", "raster_common.glsl"))
         legacy_files.update(allowed_shaders)
+        legacy_files.add(repository / "MatterEngine3/src/render/impostor_mips.h")
     legacy_includes = {repository / "MatterEngine3/src/render", repository / "MatterEngine3/include"}
     expected = {"matter_contracts", "matter_graphics", "matter_graphics_tests",
                 "matter_graphics_header_backend", "matter_graphics_header_graphics",
                 "matter_graphics_header_scene_backend", "matter_graphics_scene_tests",
-                "matter_graphics_header_composition", "matter_graphics_composition_tests"}
+                "matter_graphics_header_composition", "matter_graphics_composition_tests", "matter_graphics_header_raster"}
     if vulkan:
         expected.update({"matter_graphics_vulkan", "matter_graphics_vulkan_tests", "matter_graphics_header_vulkan_resources",
-                         "matter_graphics_header_vulkan_composition"})
+                         "matter_graphics_header_vulkan_composition", "matter_graphics_header_vulkan_raster", "matter_graphics_header_vulkan_scene_draw",
+                         "matter_graphics_header_vulkan_sparse_surface"})
     for config in model["configurations"]:
         all_targets = {t["name"]: json.loads((reply / t["jsonFile"]).read_text()) for t in config["targets"]}
         utilities = {name for name, t in all_targets.items() if t["type"] == "UTILITY"}
@@ -100,7 +109,10 @@ def audit(build):
     assert required_headers <= checked, f"Shared renderer math headers not compiled: {required_headers - checked}"
     if vulkan:
         shader_deps = set()
-        for shader in ("composite.vert", "composite.frag", "display_transform.frag"):
+        for shader in ("composite.vert", "composite.frag", "display_transform.frag", "mesh.vert", "mesh.frag",
+                       "cull.comp", "geometry_select.comp", "visible_ids.comp", "selection_line.vert", "selection_line.frag",
+                       "sparse_voxel.vert", "sparse_voxel.frag", "sparse_voxel_select.comp", "sparse_hierarchy.comp",
+                       "surface_proxy.vert", "surface_proxy.frag", "surface_query.vert", "surface_query.frag"):
             raw = (build / (shader + ".spv.d")).read_text()
             # compile_shader.py escapes paths; split only the target delimiter.
             shader_deps.update(Path(p).resolve() for p in shlex.split(raw.split(": ", 1)[1]))
