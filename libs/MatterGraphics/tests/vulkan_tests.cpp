@@ -1,5 +1,6 @@
 #include <matter/graphics/graphics.h>
 #include <matter/graphics/vulkan_resources.h>
+#include <matter/graphics/vulkan_composition.h>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -155,6 +156,8 @@ void exercise(const std::shared_ptr<NativeDevice> &native) {
   { std::lock_guard<std::mutex> lock(*native->mutex);
     vkcheck(vkQueueSubmit(native->queue, 1, &blocked, VK_NULL_HANDLE), "VK block queue"); }
   std::shared_ptr<mg::VulkanSubmission> use;
+  auto frame_owner = std::make_shared<int>(42);
+  std::weak_ptr<int> retained_frame = frame_owner;
   valid(device->submit([&](VkCommandBuffer cmd) {
     VkBufferMemoryBarrier barrier{}; barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
@@ -164,7 +167,8 @@ void exercise(const std::shared_ptr<NativeDevice> &native) {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, nullptr, 1, &barrier, 0, nullptr);
     vkCmdFillBuffer(cmd, vkbuffer->native_buffer(), 0, VK_WHOLE_SIZE, 0x01020304);
-  }, {buffer}, use), "VK queued use");
+  }, {buffer}, use, {frame_owner}), "VK queued use");
+  frame_owner.reset();
   bool complete = true; valid(use->poll(complete), "VK poll blocked use");
   check(!complete && !buffer->idle(), "VK pending use prevents retirement");
   valid(graphics.release_resource(handle), "VK caller releases resource");
@@ -172,11 +176,13 @@ void exercise(const std::shared_ptr<NativeDevice> &native) {
   frame = {}; vkbuffer.reset(); std::weak_ptr<mg::DeviceBuffer> retained = buffer; buffer.reset();
   graphics.collect_garbage(); check(!retained.expired(), "VK submission retains buffer");
   use.reset(); // Device retains the submission even after the ticket is dropped.
+  check(!retained_frame.expired(), "VK pending submission retains frame resources");
   VkSemaphoreSignalInfo signal{}; signal.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
   signal.semaphore = gate; signal.value = value;
   vkcheck(vkSignalSemaphore(native->device, &signal), "VK unblock queue");
   device->drain(); graphics.collect_garbage();
   check(retained.expired(), "VK fence completion releases buffer");
+  check(retained_frame.expired(), "VK fence completion releases frame resources");
   vkDestroySemaphore(native->device, gate, nullptr);
   auto second = graphics.upload(job, triangle(), {}); check(second.ok(), "VK pending disposal upload");
   graphics.dispose(); graphics.dispose(); // Drains uploads without polling tickets.
@@ -194,8 +200,10 @@ void exercise(const std::shared_ptr<NativeDevice> &native) {
   owned.reset();
 }
 } // namespace
+#include "composition_native.h"
 int main() {
   auto native = std::make_shared<NativeDevice>(); exercise(native);
+  exercise_composition(native);
   std::weak_ptr<NativeDevice> lifetime = native;
   auto device = std::make_shared<mg::VulkanResourceDevice>(native->binding(native));
   std::shared_ptr<mg::DeviceBuffer> survivor;

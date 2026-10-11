@@ -28,12 +28,21 @@ def audit(build):
     legacy_files = {repository / "MatterEngine3/src/render/matrix_math.cpp",
                     repository / "MatterEngine3/src/render/matrix_math.h",
                     repository / "MatterEngine3/include/matter/math_types.h"}
+    if vulkan:
+        shader_root = repository / "MatterEngine3/shaders_vk"
+        allowed_shaders = {shader_root / name for name in (
+            "composite.vert", "composite.frag", "display_transform.frag",
+            "vol_common.glsl", "impostor_common.glsl", "environment_common.glsl",
+            "cloud_shadow_common.glsl", "local_lighting.glsl", "local_light_types.glsl")}
+        legacy_files.update(allowed_shaders)
     legacy_includes = {repository / "MatterEngine3/src/render", repository / "MatterEngine3/include"}
     expected = {"matter_contracts", "matter_graphics", "matter_graphics_tests",
                 "matter_graphics_header_backend", "matter_graphics_header_graphics",
-                "matter_graphics_header_scene_backend", "matter_graphics_scene_tests"}
+                "matter_graphics_header_scene_backend", "matter_graphics_scene_tests",
+                "matter_graphics_header_composition", "matter_graphics_composition_tests"}
     if vulkan:
-        expected.update({"matter_graphics_vulkan", "matter_graphics_vulkan_tests", "matter_graphics_header_vulkan_resources"})
+        expected.update({"matter_graphics_vulkan", "matter_graphics_vulkan_tests", "matter_graphics_header_vulkan_resources",
+                         "matter_graphics_header_vulkan_composition"})
     for config in model["configurations"]:
         all_targets = {t["name"]: json.loads((reply / t["jsonFile"]).read_text()) for t in config["targets"]}
         utilities = {name for name, t in all_targets.items() if t["type"] == "UTILITY"}
@@ -89,8 +98,15 @@ def audit(build):
     # MSVC /showIncludes omits the primary .cpp; the codemodel above audits it.
     required_headers = {p for p in legacy_files if p.suffix == ".h"}
     assert required_headers <= checked, f"Shared renderer math headers not compiled: {required_headers - checked}"
+    if vulkan:
+        shader_deps = set()
+        for shader in ("composite.vert", "composite.frag", "display_transform.frag"):
+            raw = (build / (shader + ".spv.d")).read_text()
+            # compile_shader.py escapes paths; split only the target delimiter.
+            shader_deps.update(Path(p).resolve() for p in shlex.split(raw.split(": ", 1)[1]))
+        assert shader_deps == allowed_shaders, f"Unexpected shader dependency closure: {shader_deps ^ allowed_shaders}"
     print("PASS GFX-INDEPENDENT-GRAPH: scene/facade/contracts/shared pure math" +
-          (" plus isolated Vulkan adapter/loader" if vulkan else "") +
+          (" plus isolated Vulkan adapter/loader and exact production shader closure" if vulkan else "") +
           "; source, link and compiler dependency audit")
 
 
