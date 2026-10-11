@@ -50,6 +50,39 @@ expressions are unchanged. The lock coordinates tests in one CTest invocation;
 separate invocations and interactive GPU applications must still be scheduled
 by the runner owner.
 
+### Composition with CI tier labeling
+
+The separately held `keen-current-19` checkpoint `2e67` introduces
+`cmake/MatterCiTests.cmake`. Its `matter_label_ci_tests` helper currently
+assigns `RESOURCE_LOCK matter-vulkan`, replacing any existing locks. That
+assignment must be reconciled when the integration owner combines the work;
+the frozen checkpoint is not changed by this task.
+
+The composition contract is:
+
+- Use `matter_gpu` as the single canonical GPU lock name. Consolidate the
+  root-directory loop and the CI helper's GPU-lock assignment into one final
+  recursive helper, called after all tests and their labels are registered.
+  Every `gpu` or `vulkan` test in every directory must acquire that lock,
+  regardless of CI tier.
+- Append the canonical lock while retaining any existing unrelated resource
+  locks. Remove the superseded `matter-vulkan` assignment during composition;
+  a later labeling helper must not replace or split the shared GPU lock.
+- After all helpers execute, inspect `ctest --show-only=json-v1` from the
+  composed native configuration. Check every GPU test has `matter_gpu`,
+  unrelated locks are preserved, CPU-only tests do not gain the GPU lock,
+  and no tests are disabled. Check the three affected tests retain their
+  timeouts, assertions and validation-error gates. The fast CPU tier alone
+  does not satisfy this task's required native `dev` acceptance.
+- Run the focused `-j 6` command below and the required native Windows gate
+  on the exact composed `dev` SHA. Keep the staging/main requirements intact.
+
+The 26-test lock inventory above verifies this task's standalone policy.
+It does not verify the future composed helper: both its effective native
+properties and execution remain pending with the integration owner. Native
+launch retries are paused while the daemon owner handles the shared WSL
+interop failure and the current fleet qualification remains in progress.
+
 The independent CPU oracle also passes:
 
 ```sh
