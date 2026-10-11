@@ -1,4 +1,8 @@
-# Production raster implementation
+# Production native implementation
+
+The ray tracing, lighting, GI and sparse-shadow relocation is documented in
+[RAY_TRACING.md](RAY_TRACING.md). It uses the same private-fragment boundary
+described below for raster.
 
 These files were moved from the production engine by `bright-torrent-52`.
 The reference is commit `58289c187`. They preserve the native renderer's
