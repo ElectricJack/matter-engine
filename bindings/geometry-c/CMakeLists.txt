@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.25)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(matter_geometry_c_scaffold LANGUAGES C CXX)
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/../../libs/MatterContracts/cmake/ComponentScaffolds.cmake")
+matter_register_component(matter_contracts)
+matter_register_component(matter_geometry)
+# Interface-only scaffolding: no algorithm/backend/runtime implementation.
+add_library(matter_geometry_c INTERFACE)
+target_link_libraries(matter_geometry_c INTERFACE matter_contracts matter_geometry)
+set_property(TARGET matter_geometry_c PROPERTY MATTER_COMPONENT_SCAFFOLD TRUE)
+set_property(GLOBAL APPEND PROPERTY MATTER_SCAFFOLD_TARGETS matter_geometry_c)

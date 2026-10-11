@@ -85,3 +85,12 @@ the slice; this map cannot grant an unheld task.
 Namespaced legacy FNV cache identity stays distinct from the specified portable
 digest. No cache relabeling, tolerance loosening, shader fixes, promotion changes
 or source moves are part of this baseline task.
+
+## Service scaffold handoff
+
+Task `clear-crest-48.1.3` adds the [machine-readable local target manifest](../../libs/MatterContracts/component-ownership.json)
+and [public service/ABI ownership rules](../../libs/MatterContracts/SERVICES.md).
+These append to the baseline without changing its pinned provenance or central
+writers. Native module targets are explicitly marked interface-only scaffolds;
+their configure/consumer checks do not establish extraction or performance
+acceptance. The delivered shared contract gate remains prerequisite to tracks.
