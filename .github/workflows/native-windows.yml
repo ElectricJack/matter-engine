@@ -1,8 +1,11 @@
 name: Native Windows
 on:
   push:
-    branches: [main, 'aq/**']
+    branches: [main, dev, staging, 'aq/batches/**', 'aq/integration/**']
   workflow_dispatch:
+concurrency:
+  group: native-windows-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -11,8 +14,8 @@ jobs:
     runs-on: [self-hosted, Windows, X64, matter-engine-msvc]
     timeout-minutes: 90
     env:
-      CMAKE_BUILD_PARALLEL_LEVEL: '4'
-      CTEST_PARALLEL_LEVEL: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '12'
+      CTEST_PARALLEL_LEVEL: '6'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
