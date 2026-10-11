@@ -1,6 +1,9 @@
 # Build artifacts
 /build/
 *.obj
+# OBJ export geometry fixtures are source data, not MSVC object files.
+!/MatterEngine3/tests/fixtures/export/AlpineFlower.obj
+!/MatterEngine3/tests/fixtures/export/CastlePavingSlab.obj
 *.so
 *.dylib
 *.dll

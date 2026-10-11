@@ -120,9 +120,21 @@ $drive = [char]::ToLowerInvariant($repositoryPath[0])
 $relative = $repositoryPath.Substring(3).Replace('\', '/')
 $wslRoot = "/mnt/$drive/$relative"
 $wslScript = "$wslRoot/cmake/tests/build_windows_from_wsl_contract_tests.sh"
-& wsl.exe -- env -i PATH=/usr/bin:/bin HOME=/tmp bash $wslScript $wslRoot
-if ($LASTEXITCODE -ne 0) {
-    throw "WSL build-wrapper contract failed with exit $LASTEXITCODE"
+# wsl.exe itself exits -1 when the WSL service cannot start the command at
+# all (the self-hosted runner shares its WSL VM with the agent fleet, and a
+# saturated VM answers Wsl/Service/0x8007274c, a connection timeout). bash can
+# only exit 0-255, so -1 never reports a contract result: retry just that
+# launch failure, and let every exit the script produced stand.
+$wslAttempts = 4
+for ($attempt = 1; $attempt -le $wslAttempts; ++$attempt) {
+    & wsl.exe -- env -i PATH=/usr/bin:/bin HOME=/tmp bash $wslScript $wslRoot
+    $wslExit = $LASTEXITCODE
+    if ($wslExit -ne -1) { break }
+    Write-Host "WSL could not launch the contract (attempt $attempt of $wslAttempts)"
+    if ($attempt -lt $wslAttempts) { Start-Sleep -Seconds 30 }
+}
+if ($wslExit -ne 0) {
+    throw "WSL build-wrapper contract failed with exit $wslExit"
 }
 
 Write-Host 'native and WSL build-wrapper contracts passed'

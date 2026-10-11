@@ -5661,6 +5661,17 @@ void run_vt_feedback_visibility_path(matter::VulkanDevice& vulkan) {
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
 #endif
     run_vt_demand_cache_path(vulkan);
+    // This fixture tests depth-visible feedback and retained-page reuse after
+    // short frame windows. Production slicing needs hundreds of frames per
+    // page; use the supported whole-page mode so scheduling does not prevent
+    // the visibility assertions from exercising resident detail.
+    auto& budgets = matter::vt_residency_budgets();
+    struct RestoreBudgets {
+        matter::VtResidencyBudgets& live;
+        matter::VtResidencyBudgets saved;
+        ~RestoreBudgets() { live = saved; }
+    } restore_budgets{budgets, budgets};
+    budgets.fill_budget_ms = 0;
     const auto make_quad = [](uint64_t hash, float z, uint32_t material,
                               bool charted) {
         auto part = fixed_part(hash, {-1.0f, -1.0f, z}, {1.0f, 1.0f, z}, 0);

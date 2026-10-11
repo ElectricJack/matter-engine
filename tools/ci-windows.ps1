@@ -11,6 +11,14 @@ try {
     $transcribing = $true
     if (-not $env:CMAKE_BUILD_PARALLEL_LEVEL) { $env:CMAKE_BUILD_PARALLEL_LEVEL = '4' }
     if (-not $env:CTEST_PARALLEL_LEVEL) { $env:CTEST_PARALLEL_LEVEL = '2' }
+    # Keep desktop capture/overlay implicit layers out of test processes on a
+    # shared workstation runner. OBS's hook loads unconditionally; the others
+    # are environment-gated but registered. Driver layers stay enabled.
+    if (-not $env:VK_LOADER_LAYERS_DISABLE) {
+        $env:VK_LOADER_LAYERS_DISABLE = 'VK_LAYER_OBS_HOOK,VK_LAYER_EOS_Overlay,' +
+            'VK_LAYER_VALVE_steam_overlay,VK_LAYER_VALVE_steam_fossilize,' +
+            'VK_LAYER_RENDERDOC_Capture'
+    }
     Import-Module (Join-Path $PSScriptRoot 'windows/MatterWindowsToolchain.psm1') -Force
     $toolchain = Resolve-MatterWindowsToolchain -RepositoryRoot $repositoryRoot
     $toolchain | ConvertTo-Json -Depth 2 | Set-Content (Join-Path $evidence 'toolchain.json')
