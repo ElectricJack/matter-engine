@@ -11,10 +11,10 @@ if(NOT TARGET matter_contracts)
   set(BUILD_TESTING ${matter_host_testing})
 endif()
 if(NOT TARGET matter_quickjs)
+  # Same vendor sources as the shared target, compiled from where they live;
+  # the vendor carries the backtrace ownership fix (MATTER_PATCHES.md).
   set(qjs "${MATTER_HOST_ROOT}/third_party/quickjs-ng")
-  include("${CMAKE_CURRENT_LIST_DIR}/quickjs-compat.cmake")
-  matter_host_prepare_quickjs("${qjs}/quickjs.c" "${CMAKE_CURRENT_BINARY_DIR}/quickjs-host.c")
-  add_library(matter_quickjs STATIC "${CMAKE_CURRENT_BINARY_DIR}/quickjs-host.c" "${qjs}/cutils.c"
+  add_library(matter_quickjs STATIC "${qjs}/quickjs.c" "${qjs}/cutils.c"
     "${qjs}/libregexp.c" "${qjs}/libunicode.c" "${qjs}/xsum.c")
   set_property(TARGET matter_quickjs PROPERTY MATTER_QUICKJS_BACKTRACE_OWNERSHIP_FIXED TRUE)
   target_include_directories(matter_quickjs SYSTEM PUBLIC "${qjs}")

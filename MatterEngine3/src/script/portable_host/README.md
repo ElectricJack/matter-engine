@@ -96,23 +96,24 @@ or a preemptive process deadline. Large native built-ins/decoders may finish a
 bounded unit before observing cancellation; use process isolation when required.
 
 OOM is tracked by the host allocator even if QuickJS cannot allocate an Error.
-The pinned VM also needs an exception ownership fix: a second OOM during
-`build_backtrace` can free the pending error that the function still borrows.
-`quickjs-compat.cmake` retains/releases that value in a generated build-directory
-translation unit, after checking the exact vendor source SHA-256. No vendor file
-is edited. The sanitizer regression exercises array and Error allocation pressure.
+The shared vendor carries the exception ownership fix: a second OOM during
+`build_backtrace` used to free the pending error that the function still
+borrowed (`third_party/quickjs-ng/MATTER_PATCHES.md`). No build-directory copy or
+generated variant of the VM exists. The sanitizer regression exercises array and
+Error allocation pressure.
 SDK diagnostic codes, node IDs, source locations and dependency paths survive the
 boundary. Syntax/runtime stacks map module IDs back to supplied URIs and their
 line/column when available; missing VM locations are reported as zero, not guessed.
 A strict plain-data copy rejects accessors, holes, undefined, closures, invalid
 Unicode, nonfinite numbers and cycles before canonical encoding/native decoding.
 
-The vendored QuickJS 0.10.0 has two BigInt defects exercised by the RNG corpus:
-`BigInt.asUintN(64, 0xffffffffffffffffn)` yields `-1n`, and positive binary-radix
-formatting can retain a leading zero sign limb. `setup.js` corrects these two
-runtime intrinsics locally. The portable SDK, RNG algorithm, contracts and vendor
-sources remain unchanged. Frozen native words/unit values and Node parity test
-the resulting behavior, including high-bit seeds and RNG snapshot/restore.
+The vendored QuickJS 0.10.0 had BigInt defects exercised by the RNG corpus:
+`BigInt.asUintN(64, 0xffffffffffffffffn)` yielded `-1n`, and positive binary-radix
+formatting could retain a leading zero sign limb (or read past the top limb).
+The shared vendor now carries the upstream fixes, so `setup.js` no longer
+overrides any BigInt intrinsic. The portable SDK, RNG algorithm and contracts
+remain unchanged. Frozen native words/unit values and Node parity test the
+resulting behavior, including high-bit seeds and RNG snapshot/restore.
 
 ## Build and verify
 
@@ -149,11 +150,11 @@ build and CTest commands. Both suites pass with AddressSanitizer enabled.
 `BUILD_TESTING=ON` requires Node; no packages are installed. Library-only builds
 need no Node. A parent can use `add_subdirectory` and supply existing
 `matter_contracts`/`matter_quickjs` targets. A supplied QuickJS target must carry
-the equivalent backtrace retention fix and explicitly set target property
+the backtrace retention fix and explicitly set target property
 `MATTER_QUICKJS_BACKTRACE_OWNERSHIP_FIXED` to true; configuration fails otherwise.
-The later central build owner should adopt this two-line fix (or an audited
-vendor update) before linking the facade with the live ScriptHost. This avoids
-silently linking the unsafe shared VM or a second copy of its symbols.
+The root `matter_quickjs` (`cmake/MatterThirdParty.cmake`) compiles the patched
+vendor and declares it; a standalone build compiles the same vendor sources. This
+avoids silently linking an unpatched VM or a second copy of its symbols.
 Tests are local, CPU-only and serial.
 
 | Fixture | Evidence |
@@ -171,6 +172,7 @@ Tests are local, CPU-only and serial.
 | `HOST-OOM-BACKTRACE-OWNERSHIP-v1` | Repeated allocation failure while constructing errors at multiple heap limits; run under AddressSanitizer |
 | `HOST-NO-AMBIENT-SERVICES-v1` | Fresh globals, no file/network/browser/clock interfaces, explicit RNG |
 | `HOST-BIGINT-CONFORMANCE-v1` | Unsigned truncation at 0/1/32/63/64/65/128 bits, hexadecimal formatting, single width conversion and invalid-width rejection |
+| `HOST-BIGINT-VENDOR-v1` | Vendor `asUintN`/`asIntN` across limb-boundary widths to 200 bits, radix 2/4/8/10/16/32/36 formatting against a division reference, oversized-width `RangeError` |
 
 This proves authoring-only recipe equivalence. Geometry, rendering, live legacy
 ScriptHost integration and performance qualification belong to their later tasks.
