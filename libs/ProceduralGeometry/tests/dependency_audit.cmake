@@ -45,6 +45,18 @@ endif()
 if(NOT status EQUAL 0)
     message(FATAL_ERROR "Cannot inspect geometry symbols: ${errors}")
 endif()
+# MSVC /dump /symbols lists C string-literal constants as `??_C@....  (`string')`,
+# so words inside diagnostic messages and capability names land here: the
+# "mesh.retopology" capability name (modifiers.cpp) and the "mesh retopology
+# has no supported backend" error text both emit `string' symbols. The broad
+# backend-keyword checks below would then mistake those explicit
+# unsupported-operation diagnostic strings for linked backend code. Drop every
+# string-literal symbol line first; a genuinely linked backend function/class
+# emits a mangled C++ definition (e.g. `??_Z?remesh@autoremesher@@...`) that is
+# not a `string' symbol, so it survives the filter and is still detected below.
+# Non-MSVC `nm -C` output has no `string' annotation, so the filter is a no-op there.
+string(REGEX REPLACE "\n[^\n]*\\(`string'\\)" "" symbols "${symbols}")
+string(REGEX REPLACE "^[^\n]*\\(`string'\\)"  "" symbols "${symbols}")
 if(symbols MATCHES "compute_resolved_hash|DslState|JS_Eval|vkCreate|BeginDrawing|TerrainGenerator")
     message(FATAL_ERROR "Headless archive contains a host/renderer/terrain/cache runtime symbol")
 endif()
