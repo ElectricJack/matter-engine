@@ -70,7 +70,11 @@ struct Pipelines {
     vkGetPhysicalDeviceProperties(binding.physical_device, &properties);
     require(properties.limits.maxPushConstantsSize >= sizeof(LightingPush) &&
             properties.limits.maxPerStageDescriptorSamplers >= 17 &&
-            properties.limits.maxPerStageDescriptorStorageBuffers >= 6,
+            properties.limits.maxPerStageDescriptorSampledImages >= 17 &&
+            properties.limits.maxPerStageDescriptorStorageBuffers >= 6 &&
+            properties.limits.maxDescriptorSetSamplers >= 17 &&
+            properties.limits.maxDescriptorSetSampledImages >= 17 &&
+            properties.limits.maxDescriptorSetStorageBuffers >= 6,
             E::unsupported_capability, "Device lacks composition descriptor/push limits");
     VkFormatProperties fp{};
     vkGetPhysicalDeviceFormatProperties(binding.physical_device, VK_FORMAT_R32G32B32A32_SFLOAT, &fp);
@@ -233,7 +237,13 @@ struct VulkanComposition::Impl {
     ci.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D; ci.format = format; ci.extent = result->extent;
     ci.mipLevels = ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (!bytes) ci.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!bytes) {
+      ci.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      VkPhysicalDeviceProperties properties{};
+      vkGetPhysicalDeviceProperties(binding.physical_device, &properties);
+      require(w <= properties.limits.maxFramebufferWidth && h <= properties.limits.maxFramebufferHeight,
+              E::unsupported_capability, "Composition framebuffer extent unavailable on device");
+    }
     VkImageFormatProperties format_limits{};
     auto supported = vkGetPhysicalDeviceImageFormatProperties(binding.physical_device, format,
         ci.imageType, ci.tiling, ci.usage, 0, &format_limits);
