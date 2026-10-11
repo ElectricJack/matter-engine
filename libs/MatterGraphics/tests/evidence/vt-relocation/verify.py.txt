@@ -1,0 +1,33 @@
+from pathlib import Path
+import hashlib, json, subprocess
+ROOT = Path.cwd()
+BASE = '6490dbab806876631465259cdf5b397f258c5837'
+LOG = Path('/tmp/clear-crest-vt-move')
+MOVES = json.loads((LOG/'moves.json').read_text())
+def original(path):
+    return subprocess.check_output(['git','show',BASE+':'+path])
+def win(path):
+    return subprocess.check_output(['wslpath','-w',str(path)],text=True).strip()
+for move in MOVES:
+    value=(ROOT/move['to']).read_bytes()
+    if move['to'].endswith('.comp'): value=b'#version 460\n'+value
+    value=value.replace(b'../../../../../MatterEngine3/src/render/',b'').replace(b'../../../../MeshChartingLib/',b'../../../libs/MeshChartingLib/')
+    assert value==original(move['from']),move['to']
+    assert len((ROOT/move['from']).read_text().splitlines())<=4
+print('PASS: 37 source moves reconstruct reference exactly',flush=True)
+stage=ROOT/'MatterEditor/build/vt-move-validation/original-shaders'
+stage.mkdir(parents=True,exist_ok=True)
+for move in MOVES:
+    if '/shaders/' in move['to']: (stage/Path(move['from']).name).write_bytes(original(move['from']))
+for source,path in [('gbuffer.frag','libs/MatterGraphics/shaders/gbuffer.frag'),('rt_surface_test.rgen','MatterEngine3/shaders_vk/rt_surface_test.rgen')]:
+    (stage/source).write_bytes(original(path))
+results={}
+for source in ['vt_feedback.comp','vt_bc_encode.comp','gbuffer.frag','rt_surface_test.rgen']:
+    dest=stage/(source+'.spv')
+    args=['/mnt/c/VulkanSDK/1.4.357.0/Bin/glslc.exe','--target-env=vulkan1.3','-O','-I',win(stage),'-I',win(ROOT/'MatterEngine3/shaders_vk'),win(stage/source),'-o',win(dest)]
+    subprocess.run(args,check=True,timeout=300)
+    current=ROOT/'MatterEditor/build/cmake/windows-msvc/relwithdebinfo/MatterEngine3/shaders_vk'/(source+'.spv')
+    assert dest.read_bytes()==current.read_bytes(),source
+    results[source]={'bytes':dest.stat().st_size,'sha256':hashlib.sha256(dest.read_bytes()).hexdigest()}
+    print('PASS: exact optimized SPIR-V '+source,flush=True)
+(LOG/'spirv-parity.json').write_text(json.dumps(results,indent=2)+'\n')
