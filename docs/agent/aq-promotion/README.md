@@ -5,8 +5,11 @@ train-playbook requirements below. Jack permanently directed this cutover to
 skip `parent-integration` and `root-train` import and activation: git-first
 delivery runs in code. Continue train configuration and the two project
 promotion playbooks while preserving CI, App, review and release gates. The
-retained train policy is historical; a supported current git-first binding input
-needs live AQ contract confirmation before configuration.
+retained train-policy proposal is historical. Owner direction sequences `10086`
+and `10088` supply the route-free [git-first-policy.json](git-first-policy.json),
+SHA256 `e7d01545c033b00d573b74d920ec9781d2ac7e4cce95b3f6fd24aca736362cdf`,
+validated at AQ's reported deployed `73509417f`. Root admission is `authorized`,
+repair exhaustion is `continue`, and omitted CI configuration defaults to hosted.
 The [remaining operator commands](operator-cutover-2026-10-11.md) provide the
 staged handoff without the two retired imports or activations.
 
@@ -35,8 +38,9 @@ The real Windows/Linux workflow is now `tests.yml`, renamed from
 `native-windows.yml` with its reusable caller updated. The deployed cutover
 preview reads the literal `tests.yml` path and has no path override. The rename
 preserves the workflow name, jobs, required check names, runners, commands,
-permissions and triggers. After delivery, the operator must regenerate the
-preview and resolve its actual blockers; no preview success has been observed.
+permissions and triggers. That diagnostic is historical. Current owner direction
+forbids the cutover/preview controls because the project already targets `dev`;
+use fresh status and intended-mode readiness after actual code delivery.
 
 Supervisor scope extension `msg-77f1a0eef5634947904e6d836731eb76` also requires
 automatic task-to-epic-to-`dev` delivery through the git-first train and proof
@@ -46,8 +50,16 @@ commands, origin/admission checks, and completion evidence. Its complete
 [train-policy.proposal.json](train-policy.proposal.json) records the historical
 source-pinned shared-route proposal and trust-generation input. Its retired route
 snapshots are not current binding authority. The migration now follows Jack's
-decision and requires a supported current policy contract, without importing or
-activating those two playbooks.
+decision and supplied current route-free policy, without importing or
+activating those two playbooks. The [operator handoff](operator-cutover-2026-10-11.md)
+records completed owner setup and the actual worker generator scope refusal;
+authenticated output is now recorded from supervisor message `msg-dbe933c0d0654205929dfe4dcb486426`
+(sequence `10096`). Its [canonical base](evidence/git-first-generated-manifest.json)
+again has SHA256 `73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1`;
+the [explicit reconciliation](evidence/git-first-manifest-reconciliation.json)
+preserves every generated field and the existing reviewed extensions. No
+production manifest byte change was needed. Actual delivered-head readiness and
+manifest/flow bootstrap ordering still require owner receipts.
 
 The complete proposal also supplies valid inputs for the existing supported
 `trust-manifest --policy` generator, subject to supervisor/operator review.
@@ -61,9 +73,8 @@ version, ordered platform checks, verified producer and source-audit aliases.
 Supervisor message `msg-40c17359a22347fdbbdd268963b75bb0` requested this input
 after agent-queue published `d8d4642b4c58a3eda1be2a078be5b4799320b636` / PR1343.
 The CLI lacked the new option at historical preparation time. The current CLI
-now exposes `--hosted-check-policy`; the migration uses that CI-only path when
-generation is needed. Authoritative full-policy generation already resolved
-this manifest.
+now exposes `--hosted-check-policy`. The current owner used the supplied
+route-free full policy; that authenticated generation resolved this manifest.
 
 [policy.draft.json](policy.draft.json) retains the earlier full
 `HierarchicalIntegrationPolicy` proposal with unresolved route references;
@@ -150,7 +161,7 @@ supported owner setup. It does not authorize this worker to provision a host.
 | Pending gate | Prepared input | Required authority |
 | --- | --- | --- |
 | Exact-head hosted CI and delivery | Production manifest and real `tests.yml` workflow | Windows and Linux checks from producer `15368`, configured integration owner |
-| Cutover inventory and train readiness | Jack's decision, current git-first policy contract and migration review | Fresh supported preview, valid current policy, App trust and guarded project configuration |
+| Train readiness | Supplied route-free policy and authenticated bootstrap | Fresh status, intended-mode App trust/protection and guarded project configuration |
 | App variables and branch protection | Attestation App `5075923`, version `matter-engine-ci-v1` | Repository administrator and supported App verification |
 | Promotion flow and routes | Reviewed staging/release names and source-audit aliases | Local flow activation and reviewed promotion playbook activation |
 
@@ -187,7 +198,7 @@ match the manifest's ordered checks/version, and source-audit aliases match the
 reusable caller. This verifies draft consistency; it does not establish App
 identity, reviewed route authority or hosted Windows CI success.
 
-## Alternative minimal-input generation
+## Historical alternative minimal-input generation
 
 After supported deployment, the supervisor/operator uses the read-only
 generator with the reviewed minimal hosted-check input. The bound

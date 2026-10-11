@@ -12,7 +12,29 @@ Git-first delivery runs in code. Only the two project promotion playbooks remain
 in the activation plan. This replaces the earlier route hold and route-readiness
 requirements; the exact CI, App, review, CAS and release gates still apply.
 
-## Current evidence and proposed inputs
+## Current binding direction
+
+Owner direction `msg-43295073d3df42deaae6dfffb147ffe1` (sequence `10086`) and
+supervisor relay `msg-6c53372280de447dafd12a6602025f16` (sequence `10088`)
+supersede the earlier cutover/merge instructions. AQ PR1358 is reported deployed
+at `73509417ffeb31c197ac7419d3aa5491d196eec6`. The supplied route-free
+[git-first-policy.json](git-first-policy.json) is an exact mirror of the owner
+file, SHA256 `e7d01545c033b00d573b74d920ec9781d2ac7e4cce95b3f6fd24aca736362cdf`.
+Jack requires AQ's live policy with Matter's check set: parent admission
+`reviewed`, root admission `authorized`, both repair exhaustion settings
+`continue`, no route/artifact identities and no authored CI block (hosted).
+This replaces the historical proposal's reviewed-root/human-hold settings.
+
+Use the corrected [operator handoff](operator-cutover-2026-10-11.md). Do not use
+`integration cutover` or `cutover-plan`; the root already targets `dev`. The
+owner reports GitHub default `dev` and Actions variables already configured.
+Generate/reconcile the repository bootstrap through the authenticated owner,
+publish the required code on the held branch, then deliver through the current
+development owner. A doc-only update is not the bootstrap action. Exact-head CI,
+App identity/protection, actual delivery, promotion reviews and operator release
+approval remain required.
+
+## Historical evidence and proposed inputs
 
 Supported `aq integration status matter-engine-cpp --control-only --json`
 reports `projection_kind: train`, effective/desired mode `development`,
@@ -99,14 +121,11 @@ filename would instead require a separately reviewed and deployed AQ change
 to discover/configure the real check-producing workflow; no current flag
 provides that behavior.
 
-Delivery of the manifest and renamed workflow is required before the operator
-reruns `cutover-plan`. The rename addresses the observed file-read refusal;
-it does not supply the missing remote inventory, clear live-owner barriers,
-approve this review or prove train readiness. Record the fresh result and
-reconcile every actual blocker before the configuration steps below. The
-supervisor also reports that `app-setup` without an override still attempts
-to parse the bound `DevelopmentPolicy`; preserve the reviewed full-policy
-override and guarded disabled-mode binding procedure.
+Delivery of the manifest and actual workflow is still required. The old
+`cutover-plan` diagnostic explains the historical rename; current owner direction
+expressly forbids rerunning that branch-retarget procedure. Use the supplied
+route-free policy and fresh status/readiness receipts instead. The earlier
+DevelopmentPolicy finding is historical and does not qualify the train policy.
 
 ## Trust and route preparation
 
@@ -116,38 +135,27 @@ override and guarded disabled-mode binding procedure.
    Existing subjects retain their frozen artifacts; resolve their named blockers
    through supported controls. The old aborted `smart-dune` batch is history,
    not permission to resume or edit it.
-2. The supervisor/AQ owner validates a current git-first policy input against the
-   deployed schema and runtime. Local AQ `e48f6da0` still requires both boundary
-   `route` fields; simply removing those fields fails validation. Its old
-   functional preflight loads route artifacts, but no callers were found in
-   that local source. This does not establish an active git-first gate. Obtain the supported live contract
-   and resolve any remaining AQ dependency through its owner. The historical
-   policy is not binding authority. Neither those schema checks nor old runbook
-   hashes reinstate retired import/activation requirements.
-
-3. Authoritative manifest generation already succeeded. If authenticated trust
-   inputs change, the supervisor/operator can use the supported read-only
-   CI-only generator without hierarchical route inputs or mode changes:
-
-   ```bash
-   aq integration trust-manifest matter-engine-cpp \
-     --repository-id matter-engine-cpp \
-     --hosted-check-policy docs/agent/aq-promotion/hosted-check-policy.json \
-     --write agent-queue-integration.generated.json --json
-   ```
-
-   This resolves repository and attestation App identity through the authenticated
-   daemon. The current CLI exposes this CI-only option. Preserve the reviewed
-   promotion names and source-audit aliases, all generated identities and the
-   required-check version; an unbound flow cannot supply promotion names.
-   Never copy the draft's unresolved App field into production.
-   The supervisor has completed this generation as recorded above; another run
-   is unnecessary unless the authenticated binding or reviewed inputs change.
+2. Validate the supplied route-free policy against current AQ. The deployed
+   PR1358 contract makes routes optional and omits them from snapshots. Local
+   validation at the reported deployed revision passes with the complete Matter
+   CI pair, producer `15368`, parent reviewed/root authorized admission and repair
+   exhaustion `continue`. Preserve the owner file's exact hash. The historical
+   route-bearing policy is not a binding input.
+3. The authenticated owner runs the exact supplied-policy trust generator in
+   [operator stage 1](operator-cutover-2026-10-11.md#1-generate-and-deliver-the-repository-bootstrap).
+   The worker's attempt was refused at `integration_trust_manifest`, exit `4`,
+   before writing. Do not retry or bypass that refusal. Supervisor generation
+   subsequently succeeded in `msg-dbe933c0d0654205929dfe4dcb486426` (sequence
+   `10096`), base SHA256 `73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1`.
+   [Reconciliation](evidence/git-first-manifest-reconciliation.json) preserves
+   generated identities with the already-reviewed promotion names and source-audit aliases;
+   the unbound-flow generator cannot supply its future promotion names. Report
+   any resulting readiness/ordering conflict before train activation.
 4. Commit and publish the authoritative manifest with this task's workflows,
    verifier and license, including the real workflow's rename to `tests.yml`,
    then deliver them to `dev` through the configured
-   owner. During bootstrap the supervisor owns the expressly authorized hand
-   merges. A worker does not merge into `dev`. Verify the exact delivered SHA
+   development owner. The earlier bootstrap merge handoff is superseded; a
+   worker does not merge into `dev`. Verify the exact delivered SHA
    and Windows/Linux checks; a queued Windows job is still pending. The
    self-hosted `matter-engine-msvc` runner must be online and able to finish.
    Current source CI success on another SHA does not satisfy this gate.
@@ -248,91 +256,28 @@ not substitute for the exact-head hosted check from App `15368`.
 
 ## Bind and activate the project
 
-The worker prepares and verifies repository artifacts. LOCAL or a live named
-project supervisor performs integration configuration; promotion playbook
-review/activation and repository administration use their required authority.
-No daemon restart is indicated by the existing train projection. Workers never
-edit global daemon configuration or restart it.
+The corrected [operator handoff](operator-cutover-2026-10-11.md) supplies exact
+remaining commands and the concrete policy/hash. LOCAL or the live named
+supervisor runs the mode/policy/flow mutations with a fresh generation for each
+CAS. The worker prepares, validates and publishes repository code; it neither
+writes the default branch nor bypasses scope refusals.
 
-At the observed quiet point, the authorized supervisor/operator performs these
-guarded changes with a **newly read** integration generation for each command:
+The required owner sequence after actual bootstrap delivery is `disabled ->
+integration-policy <supplied file> -> observe -> app-verify -> train ->
+promotion-flow <unchanged file>`. Then selectively import, obtain authorized
+review decisions and activate only `promotion-continuous` and
+`promotion-request`. Flow activation owns create-only staging creation from the
+current green `dev` head. Preserve an existing `main`; release remains
+operator-approved. No daemon restart, retarget, legacy cutover command or
+retired route is part of this sequence.
 
-Before mutation, the local operator records the supported cutover inventory:
-
-```bash
-aq integration cutover-plan --project matter-engine-cpp \
-  --flow "$HOME/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json" \
-  --json
-```
-
-Return its exact repository/default OID, generation, PR/owner/subject inventory
-and refusals to the held worker for review. This preview is LOCAL-only; the
-worker does not execute it or manufacture its result. The root is already
-`dev`, so this proposal does not apply a branch-retarget cutover. A refusal for
-live work remains evidence to reconcile through supported controls; preview
-does not authorize ignoring a barrier or enabling another publisher.
-
-```bash
-aq integration status matter-engine-cpp --control-only --json
-aq project set matter-engine-cpp integration-mode disabled \
-  --expected-integration-generation <fresh-generation> \
-  --reason 'prepare reviewed Matter Engine git-first train policy'
-aq project set matter-engine-cpp integration-policy <current-policy-json> \
-  --expected-integration-generation <fresh-generation> \
-  --reason 'bind reviewed current git-first policy and matter-engine-ci-v1'
-aq project set matter-engine-cpp integration-review-mode pull_request \
-  --expected-integration-generation <fresh-generation> \
-  --reason 'require exact-head PR admission for Matter Engine roots'
-```
-
-`<current-policy-json>` is the validated live-contract input approved for this
-cutover, encoded as one JSON argument. It is not the historical route-bearing
-proposal. Do not enter disabled mode until that concrete input and its live
-readiness checks are available. Keep the existing repository/default-branch binding; both already
-name `matter-engine-cpp` / `dev`. Do not switch modes while a repair writer is
-publishing. `disabled` prevents new target visits; it does not erase existing
-subjects or grant a forced drain. Do not bind the hierarchical policy while
-still in development: that mode parses policy input as `DevelopmentPolicy`.
-
-The repository administrator sets `AQ_INTEGRATION_ATTESTATION_APP_ID` from the
-authoritative output and `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` to
-`matter-engine-ci-v1`. While publication is quiet, configure effective `dev`
-protection to require the integration attestation pinned to that App without
-bypass. Use the exact fixes / expected ruleset returned by supported
-`app-verify` / `app-setup`; inspect organization and classic rules too. Do not
-drop either platform check or accept a different producer to make setup green.
-
-```bash
-aq integration app-verify matter-engine-cpp \
-  --policy <validated-current-policy-file> \
-  --repository-id matter-engine-cpp --json
-aq project set matter-engine-cpp integration-mode observe \
-  --expected-integration-generation <fresh-generation> \
-  --reason 'observe reviewed Matter Engine train configuration'
-aq integration app-verify matter-engine-cpp --json
-aq integration status matter-engine-cpp --json
-```
-
-Require `app-verify` readiness and no failing trust/protection/variable items,
-the supported live git-first contract, and concrete canary origin/completion evidence before
-enabling publication. The development-mode protection report alone does not
-prove strict train readiness. Review mode remains `pull_request`; reviewed
-root admission needs an open PR, passing checks and approval of the exact
-source head, with no outstanding changes requested.
-
-```bash
-aq project set matter-engine-cpp integration-mode train \
-  --expected-integration-generation <fresh-generation> \
-  --reason 'activate reviewed Matter Engine branch-to-epic-to-dev delivery'
-aq integration status matter-engine-cpp --control-only --json
-```
-
-Expect effective/desired `train`, the reviewed policy generation, and a new
-`dev` target visit with kind `root`. Status may retain older historical target
-observations. Do not substitute `integration enable`, `develop`,
-`onboard-train`, legacy rollback controls, manual database edits or token
-changes for the currently supported commands. The new policy does not replace
-existing frozen subject pins.
+Reconcile actual live writers/subjects/batches before changing modes. Disabled
+mode does not force-drain work or replace frozen snapshots. Require actual
+intended-mode App readiness, generated identity, full check semantics, effective
+protection and Actions variables before train publication. A development-mode
+report is not that proof. Admission follows the supplied current policy,
+including its explicitly authorized root setting; do not reapply the historical
+proposal's reviewed-root requirement.
 
 ## Completion evidence
 
@@ -359,8 +304,9 @@ Supervisor reply `msg-01ad964706924027b469c5bc07219817` selects
 3. The completed `clear-crest-48.1` aggregate enters its own parent target,
    `clear-crest-48`. That root epic has the same required-child, current-head,
    hold and review requirements. Its ordinary completion and verified aggregate
-   then permit a root PR; the PR service refuses an incomplete epic or a nested
-   epic as a root source. Root admission still requires the exact-head PR gate.
+   then permit root admission under the supplied authorized policy. An
+   incomplete or nested epic is not a completed root source; do not restore the
+   historical reviewed-root PR requirement as the current admission setting.
 4. The root train publishes the tested `clear-crest-48` aggregate into `dev`.
    Record the canary's source containment through both actual epic refs and
    `dev`, plus each train publication's provenance and expected old/new OIDs.

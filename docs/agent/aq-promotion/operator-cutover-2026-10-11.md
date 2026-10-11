@@ -1,84 +1,116 @@
 # Remaining operator steps after Jack's 2026-10-11 decision
 
-This implements the [recorded decision](decision-2026-10-11.md). Run one stage
-at a time and return actual receipts to the held worker on
-`fleet-ridge-94:train-migration`. These commands have not been executed by the
-worker. The retired parent/root playbook imports and activations are omitted.
-Review the current policy contract before any mode change; the historical
-route-bearing proposal is not an approved current binding input.
+This implements the [recorded decision](decision-2026-10-11.md), as updated by
+owner direction `msg-43295073d3df42deaae6dfffb147ffe1` (sequence `10086`) and
+supervisor relay `msg-6c53372280de447dafd12a6602025f16` (sequence `10088`). The
+earlier `e092` bootstrap-merge handoff is superseded. Do not merge a documentation
+update as the bootstrap action. Prepare and validate the required repository
+code on the held branch, then use the current development delivery owner.
+Report actual receipts on `fleet-ridge-94:train-migration`.
 
-## 1. Qualify and deliver the actual task head
+Do not run `aq integration cutover` or `cutover-plan`: this project already
+targets `dev`, while those controls implement the `main -> dev` cutover and a
+fixed `tests.yml` assumption. Neither retired playbook is imported, activated or
+represented by a fabricated artifact. No daemon restart or branch retarget is
+needed.
 
-`8f25e4b8297d8db04e992aa04f557ff10ba59183` is qualified in the durable
-`source-acceptance.json`. Any later decision-documentation commit requires its
-own exact-head checks. Inspect the published task ref and require the full
-Windows/Linux pair from App `15368`, matching run/artifact provenance, all native
-tests with no skips, and package validation before delivery. Preserve current
-`dev` fixes and recheck any intervening movement.
+## 1. Generate and deliver the repository bootstrap
+
+The supplied current policy is
+`/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/git-first-policy.json`,
+SHA256 `e7d01545c033b00d573b74d920ec9781d2ac7e4cce95b3f6fd24aca736362cdf`.
+Its [committed mirror](git-first-policy.json) preserves the exact supplied bytes.
+AQ PR1358, deployed revision `73509417ffeb31c197ac7419d3aa5491d196eec6`, accepts
+route-free boundaries and omits absent routes from snapshots. Jack requires
+matching AQ's live policy, with only the Matter check set and empty authorized
+task lists substituted: parent admission `reviewed`, root admission `authorized`,
+repair exhaustion `continue`, hosted CI with no authored `ci` block.
+
+The worker's exact command below was refused with
+`out of scope: integration_trust_manifest`, exit `4`, before any file write.
+The supervisor then ran the authenticated generator successfully, exit `0`,
+reported in `msg-dbe933c0d0654205929dfe4dcb486426` (sequence `10096`). The
+[canonical base](evidence/git-first-generated-manifest.json) SHA256 is
+`73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1`.
+The worker did not retry or bypass the refusal. Generation is complete; the
+command below records the requested owner operation, rather than a remaining
+step to repeat unless authenticated inputs change.
 
 ```bash
 set -euo pipefail
-gh api repos/ElectricJack/matter-engine/git/ref/heads/aq/fleet-ridge-94
-gh api repos/ElectricJack/matter-engine/git/ref/heads/dev > dev-before.json
-aq git merge --project-id matter-engine-cpp --branch-name aq/fleet-ridge-94 \
-  --default-branch dev --json
-gh api repos/ElectricJack/matter-engine/git/ref/heads/dev > dev-after.json
+MATTER_GIT_FIRST_POLICY_FILE=/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/git-first-policy.json
+printf '%s  %s\n' e7d01545c033b00d573b74d920ec9781d2ac7e4cce95b3f6fd24aca736362cdf "$MATTER_GIT_FIRST_POLICY_FILE" | sha256sum -c -
+aq integration trust-manifest matter-engine-cpp \
+  --policy "$MATTER_GIT_FIRST_POLICY_FILE" --repository-id matter-engine-cpp \
+  --write .github/agent-queue-integration.json --json
 ```
 
-This is the existing authorized protected-dev bootstrap owner action. A scope
-refusal stays binding; route execution to authorized LOCAL rather than raw
-pushing or resetting refs. Qualify the actual delivered OID and bootstrap bytes,
-with full canonical checks or the committed full source-audit aliases. Partial
-or failed canonical checks cannot be bypassed through the aliases. Source CI is
-not a delivered-head receipt.
+For receipt transfer instead of writing the worker's file, the owner may set
+`--write` to
+`/home/jkern/.codex/worker-artifacts/fleet-ridge-94-epoch2/git-first-generated-manifest.json`
+and return the complete command receipt. That transfer is now complete.
+Preserve generated repository/App/check identities. The [explicit diff](evidence/git-first-manifest-reconciliation.json)
+confirms that the current production bytes already reconcile the two
+already-reviewed promotion names and complete
+`promotion-source-audit` alias pair against the actual output and unchanged
+flow. An unbound flow does not supply its promotion names to the generator;
+return any resulting readiness/ordering conflict to the owner rather than
+silently removing those task requirements. The supervisor has notified the
+activation owner about this ordering; obtain its actual resolution.
 
-## 2. Read current inventory and prepare the two promotion reviews
+The bootstrap includes the actual full Windows/Linux `tests.yml`, the
+`main-attestation.yml` audit reading `vars.AQ_INTEGRATION_ATTESTATION_APP_ID`, and
+its tested verifier. It uses the current AQ audit pattern, including configured
+and attested outputs, while preserving the full fallback checks on verifier or
+checkout failure. AQ's compared `train-candidate.yml` writes the legacy
+`aq-train/candidate` commit status; it does not publish an App attestation.
+The App-pinned git-first protection/proof path remains the configured authority.
 
-The paths below are the prepared flow and policy profile on this installation.
-The flow SHA256 is
-`1760070c181f4c148dbe0aae9e4053d1b2b18a43fef5ed2a41e686f5f1c76634`.
-No daemon restart or root retarget is needed for the already-designated `dev`.
+Publish through `aq git push`, validate the actual source and deliver through
+the configured development owner. The worker does not independently merge or
+push `dev`, nor close this task as passing before its required cutover evidence.
+Record the delivered OID, bootstrap bytes and its full exact-head checks from
+App `15368`, matching run/artifact provenance, all native tests without skips,
+and package validation. Qualified `8f25` evidence applies only to `8f25`; any
+later source or delivery requires its own correctly scoped qualification.
+
+## 2. Verify the completed owner setup and fresh state
+
+The owner reports GitHub's default branch changed from `main` to `dev` and
+`app-setup --apply` already set:
+
+- `AQ_INTEGRATION_ATTESTATION_APP_ID=5075923`
+- `AQ_INTEGRATION_REQUIRED_CHECK_VERSION=matter-engine-ci-v1`
+
+The reported credential/repository/producer/variable checks passed; manifest
+failed and audit workflow warned because those files were absent on `dev`.
+Verify the actual delivered files and fresh runtime state. Do not repeat the
+retarget or variable setup merely because the earlier handoff contained them.
 
 ```bash
 set -euo pipefail
 MATTER_PROMOTION_FLOW=/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json
-aq integration cutover-plan --project matter-engine-cpp \
-  --flow "$MATTER_PROMOTION_FLOW" --json > matter-cutover-plan.json
-aq integration status matter-engine-cpp --control-only --json
-aq policy apply /home/jkern/.agent-queue/policy-profiles/agent-queue-2026-10-11 \
-  --project matter-engine-cpp \
-  --only playbook:project:promotion-continuous \
-  --only playbook:project:promotion-request \
-  --set default_branch=dev --set branch_4=staging --set branch_5=main --yes
+gh api repos/ElectricJack/matter-engine/git/ref/heads/dev
+aq integration status matter-engine-cpp --json
 ```
 
-`policy apply` does not support `--json`; the corrected worker attempt was
-refused at `policy_diff` scope. The selective owner import submits actual
-project-specific reviews and does not approve or activate them. Inspect the
-returned revisions and compiled artifact hashes through the authorized decider.
-Existing items are not overwritten. Export item checksums are not approved
-compiled artifact identities.
+The unchanged flow SHA256 is
+`1760070c181f4c148dbe0aae9e4053d1b2b18a43fef5ed2a41e686f5f1c76634`.
+Reconcile actual live writers, owners, subjects and batches through supported
+controls before changing modes. Disabled mode does not force-drain them.
 
-## 3. Resolve the live policy contract before changing modes
+## 3. Bind the supplied policy, observe and verify
 
-The supervisor/AQ owner supplies an actual validated, reviewed current policy
-file and deployed runtime identity. The local model still requires both `route`
-fields; dropping them fails validation, while a dead preflight function's
-presence alone does not establish a live requirement. Confirm whether legacy
-fields are inert compatibility metadata. Do not invent fields or restore retired
-playbooks. A current incompatible runtime requires an authorized AQ resolution.
-
-The following commands become executable only when that input and its live
-contract receipt exist. Set `MATTER_GIT_FIRST_POLICY_FILE` to the actual approved
-file; preserve both `matter-engine-ci-v1` checks, producer `15368`, hosted CI,
-reviewed admission and bounded repair settings. Report material policy changes
-for review. Reconcile every live writer/barrier in the fresh cutover inventory
-before entering disabled mode. A disabled mode does not force-drain work.
+Use a fresh integration generation for every mutation. A stale CAS refuses;
+inspect the actual state rather than guessing another generation. The policy
+changes from the historical proposal are explicitly authorized by the supplied
+Jack/owner direction; do not bind the historical route-bearing policy or retain
+its reviewed-root/human-hold settings as the current contract.
 
 ```bash
 set -euo pipefail
-: "${MATTER_GIT_FIRST_POLICY_FILE:?Set the actual validated current policy file}"
-test -f "$MATTER_GIT_FIRST_POLICY_FILE"
+MATTER_GIT_FIRST_POLICY_FILE=/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/git-first-policy.json
+printf '%s  %s\n' e7d01545c033b00d573b74d920ec9781d2ac7e4cce95b3f6fd24aca736362cdf "$MATTER_GIT_FIRST_POLICY_FILE" | sha256sum -c -
 MATTER_GIT_FIRST_POLICY_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), separators=(",", ":")))' "$MATTER_GIT_FIRST_POLICY_FILE")"
 matter_generation() {
   aq integration status matter-engine-cpp --control-only --json |
@@ -86,68 +118,65 @@ matter_generation() {
 }
 aq project set matter-engine-cpp integration-mode disabled \
   --expected-integration-generation "$(matter_generation)" \
-  --reason 'Jack 2026-10-11: prepare git-first cutover with retired playbooks skipped'
+  --reason 'Jack 2026-10-11: prepare route-free git-first policy matching AQ'
 aq project set matter-engine-cpp integration-policy "$MATTER_GIT_FIRST_POLICY_JSON" \
   --expected-integration-generation "$(matter_generation)" \
-  --reason 'bind reviewed current git-first policy and matter-engine-ci-v1'
-aq project set matter-engine-cpp integration-review-mode pull_request \
-  --expected-integration-generation "$(matter_generation)" \
-  --reason 'retain exact-head reviewed root admission'
-aq integration app-verify matter-engine-cpp \
-  --policy "$MATTER_GIT_FIRST_POLICY_FILE" --repository-id matter-engine-cpp --json
-aq integration app-setup matter-engine-cpp \
-  --policy "$MATTER_GIT_FIRST_POLICY_FILE" --repository-id matter-engine-cpp --json
-aq promote rulesets --project matter-engine-cpp --file "$MATTER_PROMOTION_FLOW" --json
-```
-
-Use the fresh App report's actual fixes and generated rulesets through repository
-administration. `app-setup --apply` changes only differing Actions variables; it
-does not apply protection. The manifest's attestation App is `5075923`, distinct
-from CI App `15368`, and its check version is `matter-engine-ci-v1`. Require the
-intended train-mode integration attestation on `dev` and step-specific promotion
-attestations on `staging`/`main`, with correct App pins and no bypass. Include
-organization/classic protection in the verified effective policy. Do not claim
-that a development-mode report establishes train readiness.
-
-## 4. Observe, verify and enable the train and unchanged flow
-
-Proceed only after the current policy, trust variables, effective protection and
-review prerequisites pass. Read a fresh generation for every mutation. A stale
-CAS refuses; inspect rather than retry against a guessed generation.
-
-```bash
-set -euo pipefail
+  --reason 'bind supplied git-first-policy e7d01545 with Matter full CI pair'
 aq project set matter-engine-cpp integration-mode observe \
   --expected-integration-generation "$(matter_generation)" \
-  --reason 'observe Jack-approved git-first configuration before publication'
+  --reason 'observe supplied route-free policy before publication'
 aq integration app-verify matter-engine-cpp --json
 aq integration status matter-engine-cpp --json
-aq promote validate --project matter-engine-cpp \
-  --file "$MATTER_PROMOTION_FLOW" --remote --json
 ```
 
-After the actual reports pass, enable train mode and activate the unchanged flow:
+Require actual intended-mode readiness, including generated identity, both
+checks from producer `15368`, integration App `5075923`, variables and effective
+protection without bypass. Include organization/classic protection in that
+assessment. Repository administration uses the actual fresh App report fixes;
+`app-setup --apply` sets differing Actions variables, not protection. Report any
+manifest/flow bootstrap ordering conflict before enabling train publication.
+
+## 4. Enable train and the unchanged flow
+
+Proceed only after actual readiness passes. Flow activation owns create-only
+staging creation from the current green `dev` head; do not manually push staging
+or reset an existing target. Initial staging creation is not acceptance of the
+first automatic promotion.
 
 ```bash
 set -euo pipefail
 aq project set matter-engine-cpp integration-mode train \
   --expected-integration-generation "$(matter_generation)" \
-  --reason 'Jack 2026-10-11: enable git-first delivery in code'
+  --reason 'Jack 2026-10-11: enable route-free git-first delivery matching AQ'
 aq project set matter-engine-cpp promotion-flow "$MATTER_PROMOTION_FLOW" \
   --expected-integration-generation "$(matter_generation)" \
-  --reason 'activate reviewed dev-to-staging-to-main flow; release operator-approved'
+  --reason 'activate unchanged dev-to-staging-to-main flow; release operator-approved'
+aq promote validate --project matter-engine-cpp \
+  --file "$MATTER_PROMOTION_FLOW" --remote --json
 ```
 
-Flow activation owns create-only staging creation from the actual green `dev`
-head. Require no intervening head/check change and return its actual receipt.
-Do not manually push staging. Existing `main` is preserved. Initial staging
-creation is not first automatic-promotion acceptance.
+Return actual policy/mode/flow generations, readiness and staging-creation
+receipts, with no intervening head/check change. Existing `main` is preserved.
 
-## 5. Activate only the two approved promotion artifacts
+## 5. Import, approve and activate only the two promotion artifacts
 
-Copy the exact APPROVED compiled artifact hashes from the actual imported
-reviews, after their authorized decisions. These variables are intentionally
-unset until approval; no template hash is substituted for a compiled artifact.
+The corrected selective import command is supported below. The worker attempt
+was refused at `policy_diff` scope; no import, approval or activation occurred.
+`policy apply` does not support `--json`. Its actual project-specific reviews
+must receive authorized decisions before activation. Existing items are not
+overwritten, and export checksums are not compiled artifact identities.
+
+```bash
+set -euo pipefail
+aq policy apply /home/jkern/.agent-queue/policy-profiles/agent-queue-2026-10-11 \
+  --project matter-engine-cpp \
+  --only playbook:project:promotion-continuous \
+  --only playbook:project:promotion-request \
+  --set default_branch=dev --set branch_4=staging --set branch_5=main --yes
+```
+
+After actual approval, copy the exact compiled artifact hashes into the required
+variables below. No template hashes or fabricated artifacts are substituted.
 
 ```bash
 set -euo pipefail
@@ -167,5 +196,6 @@ Require enabled/ready health with the approved project-scoped hashes. Return
 actual train delivery and first automatic staging-promotion evidence: request or
 batch, source/candidate/target OIDs, full exact-head checks from App `15368`,
 staging proof from App `5075923`, and Git containment. Preserve the ordinary
-refactor canary acceptance in the migration runbook. Release remains gated by
-operator approval; these commands do not approve or initiate a release.
+refactor canary acceptance in the migration runbook under the supplied policy's
+admission settings. Release remains gated by operator approval; this handoff
+does not approve or initiate a release.

@@ -1,6 +1,6 @@
 name: Main attestation
-# AQ publishes the trusted App check before delivering a tested SHA. This
-# read-only audit verifies that proof; unattested pushes run the required CI.
+# The git-first train publishes the trusted App check before delivering a
+# tested SHA. This read-only audit verifies that proof; unattested pushes run CI.
 # The workflow never publishes or impersonates the daemon's attestations.
 on:
   push:
@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       attested: ${{ steps.verify.outputs.attested }}
+      configured: ${{ steps.verify.outputs.configured }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
