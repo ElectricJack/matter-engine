@@ -1,4 +1,50 @@
-# Production raster implementation
+# Production native implementations
+
+## Atmosphere, cloud shadows and froxels
+
+`clear-crest-48.4.8` moves `vk_atmosphere.*`, `vk_cloud_shadows.*` and
+`vk_volumetrics.*` from the engine into this directory. The reference is
+`6490dbab806876631465259cdf5b397f258c5837`. The old translation units and
+headers forward here, so existing CMake/Make hosts compile exactly one copy.
+Resource ownership, dispatches, layouts, histories, failure injection and
+numerical algorithms are preserved. The three producers account for 5,526
+original lines; parameter/reference headers and two extracted data blocks
+bring the total to 6,892 relocated lines.
+
+The four parameter headers (`atmosphere.h`, `cloud_layers.h`,
+`cloud_shadow_settings.h`, `volumetric_quality.h`) are byte-identical moves.
+`fog_settings.h` contains the unchanged 125-line FogSettings/cloud-helper
+block from `world_definition.h`; `gpu_volume_emitter.h` contains the unchanged
+16-line GPU record from `vk_emitter_gather.h`. The latter's part-aware gather
+stays in the engine. No emitter-update behavior has been added.
+
+The producer sources no longer include world definitions, WorldSession,
+VkSceneRenderer or the part-aware emitter gatherer. `set_sun_direction(Float3)`
+performs the original three assignments; the old `set_lighting` entrypoint
+forwards the direction from its existing host translation unit. Consumers of
+the module archive use `set_sun_direction`. All other public native signatures
+and namespaces remain intact.
+
+`matter_graphics_environment` is a separately compiled static archive, enabled
+with `MATTER_GRAPHICS_VULKAN`. It still borrows the native `VulkanDevice`,
+`vk_resources`, frame matrices and matrix packing support. A host must supply
+their implementations and the existing descriptor/command-buffer lifecycle.
+This is not a new standalone device or facade producer API. The dependency
+audit enumerates the exact remaining platform/data headers and rejects world,
+scene, ScriptHost and generation dependencies. The portable compositor still
+rejects unadvertised producer capabilities.
+
+The archive compiles the ten original atmosphere/cloud-shadow/volume compute
+shaders from `MatterEngine3/shaders_vk` with Vulkan 1.3, matching the host.
+Shaders remain at their existing source authority; none are copied or rewritten.
+A ten-line adapter reuses the host SPIR-V generator with a separate namespace,
+preventing its subset lookup registry from colliding with the host's full one.
+The forwarding host continues using its full existing shader registry.
+
+Validation and remaining qualification are recorded in
+[RENDERING.md](../../RENDERING.md#environment-relocation-evidence).
+
+## Raster implementation
 
 These files were moved from the production engine by `bright-torrent-52`.
 The reference is commit `58289c187`. They preserve the native renderer's

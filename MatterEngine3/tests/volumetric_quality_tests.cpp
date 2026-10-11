@@ -246,7 +246,7 @@ void test_effective_froxel_state_and_rejection_recovery_are_wired() {
 }
 
 void test_froxel_candidate_descriptor_failure_is_transactionally_destroyed() {
-    const std::string implementation = read_file("../src/render/vk_volumetrics.cpp");
+    const std::string implementation = read_file("../../libs/MatterGraphics/src/native/vk_volumetrics.cpp");
     CHECK(implementation.find("fail_next_bundle_descriptor_allocation_for_test_") !=
               std::string::npos &&
               implementation.find("destroy_froxel_bundle(bundle)") !=
