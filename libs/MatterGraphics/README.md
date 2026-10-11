@@ -15,6 +15,14 @@ deterministic device fixtures cover failures and budgets. The
 [integration migration map](INTEGRATION.md) records provenance and downstream
 legacy wiring. Resource tests do not establish rendered-image parity.
 
+`VulkanComposition` additionally extracts production material/light/effect
+composition and display into an offscreen pass with explicit evaluated inputs.
+It owns images, pipelines, descriptors and GPU submissions. Fourteen native
+matched image fixtures cover selected shading behavior. See the
+[rendering contract, capability map and producer inventory](RENDERING.md) for
+precise support and pending raster/RT/environment/water extraction; a composition
+consumer does not imply its product producer is available.
+
 ```cpp
 #include <matter/graphics/graphics.h>
 // Backend implementation supplies graphics allocation/scene/device operations.
@@ -119,8 +127,10 @@ The native test requires Vulkan 1.2 timeline semaphores for its deterministic
 retirement gate and fails if no suitable graphics device is available; it does
 not silently pass via a fake device. Validation is enabled when installed; set
 `MATTER_GRAPHICS_REQUIRE_VALIDATION=1` to require it (the MSVC wrapper does so).
-`BUILD_TESTING=OFF` needs no Python/Node. With testing enabled, CMake 3.27+ and
-Python 3.9+ are required for the standard-library File API audit (no Python package dependency).
+`BUILD_TESTING=OFF` with Vulkan disabled needs no Python/Node. The optional
+Vulkan target requires glslc and Python 3.9+ to compile/embed production shaders.
+With testing enabled, CMake 3.27+ and Python 3.9+ are required for the
+standard-library File API audit (no Python package dependency).
 Public headers compile individually. The audit inspects actual compiled targets,
 dependencies, sources, linker fragments and compiler-discovered headers with
 procedural/terrain/host targets absent. Only three exact legacy math source/header
