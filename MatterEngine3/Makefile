@@ -401,6 +401,8 @@ build/shaders_vk/gbuffer.frag.spv: ../libs/MatterGraphics/shaders/gbuffer.frag
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
 
+include ../libs/MatterGraphics/native-ray-shaders.mk
+
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@

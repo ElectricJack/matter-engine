@@ -102,6 +102,12 @@ the graphics-owned implementation; behavior and host wiring remain intact.
 See [the VT boundary and deferred qualification](src/native/README.md#vt-residency-and-pom-relocation).
 This does not advertise a standalone VT runtime or a P3 product adapter.
 
+`clear-crest-48.4.7` relocates C's production BLAS/TLAS, RT dispatch, local-light
+index/tile culling, GI filters and sparse-shadow interop under the same pure-move
+directive. See [the moved paths, retained ownership and native qualification](src/native/RAY_TRACING.md).
+The original inventory rows below still identify the legacy entrypoints. This
+source move does not advertise any of the proposed standalone capabilities.
+
 Follow-up owners A–E are temporary task keys in supervisor proposal
 `prop-9ef784b996c1`, vault file
 `plans/2026-10-11-graphics-producer-followups.json`. The daemon validated the
