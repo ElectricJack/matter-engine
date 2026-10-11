@@ -15,6 +15,16 @@ def audit(build):
     root = Path(model["paths"]["source"]).resolve()
     repository = root.parent.parent
     allowed = [root, repository / "libs/MatterContracts", repository / "libs/MathLib/include", build]
+    cache = (build / "CMakeCache.txt").read_text()
+    settings = {line.split(":", 1)[0]: line.split("=", 1)[1] for line in cache.splitlines()
+                if ":" in line and "=" in line and not line.startswith(("//", "#"))}
+    vulkan = settings.get("MATTER_GRAPHICS_VULKAN") == "ON"
+    native_libraries = set()
+    if vulkan:
+        allowed.append(Path(settings["Vulkan_INCLUDE_DIR"]).resolve())
+        loader = Path(settings["Vulkan_LIBRARY"]).resolve()
+        assert loader.is_file() and loader.name.lower().startswith(("vulkan-1.lib", "libvulkan.so")), loader
+        native_libraries.add(loader)
     legacy_files = {repository / "MatterEngine3/src/render/matrix_math.cpp",
                     repository / "MatterEngine3/src/render/matrix_math.h",
                     repository / "MatterEngine3/include/matter/math_types.h"}
@@ -22,6 +32,8 @@ def audit(build):
     expected = {"matter_contracts", "matter_graphics", "matter_graphics_tests",
                 "matter_graphics_header_backend", "matter_graphics_header_graphics",
                 "matter_graphics_header_scene_backend", "matter_graphics_scene_tests"}
+    if vulkan:
+        expected.update({"matter_graphics_vulkan", "matter_graphics_vulkan_tests", "matter_graphics_header_vulkan_resources"})
     for config in model["configurations"]:
         all_targets = {t["name"]: json.loads((reply / t["jsonFile"]).read_text()) for t in config["targets"]}
         utilities = {name for name, t in all_targets.items() if t["type"] == "UTILITY"}
@@ -59,10 +71,9 @@ def audit(build):
                 if fragment["role"] != "libraries":
                     continue
                 for library in shlex.split(fragment["fragment"].replace("\\", "/")):
-                    assert library.lower() in system_libraries or (build / library).resolve() in archives, f"Forbidden link input: {library}"
+                    assert library.lower() in system_libraries or (build / library).resolve() in archives | native_libraries, f"Forbidden link input: {library}"
     # Ninja's compiler-discovered dependencies catch forbidden transitive
     # headers hidden behind the two broad legacy include search directories.
-    cache = (build / "CMakeCache.txt").read_text()
     ninja = next(line.split("=", 1)[1] for line in cache.splitlines() if line.startswith("CMAKE_MAKE_PROGRAM:"))
     deps = subprocess.run([ninja, "-C", str(build), "-t", "deps"], check=True, capture_output=True, text=True).stdout
     assert "#deps" in deps, "No compiled dependency evidence; build before auditing"
@@ -78,7 +89,9 @@ def audit(build):
     # MSVC /showIncludes omits the primary .cpp; the codemodel above audits it.
     required_headers = {p for p in legacy_files if p.suffix == ".h"}
     assert required_headers <= checked, f"Shared renderer math headers not compiled: {required_headers - checked}"
-    print("PASS GFX-INDEPENDENT-GRAPH: scene/facade/contracts plus shared pure renderer math; source, link and compiler dependency audit")
+    print("PASS GFX-INDEPENDENT-GRAPH: scene/facade/contracts/shared pure math" +
+          (" plus isolated Vulkan adapter/loader" if vulkan else "") +
+          "; source, link and compiler dependency audit")
 
 
 if __name__ == "__main__":

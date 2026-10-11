@@ -8,10 +8,12 @@ terrain, script host, ECS or legacy engine archive is needed.
 
 The facade has fake-backend fixtures. `SceneBackend` additionally implements
 prototype buffer preparation, resource budgets, scene expansion, visibility,
-and retained render snapshots. Its device fixtures simulate asynchronous buffer
-completion/failure; they do not establish actual Vulkan upload or drawing.
-The [integration migration map](INTEGRATION.md) names the native GPU work still
-required by `.9.1`. No Vulkan renderer or rendered acceptance is claimed here.
+and retained render snapshots. `matter_graphics_vulkan` supplies the extracted
+Vulkan allocation/staging/submission machinery with an explicit device binding.
+Headless native tests check actual upload, readback and fence retirement;
+deterministic device fixtures cover failures and budgets. The
+[integration migration map](INTEGRATION.md) records provenance and downstream
+legacy wiring. Resource tests do not establish rendered-image parity.
 
 ```cpp
 #include <matter/graphics/graphics.h>
@@ -77,7 +79,7 @@ are filtered; the frozen observation API has no diagnostic return channel.
 
 ## Focused checks
 
-Supported native MSVC tooling (uses the repository toolchain resolver unchanged):
+Supported native MSVC tooling (enables Vulkan and requires the pinned SDK validation layer):
 
 ```powershell
 libs/MatterGraphics/build-windows.ps1 -Config RelWithDebInfo -Test
@@ -101,6 +103,22 @@ cmake --build /tmp/matter-graphics-facade --parallel 2
 ctest --test-dir /tmp/matter-graphics-facade --output-on-failure -j 1
 ```
 
+For the native Vulkan tests, configure with `-DMATTER_GRAPHICS_VULKAN=ON` and an
+installed Vulkan SDK. On Linux with the repository headers and a system loader:
+
+```bash
+cmake -S libs/MatterGraphics -B /tmp/matter-graphics-vulkan -G Ninja \
+  -DBUILD_TESTING=ON -DMATTER_GRAPHICS_VULKAN=ON -DCMAKE_BUILD_TYPE=Debug \
+  -DVulkan_INCLUDE_DIR="$PWD/third_party/Vulkan-Headers/include" \
+  -DVulkan_LIBRARY=/usr/lib/x86_64-linux-gnu/libvulkan.so.1
+cmake --build /tmp/matter-graphics-vulkan --parallel 2
+ctest --test-dir /tmp/matter-graphics-vulkan --output-on-failure -j 1
+```
+
+The native test requires Vulkan 1.2 timeline semaphores for its deterministic
+retirement gate and fails if no suitable graphics device is available; it does
+not silently pass via a fake device. Validation is enabled when installed; set
+`MATTER_GRAPHICS_REQUIRE_VALIDATION=1` to require it (the MSVC wrapper does so).
 `BUILD_TESTING=OFF` needs no Python/Node. With testing enabled, CMake 3.27+ and
 Python 3.9+ are required for the standard-library File API audit (no Python package dependency).
 Public headers compile individually. The audit inspects actual compiled targets,
@@ -128,7 +146,30 @@ submission, retains its input byte owner until the last read, reports completion
 resident allocation size and idle state, and drains submitted uses on destruction.
 It may attach native vertex/index/storage handles or backend acceleration data to
 its derived buffer owners. `drain()` is synchronous. A null device fails explicitly.
-The repository does not yet supply the native Vulkan implementation of this seam.
+`VulkanResourceDevice` implements this seam in the optional Vulkan target:
+
+```cpp
+#include <matter/graphics/vulkan_resources.h>
+auto resource_device = std::make_shared<matter::graphics::VulkanResourceDevice>(
+    matter::graphics::VulkanDeviceBinding{
+        physical_device, device, queue, queue_family, device_owner, queue_mutex});
+```
+
+The binding owns no window or device setup. Its shared owner must keep the device
+and physical-device instance alive, and every external queue user must share the
+same mutex. Allocation and scene methods are thread confined. Vertex, index and
+opaque texture payload buffers use device-preferred memory and host-visible staging;
+noncoherent mappings flush/invalidate the whole allocation. `VulkanBuffer` exposes
+the native handle. Submit every native use through `VulkanResourceDevice::submit`
+with all referenced buffer owners; it retains buffers and command storage until
+the fence completes, including when the caller drops the submission ticket.
+A raw externally submitted use cannot be inferred or retired by this adapter.
+Buffer destruction drains outstanding upload work; device destruction drains all
+registered submissions. `readback` synchronously copies into a host-visible
+allocation and returns exact bytes after completion. Unknown/foreign buffer owners
+fail before recording. Device-loss/error paths wait before releasing dependencies. If neither a fence
+nor device idle/loss establishes completion, submission storage and its device
+owner remain retained; an unproven driver failure must not free in-flight memory.
 
 Meshes upload once per asset/prototype, including position, index, normal, tangent
 and UV streams. Resolved payloads retain exact bytes and material/texture metadata
@@ -169,7 +210,8 @@ demand; repeated assembly children report one observation per coordinator ID.
 | `GFX-ENVELOPE/HANDLE/VALIDATE/CAPS/PAYLOAD` | Every envelope field, foreign/stale/type-confused handles, invalid geometry, exact capabilities and missing/corrupt bytes |
 | `GFX-FAIL/CANCEL/TICKET/CONTROL/CALLBACK` | Submission/completion errors and exceptions, malformed completion, cancellation before/during completion, ticket disposal and capture release |
 | `GFX-CAMERA/LIGHTS/DEMAND/BUDGET/DISPOSE` | Camera/light validation and rollback, data-only demand, owner/scene ceilings, busy-device and pending-upload disposal |
-| `GFX-INDEPENDENT-GRAPH` | Facade, scene, contracts and shared pure math; forbidden sources/links/compiler dependencies absent |
+| `GFX-INDEPENDENT-GRAPH` | Facade, scene, contracts, shared pure math and optionally the extracted Vulkan adapter/loader; forbidden sources/links/compiler dependencies absent |
+| `VK-UPLOAD/READBACK/SCENE/SHARING/CULL/FENCE/RETIRE/DISPOSE/OWNERSHIP` | Real device bytes, shared geometry, visibility, deterministically pending GPU use, retirement, pending disposal, foreign adapter rejection and validation-clean teardown |
 | `SCENE-UPLOAD/BUFFERS/MATERIAL` | Pending/ready buffer completion, little-endian indices, appearance metadata retention |
 | `SCENE-ASSEMBLY/AFFINE/SHARING` | Nested repeated prototypes, unsorted parents, mirrored/nonuniform placement and normal frames |
 | `SCENE-CULL/PERSPECTIVE/CAMERA/REGION/LIGHTS` | Six planes, crossing/sheared bounds, standard/reversed depth, explicit region and immutable camera/light state |

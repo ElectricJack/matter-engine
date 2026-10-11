@@ -10,7 +10,10 @@ Import-Module (Join-Path $repositoryRoot 'tools\windows\MatterWindowsToolchain.p
 $toolchain = Resolve-MatterWindowsToolchain -RepositoryRoot $repositoryRoot
 $buildDirectory = Join-Path $PSScriptRoot "build\windows-msvc\$($Config.ToLowerInvariant())"
 $developerEnvironment = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} -vcvars_ver={2}' -f $toolchain.VsDevCmd, $toolchain.WindowsSdkVersion, $toolchain.MsvcToolsVersion
-$configure = '{0} && "{1}" -S "{2}" -B "{3}" -G Ninja -DCMAKE_MAKE_PROGRAM="{4}" -DCMAKE_BUILD_TYPE={5} -DBUILD_TESTING=ON -DPython3_EXECUTABLE="{6}"' -f $developerEnvironment, $toolchain.CMake, $PSScriptRoot, $buildDirectory, $toolchain.Ninja, $Config, $toolchain.Python
+$env:VULKAN_SDK = $toolchain.VulkanSdk
+$env:VK_LAYER_PATH = Join-Path $toolchain.VulkanSdk 'Bin'
+$env:MATTER_GRAPHICS_REQUIRE_VALIDATION = '1'
+$configure = '{0} && "{1}" -S "{2}" -B "{3}" -G Ninja -DCMAKE_MAKE_PROGRAM="{4}" -DCMAKE_BUILD_TYPE={5} -DBUILD_TESTING=ON -DMATTER_GRAPHICS_VULKAN=ON -DPython3_EXECUTABLE="{6}"' -f $developerEnvironment, $toolchain.CMake, $PSScriptRoot, $buildDirectory, $toolchain.Ninja, $Config, $toolchain.Python
 & $env:ComSpec /d /s /c $configure
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $build = '{0} && "{1}" --build "{2}" --parallel 2' -f $developerEnvironment, $toolchain.CMake, $buildDirectory
