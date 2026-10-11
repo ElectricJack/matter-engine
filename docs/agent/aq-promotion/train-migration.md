@@ -6,6 +6,12 @@ through epic branches into `dev`, retain the reviewed CI trust bootstrap, and
 prove both a refactor delivery and the first automatic `dev -> staging`
 promotion. `staging -> main` retains operator approval.
 
+The [2026-10-11 decision](decision-2026-10-11.md) permanently skips
+`parent-integration` and `root-train` import and activation for this cutover.
+Git-first delivery runs in code. Only the two project promotion playbooks remain
+in the activation plan. This replaces the earlier route hold and route-readiness
+requirements; the exact CI, App, review, CAS and release gates still apply.
+
 ## Current evidence and proposed inputs
 
 Supported `aq integration status matter-engine-cpp --control-only --json`
@@ -22,18 +28,20 @@ completed task with a live branch origin in the designated repository. The
 operator must check the selected canary's origin, completion, parent target and
 admission. Changing the project mode alone does not restore missing origins.
 
-[train-policy.proposal.json](train-policy.proposal.json) is a complete
+[train-policy.proposal.json](train-policy.proposal.json) is the historical
 `HierarchicalIntegrationPolicy`, validated offline against published AQ commit
 `b2bb25872e769cbc5013e8b5a5ea62803fbc721c`. Its file SHA256 is
 `cbdf69cdfc043fd929a92e31dbfc192a26127fc4de8c5442d6a565e26a7b69d7`.
 It keeps the reviewed Windows/Linux `matter-engine-ci-v1` set, producer
 `"15368"`, reviewed admission with empty task authorization lists, hosted CI,
 bounded repairs ending in a human hold, and default cleanup. Root cadence is
-300 seconds, capped at 1800; epic collection has no settling delay.
+300 seconds, capped at 1800; epic collection has no settling delay. It is not a
+current binding input: its schema-required retired route snapshots need
+reconciliation with the supported live git-first policy contract.
 `prerequisite_branches: wait-for-parent` makes the ordinary non-agent-queue
 project default explicit. This proposal does not change assignment routing.
 
-The proposed routes are the published **system-scoped** shared bundles, not
+The historical routes were the published **system-scoped** shared bundles, not
 agent-queue's project-scoped routes. Both use an empty scope identifier. Full
 artifact snapshots, including schema generation, source digest, command
 fingerprint, compiler and version, are in the policy.
@@ -53,8 +61,9 @@ Artifact bytes match `artifact.sha256` and review-manifest digests; computed
 command fingerprints match the manifests; published diagnostics are empty.
 This source check does not prove installation, current contract validity,
 activation health or operator approval of this project's cutover. The
-supervisor previously found no applicable project routes. If different bundles
-are selected, revise and revalidate the policy before binding it.
+supervisor previously found no applicable project routes. Jack has now retired
+these import/activation requirements. Preserve these historical identities as
+evidence; do not substitute other bundles or fabricate new route snapshots.
 
 ## Authoritative manifest and preview refusal
 
@@ -107,41 +116,30 @@ override and guarded disabled-mode binding procedure.
    Existing subjects retain their frozen artifacts; resolve their named blockers
    through supported controls. The old aborted `smart-dune` batch is history,
    not permission to resume or edit it.
-2. The local operator validates and imports the shared bundles from supported
-   deployed packages, then activates the reviewed exact digests. Validation must
-   report zero errors/questions and activation health must report the matching
-   enabled, ready artifacts. A contract mismatch requires reviewed replacement
-   artifacts and a revised policy. Do not use historical runbook hashes or
-   fabricate activation IDs.
+2. The supervisor/AQ owner validates a current git-first policy input against the
+   deployed schema and runtime. Local AQ `e48f6da0` still requires both boundary
+   `route` fields; simply removing those fields fails validation. Its old
+   functional preflight loads route artifacts, but no callers were found in
+   that local source. This does not establish an active git-first gate. Obtain the supported live contract
+   and resolve any remaining AQ dependency through its owner. The historical
+   policy is not binding authority. Neither those schema checks nor old runbook
+   hashes reinstate retired import/activation requirements.
 
-   ```bash
-   aq playbook v2-validate --path reviewed-playbooks/parent-integration/artifact.json
-   aq playbook v2-validate --path reviewed-playbooks/root-train/artifact.json
-   aq playbook v2-import --path reviewed-playbooks/parent-integration
-   aq playbook v2-import --path reviewed-playbooks/root-train
-   aq playbook activate --playbook-id parent-integration --artifact-sha256 sha256:a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd --enabled
-   aq playbook activate --playbook-id root-train --artifact-sha256 sha256:6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52 --enabled
-   aq playbook activation-health --playbook-id parent-integration
-   aq playbook activation-health --playbook-id root-train
-   ```
-
-3. The supervisor/operator can now use the already-supported, read-only full
-   policy generator without binding the policy or changing modes:
+3. Authoritative manifest generation already succeeded. If authenticated trust
+   inputs change, the supervisor/operator can use the supported read-only
+   CI-only generator without hierarchical route inputs or mode changes:
 
    ```bash
    aq integration trust-manifest matter-engine-cpp \
      --repository-id matter-engine-cpp \
-     --policy docs/agent/aq-promotion/train-policy.proposal.json \
+     --hosted-check-policy docs/agent/aq-promotion/hosted-check-policy.json \
      --write agent-queue-integration.generated.json --json
    ```
 
-   This resolves the repository and attestation App through the authenticated
-   daemon. The reviewed minimal `--hosted-check-policy` path remains an
-   alternative after its supported deployment. Before the flow is bound and a
-   manifest committed, the full-policy generator supplies neither the reviewed
-   promotion names nor the source-audit aliases: add those exact fields from
-   `trust-manifest.draft.json` / `hosted-check-policy.json` to its output for
-   review. Preserve all generated identities and the required-check version.
+   This resolves repository and attestation App identity through the authenticated
+   daemon. The current CLI exposes this CI-only option. Preserve the reviewed
+   promotion names and source-audit aliases, all generated identities and the
+   required-check version; an unbound flow cannot supply promotion names.
    Never copy the draft's unresolved App field into production.
    The supervisor has completed this generation as recorded above; another run
    is unnecessary unless the authenticated binding or reviewed inputs change.
@@ -251,8 +249,8 @@ not substitute for the exact-head hosted check from App `15368`.
 ## Bind and activate the project
 
 The worker prepares and verifies repository artifacts. LOCAL or a live named
-project supervisor performs the integration configuration; shared bundle
-import/activation and repository administration remain operator actions.
+project supervisor performs integration configuration; promotion playbook
+review/activation and repository administration use their required authority.
 No daemon restart is indicated by the existing train projection. Workers never
 edit global daemon configuration or restart it.
 
@@ -279,16 +277,18 @@ aq integration status matter-engine-cpp --control-only --json
 aq project set matter-engine-cpp integration-mode disabled \
   --expected-integration-generation <fresh-generation> \
   --reason 'prepare reviewed Matter Engine git-first train policy'
-aq project set matter-engine-cpp integration-policy <policy-json> \
+aq project set matter-engine-cpp integration-policy <current-policy-json> \
   --expected-integration-generation <fresh-generation> \
-  --reason 'bind reviewed shared routes and matter-engine-ci-v1'
+  --reason 'bind reviewed current git-first policy and matter-engine-ci-v1'
 aq project set matter-engine-cpp integration-review-mode pull_request \
   --expected-integration-generation <fresh-generation> \
   --reason 'require exact-head PR admission for Matter Engine roots'
 ```
 
-`<policy-json>` is the complete, verified proposal file encoded as one JSON
-argument. Keep the existing repository/default-branch binding; both already
+`<current-policy-json>` is the validated live-contract input approved for this
+cutover, encoded as one JSON argument. It is not the historical route-bearing
+proposal. Do not enter disabled mode until that concrete input and its live
+readiness checks are available. Keep the existing repository/default-branch binding; both already
 name `matter-engine-cpp` / `dev`. Do not switch modes while a repair writer is
 publishing. `disabled` prevents new target visits; it does not erase existing
 subjects or grant a forced drain. Do not bind the hierarchical policy while
@@ -304,7 +304,7 @@ drop either platform check or accept a different producer to make setup green.
 
 ```bash
 aq integration app-verify matter-engine-cpp \
-  --policy docs/agent/aq-promotion/train-policy.proposal.json \
+  --policy <validated-current-policy-file> \
   --repository-id matter-engine-cpp --json
 aq project set matter-engine-cpp integration-mode observe \
   --expected-integration-generation <fresh-generation> \
@@ -314,7 +314,7 @@ aq integration status matter-engine-cpp --json
 ```
 
 Require `app-verify` readiness and no failing trust/protection/variable items,
-matching route health, and concrete canary origin/completion evidence before
+the supported live git-first contract, and concrete canary origin/completion evidence before
 enabling publication. The development-mode protection report alone does not
 prove strict train readiness. Review mode remains `pull_request`; reviewed
 root admission needs an open PR, passing checks and approval of the exact
@@ -376,7 +376,7 @@ prerequisite and keep this task incomplete while their normal work proceeds.
 Keep `fleet-ridge-94` held until all of these are recorded:
 
 - Authoritative manifest and workflows on `dev`, matching App/check-version
-  Actions variables, valid protection, and ready reviewed route artifacts.
+  Actions variables, valid protection, and the validated live git-first policy.
 - A train-owned epic batch naming the canary's exact source, its candidate SHA,
   both required checks from producer `15368`, and recorded publication into the
   epic, through each nested ancestor. Then a train-owned root batch and delivery

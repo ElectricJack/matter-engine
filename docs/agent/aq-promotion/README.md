@@ -1,5 +1,15 @@
 # AQ promotion trust and operator handoff
 
+The [2026-10-11 cutover decision](decision-2026-10-11.md) supersedes the retired
+train-playbook requirements below. Jack permanently directed this cutover to
+skip `parent-integration` and `root-train` import and activation: git-first
+delivery runs in code. Continue train configuration and the two project
+promotion playbooks while preserving CI, App, review and release gates. The
+retained train policy is historical; a supported current git-first binding input
+needs live AQ contract confirmation before configuration.
+The [remaining operator commands](operator-cutover-2026-10-11.md) provide the
+staged handoff without the two retired imports or activations.
+
 Review draft for `fleet-ridge-94`, prepared following supervisor message
 `msg-716bab7ae7d843469245316071786433` and reported human authorization on
 escalation `c9c9fe72`. The authorization covers preparing CI trust inputs.
@@ -33,10 +43,11 @@ automatic task-to-epic-to-`dev` delivery through the git-first train and proof
 that a refactor lands without a hand merge. The
 [train migration proposal](train-migration.md) records the supported cutover
 commands, origin/admission checks, and completion evidence. Its complete
-[train-policy.proposal.json](train-policy.proposal.json) uses source-pinned
-shared system routes and passes AQ's published value schema. It is awaiting
-operator route review, installation/health checks and guarded project binding;
-source validation does not establish those approvals.
+[train-policy.proposal.json](train-policy.proposal.json) records the historical
+source-pinned shared-route proposal and trust-generation input. Its retired route
+snapshots are not current binding authority. The migration now follows Jack's
+decision and requires a supported current policy contract, without importing or
+activating those two playbooks.
 
 The complete proposal also supplies valid inputs for the existing supported
 `trust-manifest --policy` generator, subject to supervisor/operator review.
@@ -49,9 +60,10 @@ inputs for the published `--hosted-check-policy` bootstrap path: the reviewed
 version, ordered platform checks, verified producer and source-audit aliases.
 Supervisor message `msg-40c17359a22347fdbbdd268963b75bb0` requested this input
 after agent-queue published `d8d4642b4c58a3eda1be2a078be5b4799320b636` / PR1343.
-Local `aq integration trust-manifest --help` still lacks the new option at
-preparation time. Generation through this alternative minimal-input path awaits
-supported CLI/daemon deployment; it is no longer required to resolve this manifest.
+The CLI lacked the new option at historical preparation time. The current CLI
+now exposes `--hosted-check-policy`; the migration uses that CI-only path when
+generation is needed. Authoritative full-policy generation already resolved
+this manifest.
 
 [policy.draft.json](policy.draft.json) retains the earlier full
 `HierarchicalIntegrationPolicy` proposal with unresolved route references;
@@ -138,7 +150,7 @@ supported owner setup. It does not authorize this worker to provision a host.
 | Pending gate | Prepared input | Required authority |
 | --- | --- | --- |
 | Exact-head hosted CI and delivery | Production manifest and real `tests.yml` workflow | Windows and Linux checks from producer `15368`, configured integration owner |
-| Cutover inventory and train readiness | Complete train policy and migration review | User review, fresh supported preview, ready shared routes, guarded project configuration |
+| Cutover inventory and train readiness | Jack's decision, current git-first policy contract and migration review | Fresh supported preview, valid current policy, App trust and guarded project configuration |
 | App variables and branch protection | Attestation App `5075923`, version `matter-engine-ci-v1` | Repository administrator and supported App verification |
 | Promotion flow and routes | Reviewed staging/release names and source-audit aliases | Local flow activation and reviewed promotion playbook activation |
 
@@ -152,7 +164,7 @@ each artifact's `playbook_id` must match its route's ID.
 `activation_id` and `compiled_at` are optional nulls; the required artifact
 fields remain unresolved.
 
-Admission, repair, cleanup and branchless-parent settings are proposed schema
+Admission, repair, cleanup and branchless-parent settings are historical proposed schema
 values. Both boundaries use reviewed admission, no task-specific authorization
 list, bounded repair attempts and a human hold on exhaustion. CI is hosted.
 This override is a review/generation input; the bound DevelopmentPolicy and
