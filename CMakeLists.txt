@@ -143,4 +143,17 @@ include(cmake/MatterPackaging.cmake)
 
 if(BUILD_TESTING)
     add_subdirectory(cmake/tests/third_party_smoke)
+
+    # The native Windows runner has one GPU. Concurrent Vulkan processes
+    # contend for its memory, shader compilation and queues, exhausting VT
+    # readiness deadlines even when each test passes alone. Keep CPU tests
+    # parallel while giving every GPU test the same exclusive CTest resource.
+    # Apply this after all root-directory tests have been registered.
+    get_property(matter_registered_tests DIRECTORY PROPERTY TESTS)
+    foreach(matter_test IN LISTS matter_registered_tests)
+        get_property(matter_test_labels TEST "${matter_test}" PROPERTY LABELS)
+        if("vulkan" IN_LIST matter_test_labels OR "gpu" IN_LIST matter_test_labels)
+            set_property(TEST "${matter_test}" APPEND PROPERTY RESOURCE_LOCK matter_gpu)
+        endif()
+    endforeach()
 endif()
