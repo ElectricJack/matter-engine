@@ -11,7 +11,8 @@ procedural surface recipes. `SceneBackend` and this pass remain separate APIs
 until the producer/integration work below connects their explicit resources.
 
 `composite.vert`, `composite.frag`, `display_transform.frag` are compiled directly
-from `MatterEngine3/shaders_vk/`, including their six production GLSL helpers.
+from `MatterEngine3/shaders_vk/`, including their production GLSL helpers.
+The engine's `impostor_common.glsl` forwards to `shaders/impostor_common.glsl`.
 No shader implementation is copied. `src/vulkan_composition.cpp` extracts the
 composite/display descriptor ABI, pipeline construction and packing from
 `MatterEngine3/src/render/vk_scene_renderer.cpp`, replacing device/world globals
@@ -87,6 +88,13 @@ below is a proposed boundary name, never advertised by this pass. Existing
 native paths remain intact. Absence of a producer must cause explicit capability
 failure or use an approved, tested compatibility adapter during migration.
 Central wiring alone cannot substitute for missing module extraction.
+
+`bright-torrent-52` relocates the production raster/material shaders and
+mesh/impostor helpers to MatterGraphics, plus the G-buffer recording, raster
+pipeline and atlas routines as private fragments included by the existing host.
+The inventory below names their original engine locations; see
+[the actual paths and retained host dependencies](src/native/README.md).
+Standalone producer APIs and broader facade integration remain pending.
 
 Follow-up owners A–E are temporary task keys in supervisor proposal
 `prop-9ef784b996c1`, vault file

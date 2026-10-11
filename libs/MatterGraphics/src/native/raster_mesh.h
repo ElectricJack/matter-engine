@@ -21,7 +21,7 @@
 // `dominant_mat` in stage_from_snapshot) so a re-baked coarse rung that lost
 // its per-triangle material does not fall through to the instance material.
 //
-#include "indexed_part_geometry.h"   // IndexedPartGeometry, Tri, TriEx
+#include "../../../../MatterEngine3/src/render/indexed_part_geometry.h"   // IndexedPartGeometry, Tri, TriEx
 #include <cstdint>
 #include <vector>
 

@@ -51,6 +51,7 @@ file(GLOB matter_vulkan_shader_stages
     "${matter_shader_source_dir}/*.rchit"
     "${matter_shader_source_dir}/*.rahit"
 )
+list(APPEND matter_vulkan_shader_stages raster.vert gbuffer.frag)
 list(SORT matter_vulkan_shader_stages)
 
 # MatterEngine3/Makefile remains the canonical logical SPIR-V inventory during
@@ -103,6 +104,9 @@ matter_add_vulkan_shader_pipeline(
     PYTHON_ARGUMENTS ${matter_python_arguments}
     EMBED_SCRIPT "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_spirv.py"
     SHADERS ${matter_vulkan_shader_stages}
+    SOURCE_OVERRIDES
+        "raster.vert|${CMAKE_SOURCE_DIR}/libs/MatterGraphics/shaders/raster.vert"
+        "gbuffer.frag|${CMAKE_SOURCE_DIR}/libs/MatterGraphics/shaders/gbuffer.frag"
     SPECIALIZATIONS
         "raster_skin.vert|raster.vert|MATTER_SKINNED_VERTEX_INPUT"
         "raster_water.vert|raster.vert|MATTER_WATER_ANIMATION_VERTEX_INPUT"
