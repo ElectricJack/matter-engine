@@ -8,14 +8,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Import-Module (Join-Path $PSScriptRoot 'windows/MatterWindowsCi.psm1') -Force
-$selectedTier = Get-MatterCiTier -Ref $env:GITHUB_REF -EventName $env:GITHUB_EVENT_NAME -Tier $Tier
 $evidence = Join-Path $repositoryRoot 'artifacts/ci'
 New-Item -ItemType Directory -Force -Path $evidence | Out-Null
 # A self-hosted checkout may retain ignored artifacts. Upload only this run.
 Get-ChildItem -LiteralPath $evidence -File | Remove-Item -Force
 $summary = [ordered]@{ schema = 'matter.windows-ci-run.v1'; source_sha = $env:GITHUB_SHA;
     hosted = ($env:GITHUB_ACTIONS -eq 'true'); ci_script_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $PSCommandPath).Hash.ToLowerInvariant();
-    ref = $env:GITHUB_REF; event = $env:GITHUB_EVENT_NAME; tier = $selectedTier;
+    ref = $env:GITHUB_REF; event = $env:GITHUB_EVENT_NAME; requested_tier = $Tier; tier = $null;
     started_at_utc = [DateTime]::UtcNow.ToString('o'); status = 'failed'; phases = @() }
 $total = [Diagnostics.Stopwatch]::StartNew()
 $transcribing = $false
@@ -37,6 +36,12 @@ Push-Location $repositoryRoot
 try {
     Start-Transcript -Path (Join-Path $evidence 'native-windows.log') -Force | Out-Null
     $transcribing = $true
+    $selectedTier = Get-MatterCiTier -Ref $env:GITHUB_REF -EventName $env:GITHUB_EVENT_NAME -Tier $Tier
+    $summary.tier = $selectedTier
+    if ($env:GITHUB_EVENT_NAME -eq 'schedule') {
+        $ForceClean = $true
+        $DisableCompilerCache = $true
+    }
     if (-not $env:CMAKE_BUILD_PARALLEL_LEVEL) { $env:CMAKE_BUILD_PARALLEL_LEVEL = '4' }
     if (-not $env:CTEST_PARALLEL_LEVEL) { $env:CTEST_PARALLEL_LEVEL = '2' }
     $summary.build_parallelism = $env:CMAKE_BUILD_PARALLEL_LEVEL

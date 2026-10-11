@@ -37,6 +37,27 @@ try {
     Assert ($after.Key -ne $before.Key) 'CMake edit did not invalidate build'
     Set-Content -LiteralPath $tools.Glslc -Value 'upgraded compiler'
     Assert ((Get-MatterCiFingerprint -RepositoryRoot $source -Toolchain $tools).Key -ne $after.Key) 'in-place tool upgrade did not invalidate build'
+    Copy-Item (Join-Path $repository 'tools/ci-windows.ps1') (Join-Path $source 'tools/ci-windows.ps1')
+    Copy-Item (Join-Path $repository 'tools/windows/MatterWindowsCi.psm1') (Join-Path $source 'tools/windows/MatterWindowsCi.psm1')
+    $oldEvidence = Join-Path $source 'artifacts/ci'
+    New-Item -ItemType Directory -Force -Path $oldEvidence | Out-Null
+    Set-Content (Join-Path $oldEvidence 'stale.fixture') 'previous run'
+    $savedRef = $env:GITHUB_REF
+    $savedErrorAction = $ErrorActionPreference
+    try {
+        $env:GITHUB_REF = 'refs/heads/staging'
+        $ErrorActionPreference = 'Continue'
+        $invalidOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File (Join-Path $source 'tools/ci-windows.ps1') -Tier fast 2>&1 | Out-String
+        $invalidExit = $LASTEXITCODE
+    } finally {
+        $env:GITHUB_REF = $savedRef
+        $ErrorActionPreference = $savedErrorAction
+    }
+    Assert ($invalidExit -ne 0) "staging fast override was accepted: $invalidOutput"
+    Assert (-not (Test-Path (Join-Path $oldEvidence 'stale.fixture'))) 'rejected tier retained stale evidence'
+    $invalidSummary = Get-Content -Raw (Join-Path $oldEvidence 'run-summary.json') | ConvertFrom-Json
+    Assert ($invalidSummary.status -eq 'failed' -and $invalidSummary.error -match 'require the full tier') 'rejected tier did not leave failure evidence'
     $plan = Get-MatterCiBuildPlan -RepositoryRoot $source -CiRoot $ciRoot -Fingerprint 'a'
     Assert $plan.Clean 'first run must clean'
     Initialize-MatterCiBuild $plan
