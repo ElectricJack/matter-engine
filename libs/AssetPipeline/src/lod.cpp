@@ -13,15 +13,10 @@
 #include <optional>
 #include <set>
 
-// Error-bounded LOD generation. Every stage is the engine's own, compiled from
-// its source directory: MatterSurfaceLib from_tri/simplify/reproject_triex
-// (linked from matter_geometry, which owns them) and MatterEngine3's
-// mesh_error verifier. The per-level flow is surface_proxy's
-// bake_solid_lods (MatterEngine3/src/surface_proxy_lod.cpp:8-58) and the QEM
-// stop rule is lod_bake::decimate_to_error (MatterEngine3/src/lod_bake.cpp:
-// 86-131), which cannot be linked here without lod_bake.h's GPU/part-store
-// includes. The contracts adapters (weld/unweld/placements) follow
-// ProceduralGeometry's modifier stack (ProceduralGeometry/src/modifiers.cpp).
+// Error-bounded LOD generation through MatterSurfaceLib's shared
+// from_tri/decimate_to_error/reproject_triex stages (linked from matter_geometry)
+// and MatterEngine3's mesh_error verifier. The contracts adapters
+// (weld/unweld/placements) follow ProceduralGeometry's modifier stack.
 namespace matter::asset {
 namespace {
 using namespace detail;
@@ -511,17 +506,9 @@ services::AssetResult prepare_lods(const services::JobEnvelope &job,
         const float target = settings.max_error_metres[k];
         usage.operations += 2 * triangles;
         checked(monitor.checkpoint(usage));
-        // decimate_to_error: the error bound is the only stop (target_ratio
-        // 0), QEM cost is squared distance, open edges stay locked, no AABB
-        // lock, and an emptied result falls back to the source. Each level
-        // simplifies the source, never the previous level.
-        SimplifyOptions o;
-        o.target_ratio = 0.0f;
-        o.max_error = target * target;
-        o.lock_boundary = true;
-        MeshIndexed mesh = simplify(geometry, o, nullptr);
-        if (mesh.positions.empty() || mesh.indices.empty())
-          mesh = geometry;
+        // Each level simplifies the source, never the previous level.
+        // Props keep open edges locked without treating their AABB as a border.
+        MeshIndexed mesh = decimate_to_error(geometry, target, false);
         reproject_triex(index, mesh);
         for (const auto &v : mesh.positions)
           if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z))

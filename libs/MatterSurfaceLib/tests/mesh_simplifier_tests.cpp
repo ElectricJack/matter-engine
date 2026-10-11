@@ -436,6 +436,46 @@ static void test_group_border_edges() {
     printf("PASSED\n");
 }
 
+static void test_error_bounded_entrypoints() {
+    printf("=== test_error_bounded_entrypoints ===\n");
+    assert(decimate_to_error(MeshIndexed{}, 1.0f).indices.empty());
+    assert(decimate_to_error(std::vector<Tri>{}, 1.0f).empty());
+
+    Mesh grid = makeGrid(8, 4.0f);
+    MeshIndexed input;
+    for (int i = 0; i < grid.vertexCount; ++i)
+        input.positions.push_back(make_float3(grid.vertices[3*i],
+                                              grid.vertices[3*i+1],
+                                              grid.vertices[3*i+2]));
+    input.indices.assign(grid.indices, grid.indices + 3*grid.triangleCount);
+    UnloadMesh(grid);
+
+    // On a planar mesh the AABB face lock freezes every vertex. Turning it
+    // off must allow interior reduction while preserving the open rim.
+    MeshIndexed locked = decimate_to_error(input, 1.0f);
+    assert(locked.indices.size() == input.indices.size());
+    MeshIndexed reduced = decimate_to_error(input, 1.0f, false);
+    assert(!reduced.indices.empty());
+    assert(reduced.indices.size() < input.indices.size() / 2);
+    for (const float3& v : input.positions) {
+        if (v.x != 0 && v.x != 4 && v.y != 0 && v.y != 4) continue;
+        bool found = false;
+        for (uint32_t index : reduced.indices) {
+            const float3& p = reduced.positions[index];
+            if (p.x == v.x && p.y == v.y && p.z == v.z) found = true;
+        }
+        assert(found);
+    }
+
+    std::vector<Tri> tris;
+    std::vector<TriEx> unused;
+    to_tri(input, tris, unused);
+    assert(decimate_to_error(tris, 1.0f).size() == tris.size());
+    const auto reduced_tris = decimate_to_error(tris, 1.0f, false);
+    assert(reduced_tris.size() == reduced.indices.size() / 3);
+    printf("PASSED\n");
+}
+
 int main() {
     printf("=== Mesh Simplifier Tests ===\n");
     test_indices_in_range_sphere();
@@ -450,6 +490,7 @@ int main() {
     test_no_degenerate_triangles();
     test_boundary_preserved();
     test_group_border_edges();
+    test_error_bounded_entrypoints();
     test_watertight_seam();
     test_simplify_meshindexed_overload_delegates();
     test_simplify_meshindexed_over_65535_verts();
