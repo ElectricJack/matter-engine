@@ -57,4 +57,25 @@ CheckedProfile profile(const data::RecipeNode &, jobs::JobMonitor &, jobs::Resou
 void reserve_work(uint64_t triangles, uint64_t scratch, jobs::JobMonitor &, jobs::ResourceUsage &);
 data::MeshPrototype convert(const tri_emit::TriangleBuildBuffer &, const data::RecipeNode &);
 void mesh_bounds(data::MeshPrototype &);
+// Empty when the build omits the optional modifier backend.
+std::vector<data::Capability> modifier_capabilities();
+// Frozen contracts-v1 JobResult::success discards diagnostics when its final
+// envelope validation runs out of memory. Entry admission already validated
+// this owned, immutable envelope, so that exact late fallback means allocation
+// failure, not a newly invalid caller envelope. Keep the workaround local until
+// JobResult preserves the swallowed validation error.
+template <class T>
+jobs::JobResult<T> published(jobs::JobResult<T> result, const jobs::JobEnvelope &admitted, const char *message) {
+    if (!result.ok() && result.diagnostics().size() == 1) {
+        const auto &d = result.diagnostics()[0];
+        if (d.code == data::ErrorCode::invalid_input &&
+            d.message == "invalid result envelope or failure without an error") {
+            // The success path supplies no diagnostics; with immutable valid
+            // fields its failed validation can only be the swallowed resource error.
+            checked(jobs::validate(admitted));
+            return jobs::JobResult<T>::failure(admitted, data::ErrorCode::resource_limit, message);
+        }
+    }
+    return result;
+}
 } // namespace matter::geometry::detail
