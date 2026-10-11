@@ -3,8 +3,12 @@
 Task `bright-torrent-52` relocates the production code from base
 `58289c187ef2565c7d0532fe28a8cfb903023e44`. The implementation is mechanically
 equivalent, but validation is **not all green**: VT and VT-RT smoke failures
-remain unresolved. No matching prior failure receipt was found. Source and
-SPIR-V equality are evidence of the move, not proof of runtime failure provenance.
+remain unresolved and are a **known deferred gap**. The supervisor's
+2026-10-11 22:27 UTC task comment relays Jack's decision to defer virtual
+texturing, cancel the baseline/bisect work, and accept this extraction once the
+other modes pass. Those five modes passed as recorded below. No matching prior
+failure receipt was found. Source and SPIR-V equality are evidence of the move,
+not proof of runtime failure provenance.
 
 ## Boundary and provenance
 
@@ -74,7 +78,30 @@ baseline for those modes was found in repository findings or by the supervisor
 [VT-normal-frame finding](streammountain-gbuffer-cache-order-2026-09-29.md)
 concerns a different mode and is not a baseline receipt for these failures.
 No new runtime baseline, changed assertion, tolerance or unrelated VT fix was
-introduced. These failures remain explicit limitations of acceptance.
+introduced.
+
+## Deferred VT gap and reopen disposition
+
+The supervisor's decision supersedes the earlier reopen request to run VT and
+VT-RT on the pre-move baseline and bisect any regression. VT investigation is
+assigned to a separate follow-up; these failures no longer block this extraction.
+Their provenance remains undetermined, so neither is classified as pre-existing
+or fixed. The original results remain failures:
+
+| Mode | Exit status | Failed assertions | Validation errors | Full log |
+| --- | --- | --- | --- | --- |
+| `vt` | 1 | 7 | 0 | [VT log](../agent/evidence/2026-10-11-graphics-producer-move/vt.txt) |
+| `vt-rt` | 1 | 12 | 0 | [VT-RT log](../agent/evidence/2026-10-11-graphics-producer-move/vt-rt.txt) |
+
+[Smoke results](../agent/evidence/2026-10-11-graphics-producer-move/smoke-results.json)
+preserve the exact commands, per-mode exit statuses and individual assertions.
+Each mode ran once in the original validation of extraction commit
+`90a19c6698a03623da9a3e3c5235ad272531d462`. The reopen changes only this findings
+document and reuses that validation: no rendering or test implementation changed,
+and no runtime smoke rerun or baseline/bisect was performed. The five other
+native smoke modes, two native CPU tests and five standalone tests passed.
+The fixture incompatibility and supplemental Unix ABI mismatch below remain
+separate, explicitly disclosed limitations.
 
 ## Other checks that could not pass
 
