@@ -1,0 +1,315 @@
+{
+  "schema_version": 1,
+  "task_id": "sound-impact-80.3",
+  "claim_epoch": 4,
+  "observed_at_utc": "2026-10-11T14:14:39.890774+00:00",
+  "status": "pending_owner_delivery_and_exact_head_linux",
+  "acceptance_satisfied": false,
+  "repository": "ElectricJack/matter-engine",
+  "repository_id": 1266132968,
+  "authority": {
+    "plan_revision": 5,
+    "plan": "2026-10-10-matter-engine-git-first-train-and-promotion-cutover.md",
+    "delivery_owner": "configured integration owner; supervisor alone authorized for bootstrap hand merge",
+    "worker": "a534967b-d35f-4267-8831-950225f50d76",
+    "worker_branch": "aq/sound-impact-80.3",
+    "is_autonomous_canary_evidence": false
+  },
+  "delivery": {
+    "observed_dev_oid": "ff3f3e5bc775f05718d9141ffbf3fdfa95748545",
+    "observed_dev_tree": "d8a360b8c91ef9e918a723b4c3d8f80feab33033",
+    "old_dev_oid": null,
+    "new_dev_oid": null,
+    "owner_receipt": null,
+    "explanation": "No bootstrap delivery observed. These nulls must be replaced with actual owner old/new OIDs and receipt after delivery; the observed dev commit is not a bootstrap delivery receipt.",
+    "owner_branch": "aq/fleet-ridge-94",
+    "owner_branch_api_status": 404,
+    "latest_published_owner_checkpoint": null,
+    "historical_source_oid": "c4459b8f508a4d2f5b6ee2fc7084264eab825d89",
+    "historical_source_is_ancestor_of_dev": false,
+    "containment_exit_code": 1,
+    "tree_response_truncated": false,
+    "required_paths": [
+      {
+        "path": ".github/agent-queue-integration.json",
+        "present": false
+      },
+      {
+        "path": ".github/workflows/tests.yml",
+        "present": false
+      },
+      {
+        "path": ".github/workflows/main-attestation.yml",
+        "present": false
+      },
+      {
+        "path": "tools/aq_attestation.py",
+        "present": false
+      },
+      {
+        "path": "docs/agent/aq-promotion/train-policy.proposal.json",
+        "present": false
+      },
+      {
+        "path": "docs/agent/aq-promotion/hosted-check-policy.json",
+        "present": false
+      },
+      {
+        "path": "docs/agent/aq-promotion/train-migration.md",
+        "present": false
+      },
+      {
+        "path": "tools/aq_attestation.LICENSE",
+        "present": false
+      }
+    ],
+    "current_workflow": ".github/workflows/native-windows.yml"
+  },
+  "platform_checks": {
+    "required_producer_app_id": 15368,
+    "required_names": [
+      "Native Windows build and tests",
+      "Linux foundation build and tests"
+    ],
+    "head_sha": "ff3f3e5bc775f05718d9141ffbf3fdfa95748545",
+    "query_filter": "all",
+    "total_count": 1,
+    "checks": [
+      {
+        "id": 114469193115,
+        "name": "Native Windows build and tests",
+        "head_sha": "ff3f3e5bc775f05718d9141ffbf3fdfa95748545",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-11T12:24:40Z",
+        "completed_at": "2026-10-11T12:38:29Z",
+        "details_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38139145620/job/114469193115",
+        "producer_app_id": 15368
+      }
+    ],
+    "missing": [
+      "Linux foundation build and tests"
+    ]
+  },
+  "windows": {
+    "run": {
+      "id": 38139145620,
+      "head_sha": "ff3f3e5bc775f05718d9141ffbf3fdfa95748545",
+      "head_branch": "dev",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "path": ".github/workflows/native-windows.yml",
+      "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38139145620",
+      "created_at": "2026-10-11T12:24:38Z",
+      "updated_at": "2026-10-11T12:38:30Z"
+    },
+    "jobs": [
+      {
+        "id": 114469193115,
+        "name": "Native Windows build and tests",
+        "head_sha": "ff3f3e5bc775f05718d9141ffbf3fdfa95748545",
+        "status": "completed",
+        "conclusion": "success",
+        "runner_id": 22,
+        "runner_name": "DESKTOP-EB8UOME-matter-msvc",
+        "labels": [
+          "self-hosted",
+          "Windows",
+          "X64",
+          "matter-engine-msvc"
+        ],
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1,
+            "started_at": "2026-10-11T12:24:41Z",
+            "completed_at": "2026-10-11T12:24:43Z"
+          },
+          {
+            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2,
+            "started_at": "2026-10-11T12:24:43Z",
+            "completed_at": "2026-10-11T12:24:50Z"
+          },
+          {
+            "name": "Build, test and validate package",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3,
+            "started_at": "2026-10-11T12:24:50Z",
+            "completed_at": "2026-10-11T12:38:23Z"
+          },
+          {
+            "name": "Upload test evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4,
+            "started_at": "2026-10-11T12:38:23Z",
+            "completed_at": "2026-10-11T12:38:25Z"
+          },
+          {
+            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8,
+            "started_at": "2026-10-11T12:38:25Z",
+            "completed_at": "2026-10-11T12:38:27Z"
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9,
+            "started_at": "2026-10-11T12:38:27Z",
+            "completed_at": "2026-10-11T12:38:27Z"
+          }
+        ]
+      }
+    ],
+    "artifact": {
+      "id": 11701364953,
+      "node_id": "MDg6QXJ0aWZhY3QxMTcwMTM2NDk1Mw==",
+      "name": "native-windows-ff3f3e5bc775f05718d9141ffbf3fdfa95748545-1",
+      "size_in_bytes": 21068,
+      "url": "https://api.github.com/repos/ElectricJack/matter-engine/actions/artifacts/11701364953",
+      "archive_download_url": "https://api.github.com/repos/ElectricJack/matter-engine/actions/artifacts/11701364953/zip",
+      "expired": false,
+      "digest": "sha256:12878a01f7ec8468579771bbb19a6b1b60d9fef765f4b4df0f6bafec6c395197",
+      "created_at": "2026-10-11T12:38:25Z",
+      "updated_at": "2026-10-11T12:38:25Z",
+      "expires_at": "2027-01-09T12:24:38Z",
+      "workflow_run": {
+        "id": 38139145620,
+        "repository_id": 1266132968,
+        "head_repository_id": 1266132968,
+        "head_branch": "dev",
+        "head_sha": "ff3f3e5bc775f05718d9141ffbf3fdfa95748545"
+      }
+    },
+    "artifact_files": [
+      {
+        "name": "ctest.xml",
+        "sha256": "68ff59c0925b72edf880dafd5e5b9270fd4c619aa91916c9759a75032a7ae188",
+        "bytes": 121435
+      },
+      {
+        "name": "native-windows.log",
+        "sha256": "1b667cc95571634edf4e2c8c4fa884d38292d7002024cf85704548c2df0a3db0",
+        "bytes": 1176
+      },
+      {
+        "name": "toolchain.json",
+        "sha256": "3f8f8d5abe1ca3ca7f92c9bac146dac956fcd89e7b5b3e6ef042bda4ba3745d3",
+        "bytes": 896
+      }
+    ],
+    "ctest_summary": {
+      "name": "Win32-ninja",
+      "tests": "189",
+      "failures": "0",
+      "disabled": "0",
+      "skipped": "0",
+      "hostname": "DESKTOP-EB8UOME",
+      "time": "315",
+      "timestamp": "2026-10-11T05:32:47"
+    },
+    "toolchain": {
+      "VisualStudioRoot": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+      "VisualStudioProductId": "Microsoft.VisualStudio.Product.Community",
+      "VsDevCmd": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+      "MsvcToolsVersion": "14.44.35207",
+      "WindowsSdkVersion": "10.0.26100.0",
+      "CMake": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+      "Ninja": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe",
+      "Python": "C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+      "PythonVersion": "Python 3.13.14",
+      "VulkanSdk": "C:\\VulkanSDK\\1.4.357.0",
+      "Glslc": "C:\\VulkanSDK\\1.4.357.0\\Bin\\glslc.exe"
+    },
+    "runner_account": "DESKTOP-EB8UOME\\webde",
+    "package_validation": "MSVC package: PASS (469 hashed files + manifest, 9 import(s), 0 runtime DLL(s), clean-PATH launch)",
+    "script_verified_at": "ff3f3e5bc775f05718d9141ffbf3fdfa95748545",
+    "script_stages": [
+      "build-windows.ps1 -Config RelWithDebInfo",
+      "ctest --preset windows-msvc-relwithdebinfo --no-tests=error --output-junit artifacts/ci/ctest.xml",
+      "build-windows.ps1 -Config RelWithDebInfo -Target matter_dist",
+      "check-windows-msvc-package.ps1 -DistPath MatterEditor/build/dist/world_demo"
+    ]
+  },
+  "runner_inventory": {
+    "total_count": 1,
+    "runners": [
+      {
+        "id": 22,
+        "name": "DESKTOP-EB8UOME-matter-msvc",
+        "os": "Windows",
+        "status": "online",
+        "busy": false,
+        "version": "2.338.0",
+        "labels": [
+          {
+            "id": 0,
+            "name": "self-hosted",
+            "type": "read-only"
+          },
+          {
+            "id": 0,
+            "name": "Windows",
+            "type": "read-only"
+          },
+          {
+            "id": 0,
+            "name": "X64",
+            "type": "read-only"
+          },
+          {
+            "id": 0,
+            "name": "matter-engine-msvc",
+            "type": "custom"
+          }
+        ]
+      }
+    ]
+  },
+  "plan_reconciliation": {
+    "workflow_parallelism_at_observed_dev": {
+      "CMAKE_BUILD_PARALLEL_LEVEL": 12,
+      "CTEST_PARALLEL_LEVEL": 6
+    },
+    "plan_historical_parallelism": {
+      "CMAKE_BUILD_PARALLEL_LEVEL": 4,
+      "CTEST_PARALLEL_LEVEL": 2
+    },
+    "note": "Current dev workflow has only the native job and narrower aq push patterns than the approved bootstrap source. Owner must reconcile delivery with current fixes; existing green Windows run does not establish the reviewed Windows/Linux trust contract."
+  },
+  "blockers": [
+    "Owner trust-bootstrap files absent from dev.",
+    "Required exact-head Linux check absent.",
+    "Current published owner branch returns 404; replacement checkpoint and delivery receipt needed."
+  ],
+  "coordination": {
+    "message_id": "msg-abeb1a013bac47fe9a9897059c1dc85c",
+    "thread_id": "sound-impact-80.3:bootstrap-epoch4",
+    "after_seq": 9844
+  },
+  "commands": [
+    "gh api repos/ElectricJack/matter-engine/branches/dev",
+    "gh api repos/ElectricJack/matter-engine/commits/ff3f3e5bc775f05718d9141ffbf3fdfa95748545",
+    "gh api repos/ElectricJack/matter-engine/commits/ff3f3e5bc775f05718d9141ffbf3fdfa95748545/check-runs?filter=all&per_page=100",
+    "gh api repos/ElectricJack/matter-engine/git/trees/ff3f3e5bc775f05718d9141ffbf3fdfa95748545?recursive=1",
+    "gh api repos/ElectricJack/matter-engine/git/ref/heads/aq/fleet-ridge-94",
+    "gh api repos/ElectricJack/matter-engine/actions/runners",
+    "gh api repos/ElectricJack/matter-engine/actions/runs/38139145620",
+    "gh api repos/ElectricJack/matter-engine/actions/runs/38139145620/jobs",
+    "gh api repos/ElectricJack/matter-engine/actions/runs/38139145620/artifacts",
+    "gh run download 38139145620 -R ElectricJack/matter-engine -n native-windows-ff3f3e5bc775f05718d9141ffbf3fdfa95748545-1 -D /tmp/sound-impact-80.3-evidence/windows",
+    "git merge-base --is-ancestor c4459b8f508a4d2f5b6ee2fc7084264eab825d89 ff3f3e5bc775f05718d9141ffbf3fdfa95748545"
+  ],
+  "raw_local_evidence": "/tmp/sound-impact-80.3-evidence",
+  "limitations": "Snapshot only. No merge, runner registration, cutover preview, route activation or repository administration performed. Local artifact downloads were inspected; URLs and file hashes permit re-verification. Local scratch paths are not durable hosted evidence."
+}
