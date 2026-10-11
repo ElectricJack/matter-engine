@@ -15,6 +15,12 @@ foreach(kind compile link)
     math(EXPR last "${count} - 1")
     foreach(i RANGE 0 ${last})
         string(JSON flag GET "${_matter_wasm_lock}" ${kind}_options ${i})
+        # Entrypoint lifecycle is target-specific: contract executables call
+        # main/exit; the production library has neither. Keep the locked smoke
+        # settings on its executable targets rather than leaking them transitively.
+        if(kind STREQUAL "link" AND flag MATCHES "^-s(EXPORTED_RUNTIME_METHODS|EXIT_RUNTIME)=")
+            continue()
+        endif()
         if(kind STREQUAL "compile")
             target_compile_options(matter_wasm_profile INTERFACE "${flag}")
         else()
