@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "Fixture ownership manifest; the checker cross-checks it against component-rules.json.",
+  "contracts": {"target": "fx_contracts", "directory": "libs/FxContracts", "dependencies": []},
+  "modules": [
+    {"target": "fx_geometry", "directory": "libs/FxGeometry", "dependencies": ["fx_contracts"]},
+    {"target": "fx_graphics", "directory": "libs/FxGraphics", "dependencies": ["fx_contracts"]},
+    {"target": "fx_scaffold", "directory": "libs/FxScaffold", "dependencies": ["fx_contracts"], "implemented": false}
+  ],
+  "non_native": [
+    {"directory": "packages/fx-authoring", "kind": "javascript"},
+    {"directory": "integrations/fx-web", "kind": "browser", "implemented": false}
+  ]
+}

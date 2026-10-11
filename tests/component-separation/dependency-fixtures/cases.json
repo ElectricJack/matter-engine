@@ -1,0 +1,599 @@
+{
+  "schema": "matter.component-dependency-fixture-cases.v1",
+  "description": "Each case copies base/ to a temporary directory, applies its edits (one deliberate violation, or none) and runs check_dependencies.py with args. expect.codes and expect.failing are exact sets; untested and passing are subsets. Paths are relative to the copied repository; ../external/ is a sibling directory standing in for files outside the checkout. toolchain cases configure (and build) CMake probes and are skipped without cmake, ninja and a C++ compiler.",
+  "cases": [
+    {
+      "name": "static-baseline",
+      "description": "The clean fixture passes the static and duplicate checks; scaffold and absent components are UNTESTED, not passed.",
+      "args": ["--checks", "static,duplicates"],
+      "expect": {
+        "exit": 0,
+        "codes": [],
+        "failing": [],
+        "passing": ["repository/-/ownership", "contracts/-/ownership", "contracts/-/public-includes", "geometry/-/public-includes",
+                    "graphics/-/public-includes", "authoring/-/js-imports", "geometry/-/duplicates", "scaffold/-/ownership", "web/-/ownership"],
+        "untested": ["scaffold/-/public-includes", "scaffold/-/duplicates", "web/-/js-imports", "web/-/duplicates"]
+      }
+    },
+    {
+      "name": "strict-untested",
+      "description": "--strict-untested turns UNTESTED results into a failing exit without inventing violations.",
+      "args": ["--checks", "static,duplicates", "--strict-untested"],
+      "expect": {"exit": 1, "codes": [], "failing": [], "stderr": "failing because --strict-untested was given"}
+    },
+    {
+      "name": "geometry-public-header-includes-js-engine",
+      "description": "Geometry's public surface must not reach the JavaScript engine.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxGeometry/include/fx_geometry/fx_mesh.h",
+         "old": "#include <fx_contracts/fx_value.h>\n", "new": "#include <fx_contracts/fx_value.h>\n#include <fakejs.h>\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["public-include.forbidden"], "failing": ["geometry/-/public-includes"], "details": ["fakejs.h"]}
+    },
+    {
+      "name": "geometry-public-header-reaches-renderer-transitively",
+      "description": "A forbidden renderer include two hops down the public include closure is still found, with the path that reached it.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "json", "path": "component-rules.json", "at": ["components", "geometry"], "set": {"public_include_roots": ["libs/FxGeometry/detail"]}},
+        {"op": "write", "path": "libs/FxGeometry/detail/fx_mesh_internal.h",
+         "text": ["#pragma once", "#include <fakerender.h>"]},
+        {"op": "replace", "path": "libs/FxGeometry/include/fx_geometry/fx_mesh.h",
+         "old": "#include <fx_contracts/fx_value.h>\n", "new": "#include <fx_contracts/fx_value.h>\n#include \"../../detail/fx_mesh_internal.h\"\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["public-include.forbidden"], "failing": ["geometry/-/public-includes"],
+                 "details": ["fakerender.h", "via libs/FxGeometry/include/fx_geometry/fx_mesh.h"]}
+    },
+    {
+      "name": "public-header-includes-private-header",
+      "description": "A public header that includes a private source-tree header leaks it to every consumer.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "write", "path": "libs/FxGeometry/src/fx_mesh_detail.h", "text": ["#pragma once", "namespace fx { constexpr int fxgeo_detail_level = 2; }"]},
+        {"op": "replace", "path": "libs/FxGeometry/include/fx_geometry/fx_mesh.h",
+         "old": "#include <fx_contracts/fx_value.h>\n", "new": "#include <fx_contracts/fx_value.h>\n#include \"../../src/fx_mesh_detail.h\"\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["public-include.outside-public-roots"], "failing": ["geometry/-/public-includes"],
+                 "details": ["libs/FxGeometry/src/fx_mesh_detail.h"]}
+    },
+    {
+      "name": "graphics-public-header-includes-geometry",
+      "description": "Graphics must not depend on geometry: the include resolves only into another component's headers.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxGraphics/include/fx_graphics/fx_draw.h",
+         "old": "#include <fx_contracts/fx_value.h>\n", "new": "#include <fx_contracts/fx_value.h>\n#include <fx_geometry/fx_mesh.h>\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["public-include.foreign-component"], "failing": ["graphics/-/public-includes"], "details": ["geometry"]}
+    },
+    {
+      "name": "contracts-public-header-includes-graphics",
+      "description": "The neutral contracts may include no other component.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxContracts/include/fx_contracts/fx_value.h",
+         "old": "#pragma once\n", "new": "#pragma once\n#include <fx_graphics/fx_draw.h>\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["public-include.foreign-component"], "failing": ["contracts/-/public-includes"], "details": ["graphics"]}
+    },
+    {
+      "name": "public-header-includes-unowned-legacy-header",
+      "description": "An include that only resolves into code no component owns is unresolved through the public include path.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxGeometry/include/fx_geometry/fx_mesh.h",
+         "old": "#include <fx_contracts/fx_value.h>\n", "new": "#include <fx_contracts/fx_value.h>\n#include <fx_legacy/fx_util.h>\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["public-include.unresolved"], "failing": ["geometry/-/public-includes"], "details": ["fx_legacy/fx_util.h"]}
+    },
+    {
+      "name": "js-imports-host-module",
+      "description": "Portable authoring code must not import Node host modules.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "replace", "path": "packages/fx-authoring/src/index.mjs",
+         "old": "import { scale } from \"./scale.mjs\";\n", "new": "import { scale } from \"./scale.mjs\";\nimport { readFileSync } from \"node:fs\";\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["js-import.forbidden"], "failing": ["authoring/-/js-imports"], "details": ["node:fs"]}
+    },
+    {
+      "name": "js-import-escapes-package",
+      "description": "A relative import may not leave the package directory.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "replace", "path": "packages/fx-authoring/src/index.mjs",
+         "old": "import { scale } from \"./scale.mjs\";\n", "new": "import { scale } from \"./scale.mjs\";\nimport { helper } from \"../../shared/helper.mjs\";\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["js-import.escapes-package"], "failing": ["authoring/-/js-imports"], "details": ["../../shared/helper.mjs"]}
+    },
+    {
+      "name": "js-import-undeclared-package",
+      "description": "A bare package specifier must be declared in allowed_bare_specifiers.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "replace", "path": "packages/fx-authoring/src/index.mjs",
+         "old": "import { scale } from \"./scale.mjs\";\n", "new": "import { scale } from \"./scale.mjs\";\nimport merge from \"lodash\";\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["js-import.undeclared"], "failing": ["authoring/-/js-imports"], "details": ["lodash"]}
+    },
+    {
+      "name": "duplicate-file-copied-into-component",
+      "description": "A verbatim copy of in-place legacy code inside a component is a duplicate algorithm source.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "copy", "from": "legacy/src/fx_legacy_util.cpp", "path": "libs/FxGeometry/src/fx_smooth.cpp"}
+      ],
+      "expect": {"exit": 1, "codes": ["duplicate.identical-file"], "failing": ["geometry/-/duplicates"],
+                 "details": ["legacy/src/fx_legacy_util.cpp", "libs/FxGeometry/src/fx_smooth.cpp"]}
+    },
+    {
+      "name": "duplicate-algorithm-across-components",
+      "description": "Graphics re-implementing geometry's triangle area (renamed, same body) is shared code across components.",
+      "args": ["--checks", "static,duplicates"],
+      "edits": [
+        {"op": "append", "path": "libs/FxGraphics/src/fx_draw.cpp", "text": [
+          "",
+          "namespace fx {",
+          "double fxgfx_triangle_area(const Value& a, const Value& b, const Value& c) {",
+          "    const double ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;",
+          "    const double vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;",
+          "    const double cross_x = uy * vz - uz * vy;",
+          "    const double cross_y = uz * vx - ux * vz;",
+          "    const double cross_z = ux * vy - uy * vx;",
+          "    const double twice_area = std::sqrt(cross_x * cross_x + cross_y * cross_y + cross_z * cross_z);",
+          "    return 0.5 * twice_area;",
+          "}",
+          "}  // namespace fx"
+        ]}
+      ],
+      "expect": {"exit": 1, "codes": ["duplicate.shared-code"], "failing": ["geometry/-/duplicates", "graphics/-/duplicates"],
+                 "details": ["libs/FxGraphics/src/fx_draw.cpp", "libs/FxGeometry/src/fx_mesh.cpp"]}
+    },
+    {
+      "name": "absent-component-directory-exists",
+      "description": "Code for a component the rules call absent must not appear unannounced.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "write", "path": "integrations/fx-web/index.html", "text": ["<!doctype html>", "<title>fx-web</title>"]}],
+      "expect": {"exit": 1, "codes": ["ownership.absent-exists"], "failing": ["web/-/ownership"]}
+    },
+    {
+      "name": "scaffold-component-has-sources",
+      "description": "A scaffold component that gains code must be promoted to implemented, so it gets checked.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "write", "path": "libs/FxScaffold/src/fx_scaffold.cpp", "text": ["int fx_scaffold_marker() { return 1; }"]}],
+      "expect": {"exit": 1, "codes": ["ownership.scaffold-has-sources"], "failing": ["scaffold/-/ownership"], "details": ["fx_scaffold.cpp"]}
+    },
+    {
+      "name": "manifest-dependency-mismatch",
+      "description": "The ownership manifest and the rules must agree about who may depend on whom.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "ownership.json", "at": ["modules", "fx_geometry"], "extend": {"dependencies": ["fx_graphics"]}}],
+      "expect": {"exit": 1, "codes": ["ownership.manifest-mismatch"], "failing": ["geometry/-/ownership"], "details": ["the manifest declares ['contracts', 'graphics']"]}
+    },
+    {
+      "name": "manifest-module-without-rules",
+      "description": "Every module in the ownership manifest needs a component rule.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "ownership.json", "extend": {"modules": [{"target": "fx_terrain", "directory": "libs/FxTerrain", "dependencies": []}]}}],
+      "expect": {"exit": 1, "codes": ["ownership.manifest-unmapped"], "failing": ["repository/-/ownership"], "details": ["libs/FxTerrain"]}
+    },
+    {
+      "name": "component-directories-overlap",
+      "description": "Two components may not claim the same directory.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "component-rules.json", "extend": {"components": [
+        {"name": "geometry_adapter", "status": "scaffold", "kind": "adapter", "directory": "libs/FxGeometry/include",
+         "reason": "a fixture adapter that wrongly nests inside geometry"}
+      ]}}],
+      "expect": {"exit": 1, "codes": ["ownership.overlap"], "failing": ["repository/-/ownership"], "details": ["libs/FxGeometry"]}
+    },
+    {
+      "name": "implemented-component-missing-build-file",
+      "description": "An implemented native component needs its own CMakeLists.txt so it can build alone.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "delete", "path": "libs/FxGraphics/CMakeLists.txt"}],
+      "expect": {"exit": 1, "codes": ["ownership.missing-build-file"], "failing": ["graphics/-/ownership"]}
+    },
+    {
+      "name": "scaffold-component-missing-directory",
+      "description": "A scaffold component must have its reserved directory.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "delete", "path": "libs/FxScaffold"}],
+      "expect": {"exit": 1, "codes": ["ownership.missing-directory"], "failing": ["scaffold/-/ownership"]}
+    },
+
+    {
+      "name": "error-unknown-required-capability",
+      "description": "An unknown required capability fails explicitly instead of being ignored.",
+      "args": ["--checks", "static", "--require-capability", "no-such-sdk"],
+      "expect": {"exit": 2, "stderr": "unknown capability 'no-such-sdk'", "no_report": true}
+    },
+    {
+      "name": "error-required-capability-without-probes",
+      "description": "--require-capability without the configure/build checks would silently prove nothing.",
+      "args": ["--checks", "static", "--require-capability", "fx-sdk"],
+      "expect": {"exit": 2, "stderr": "only applies to the configure/build checks", "no_report": true}
+    },
+    {
+      "name": "error-variant-requires-undeclared-capability",
+      "description": "A variant may only be gated on a declared capability.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "component-rules.json", "at": ["components", "graphics", "variants", "sdk"], "set": {"requires_capability": "gpu-sdk"}}],
+      "expect": {"exit": 2, "stderr": "requires undeclared capability", "no_report": true}
+    },
+    {
+      "name": "error-untested-component-without-reason",
+      "description": "A scaffold or absent component must say why it is untested.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "component-rules.json", "at": ["components", "scaffold"], "set": {"reason": "todo"}}],
+      "expect": {"exit": 2, "stderr": "must state why they are untested", "no_report": true}
+    },
+    {
+      "name": "error-unknown-rules-key",
+      "description": "A misspelt rules key is an error, not a silently ignored allowance.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "component-rules.json", "at": ["components", "geometry"], "set": {"allowed_component": ["graphics"]}}],
+      "expect": {"exit": 2, "stderr": "unknown key", "no_report": true}
+    },
+    {
+      "name": "error-allowed-component-not-implemented",
+      "description": "An implemented component cannot be allowed to depend on a scaffold.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "component-rules.json", "at": ["components", "geometry"], "extend": {"allowed_components": ["scaffold"]}}],
+      "expect": {"exit": 2, "stderr": "cannot depend on", "no_report": true}
+    },
+    {
+      "name": "error-audited-exception-without-reason",
+      "description": "Every audited exception carries its reason.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "component-rules.json", "at": ["components", "geometry"],
+                 "set": {"legacy_sources": [{"path": "legacy/src/fx_legacy_util.cpp"}]}}],
+      "expect": {"exit": 2, "stderr": "missing required key", "no_report": true}
+    },
+    {
+      "name": "error-unknown-symbol-group",
+      "description": "forbidden_symbols may only name declared symbol groups.",
+      "args": ["--checks", "static"],
+      "edits": [{"op": "json", "path": "component-rules.json", "at": ["components", "geometry"], "extend": {"forbidden_symbols": ["no_such_group"]}}],
+      "expect": {"exit": 2, "stderr": "unknown symbol group", "no_report": true}
+    },
+    {
+      "name": "error-unknown-component",
+      "description": "--component must name a component in the rules.",
+      "args": ["--checks", "static", "--component", "nope"],
+      "expect": {"exit": 2, "stderr": "unknown component", "no_report": true}
+    },
+    {
+      "name": "error-unknown-check",
+      "description": "--checks must name known checks.",
+      "args": ["--checks", "lint"],
+      "expect": {"exit": 2, "stderr": "unknown check", "no_report": true}
+    },
+
+    {
+      "name": "probe-baseline",
+      "description": "Every implemented native component configures and builds alone; the SDK variant and the scaffold are UNTESTED with reasons.",
+      "toolchain": true,
+      "args": ["--checks", "configure,build"],
+      "expect": {
+        "exit": 0,
+        "codes": [],
+        "failing": [],
+        "passing": ["contracts/default/component-off", "contracts/default/build", "contracts/default/headers", "contracts/default/symbols",
+                    "geometry/default/component-off", "geometry/default/link", "geometry/default/headers", "geometry/default/symbols",
+                    "graphics/default/component-off", "graphics/default/headers", "repository/-/compiled-twice"],
+        "untested": ["graphics/sdk/configure", "graphics/sdk/build", "scaffold/-/configure", "scaffold/-/build"],
+        "notes": {"geometry/default/component-off": "targets: fx_contracts, fx_geometry"}
+      }
+    },
+    {
+      "name": "probe-required-capability-unavailable",
+      "description": "A required capability that is missing fails instead of reporting UNTESTED.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "graphics", "--require-capability", "fx-sdk"],
+      "expect": {"exit": 1, "codes": ["capability.unavailable"], "failing": ["graphics/sdk/configure"], "passing": ["graphics/default/configure"],
+                 "details": ["Could NOT find FxSdk"]}
+    },
+    {
+      "name": "probe-geometry-configures-graphics",
+      "description": "Geometry pulling graphics into its configuration fails the component-off check even without linking it.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "add_library(fx_geometry STATIC src/fx_mesh.cpp)\n", "new": [
+          "if(NOT TARGET fx_graphics)",
+          "  add_subdirectory(\"${CMAKE_CURRENT_LIST_DIR}/../FxGraphics\" \"${CMAKE_BINARY_DIR}/fx_graphics\")",
+          "endif()",
+          "add_library(fx_geometry STATIC src/fx_mesh.cpp)"
+        ]}
+      ],
+      "expect": {"exit": 1, "codes": ["component-off.forbidden-component", "configure-input.foreign-component"],
+                 "failing": ["geometry/default/component-off", "geometry/default/configure-inputs"], "details": ["fx_graphics"]}
+    },
+    {
+      "name": "probe-geometry-links-graphics",
+      "description": "Geometry linking graphics is a forbidden link edge and leaks graphics' include directory.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "add_library(fx_geometry STATIC src/fx_mesh.cpp)\n", "new": [
+          "if(NOT TARGET fx_graphics)",
+          "  add_subdirectory(\"${CMAKE_CURRENT_LIST_DIR}/../FxGraphics\" \"${CMAKE_BINARY_DIR}/fx_graphics\")",
+          "endif()",
+          "add_library(fx_geometry STATIC src/fx_mesh.cpp)"
+        ]},
+        {"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "target_link_libraries(fx_geometry PUBLIC fx_contracts)",
+         "new": "target_link_libraries(fx_geometry PUBLIC fx_contracts fx_graphics)"}
+      ],
+      "expect": {"exit": 1,
+                 "codes": ["component-off.forbidden-component", "configure-input.foreign-component", "link.forbidden-component",
+                           "include-dir.foreign-component", "include-dir.public-leak"],
+                 "failing": ["geometry/default/component-off", "geometry/default/configure-inputs", "geometry/default/link", "geometry/default/include-dirs"]}
+    },
+    {
+      "name": "probe-contracts-link-js-engine-reaches-geometry",
+      "description": "A JS engine linked into the contracts reaches geometry transitively; geometry's probe sees an unowned target, link edge, include directory and configure input.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxContracts/CMakeLists.txt", "old": "target_compile_features(fx_contracts PUBLIC cxx_std_17)\n", "new": [
+          "target_compile_features(fx_contracts PUBLIC cxx_std_17)",
+          "if(NOT TARGET fakejs)",
+          "  add_subdirectory(\"${CMAKE_CURRENT_LIST_DIR}/../../third_party/fakejs\" \"${CMAKE_BINARY_DIR}/fakejs\")",
+          "endif()",
+          "target_link_libraries(fx_contracts PUBLIC fakejs)"
+        ]}
+      ],
+      "expect": {"exit": 1,
+                 "codes": ["component-off.unexpected-target", "link.unexpected-target", "include-dir.unaudited", "include-dir.public-leak",
+                           "configure-input.unaudited"],
+                 "failing": ["geometry/default/component-off", "geometry/default/link", "geometry/default/include-dirs", "geometry/default/configure-inputs"],
+                 "details": ["fakejs", "which no component owns"]}
+    },
+    {
+      "name": "probe-contracts-depend-on-graphics",
+      "description": "The neutral contracts configuring and linking graphics are caught by the contracts probe.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "contracts"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxContracts/CMakeLists.txt", "old": "target_compile_features(fx_contracts PUBLIC cxx_std_17)\n", "new": [
+          "target_compile_features(fx_contracts PUBLIC cxx_std_17)",
+          "if(NOT TARGET fx_graphics)",
+          "  add_subdirectory(\"${CMAKE_CURRENT_LIST_DIR}/../FxGraphics\" \"${CMAKE_BINARY_DIR}/fx_graphics\")",
+          "endif()",
+          "target_link_libraries(fx_contracts PUBLIC fx_graphics)"
+        ]}
+      ],
+      "expect": {"exit": 1,
+                 "codes": ["component-off.forbidden-component", "configure-input.foreign-component", "link.forbidden-component",
+                           "include-dir.foreign-component", "include-dir.public-leak"],
+                 "failing": ["contracts/default/component-off", "contracts/default/configure-inputs", "contracts/default/link", "contracts/default/include-dirs"]}
+    },
+    {
+      "name": "probe-raw-library",
+      "description": "A raw library name bypasses component ownership and must be declared or replaced by a target.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [{"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "target_link_libraries(fx_geometry PUBLIC fx_contracts)",
+                 "new": "target_link_libraries(fx_geometry PUBLIC fx_contracts fxraw)"}],
+      "expect": {"exit": 1, "codes": ["link.raw-library"], "failing": ["geometry/default/link"], "details": ["fxraw"]}
+    },
+    {
+      "name": "probe-source-compiled-by-two-components",
+      "description": "Geometry compiling graphics' source is foreign-component code, and the run sees it compiled twice.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry", "--component", "graphics"],
+      "edits": [{"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "add_library(fx_geometry STATIC src/fx_mesh.cpp)",
+                 "new": "add_library(fx_geometry STATIC src/fx_mesh.cpp ../FxGraphics/src/fx_draw.cpp)"}],
+      "expect": {"exit": 1, "codes": ["source.foreign-component", "duplicate.compiled-twice"],
+                 "failing": ["geometry/default/sources", "repository/-/compiled-twice"], "details": ["libs/FxGraphics/src/fx_draw.cpp"]}
+    },
+    {
+      "name": "probe-unaudited-legacy-source",
+      "description": "Compiling in-place legacy code needs an audited legacy_sources entry.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [{"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "add_library(fx_geometry STATIC src/fx_mesh.cpp)",
+                 "new": "add_library(fx_geometry STATIC src/fx_mesh.cpp ../../legacy/src/fx_legacy_util.cpp)"}],
+      "expect": {"exit": 1, "codes": ["source.unaudited"], "failing": ["geometry/default/sources"], "details": ["legacy/src/fx_legacy_util.cpp"]}
+    },
+    {
+      "name": "probe-audited-legacy-source",
+      "description": "The same legacy source with an audited reason passes, and the pass records what it tolerated.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "add_library(fx_geometry STATIC src/fx_mesh.cpp)",
+         "new": "add_library(fx_geometry STATIC src/fx_mesh.cpp ../../legacy/src/fx_legacy_util.cpp)"},
+        {"op": "json", "path": "component-rules.json", "at": ["components", "geometry"],
+         "set": {"legacy_sources": [{"path": "legacy/src/fx_legacy_util.cpp", "reason": "fixture: compiled in place until the smoothing code moves"}]}}
+      ],
+      "expect": {"exit": 0, "codes": [], "failing": [], "passing": ["geometry/default/sources"],
+                 "notes": {"geometry/default/sources": "legacy/src/fx_legacy_util.cpp (fixture: compiled in place"}}
+    },
+    {
+      "name": "probe-public-include-dir-outside-component",
+      "description": "A PUBLIC include directory into unowned code is unaudited and leaks to every consumer.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [{"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "target_include_directories(fx_geometry PUBLIC include)",
+                 "new": "target_include_directories(fx_geometry PUBLIC include ../../legacy/include)"}],
+      "expect": {"exit": 1, "codes": ["include-dir.unaudited", "include-dir.public-leak"], "failing": ["geometry/default/include-dirs"],
+                 "details": ["legacy/include"]}
+    },
+    {
+      "name": "probe-private-include-dir-into-other-component",
+      "description": "Even a PRIVATE include directory into another component's headers is a forbidden dependency.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [{"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "target_include_directories(fx_geometry PUBLIC include)",
+                 "new": "target_include_directories(fx_geometry PUBLIC include PRIVATE ../FxGraphics/include)"}],
+      "expect": {"exit": 1, "codes": ["include-dir.foreign-component"], "failing": ["geometry/default/include-dirs"], "details": ["graphics"]}
+    },
+    {
+      "name": "probe-configure-reads-other-component",
+      "description": "Including another component's CMake script is a configure-time dependency on it.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [{"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "add_library(fx_geometry STATIC src/fx_mesh.cpp)\n", "new": [
+        "include(\"${CMAKE_CURRENT_LIST_DIR}/../FxGraphics/cmake/FxGraphicsOptions.cmake\")",
+        "add_library(fx_geometry STATIC src/fx_mesh.cpp)"
+      ]}],
+      "expect": {"exit": 1, "codes": ["configure-input.foreign-component"], "failing": ["geometry/default/configure-inputs"],
+                 "details": ["libs/FxGraphics/cmake/FxGraphicsOptions.cmake"]}
+    },
+    {
+      "name": "probe-configure-reads-outside-checkout",
+      "description": "A configure-time input outside the checkout is an undeclared external dependency.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [
+        {"op": "write", "path": "../external/ext.cmake", "text": ["set(FX_EXTERNAL_LOADED ON)"]},
+        {"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "add_library(fx_geometry STATIC src/fx_mesh.cpp)\n", "new": [
+          "include(\"${CMAKE_CURRENT_LIST_DIR}/../../../external/ext.cmake\")",
+          "add_library(fx_geometry STATIC src/fx_mesh.cpp)"
+        ]}
+      ],
+      "expect": {"exit": 1, "codes": ["configure-input.external"], "failing": ["geometry/default/configure-inputs"], "details": ["ext.cmake"]}
+    },
+    {
+      "name": "probe-source-outside-checkout",
+      "description": "Compiling a source from outside the checkout is an external source dependency.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [
+        {"op": "write", "path": "../external/ext_source.cpp", "text": ["int fx_external_value() { return 7; }"]},
+        {"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "add_library(fx_geometry STATIC src/fx_mesh.cpp)",
+         "new": "add_library(fx_geometry STATIC src/fx_mesh.cpp ${CMAKE_CURRENT_LIST_DIR}/../../../external/ext_source.cpp)"}
+      ],
+      "expect": {"exit": 1, "codes": ["source.external"], "failing": ["geometry/default/sources"], "details": ["ext_source.cpp"]}
+    },
+    {
+      "name": "probe-unbuilt-component-source",
+      "description": "A source in the component that no target compiles is dead or misplaced code.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [{"op": "write", "path": "libs/FxGeometry/src/fx_orphan.cpp", "text": ["int fxgeo_orphan() { return 0; }"]}],
+      "expect": {"exit": 1, "codes": ["source.unbuilt"], "failing": ["geometry/default/unbuilt-sources"], "details": ["libs/FxGeometry/src/fx_orphan.cpp"]}
+    },
+    {
+      "name": "probe-configure-fails",
+      "description": "A component that cannot configure alone fails, and its downstream checks are UNTESTED, not passed.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [{"op": "append", "path": "libs/FxGeometry/CMakeLists.txt", "text": ["message(FATAL_ERROR \"fixture: geometry refuses to configure\")"]}],
+      "expect": {"exit": 1, "codes": ["configure.failed"], "failing": ["geometry/default/configure"],
+                 "untested": ["geometry/default/component-off", "geometry/default/link", "geometry/default/sources"],
+                 "details": ["fixture: geometry refuses to configure"]}
+    },
+    {
+      "name": "probe-declared-target-missing",
+      "description": "A target the rules declare must exist when the component configures alone.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [{"op": "json", "path": "component-rules.json", "at": ["components", "geometry"], "extend": {"targets": ["fx_geometry_extra"]}}],
+      "expect": {"exit": 1, "codes": ["component-off.missing-target"], "failing": ["geometry/default/component-off"], "details": ["fx_geometry_extra"]}
+    },
+    {
+      "name": "probe-header-from-unowned-code",
+      "description": "A real header dependency on in-place legacy code needs an audited legacy_headers entry.",
+      "toolchain": true,
+      "args": ["--checks", "build", "--component", "geometry"],
+      "edits": [{"op": "replace", "path": "libs/FxGeometry/src/fx_mesh.cpp", "old": "#include <cmath>\n",
+                 "new": "#include <cmath>\n\n#include \"../../../legacy/include/fx_legacy/fx_util.h\"\n"}],
+      "expect": {"exit": 1, "codes": ["header.unaudited"], "failing": ["geometry/default/headers"], "details": ["legacy/include/fx_legacy/fx_util.h"]}
+    },
+    {
+      "name": "probe-header-from-other-component",
+      "description": "Geometry compiling against a graphics header by relative path is still a dependency on graphics.",
+      "toolchain": true,
+      "args": ["--checks", "build", "--component", "geometry"],
+      "edits": [{"op": "replace", "path": "libs/FxGeometry/src/fx_mesh.cpp", "old": "#include <cmath>\n",
+                 "new": "#include <cmath>\n\n#include \"../../FxGraphics/include/fx_graphics/fx_draw.h\"\n"}],
+      "expect": {"exit": 1, "codes": ["header.foreign-component"], "failing": ["geometry/default/headers"], "details": ["libs/FxGraphics/include/fx_graphics/fx_draw.h"]}
+    },
+    {
+      "name": "probe-public-header-leaks-private-header",
+      "description": "The static and the real (compiler) views agree that a public header pulls in a private one.",
+      "toolchain": true,
+      "args": ["--checks", "static,configure,build", "--component", "geometry"],
+      "edits": [
+        {"op": "write", "path": "libs/FxGeometry/src/fx_mesh_detail.h", "text": ["#pragma once", "namespace fx { constexpr int fxgeo_detail_level = 2; }"]},
+        {"op": "replace", "path": "libs/FxGeometry/include/fx_geometry/fx_mesh.h",
+         "old": "#include <fx_contracts/fx_value.h>\n", "new": "#include <fx_contracts/fx_value.h>\n#include \"../../src/fx_mesh_detail.h\"\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["public-include.outside-public-roots", "header.public-leak"],
+                 "failing": ["geometry/-/public-includes", "geometry/default/headers"], "details": ["libs/FxGeometry/src/fx_mesh_detail.h"]}
+    },
+    {
+      "name": "probe-external-js-engine-header",
+      "description": "A JS engine header from outside the checkout is caught both as an include directory and as a real header dependency.",
+      "toolchain": true,
+      "args": ["--checks", "build", "--component", "geometry"],
+      "edits": [
+        {"op": "write", "path": "../external/include/fakejs.h", "text": ["#pragma once", "extern \"C\" int FJS_Eval(const char* source);"]},
+        {"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "target_include_directories(fx_geometry PUBLIC include)",
+         "new": "target_include_directories(fx_geometry PUBLIC include PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../../external/include)"},
+        {"op": "replace", "path": "libs/FxGeometry/src/fx_mesh.cpp", "old": "#include <cmath>\n", "new": "#include <cmath>\n\n#include <fakejs.h>\n"}
+      ],
+      "expect": {"exit": 1, "codes": ["include-dir.external", "header.forbidden-external"],
+                 "failing": ["geometry/default/include-dirs", "geometry/default/headers"], "details": ["fakejs.h"]}
+    },
+    {
+      "name": "probe-forbidden-symbol",
+      "description": "With every build edge audited, the archive scan still catches geometry calling into the JS engine.",
+      "toolchain": true,
+      "args": ["--checks", "build", "--component", "geometry"],
+      "edits": [
+        {"op": "replace", "path": "libs/FxGeometry/CMakeLists.txt", "old": "target_link_libraries(fx_geometry PUBLIC fx_contracts)", "new": [
+          "target_link_libraries(fx_geometry PUBLIC fx_contracts)",
+          "if(NOT TARGET fakejs)",
+          "  add_subdirectory(\"${CMAKE_CURRENT_LIST_DIR}/../../third_party/fakejs\" \"${CMAKE_BINARY_DIR}/fakejs\")",
+          "endif()",
+          "target_link_libraries(fx_geometry PRIVATE fakejs)"
+        ]},
+        {"op": "replace", "path": "libs/FxGeometry/src/fx_mesh.cpp", "old": "#include <cmath>\n", "new": "#include <cmath>\n\n#include <fakejs.h>\n"},
+        {"op": "replace", "path": "libs/FxGeometry/src/fx_mesh.cpp", "old": "    return 0.5 * twice_area;",
+         "new": "    return 0.5 * twice_area * FJS_Eval(\"1\");"},
+        {"op": "json", "path": "component-rules.json", "at": ["components", "geometry"], "set": {
+          "vendored_targets": ["fakejs"],
+          "legacy_sources": [{"path": "third_party/fakejs", "reason": "fixture: the vendored engine is audited everywhere"}],
+          "legacy_include_dirs": [{"path": "third_party/fakejs", "reason": "fixture: the vendored engine is audited everywhere"}],
+          "legacy_headers": [{"path": "third_party/fakejs", "reason": "fixture: the vendored engine is audited everywhere"}],
+          "configure_inputs": [{"path": "third_party/fakejs", "reason": "fixture: the vendored engine is audited everywhere"}]
+        }}
+      ],
+      "expect": {"exit": 1, "codes": ["symbol.forbidden"], "failing": ["geometry/default/symbols"], "details": ["FJS_Eval"]}
+    },
+    {
+      "name": "probe-graphics-uses-geometry-symbol",
+      "description": "Graphics calling a geometry function cannot link alone: the component-off build fails and the later stages are UNTESTED.",
+      "toolchain": true,
+      "args": ["--checks", "build", "--component", "graphics"],
+      "edits": [{"op": "append", "path": "libs/FxGraphics/src/fx_draw.cpp", "text": [
+        "",
+        "namespace fx {",
+        "double fxgeo_triangle_area(const Value& a, const Value& b, const Value& c);",
+        "double fxgfx_area_weight(const Value& a, const Value& b, const Value& c) { return fxgeo_triangle_area(a, b, c); }",
+        "}  // namespace fx"
+      ]}],
+      "expect": {"exit": 1, "codes": ["build.failed"], "failing": ["graphics/default/build"],
+                 "untested": ["graphics/default/headers", "graphics/default/symbols"], "details": ["fxgeo_triangle_area"]}
+    },
+    {
+      "name": "probe-header-only-contracts",
+      "description": "A header-only (INTERFACE) contracts library still counts as present, but its source is unbuilt and the symbol scan has nothing to inspect; neither is a silent pass.",
+      "toolchain": true,
+      "args": ["--checks", "build", "--component", "contracts"],
+      "edits": [{"op": "replace", "path": "libs/FxContracts/CMakeLists.txt",
+                 "old": ["add_library(fx_contracts STATIC src/fx_value.cpp)", "target_include_directories(fx_contracts PUBLIC include)",
+                         "target_compile_features(fx_contracts PUBLIC cxx_std_17)"],
+                 "new": ["add_library(fx_contracts INTERFACE)", "target_include_directories(fx_contracts INTERFACE include)",
+                         "target_compile_features(fx_contracts INTERFACE cxx_std_17)"]}],
+      "expect": {"exit": 1, "codes": ["source.unbuilt", "symbol.tool-unavailable"],
+                 "failing": ["contracts/default/unbuilt-sources", "contracts/default/symbols"], "details": ["no component archive was found to inspect"],
+                 "passing": ["contracts/default/component-off"], "notes": {"contracts/default/component-off": "targets: fx_contracts"}}
+    }
+  ]
+}
