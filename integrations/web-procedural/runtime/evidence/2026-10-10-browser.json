@@ -1,0 +1,232 @@
+{
+  "fixtures": {
+    "passed": [
+      "WEB-PROP",
+      "WEB-ASSEMBLY",
+      "WEB-STAGED",
+      "WEB-REPEAT-OWNERSHIP",
+      "WEB-CANCEL-RESTART",
+      "WEB-RESTART",
+      "WEB-DEADLINE",
+      "WEB-BOUNDS-QUEUED-CANCEL",
+      "WEB-REVISION-EPOCH",
+      "WEB-ERROR-RELEASE-CAPS",
+      "WEB-RESPONSIVENESS",
+      "WEB-DISPOSE",
+      "WEB-REALM-RECYCLE",
+      "WEB-LATE-MESSAGE-ADMISSION",
+      "WEB-INPUT-SNAPSHOT-LIMITS"
+    ],
+    "measurements": {
+      "WEB-PROP": {
+        "elapsedMs": 185.20000004768372,
+        "stages": 1,
+        "wasmHeapBytes": 33554432,
+        "transferredBytes": 3780
+      },
+      "WEB-ASSEMBLY": {
+        "elapsedMs": 35.39999997615814,
+        "stages": 1,
+        "wasmHeapBytes": 33554432,
+        "transferredBytes": 5661
+      },
+      "WEB-STAGED": {
+        "elapsedMs": 34,
+        "stages": 3,
+        "wasmHeapBytes": 33554432,
+        "transferredBytes": 4054
+      },
+      "WEB-REPEAT": {
+        "iterations": 24,
+        "wasmHeapBytes": 33554432,
+        "lastWasmHeapBytes": 33554432
+      },
+      "WEB-RESPONSIVENESS": {
+        "elapsedMs": 364.1999999284744,
+        "timerTicks": 72,
+        "intervalMs": 5,
+        "maxTimerGapMs": 5.299999952316284,
+        "worker": {
+          "elapsedMs": 363.60000002384186,
+          "stages": 1,
+          "wasmHeapBytes": 33554432,
+          "transferredBytes": 3790
+        },
+        "pageUsedJSHeapBytes": 2393139,
+        "scope": "Warmed 350ms worker CPU probe; page JS heap excludes worker WASM heaps; heap capacity is not allocator peak"
+      }
+    }
+  },
+  "errors": [],
+  "environment": {
+    "browser": "150.0.7871.46",
+    "executable": "/opt/google/chrome/chrome",
+    "python": "3.12.3",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "wasm_profile": "matter-wasm32-worker-v1",
+    "concurrency": 2
+  },
+  "download": {
+    "scope": "Unique production modules and WASM actually served, excluding test JS/HTML; raw HTTP, hypothetical per-file gzip",
+    "fixtures": [
+      "WEB-PROP",
+      "WEB-ASSEMBLY",
+      "WEB-STAGED"
+    ],
+    "bytes": 1042061,
+    "gzip_bytes": 340838,
+    "files": [
+      {
+        "path": "bindings/geometry-c/wasm/geometry.mjs",
+        "bytes": 7986,
+        "gzip_bytes": 2821,
+        "sha256": "aefa071ffd31aaa2b0f259ccc6c36db6c82b7cf17c8fc4ffe4388fc2672c3ff4"
+      },
+      {
+        "path": "libs/MatterContracts/examples/contracts.mjs",
+        "bytes": 5568,
+        "gzip_bytes": 2107,
+        "sha256": "628e44ba6f15e94694accdbf46bc49879bfb2eb99f91918fe60cf588b227c93e"
+      },
+      {
+        "path": "packages/matter-authoring/index.mjs",
+        "bytes": 399,
+        "gzip_bytes": 260,
+        "sha256": "76769e4aec9d8ec67a89463e9bcd9cfc07b1940731d24b2b958493e4db85331e"
+      },
+      {
+        "path": "packages/matter-authoring/legacy.mjs",
+        "bytes": 8294,
+        "gzip_bytes": 2756,
+        "sha256": "f87a6f127306a9ec6bd25eea04c7a2ace06ec1dd99875bc1a6b04e3b59407645"
+      },
+      {
+        "path": "packages/matter-authoring/parameters.mjs",
+        "bytes": 2118,
+        "gzip_bytes": 772,
+        "sha256": "8a49c1013ef4f3633a0d5e9312ad625cb8aaf0c01d4d325999b585f232497632"
+      },
+      {
+        "path": "packages/matter-authoring/recipe.mjs",
+        "bytes": 29052,
+        "gzip_bytes": 7759,
+        "sha256": "77a893c269709c5f4618deafed6a4de419c44c3efce8e46d5bb36a686ea016a0"
+      },
+      {
+        "path": "packages/matter-authoring/rng.mjs",
+        "bytes": 2322,
+        "gzip_bytes": 1013,
+        "sha256": "33ee813f2f9fead752530e7a8042d5155fd08f7bc53866371e23872cb33b96d7"
+      },
+      {
+        "path": "packages/matter-authoring/values.mjs",
+        "bytes": 9118,
+        "gzip_bytes": 3347,
+        "sha256": "ffc2a46a89694540538f66179871cf68a0f35a705a1cd69ed6d8255f85fb8e16"
+      },
+      {
+        "path": "matter_geometry_wasm.mjs",
+        "bytes": 42633,
+        "gzip_bytes": 11558,
+        "sha256": "9d1cb11966047c2ce0c62ff97a2d19af4a360d33f55678ddbc4fb2c1790f664f"
+      },
+      {
+        "path": "matter_geometry_wasm.wasm",
+        "bytes": 914223,
+        "gzip_bytes": 302038,
+        "sha256": "4a0ebd8e7817e30ea716f862b8aed7b61debb1fadad7496e51c63fea121cd6aa"
+      },
+      {
+        "path": "index.mjs",
+        "bytes": 11570,
+        "gzip_bytes": 3190,
+        "sha256": "ff2bbd00ebe76eb0c38fd4cace13760ab59c6e9d12622716e959cf9eee594a32"
+      },
+      {
+        "path": "protocol.mjs",
+        "bytes": 2472,
+        "gzip_bytes": 944,
+        "sha256": "2d5069491d89d98ce11b4ebf571d13b74305fd0077a52892c850c44c5b53d086"
+      },
+      {
+        "path": "worker.mjs",
+        "bytes": 6306,
+        "gzip_bytes": 2273,
+        "sha256": "7a2bb3bc248f74b037409c61b7e565889412e028e54b94aa639c778d62667c62"
+      }
+    ]
+  },
+  "task": "clear-crest-48.6.3",
+  "base_commit": "f814149506dd4b69f15796c08dcd7bdd462355f9",
+  "source_sha256": {
+    "integrations/web-procedural/runtime/.gitignore": "e87d28f31fdca000c4532350a9d393f1f56ee1d068aef6581af0e3636a928032",
+    "integrations/web-procedural/runtime/CMakeLists.txt": "3557151d2e33746586f6c003f3de79dace7afa8fcbe516ebe02b9e4165af66c0",
+    "integrations/web-procedural/runtime/README.md": "21b8a8df00195f2022ad3ef51739f9204729b20457b70b05a8b4337046a6a365",
+    "integrations/web-procedural/runtime/src/index.mts": "f23f0eeb55cb0a507a5519ddcd9ee98433fc21dbe21f12a7ecd8217a3af6fe86",
+    "integrations/web-procedural/runtime/src/protocol.mts": "aa15bcb2365c5f6ceeebd7c9ce4afbd98cc6a17d39458204917c3c8e30448ac3",
+    "integrations/web-procedural/runtime/src/types.mts": "724c34247ed3965e3dd54033118f5320ddfd4d4cdeeab1f8894a5e7e09616b91",
+    "integrations/web-procedural/runtime/src/worker.mts": "e1e8673a07a5c93f428083832cd372efb6f29a12ea7b5bdba24377677afb3a9b",
+    "integrations/web-procedural/runtime/tests/browser.html": "962af8e686c4f3476159b12e631437d236b6c74a1b542840ba30ea4847aa4370",
+    "integrations/web-procedural/runtime/tests/browser_tests.mjs": "29a37d3e6849cfa6ff7f8952de2db9528b1d44bece3f4697c437d83859cbbdf5",
+    "integrations/web-procedural/runtime/tests/browser_tests.py": "44084e10d6db7dee9bbebc1f209c31b54ba0159ff52d466b8112a9dc4ea209f3",
+    "integrations/web-procedural/runtime/tests/tsconfig.json": "86794be5134c31255dd5b3bf2f33cff1815066d08f09db00f85fedf2130a086c",
+    "integrations/web-procedural/runtime/tests/type_checks.mts": "43d92724af04e4aaf9cb6c0bd9fd75e9f7552a3ea00987330edd71cdfdd6717b",
+    "integrations/web-procedural/runtime/tsconfig.json": "d23290be1823ec9f22011ac10a2a4d9a95a86897b572b4f931616e863b392566"
+  },
+  "commands": [
+    {
+      "command": "python3 bindings/geometry-c/wasm/build-smoke.py --emsdk /home/jkern/emsdk --build-dir /tmp/matter-web-slot7-wasm",
+      "exit_code": 0,
+      "result": "6/6 CTests; fresh pinned SDK cache",
+      "evidence": "/tmp/matter-web-slot7-wasm/smoke-evidence.json"
+    },
+    {
+      "command": "tsc -p integrations/web-procedural/runtime/tsconfig.json",
+      "exit_code": 0,
+      "result": "TypeScript 5.9.3 source/declaration compilation"
+    },
+    {
+      "command": "tsc -p integrations/web-procedural/runtime/tests/tsconfig.json",
+      "exit_code": 0,
+      "result": "Emitted public API positive/negative checks"
+    },
+    {
+      "command": "node --experimental-vm-modules packages/matter-authoring/tests/authoring_tests.mjs",
+      "exit_code": 0,
+      "result": "14 authoring fixtures"
+    },
+    {
+      "command": "cmake -S integrations/web-procedural/runtime -B /tmp/matter-web-slot7-runtime -G Ninja -DMATTER_WEB_WASM_MODULE=/tmp/matter-web-slot7-wasm/matter_geometry_wasm.mjs -DMATTER_WEB_TEST_PYTHON=/usr/bin/python3.12",
+      "exit_code": 0
+    },
+    {
+      "command": "cmake --build /tmp/matter-web-slot7-runtime --parallel 1",
+      "exit_code": 0
+    },
+    {
+      "command": "ctest --test-dir /tmp/matter-web-slot7-runtime --output-on-failure --parallel 1",
+      "exit_code": 0,
+      "result": "15 browser fixtures; 1/1 CTest; 4.69 seconds"
+    },
+    {
+      "command": "EM_CONFIG=/home/jkern/emsdk/.emscripten EM_CACHE=/tmp/matter-web-slot7-wasm/emscripten-cache PATH=/home/jkern/emsdk/node/22.16.0_64bit/bin:/home/jkern/emsdk/upstream/emscripten:$PATH cmake -S integrations/web-procedural/runtime -B /tmp/matter-web-slot7-local-wasm -G Ninja -DCMAKE_TOOLCHAIN_FILE=/home/jkern/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DCMAKE_BUILD_TYPE=Release -DMATTER_WEB_TEST_PYTHON=/usr/bin/python3.12",
+      "exit_code": 0
+    },
+    {
+      "command": "EM_CONFIG=/home/jkern/emsdk/.emscripten EM_CACHE=/tmp/matter-web-slot7-wasm/emscripten-cache PATH=/home/jkern/emsdk/node/22.16.0_64bit/bin:/home/jkern/emsdk/upstream/emscripten:$PATH cmake --build /tmp/matter-web-slot7-local-wasm --parallel 1",
+      "exit_code": 0
+    },
+    {
+      "command": "ctest --test-dir /tmp/matter-web-slot7-local-wasm --output-on-failure --parallel 1",
+      "exit_code": 0,
+      "result": "15 browser fixtures; 1/1 CTest; 4.25 seconds"
+    }
+  ],
+  "limitations": [
+    "WASM capacity is allocated linear memory, not allocator peak or browser RSS; page JS heap excludes worker JS heaps.",
+    "Gzip payload is calculated per file; HTTP test traffic uses raw bytes. No product performance budget was agreed.",
+    "Repeated assembly uses shared mesh placements. The pinned external assembly fixture fails explicitly with missing_dependency; the runtime owns no asset resolver.",
+    "Self-contained authoring source snapshots use injected SDK; external module discovery remains host-owned.",
+    "No central/live-editor wiring or renderer changes in this task."
+  ]
+}
