@@ -13,13 +13,20 @@ def main():
     parser.add_argument("--build-root", type=Path, required=True)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[3]
+    adapters_off = ["-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF"]
+    kernels = {"matter_asset_lod_kernels", "matter_geometry"}
+    # (name, module, required targets, options, extra forbidden targets)
     cases = [
-        ("geometry", "ProceduralGeometry", "matter_geometry", ["-DMATTER_GEOMETRY_TESTS=OFF"]),
-        ("graphics", "MatterGraphics", "matter_graphics", ["-DMATTER_GRAPHICS_VULKAN=OFF"]),
-        ("archive-only", "AssetPipeline", "matter_asset_archive", [
-            "-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF"]),
+        ("geometry", "ProceduralGeometry", {"matter_geometry"}, ["-DMATTER_GEOMETRY_TESTS=OFF"], set()),
+        ("graphics", "MatterGraphics", {"matter_graphics"}, ["-DMATTER_GRAPHICS_VULKAN=OFF"], set()),
+        # Prepared loading without any generation kernel.
+        ("archive-only", "AssetPipeline", {"matter_asset_archive", "matter_asset_prepared"},
+         adapters_off + ["-DMATTER_ASSET_LOD=OFF"], kernels),
+        # LOD generation pulls the geometry stages but no I/O adapter.
+        ("lod-only", "AssetPipeline", {"matter_asset_prepared", "matter_asset_lod"} | kernels,
+         adapters_off, set()),
     ]
-    for name, module, expected, options in cases:
+    for name, module, expected, options, excluded in cases:
         build = (args.build_root / name).resolve()
         query = build / ".cmake/api/v1/query"
         query.mkdir(parents=True, exist_ok=True)
@@ -35,10 +42,11 @@ def main():
         model = json.loads((reply / index["reply"]["codemodel-v2"]["jsonFile"]).read_text())
         targets = model["configurations"][0]["targets"]
         names = {t["name"] for t in targets}
-        assert expected in names and "matter_contracts" in names, names
+        assert expected <= names and "matter_contracts" in names, (name, names)
         forbidden = {"matter_asset_pipeline", "matter_asset_storage", "matter_asset_gltf", "matter_asset_legacy"}
+        forbidden |= excluded
         if module != "AssetPipeline":
-            forbidden.add("matter_asset_archive")
+            forbidden |= {"matter_asset_archive", "matter_asset_prepared", "matter_asset_lod"}
         assert not names.intersection(forbidden), (name, names)
         if module != "AssetPipeline":
             for ref in targets:

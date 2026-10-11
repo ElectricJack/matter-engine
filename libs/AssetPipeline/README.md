@@ -12,12 +12,72 @@ Matter export entrypoints remain integration-owned.
 | `matter_asset_storage` | `CacheService` persistence and explicit atomic file export | `MATTER_ASSET_STORAGE` |
 | `matter_asset_gltf` | Static glTF 2.0 and GLB import/export; PNG/JPEG input, PNG output | `MATTER_ASSET_GLTF` |
 | `matter_asset_legacy` | Injected existing Matter artifact reader and legacy hash checks | `MATTER_ASSET_LEGACY` |
-| `matter_asset_pipeline` | Convenience interface target for enabled adapters | No geometry/graphics dependency |
+| `matter_asset_prepared` | LOD settings, processing-cache keys, chain records, prepared loader | Always available; kernel-free |
+| `matter_asset_lod` | `lod_simplify@1` LOD generation (`lod_disabled.cpp` stub when OFF) | `MATTER_ASSET_LOD` |
+| `matter_asset_pipeline` | Convenience interface target for enabled adapters | No graphics dependency |
 
 All switches default ON. Turning them OFF removes their implementations from
 the link graph. Geometry and graphics build independently without registering
-any AssetPipeline target. The archive-only build has no filesystem/image/backend
-dependency. No package publishing or installed service is involved.
+any AssetPipeline target. The archive-only build (`MATTER_ASSET_LOD=OFF` too) has
+no filesystem/image/backend/geometry dependency. No package publishing or
+installed service is involved.
+
+## Prepared representations and LOD generation
+
+Preparation is split so that consumers of baked assets never link a generation
+kernel. `matter/asset/prepared.h` is kernel-free; `matter/asset/lod.h` declares
+the optional generator. Renderer LOD *selection*
+(`MatterEngine3/src/render/lod_distance.h`) belongs to neither: a prepared asset
+publishes representations and their measured error, and choosing a rung for a
+view stays with the renderer.
+
+`prepare_lods` runs behind a `ProcessingRequest` that must declare
+`matter.process.lod.simplify@1`. Its settings object takes `prototypes`
+(nonempty, unique, order-insensitive), `max_error_metres` (1-16 finite, positive,
+strictly increasing targets) and an optional `verification_tolerance_metres`
+(default 1 mm); unknown keys fail. Each level is simplified from the source,
+not from the previous level, with the engine's `decimate_to_error` policy.
+Normals and submesh ownership are reprojected from the source, and the two-sided
+surface distance to the source is measured with MatterEngine3's `mesh_error`.
+The kernels are not copied. `matter_geometry` already owns the MatterSurfaceLib
+QEM/weld/reprojection sources and is linked; `mesh_error.cpp` and SpatialQueryLib's
+`bvh.cpp` have no other component owner and compile in `matter_asset_lod_kernels`
+from their source directories.
+
+Output keeps every input id. The source prototype and every assembly child,
+placement, root, material and provenance entry are unchanged. Levels are
+appended as meshes `<source>.lod<N>`. `lods` lists the source at zero error and
+each level at its measured upper bound. `matter.asset.lod@1` joins
+`required_capabilities`. The optional `matter.asset.lod.chain@1` extension
+records the source → level grouping, the requested and measured error interval,
+triangle and query counts, the algorithm version and the normalized settings
+digest. Asset bounds grow to cover each level at every placement of its source.
+
+The following are explicit failures, never silent drops:
+
+- Tangents, UV sets, skinning and terrain sources are `unsupported_capability`.
+- An already-prepared input, a derived-id collision or a coordinate above 1e8 m
+  is `invalid_input`.
+- A source over 2^20 triangles is `resource_limit`.
+- A newer algorithm, any unknown request or host capability, and any required
+  document extension are `unsupported_capability`.
+
+Cancellation and progress (`validate`, one `lod` per level, `complete`) are
+honoured, and every `ResourceBudget` field is enforced. Mesh-error point queries
+count against `queries`. With `MATTER_ASSET_LOD=OFF`, `lod_capabilities()` is
+empty and every request fails as `unsupported_capability`.
+
+`processing_cache_key` hashes the canonical profile, the cache namespace, the
+algorithm and version, the source content digest, the sorted request
+capabilities and the *normalized* settings. Equivalent spellings share a key.
+Any change to source, settings, tolerance or algorithm version changes it.
+`load_prepared` decodes with `prepared_capabilities()` added, then checks the
+consumer's `PreparedRequirements`. It never generates: an unbaked source or a
+chain built with different settings is `missing_dependency`, and an inconsistent
+record is `invalid_input`. A `FileCache` that persists LOD products must be
+constructed with `EvaluationOptions` that include `prepared_capabilities()`. A
+plain cache refuses them as `unsupported_capability`, as it does any other typed
+product.
 
 ## Prepared cache
 
@@ -134,13 +194,20 @@ python3 libs/AssetPipeline/tests/independence.py \
   --build-root /tmp/matter-asset-independence
 ```
 
-Seven CTests execute `AP-ARCHIVE/HASH/VERSION/CANCEL/BUDGET/CAPS`,
+Eleven CTests execute `AP-ARCHIVE/HASH/VERSION/CANCEL/BUDGET/CAPS`,
+`AP-PREPARED-LOAD/MISSING/RECORD`, `AP-CACHE-SETTINGS`, `AP-LOD-SETTINGS`,
+`AP-LOD-IDENTITY/ERROR/DETERMINISM`, `AP-LOD-CANCEL/PROGRESS/BUDGET/CAPS`,
 `AP-CACHE-REOPEN/NO-PARTIAL/STALE/ATOMIC/EXPORT`,
 `AP-GLTF-ROUNDTRIP/GLB-ROUNDTRIP/SHARED/AFFINE/SCENE-MISMATCH`,
 `AP-EXTERNAL/STRIDE/U16/NONINDEXED/TRS/PNG/SAMPLER/PBR`, malformed glTF/GLB, unsupported materials/color
-spaces, and legacy version/namespace/hash fixtures. Assertions remain active in
-Release. The matrix builds geometry, graphics and archive-only configurations,
-then audits actual CMake File API target graphs for absent storage implementations.
+spaces, and legacy version/namespace/hash fixtures. A `MATTER_ASSET_LOD=OFF`
+build replaces the two generation tests with `AP-LOD-DISABLED` and
+`AP-PREPARED-NO-KERNEL`, which load a baked product with no kernel linked.
+Assertions remain active in Release. The matrix builds geometry, graphics,
+archive-only (no LOD kernel) and LOD-only configurations. It then audits the
+actual CMake File API target graphs: storage implementations must be absent,
+and the archive-only graph must not contain `matter_asset_lod_kernels` or
+`matter_geometry`.
 
 To emit the textured repeated-assembly GLB for an independent glTF validator:
 
