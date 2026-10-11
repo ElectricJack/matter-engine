@@ -2,14 +2,16 @@
 
 `matter_graphics` implements the frozen `matter::services::GraphicsService` v1
 in `matter::graphics::Graphics`. It consumes immutable `AssetDocument` owners
-and resolved bytes. It links contracts and neutral MathLib only; no generation,
+and resolved bytes. It links contracts, neutral MathLib, and the existing pure
+renderer `matrix_math.cpp` compiled directly from its source; no generation,
 terrain, script host, ECS or legacy engine archive is needed.
 
-This task supplies the scene/resource facade and an injected backend seam, with
-fake backend fixtures. It supplies no Vulkan renderer or rendered acceptance.
-The subsequent graphics backend task owns actual drawing, shaders/materials,
-BLAS/TLAS, culling and residency implementations. Legacy entrypoint conversion
-and central source registration remain ordered integration work.
+The facade has fake-backend fixtures. `SceneBackend` additionally implements
+prototype buffer preparation, resource budgets, scene expansion, visibility,
+and retained render snapshots. Its device fixtures simulate asynchronous buffer
+completion/failure; they do not establish actual Vulkan upload or drawing.
+The [integration migration map](INTEGRATION.md) names the native GPU work still
+required by `.9.1`. No Vulkan renderer or rendered acceptance is claimed here.
 
 ```cpp
 #include <matter/graphics/graphics.h>
@@ -102,7 +104,62 @@ ctest --test-dir /tmp/matter-graphics-facade --output-on-failure -j 1
 `BUILD_TESTING=OFF` needs no Python/Node. With testing enabled, CMake 3.27+ and
 Python 3.9+ are required for the standard-library File API audit (no Python package dependency).
 Public headers compile individually. The audit inspects actual compiled targets,
-dependencies, sources and includes with procedural/terrain/host targets absent.
+dependencies, sources, linker fragments and compiler-discovered headers with
+procedural/terrain/host targets absent. Only three exact legacy math source/header
+paths are admitted; adding PartStore or world/device context fails the audit.
+
+## Concrete scene/resource backend
+
+```cpp
+#include <matter/graphics/scene_backend.h>
+auto backend = std::make_unique<matter::graphics::SceneBackend>(resource_device);
+auto* scene = backend.get(); // Borrowed until Graphics destruction.
+matter::graphics::Graphics graphics(std::move(backend));
+// Use the same upload/poll/update_scene/set_camera/set_lights facade calls.
+matter::graphics::SceneFrame frame;
+auto status = scene->frame(frame);
+// A render-pass adapter consumes frame.visible and retains its buffer owners
+// until submitted device work retires. The frame also owns its camera/lights.
+```
+
+`ResourceDevice` is an explicit native allocation/upload boundary, with no scene
+or world callbacks. A device adapter returns a `DeviceBuffer` owner before
+submission, retains its input byte owner until the last read, reports completion,
+resident allocation size and idle state, and drains submitted uses on destruction.
+It may attach native vertex/index/storage handles or backend acceleration data to
+its derived buffer owners. `drain()` is synchronous. A null device fails explicitly.
+The repository does not yet supply the native Vulkan implementation of this seam.
+
+Meshes upload once per asset/prototype, including position, index, normal, tangent
+and UV streams. Resolved payloads retain exact bytes and material/texture metadata
+for the rendering adapter; texture decoding, images, shaders and PBR evaluation
+remain rendering work. Unknown required capabilities fail. Core asset/PBR support
+here denotes preserved scene/buffer inputs, not independently rendered appearance.
+
+`SceneBackend` expands nested assemblies with bounded instance/depth budgets and
+parent-before-local composition regardless of stored parent order. Each draw has
+the coordinator's instance ID, its assembly child path, shared mesh buffers,
+world matrix, inverse-transpose normal matrix and mirrored flag. The rendering
+adapter combines mirrored parity with prototype winding and tangent handedness.
+Asset top-level instances are not inserted implicitly: the application supplies
+the scene update. No generation, source lookup or implicit world query occurs.
+
+Scene updates prepare a complete replacement before publication. Visibility uses
+the existing renderer's normalized frustum planes and a conservative object-space
+support-point AABB test, valid for shear, mirrored/nonuniform scale, and standard
+or reversed Vulkan zero-to-one depth. No second LOD rule is introduced. Camera
+and placement matrices use the same explicit region; the double-precision region
+origin travels with the snapshot and is never silently narrowed into vertices.
+
+Requested upload bytes and actual driver allocation sizes count against residency,
+including pending uploads, old frame snapshots, and buffers retained directly by
+render submissions after their assets are released. Device completion does not
+delete scene references, and instance removal does not delete shared geometry.
+Shutdown drains the device; retained snapshots keep their allocations and device
+owner alive until their own release. Snapshots obtained before shutdown are for
+retirement only: submitting new work after shutdown is invalid. Visible-instance
+observations report resource bytes without scheduling generation or inventing LOD
+demand; repeated assembly children report one observation per coordinator ID.
 
 | Fixture IDs | Assertions |
 | --- | --- |
@@ -112,4 +169,10 @@ dependencies, sources and includes with procedural/terrain/host targets absent.
 | `GFX-ENVELOPE/HANDLE/VALIDATE/CAPS/PAYLOAD` | Every envelope field, foreign/stale/type-confused handles, invalid geometry, exact capabilities and missing/corrupt bytes |
 | `GFX-FAIL/CANCEL/TICKET/CONTROL/CALLBACK` | Submission/completion errors and exceptions, malformed completion, cancellation before/during completion, ticket disposal and capture release |
 | `GFX-CAMERA/LIGHTS/DEMAND/BUDGET/DISPOSE` | Camera/light validation and rollback, data-only demand, owner/scene ceilings, busy-device and pending-upload disposal |
-| `GFX-INDEPENDENT-GRAPH` | Runtime facade and contracts only, forbidden sources/includes/targets absent |
+| `GFX-INDEPENDENT-GRAPH` | Facade, scene, contracts and shared pure math; forbidden sources/links/compiler dependencies absent |
+| `SCENE-UPLOAD/BUFFERS/MATERIAL` | Pending/ready buffer completion, little-endian indices, appearance metadata retention |
+| `SCENE-ASSEMBLY/AFFINE/SHARING` | Nested repeated prototypes, unsorted parents, mirrored/nonuniform placement and normal frames |
+| `SCENE-CULL/PERSPECTIVE/CAMERA/REGION/LIGHTS` | Six planes, crossing/sheared bounds, standard/reversed depth, explicit region and immutable camera/light state |
+| `SCENE-LIMIT/ROLLBACK/BUDGET/PENDING-BUDGET` | Bounded expansion, stale/malformed updates, requested/allocated bytes and delayed allocation growth |
+| `SCENE-LIFETIME/SNAPSHOT/BUFFER-OWNER` | Caller/scene/frame/device release order and reclaimed/reused residency |
+| `SCENE-FAIL/CANCEL/CAPS` | Partial failure/exception cleanup, cancellation and unsupported capability rejection |
