@@ -19,19 +19,19 @@
     ],
     "measurements": {
       "WEB-PROP": {
-        "elapsedMs": 185.20000004768372,
+        "elapsedMs": 236.5,
         "stages": 1,
         "wasmHeapBytes": 33554432,
         "transferredBytes": 3780
       },
       "WEB-ASSEMBLY": {
-        "elapsedMs": 35.39999997615814,
+        "elapsedMs": 49.5,
         "stages": 1,
         "wasmHeapBytes": 33554432,
         "transferredBytes": 5661
       },
       "WEB-STAGED": {
-        "elapsedMs": 34,
+        "elapsedMs": 45.10000002384186,
         "stages": 3,
         "wasmHeapBytes": 33554432,
         "transferredBytes": 4054
@@ -42,17 +42,17 @@
         "lastWasmHeapBytes": 33554432
       },
       "WEB-RESPONSIVENESS": {
-        "elapsedMs": 364.1999999284744,
-        "timerTicks": 72,
+        "elapsedMs": 372.3000000715256,
+        "timerTicks": 74,
         "intervalMs": 5,
-        "maxTimerGapMs": 5.299999952316284,
+        "maxTimerGapMs": 6,
         "worker": {
-          "elapsedMs": 363.60000002384186,
+          "elapsedMs": 371.39999997615814,
           "stages": 1,
           "wasmHeapBytes": 33554432,
           "transferredBytes": 3790
         },
-        "pageUsedJSHeapBytes": 2393139,
+        "pageUsedJSHeapBytes": 2420991,
         "scope": "Warmed 350ms worker CPU probe; page JS heap excludes worker WASM heaps; heap capacity is not allocator peak"
       }
     }
@@ -73,8 +73,8 @@
       "WEB-ASSEMBLY",
       "WEB-STAGED"
     ],
-    "bytes": 1042061,
-    "gzip_bytes": 340838,
+    "bytes": 1042171,
+    "gzip_bytes": 340873,
     "files": [
       {
         "path": "bindings/geometry-c/wasm/geometry.mjs",
@@ -150,29 +150,14 @@
       },
       {
         "path": "worker.mjs",
-        "bytes": 6306,
-        "gzip_bytes": 2273,
-        "sha256": "7a2bb3bc248f74b037409c61b7e565889412e028e54b94aa639c778d62667c62"
+        "bytes": 6416,
+        "gzip_bytes": 2308,
+        "sha256": "1ac03a2ada15d25638438172a4b1eb249a015ed7e2d6cbe0d7e3d33de8925de5"
       }
     ]
   },
   "task": "clear-crest-48.6.3",
   "base_commit": "f814149506dd4b69f15796c08dcd7bdd462355f9",
-  "source_sha256": {
-    "integrations/web-procedural/runtime/.gitignore": "e87d28f31fdca000c4532350a9d393f1f56ee1d068aef6581af0e3636a928032",
-    "integrations/web-procedural/runtime/CMakeLists.txt": "3557151d2e33746586f6c003f3de79dace7afa8fcbe516ebe02b9e4165af66c0",
-    "integrations/web-procedural/runtime/README.md": "21b8a8df00195f2022ad3ef51739f9204729b20457b70b05a8b4337046a6a365",
-    "integrations/web-procedural/runtime/src/index.mts": "f23f0eeb55cb0a507a5519ddcd9ee98433fc21dbe21f12a7ecd8217a3af6fe86",
-    "integrations/web-procedural/runtime/src/protocol.mts": "aa15bcb2365c5f6ceeebd7c9ce4afbd98cc6a17d39458204917c3c8e30448ac3",
-    "integrations/web-procedural/runtime/src/types.mts": "724c34247ed3965e3dd54033118f5320ddfd4d4cdeeab1f8894a5e7e09616b91",
-    "integrations/web-procedural/runtime/src/worker.mts": "e1e8673a07a5c93f428083832cd372efb6f29a12ea7b5bdba24377677afb3a9b",
-    "integrations/web-procedural/runtime/tests/browser.html": "962af8e686c4f3476159b12e631437d236b6c74a1b542840ba30ea4847aa4370",
-    "integrations/web-procedural/runtime/tests/browser_tests.mjs": "29a37d3e6849cfa6ff7f8952de2db9528b1d44bece3f4697c437d83859cbbdf5",
-    "integrations/web-procedural/runtime/tests/browser_tests.py": "44084e10d6db7dee9bbebc1f209c31b54ba0159ff52d466b8112a9dc4ea209f3",
-    "integrations/web-procedural/runtime/tests/tsconfig.json": "86794be5134c31255dd5b3bf2f33cff1815066d08f09db00f85fedf2130a086c",
-    "integrations/web-procedural/runtime/tests/type_checks.mts": "43d92724af04e4aaf9cb6c0bd9fd75e9f7552a3ea00987330edd71cdfdd6717b",
-    "integrations/web-procedural/runtime/tsconfig.json": "d23290be1823ec9f22011ac10a2a4d9a95a86897b572b4f931616e863b392566"
-  },
   "commands": [
     {
       "command": "python3 bindings/geometry-c/wasm/build-smoke.py --emsdk /home/jkern/emsdk --build-dir /tmp/matter-web-slot7-wasm",
@@ -220,6 +205,26 @@
       "command": "ctest --test-dir /tmp/matter-web-slot7-local-wasm --output-on-failure --parallel 1",
       "exit_code": 0,
       "result": "15 browser fixtures; 1/1 CTest; 4.25 seconds"
+    },
+    {
+      "command": "tsc -p integrations/web-procedural/runtime/tsconfig.json",
+      "exit_code": 0,
+      "result": "Final worker error-path source compilation"
+    },
+    {
+      "command": "tsc -p integrations/web-procedural/runtime/tests/tsconfig.json",
+      "exit_code": 0,
+      "result": "Final emitted public API checks"
+    },
+    {
+      "command": "cmake --build /tmp/matter-web-slot7-local-wasm --parallel 1",
+      "exit_code": 0,
+      "result": "Final TS rebuild; existing native binding unchanged"
+    },
+    {
+      "command": "ctest --test-dir /tmp/matter-web-slot7-local-wasm --output-on-failure --parallel 1",
+      "exit_code": 0,
+      "result": "Final 15 browser fixtures, including non-Error authoring throw; 1/1 CTest, 6.36 seconds"
     }
   ],
   "limitations": [
@@ -228,5 +233,21 @@
     "Repeated assembly uses shared mesh placements. The pinned external assembly fixture fails explicitly with missing_dependency; the runtime owns no asset resolver.",
     "Self-contained authoring source snapshots use injected SDK; external module discovery remains host-owned.",
     "No central/live-editor wiring or renderer changes in this task."
-  ]
+  ],
+  "implementation_commit": "17313003c22f7d1ed352c1d2b58187c7c4bc7368",
+  "source_sha256": {
+    "integrations/web-procedural/runtime/.gitignore": "e87d28f31fdca000c4532350a9d393f1f56ee1d068aef6581af0e3636a928032",
+    "integrations/web-procedural/runtime/CMakeLists.txt": "3557151d2e33746586f6c003f3de79dace7afa8fcbe516ebe02b9e4165af66c0",
+    "integrations/web-procedural/runtime/README.md": "21b8a8df00195f2022ad3ef51739f9204729b20457b70b05a8b4337046a6a365",
+    "integrations/web-procedural/runtime/src/index.mts": "f23f0eeb55cb0a507a5519ddcd9ee98433fc21dbe21f12a7ecd8217a3af6fe86",
+    "integrations/web-procedural/runtime/src/protocol.mts": "aa15bcb2365c5f6ceeebd7c9ce4afbd98cc6a17d39458204917c3c8e30448ac3",
+    "integrations/web-procedural/runtime/src/types.mts": "724c34247ed3965e3dd54033118f5320ddfd4d4cdeeab1f8894a5e7e09616b91",
+    "integrations/web-procedural/runtime/src/worker.mts": "2a9bd11dd92c04d585c68eba9d7e3b901bbabd6c907adbd40b373a3c9f903ab6",
+    "integrations/web-procedural/runtime/tests/browser.html": "962af8e686c4f3476159b12e631437d236b6c74a1b542840ba30ea4847aa4370",
+    "integrations/web-procedural/runtime/tests/browser_tests.mjs": "e0fe937fb5b015e5e78d9235a601d8522567fc26dd2b0b5550edde8aa50f868b",
+    "integrations/web-procedural/runtime/tests/browser_tests.py": "44084e10d6db7dee9bbebc1f209c31b54ba0159ff52d466b8112a9dc4ea209f3",
+    "integrations/web-procedural/runtime/tests/tsconfig.json": "86794be5134c31255dd5b3bf2f33cff1815066d08f09db00f85fedf2130a086c",
+    "integrations/web-procedural/runtime/tests/type_checks.mts": "43d92724af04e4aaf9cb6c0bd9fd75e9f7552a3ea00987330edd71cdfdd6717b",
+    "integrations/web-procedural/runtime/tsconfig.json": "d23290be1823ec9f22011ac10a2a4d9a95a86897b572b4f931616e863b392566"
+  }
 }

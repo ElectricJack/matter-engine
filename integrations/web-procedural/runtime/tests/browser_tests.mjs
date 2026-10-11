@@ -124,6 +124,7 @@ export async function runTests() {
       return b.output(b.assembly('child',dep)).build();
     }`,'r2',0xffffffffffffffffn)), 'missing_dependency');
     await rejects(runtime.submit({...job('bad','export default () => { throw Error("source failed") }','r2',0xffffffffffffffffn)}), 'backend_failure');
+    await rejects(runtime.submit(job('throw.null','export default () => { throw null; }','r2',0xffffffffffffffffn)), 'backend_failure');
     await runtime.submit(job('after.failure',propSource,'r2',0xffffffffffffffffn));
     const limited = {...job('stage.limit',stagedSource,'r2',0xffffffffffffffffn), maxStages:2};
     await rejects(runtime.submit(limited), 'resource_limit');

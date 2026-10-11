@@ -77,7 +77,8 @@ async function run(message: Start): Promise<void> {
     host.postMessage({protocol: PROTOCOL, type: 'result', serial: message.serial, envelope: message.envelope, result: output}, [...buffers]);
   } catch (error) {
     if (!geometry) modulePromise = undefined;
-    const failure = error as {code?: string; status?: number; message?: string; diagnostics?: unknown[]; diagnostic?: {code?: string}};
+    const failure = (error !== null && (typeof error === 'object' || typeof error === 'function') ? error : {message: String(error)}) as
+      {code?: string; status?: number; message?: string; diagnostics?: unknown[]; diagnostic?: {code?: string}};
     const statuses: Record<number, ErrorCode> = {1: 'invalid_input', 2: 'unsupported_capability', 3: 'unsupported_version',
       4: 'missing_dependency', 5: 'cycle', 6: 'resource_limit', 7: 'cancelled', 8: 'stale_result', 9: 'backend_failure', 10: 'invalid_handle'};
     const codes: ErrorCode[] = [...Object.values(statuses), 'disposed'];
