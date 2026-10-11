@@ -1,11 +1,13 @@
-# Headless terrain fields and frozen region inputs
+# Headless terrain fields, meshes and CPU products
 
 `matter_terrain` compiles the existing CPU field/noise interpreter directly from
 `MatterEngine3/src/terrain_field.cpp`. The algorithms, integer noise hashes,
 96-register limit, octave accumulation order and legacy FNV text identity have
 one source of truth. Its production link dependency is `matter_contracts`;
 private legacy includes are neutral field/overlay and hydrology data types.
-The target links no engine archive, QuickJS, graphics, windowing or ECS library.
+The target also compiles the original `terrain_mesher.cpp` surface-nets and
+contour implementation directly. The target links no engine archive, QuickJS,
+graphics, windowing or ECS library.
 The original field fixture additionally compiles the CPU river overlay/geometry
 sources; those concrete algorithms are test dependencies only.
 
@@ -18,9 +20,10 @@ the request identity, field and dependencies. Both use the supplied job controls
 and echo request ID, source revision and generation epoch. Admission remains the
 coordinator's responsibility (`services::admit` rejects stale envelopes).
 
-This is the field stage for later chunk generation. It does not implement
-`TerrainService::generate`, produce geometry, resolve imports, write caches, or
-publish collision/graphics resources. Ordered integration owns existing host,
+The field API does not mesh or publish resources. The separate
+`matter/terrain/meshing.h` API implements `TerrainService::generate` with the
+same frozen field and the existing CPU mesher, as described below. Neither API
+resolves imports, writes caches, or publishes to a runtime. Ordered integration owns existing host,
 world and central build entrypoints. Relocation of the legacy source also belongs
 to integration, so the module currently builds within the monorepo.
 
@@ -173,3 +176,132 @@ ctest --test-dir /tmp/matter-terrain-build --output-on-failure -j 1
 Production-only consumers set `BUILD_TESTING=OFF` and
 `MATTER_TERRAIN_BUILD_TESTS=OFF`, or link `matter_terrain` from a parent CMake
 project. No central manifest or live-world edits are needed for these builds.
+
+## Mesh profile and explicit sampling domain
+
+`CpuTerrain(encoded_field, ChunkSettings{size})` copies the field and implements
+the shared `TerrainService`. `generate_chunk(request, field, settings, control)`
+is the equivalent synchronous free function. Requests must require
+`matter.terrain.generate@1` and `matter.terrain.mesh.surface-nets@1`. Geometry
+contains local float32 positions, native gradient normals, uint32 indices, native
+material bucket order and a single placed instance. Four neutral PBR slot IDs
+(`terrain.material.0` through `.3`) preserve the native grass/dirt/rock/snow
+classification; the consuming material adapter supplies appearance. There are
+no texture, renderer, collision-solver or resident-sector pointers.
+
+The initial bounded contour profile has these exact rules:
+
+* The output tile is `[0,size]^3` relative to `origin_metres`. Size is a power
+  of two from 8 through 64 metres. Each origin coordinate is an integer multiple
+  of size, with the world field precision checks from the field stage retained.
+* Spacing is 2, 4 or 8 metres (native rungs 0, -1, -2), with 2–32 output cells
+  per axis. Finer spacing would out-resolve the native canonical 2m contour and
+  is explicitly unsupported. `detail_level` is an opaque coordinator identity;
+  actual sampling is set by the domain and cell counts.
+* The request's **sample domain includes the halo**, and is exactly
+  `[-3*spacing,size+3*spacing]^3`, with `cell_counts = size/spacing+6` on each
+  axis. For size 16 and spacing 2, pass `[-6,22]^3` and `{14,14,14}`.
+  Geometry bounds cover the output tile, not this sample domain. The explicit
+  halo covers native ghost cells, central-difference normals, canonical contour
+  probes and material slope probes. A missing halo is an error, never an
+  implicit read beyond the declared domain. Sampling fields with a wider range
+  remains available through the separate field API.
+* The complete request is validated first. A private field-stage request then
+  receives only field capabilities and no mesh boundary requests. The product
+  echoes the original job, region, key, origin, field digest, detail and full
+  sampling cell counts. Unknown required capabilities or versions fail.
+* The native process contour mode must be enabled. Its default is enabled;
+  `MATTER_CONTOUR_SEAMS=0` returns `unsupported_capability`. This adapter never
+  changes process-global bake mode or silently switches seam algorithms.
+
+The original mesher is compiled from its source of truth, not copied or
+reimplemented. Live-world/central manifest migration remains the ordered
+integration task's work. The old column/overlap-band rollback API remains
+available to its existing consumers; it is not exposed as this contour profile.
+
+## Mesh boundaries and transition guarantees
+
+Each requested neighbor uses `matter.terrain.boundary.contour-2m@1`, also listed
+in `required_capabilities`. Local spacing must match the sample lattice.
+Neighbor spacing must be 2/4/8m at equal or 2:1 resolution. Other ratios and
+field-only boundary policies fail explicitly. The coordinator remains responsible
+for matching field/dependency identities, origins and tangential domains;
+neighbor keys in the shared contract express logical adjacency, not an implicit
+origin computation. No neighboring mesh or live sector is queried.
+
+The contour algorithm terminates each tile on a world-aligned 2m contour.
+The selected six-face oblique-plane fixtures compare shared contour segments
+**exactly** and require one incident triangle from each side, at equal spacing
+and 2:1 for 2/4m and 4/8m. The existing native noisy cave 2x2x2-block fixture
+also runs unchanged, covering a split octree child, face/edge/corner handover,
+no see-through seam holes and its existing fold allowances. These are preserved
+native guarantees, not a claim that every arbitrary field produces a globally
+manifold surface: surface-nets pinches and topology below coarse sampling remain
+limitations. Native contour tracing can omit components that no coarse seed
+reaches; this extraction does not invent a stronger guarantee.
+
+Every requested boundary receives an owned UTF-8 canonical JSON resource at
+the caller's `seam_resource` ID, or `terrain.face.N` by default (contract face
+order: -X,+X,-Y,+Y,-Z,+Z). Resource IDs must be unique and cannot collide with
+collision buffer IDs. The `contour-2m@1` payload contains:
+
+| Field | Meaning |
+| --- | --- |
+| `version`, `face`, `origin_metres`, `tile_size_metres` | Version 1, contract face and explicit coordinate frame |
+| `canonical_spacing_metres`, `sample_side`, `densities` | 2m lattice including both endpoints; tangential a fastest, then b. X face uses (Y,Z), Y uses (X,Z), Z uses (X,Y). Positive density is solid. |
+| `sample_spacing_metres`, `neighbor_spacing_metres`, `neighbor_key` | Requested sampling/transition metadata |
+| `native_plane`, `native_cell_layer`, `native_cells` | Original sparse surface-nets record; global cell indices a/b, world-double position, normal, native material ID and four plane-corner sign bits |
+
+Native sparse cell records describe the underlying dual mesh, not the canonical
+contour itself. Final shared contour segments are edges of the portable mesh;
+the density lattice and metadata are available to independent seam consumers.
+Contour mode has no overlap band or separately drawn skirt to publish.
+
+## Collision ownership and controls
+
+Requiring `matter.terrain.collision.mesh@1` adds a required extension with
+`positions` and `indices` resource IDs, local bounds, frame and CCW winding.
+`terrain.collision.positions` contains little-endian float32 XYZ triples;
+`terrain.collision.indices` contains little-endian uint32 triangle indices.
+They exactly reproduce the portable render mesh's geometry. Each payload has
+its own immutable `BytesOwner`, SHA-256 and typed resource descriptor. A physics
+consumer can retain these owners plus product origin/bounds/identity and release
+all graphics/mesh owners independently. No solver object or acceleration
+structure is created. Without this capability no collision bytes are allocated.
+All-air/all-solid regions succeed with an empty asset and, when requested, empty
+typed collision buffers. No degenerate placeholder triangle is emitted.
+
+One invocation-wide `JobMonitor` covers preparation, meshing, conversion,
+boundary sampling, validation and final publication. Conservative reservations
+check queries, operation cost and working storage before the native call. The
+reservation uses `v=(tile_cells+3)^3`, `f=6*(size/2+1)^2`, at most
+`q=64*v+256*f` charged queries, `q*(field_sample_cost+64)` operations and
+`2048*v+16384*f` working bytes plus the retained input. These deliberately
+conservative accounting ceilings include native maps, triangle soup, output
+buffers and JSON conversion; they are not measured peak process memory.
+For a 32m/2m tile a caller can use 1e9 operations, 1e7 queries and 256 MiB
+working storage, retaining its own output/vertex/index/time limits. Actual
+vertices/indices and encoded output resources are checked before publication.
+
+The unchanged native mesher has no internal cancellation hook. Its capped
+2–32-cell, at-most-64m invocation is one bounded cooperative work unit, with
+cancellation/deadline checkpoints immediately before and after it. Conversion
+and boundary sampling have additional checkpoints. This does not promise
+preemptive interruption or a hard wall-clock deadline inside the native call.
+Progress reports `terrain.mesh.begin`, `.convert`, `.complete`, up to the
+caller's event budget; callback cancellation/exception cannot publish a prefix.
+All failures return no product and preserve the request envelope. The
+coordinator's `admit_terrain` separately rejects stale epochs, revisions and
+region/detail identity.
+
+Additional fixtures in the same native wrapper/CTest suite:
+
+| Fixture ID / CTest | Evidence |
+| --- | --- |
+| `terrain.mesh.render_collision.v1` | Public-only consumer; render/collision equality, separate ownership, stale-result rejection |
+| `terrain.mesh.six_faces_and_lod.v1` | Signed faces at negative origins, exact matching samples and contour edges at 2/4/8m, selected 2:1 transitions |
+| `terrain.mesh.controls_and_limits.v1` | Stage cancellation, callback exceptions, zero progress, budgets, domains, capabilities, precision, resource identity and empty output |
+| `terrain.mesh_native_parity.v1` | Direct native versus portable noisy heightfield: exact positions, normals, triangle order, material IDs at all three supported spacings |
+| `terrain.mesh_rollback_rejected.v1` | Separate process with native contour mode disabled; explicit unsupported result |
+| `terrain.dependencies.v1` | Exact production CPU source set, contracts-only linkage, public includes and archive symbol audit |
+| `terrain.legacy_terrain_mesher`, `terrain.legacy_contour_engine` | Original native mesher/noisy cave and transition suites, unchanged expectations |
