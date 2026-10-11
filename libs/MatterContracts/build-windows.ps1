@@ -3,15 +3,20 @@ param(
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release')]
     [string]$Config = 'RelWithDebInfo',
     [switch]$Test,
-    [switch]$Matrix
+    [switch]$Matrix,
+    # Optional native venv for test-only jsonschema; compiler/toolchain still
+    # comes exclusively from the supported repository resolver.
+    [string]$TestPython
 )
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Import-Module (Join-Path $repositoryRoot 'tools\windows\MatterWindowsToolchain.psm1') -Force
 $toolchain = Resolve-MatterWindowsToolchain -RepositoryRoot $repositoryRoot
+if (-not $TestPython) { $TestPython = $toolchain.Python }
+if (-not (Test-Path -LiteralPath $TestPython -PathType Leaf)) { throw 'TestPython must name an existing native Python interpreter.' }
 $buildDirectory = Join-Path $PSScriptRoot "build\windows-msvc\$($Config.ToLowerInvariant())"
 $developerEnvironment = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} -vcvars_ver={2}' -f $toolchain.VsDevCmd, $toolchain.WindowsSdkVersion, $toolchain.MsvcToolsVersion
-$configure = '{0} && "{1}" -S "{2}" -B "{3}" -G Ninja -DCMAKE_MAKE_PROGRAM="{4}" -DCMAKE_BUILD_TYPE={5} -DBUILD_TESTING=ON' -f $developerEnvironment, $toolchain.CMake, $PSScriptRoot, $buildDirectory, $toolchain.Ninja, $Config
+$configure = '{0} && "{1}" -S "{2}" -B "{3}" -G Ninja -DCMAKE_MAKE_PROGRAM="{4}" -DCMAKE_BUILD_TYPE={5} -DBUILD_TESTING=ON -DPython3_EXECUTABLE="{6}"' -f $developerEnvironment, $toolchain.CMake, $PSScriptRoot, $buildDirectory, $toolchain.Ninja, $Config, $TestPython
 & $env:ComSpec /d /s /c $configure
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $build = '{0} && "{1}" --build "{2}" --parallel 2' -f $developerEnvironment, $toolchain.CMake, $buildDirectory
