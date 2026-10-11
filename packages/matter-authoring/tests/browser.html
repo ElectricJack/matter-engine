@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Matter authoring browser conformance</title>
+<body data-status="running"><pre id="result">Running</pre>
+<script type="module">
+import * as contracts from '../../../libs/MatterContracts/examples/contracts.mjs';
+import { contractServices, SeededRng, legacyPart, RecipeBuilder, AuthoringError } from '../index.mjs';
+import { extrudedProp, orderedCsg, repeatedAssembly } from '../examples/recipes.mjs';
+import { expectedProp, expectedRepeated } from './expected.mjs';
+
+try {
+  const check = (condition, message) => { if (!condition) throw new Error(message); };
+  // These local fixture reads and Web Crypto belong to the browser test host.
+  // The SDK never acquires either service from a global.
+  const [csg, vectors] = await Promise.all([
+    fetch('../../../libs/MatterContracts/examples/ordered-csg.recipe.json').then(r => r.json()),
+    fetch('../../../libs/MatterContracts/tests/rng-vectors.json').then(r => r.json())
+  ]);
+  const services = contractServices(contracts, async bytes => new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+  Math.random = () => { throw new Error('ambient entropy forbidden'); };
+  const expected = [expectedProp, csg, expectedRepeated];
+  const builds = [extrudedProp, orderedCsg, repeatedAssembly].map(build => build(services));
+  for (let i = 0; i < builds.length; ++i) {
+    check(builds[i].canonical() === contracts.canonicalJson(expected[i]), `canonical fixture ${i}`);
+    const digest = await builds[i].digest();
+    check(digest.hex === (await services.digestDocument(expected[i])).hex, `digest fixture ${i}`);
+  }
+  let words = 0;
+  for (const vector of vectors.vectors) {
+    const rng = new SeededRng(vector.seed, services), unit = new SeededRng(vector.seed, services);
+    for (let i = 0; i < vector.words.length; ++i) {
+      check(rng.nextU64().toString(16).padStart(16, '0') === vector.words[i], `RNG word ${vector.seed}/${i}`);
+      check(unit.random() === vector.units[i], `RNG unit ${vector.seed}/${i}`); ++words;
+    }
+  }
+  const source = { uri: 'browser://part.js', line: 9, column: 2 };
+  const part = legacyPart(new RecipeBuilder({ source: { id: 'browser.part', uri: source.uri, revision: '1' }, seed: 1n }), { sourceLocation: () => source });
+  try { part.cylinder(); throw new Error('unsupported verb was accepted'); }
+  catch (error) {
+    check(error instanceof AuthoringError && error.diagnostic.code === 'unsupported_capability' &&
+      error.diagnostic.source.line === source.line && error.diagnostic.message.includes('cylinder'), 'source-mapped unsupported verb');
+  }
+  document.body.dataset.status = 'pass';
+  document.getElementById('result').textContent = JSON.stringify({ fixtures: 3, rngWords: words, rngUnits: words, diagnostics: 1 });
+} catch (error) {
+  document.body.dataset.status = 'fail';
+  document.getElementById('result').textContent = String(error.stack ?? error);
+}
+</script>
+</body>
+</html>
