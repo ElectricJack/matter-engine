@@ -671,18 +671,12 @@ static void test_local_provider_cache() {
     }
 }
 
-static std::string read_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    std::ostringstream ss; ss << f.rdbuf();
-    return ss.str();
-}
-
 // Task 10 (updated for bake-time flattening): the PartStore serves parts two ways.
-//  - A PLACED ROOT (whatever the demo manifest places — currently TreeGallery)
+//  - A PLACED ROOT (the seed-42 Tree expanded from TreeGallery)
 //    has a flat artifact (<hash>.flat.part, written by LocalProvider::connect):
 //    loaded flat-preferred with its STORED LOD ladder and an EMPTY child table
 //    (the whole subtree is merged into the mesh).
-//  - A non-flattened part (the Tree, never placed as a manifest root) loads
+//  - A non-flattened part (a seed-1 Tree, never placed by TreeGallery) loads
 //    through the compositional path and must KEEP its baked child-instance
 //    table for the WorldComposer to expand.
 static void test_partstore_keeps_children() {
@@ -701,8 +695,8 @@ static void test_partstore_keeps_children() {
     if (schemas.empty() || sharedlib.empty()) return;
 
     // Reuse the warm cache already built by test_local_provider_cache. The gallery
-    // bakes seed-variant Trees, so the default-params Tree installed here is its own
-    // cache entry: cold-baked once on the first-ever run, a disk cache hit (no
+    // places seeds 42 + 101*s, including the default Tree. Seed 1 remains a
+    // separate compositional cache entry: cold-baked once, a disk cache hit (no
     // re-bake) on every run after that since the test cache persists.
     const std::string root = test_tmp("me3_viewer_cache_test");
     ensure_parts_dir(root);   // ensure exists (may already)
@@ -716,31 +710,55 @@ static void test_partstore_keeps_children() {
     pg::HostBaker baker(host, ".");
     pg::PartGraph graph(resolver, baker);
 
-    pg::InstallResult ir = graph.install({ pg::ChildRequest{ "Tree", pg::Params{} } });
+    const pg::Params compositional_params{{"seed", pg::ParamValue::number(1)}};
+    pg::InstallResult ir = graph.install({ pg::ChildRequest{ "Tree", compositional_params } });
     CHECK(ir.ok, "demo Tree installs into sandbox cache");
+    CHECK(ir.failed.empty(), "compositional Tree install has no skipped parts");
     if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
 
     // Recompute the hash chain exactly as the graph did: Leaf (no children) folds
-    // into TreeBranch, which folds into Tree. Use the SAME host (shared-lib root
-    // set) so the imported module sources fold identically.
-    uint64_t leaf_hash = host.resolve_hash(read_file(schemas + "/Leaf.js"), "{}");
+    // into TreeBranch, which folds into Tree. Use the SAME resolver and host
+    // so grouped object directories and imported sources fold identically.
+    std::string leaf_source, branch_source, tree_source;
+    const bool sources_loaded = resolver.load_source("Leaf", leaf_source) &&
+        resolver.load_source("TreeBranch", branch_source) &&
+        resolver.load_source("Tree", tree_source) &&
+        !leaf_source.empty() && !branch_source.empty() && !tree_source.empty();
+    CHECK(sources_loaded, "resolved grouped Leaf, TreeBranch, and Tree sources");
+    if (!sources_loaded) {
+        if (prevcwd[0]) (void)test_chdir(prevcwd);
+        return;
+    }
+    uint64_t leaf_hash = host.resolve_hash(leaf_source, "{}");
     uint64_t branch_kids[1] = { leaf_hash };
-    uint64_t branch_hash = host.resolve_hash(read_file(schemas + "/TreeBranch.js"), "{}",
+    uint64_t branch_hash = host.resolve_hash(branch_source, "{}",
                                              branch_kids, 1);
     uint64_t tree_kids[1] = { branch_hash };
-    uint64_t tree_hash = host.resolve_hash(read_file(schemas + "/Tree.js"), "{}",
+    const uint64_t placed_tree_hash = host.resolve_hash(tree_source, "{}",
+                                                        tree_kids, 1);
+    uint64_t tree_hash = host.resolve_hash(tree_source, pg::params_to_json(compositional_params),
                                            tree_kids, 1);
+    CHECK(ir.root_hashes.size() == 1 && ir.root_hashes[0] == tree_hash && tree_hash != 0,
+          "compositional Tree hash matches installed grouped sources");
 
     // Reuse the shared PartStore (already has the manifest root loaded) to avoid a
     // second lod_bake pass. The shared store points at the same cache root.
     if (!g_shared_store) { CHECK(false, "keep-children: shared store not set"); if (prevcwd[0]) test_chdir(prevcwd); return; }
 
-    // Placed root (from the manifest; LocalProvider::connect wrote its flat
-    // artifact) -> flat-preferred: merged mesh, stored ladder, EMPTY child table.
+    // TreeGallery itself is a geometry-free assembly whose flat artifact emits
+    // instance refs. Its expanded seed-42 Tree is the geometry-bearing root
+    // that exercises flat-preferred loading; select its identity independently
+    // of whether any loaded part happens to satisfy the assertions below.
     CHECK(!g_shared_manifest.instances.empty(), "shared manifest has a placed root");
-    const viewer::LoadedPart* root_part = g_shared_manifest.instances.empty()
-        ? nullptr
-        : g_shared_store->get_or_load(g_shared_manifest.instances[0].part_hash);
+    bool placed_tree_present = false, compositional_tree_placed = false;
+    for (const auto& entry : g_shared_manifest.instances) {
+        placed_tree_present |= entry.part_hash == placed_tree_hash;
+        compositional_tree_placed |= entry.part_hash == tree_hash;
+    }
+    CHECK(placed_tree_present, "gallery manifest contains the seed-42 Tree root");
+    CHECK(!compositional_tree_placed, "seed-1 Tree is not a placed root");
+    const viewer::LoadedPart* root_part = placed_tree_present
+        ? g_shared_store->get_or_load(placed_tree_hash) : nullptr;
     CHECK(root_part != nullptr, "placed root loads from PartStore");
     CHECK(root_part && !root_part->lod_blas.empty(), "flat root carries LOD geometry");
     CHECK(root_part && root_part->children.empty(), "flat root has an empty child table");
@@ -751,7 +769,7 @@ static void test_partstore_keeps_children() {
     if (root_part) printf("  flat root: %zu LOD level(s), %zu children\n",
                           root_part->lod_blas.size(), root_part->children.size());
 
-    // Non-flattened part (the Tree — never placed as a manifest root, so no flat
+    // Non-flattened part (seed-1 Tree — never placed as a manifest root, so no flat
     // artifact) -> compositional path, which must KEEP the baked child-instance
     // table for the WorldComposer to expand.
     const viewer::LoadedPart* tree = g_shared_store->get_or_load(tree_hash);
