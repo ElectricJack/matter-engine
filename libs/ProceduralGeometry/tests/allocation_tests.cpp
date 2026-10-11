@@ -43,7 +43,7 @@ void operator delete(void *p,std::align_val_t) noexcept { aligned_free(p); }
 void operator delete[](void *p,std::align_val_t) noexcept { aligned_free(p); }
 void operator delete(void *p,size_t,std::align_val_t) noexcept { aligned_free(p); }
 void operator delete[](void *p,size_t,std::align_val_t) noexcept { aligned_free(p); }
-int main() {
+int main(int argc,char **) {
     namespace d=matter::contracts;
     namespace s=matter::services;
     matter::geometry::PrimitiveGeometry geometry;
@@ -58,6 +58,15 @@ int main() {
     sweep.inputs={{"profile",d::InputKind::node,profile.id,d::ProductType::profile}};
     sweep.parameters=d::Value::Object{{"depth",2}};
     recipe.nodes={profile,sweep}; recipe.outputs={sweep.id};
+    if(argc>1) {
+        d::RecipeNode a; a.id={"a"}; a.operation="primitive.sphere";
+        a.parameters=d::Value::Object{{"radius",0.04},{"segments",8}};
+        auto b=a; b.id={"b"};
+        d::RecipeNode solid; solid.id={"solid"}; solid.operation="solid.csg";
+        solid.parameters=d::Value::Object{{"operator","union"}};
+        solid.inputs={{"a",d::InputKind::node,a.id,d::ProductType::mesh},{"b",d::InputKind::node,b.id,d::ProductType::mesh}};
+        recipe.nodes={a,b,solid}; recipe.outputs={solid.id};
+    }
     s::JobEnvelope job{"allocation.fixture","1",1};
     s::ResolvedInputs inputs; s::EvaluationOptions options; s::JobControl control;
     // Warm standard-library locale/formatting caches before measuring a

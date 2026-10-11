@@ -5,10 +5,19 @@ namespace matter::geometry {
 namespace data = matter::contracts;
 namespace jobs = matter::services;
 
+struct CsgMeshingSettings {
+    // Metres, in the prototype's local frame. Never silently coarsened.
+    float sample_spacing = 0.1f;
+    // Zero selects the zero level set. Positive values reproduce the canonical
+    // coarse-grid offset relative to a caller-selected reference radius.
+    float reference_radius = 0;
+};
+
 // Native synchronous evaluator. Owned contract values are its entire public
 // boundary; legacy triangle/POD types are private implementation details.
 class PrimitiveGeometry final : public jobs::GeometryService {
 public:
+    explicit PrimitiveGeometry(CsgMeshingSettings settings = {}) : csg_settings_(settings) {}
     std::vector<data::Capability> capabilities() const override;
     jobs::AssetResult evaluate(const jobs::JobEnvelope &, const data::RecipeDocument &,
         const jobs::ResolvedInputs &, const jobs::EvaluationOptions &, const jobs::JobControl &) override;
@@ -16,6 +25,8 @@ public:
         const jobs::QueryBatch &, const jobs::EvaluationOptions &, const jobs::JobControl &) override;
     jobs::AssetResult process(const jobs::JobEnvelope &, const jobs::AssetProduct &,
         const jobs::ProcessingRequest &, const jobs::EvaluationOptions &, const jobs::JobControl &) override;
+private:
+    CsgMeshingSettings csg_settings_;
 };
 
 struct Profile {

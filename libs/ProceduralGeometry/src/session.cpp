@@ -20,7 +20,7 @@ data::ValidationResult Session::fail(data::ErrorCode code,const char *message) {
     return {errors_};
 }
 void Session::declare(const std::string &op) {
-    if(op=="primitive.box" || op=="primitive.sphere" || op=="profile.polygon" || op=="placement.affine") return;
+    if(op=="primitive.box" || op=="primitive.sphere" || op=="profile.polygon" || op=="placement.affine" || op=="solid.csg") return;
     std::string name="matter.operation."+op;
     if(std::none_of(recipe_.required_capabilities.begin(),recipe_.required_capabilities.end(),
         [&](const auto &c){return c.name==name;})) recipe_.required_capabilities.push_back({name,1});
