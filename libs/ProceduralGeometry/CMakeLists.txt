@@ -26,16 +26,42 @@ endif()
 string(SUBSTRING "${_emitter_source}" 0 ${_cache_seam} _geometry_source)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/shared_triangle_emit.cpp"
     "${_geometry_source}\n} // namespace tri_emit\n")
-add_library(matter_geometry STATIC src/geometry.cpp src/profile.cpp src/session.cpp
+set(_surface "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/surface.c")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_surface}")
+file(READ "${_surface}" _surface_source)
+set(_surface_math "#pragma once\n#include <cmath>\n#include <matter_math_c.h>\nnamespace matter::geometry::detail {\nusing std::isinf; using std::isfinite;\n")
+foreach(_helper smin_set VertexInterpolation)
+    if(_helper STREQUAL "smin_set")
+        set(_start "static float smin_set(")
+        set(_end "// Ordered-CSG staged field evaluation")
+    else()
+        set(_start "static MtVec3 VertexInterpolation(MtVec3 v1, float val1, MtVec3 v2, float val2, float isovalue) {")
+        set(_end "// Enumeration for edge indices in a cube")
+    endif()
+    string(FIND "${_surface_source}" "${_start}" _begin)
+    string(FIND "${_surface_source}" "${_end}" _finish)
+    if(_begin LESS 0 OR _finish LESS_EQUAL _begin)
+        message(FATAL_ERROR "Canonical surface math seam changed; audit ${_helper}")
+    endif()
+    math(EXPR _length "${_finish} - ${_begin}")
+    string(SUBSTRING "${_surface_source}" ${_begin} ${_length} _body)
+    string(PREPEND _body "[[maybe_unused]] ")
+    string(APPEND _surface_math "${_body}\n")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/shared_surface_math.h" "${_surface_math}\n}\n")
+add_library(matter_geometry STATIC src/geometry.cpp src/profile.cpp src/session.cpp src/csg.cpp src/csg_mesh.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/shared_triangle_emit.cpp"
-    "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src/polygon_triangulate.cpp")
+    "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src/polygon_triangulate.cpp"
+    "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/fat_primitive.c")
 target_compile_features(matter_geometry PUBLIC cxx_std_17)
 target_link_libraries(matter_geometry PUBLIC matter_contracts)
 target_include_directories(matter_geometry PUBLIC include PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}"
     "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src"
     "${MATTER_GEOMETRY_ROOT}/MatterEngine3/include"
     "${MATTER_GEOMETRY_ROOT}/libs/SpatialQueryLib/include"
     "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/include"
+    "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src"
     "${MATTER_GEOMETRY_ROOT}/third_party/raylib/src")
 if(MSVC)
     target_compile_options(matter_geometry PRIVATE /W4 /permissive- /utf-8)
@@ -47,6 +73,21 @@ add_executable(matter_geometry_recipe examples/direct_recipe.cpp)
 target_link_libraries(matter_geometry_recipe PRIVATE matter_geometry)
 if(MATTER_GEOMETRY_TESTS)
     enable_testing()
+    # Production baseline is test-only. The shipped CPU target never links the
+    # unbounded surface traversal, spatial hash or its scratch allocator.
+    add_executable(matter_geometry_csg_tests tests/csg_tests.cpp
+        "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/surface.c"
+        "${MATTER_GEOMETRY_ROOT}/libs/SpatialQueryLib/src/spatial_hash.c"
+        "${MATTER_GEOMETRY_ROOT}/libs/MemoryLib/src/mem_pool.c")
+    target_link_libraries(matter_geometry_csg_tests PRIVATE matter_geometry)
+    target_include_directories(matter_geometry_csg_tests PRIVATE src
+        "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src"
+        "${MATTER_GEOMETRY_ROOT}/MatterEngine3/include"
+        "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/include"
+        "${MATTER_GEOMETRY_ROOT}/libs/SpatialQueryLib/include"
+        "${MATTER_GEOMETRY_ROOT}/libs/MemoryLib/include"
+        "${MATTER_GEOMETRY_ROOT}/third_party/raylib/src")
+    add_test(NAME matter_geometry_csg_tests COMMAND matter_geometry_csg_tests)
     add_executable(matter_geometry_tests tests/geometry_tests.cpp)
     target_link_libraries(matter_geometry_tests PRIVATE matter_geometry)
     add_test(NAME matter_geometry_tests COMMAND matter_geometry_tests)
@@ -54,6 +95,7 @@ if(MATTER_GEOMETRY_TESTS)
     add_executable(matter_geometry_allocation_tests tests/allocation_tests.cpp)
     target_link_libraries(matter_geometry_allocation_tests PRIVATE matter_geometry)
     add_test(NAME matter_geometry_allocation_tests COMMAND matter_geometry_allocation_tests)
+    add_test(NAME matter_geometry_csg_allocation_tests COMMAND matter_geometry_allocation_tests --csg)
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/geometry-dependencies-$<CONFIG>.cmake" CONTENT
 "set(geometry_links [==[$<TARGET_PROPERTY:matter_geometry,LINK_LIBRARIES>]==])
 set(geometry_public_links [==[$<TARGET_PROPERTY:matter_geometry,INTERFACE_LINK_LIBRARIES>]==])

@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "csg.h"
 #include <map>
 #include <set>
 
@@ -6,10 +7,10 @@ namespace matter::geometry {
 using namespace detail;
 namespace {
 const std::vector<std::string> extra_ops={"primitive.line","primitive.cylinder","primitive.cone","primitive.capsule",
-    "mesh.triangles","profile.contours","profile.sweep","profile.fill"};
+    "mesh.triangles","profile.contours","profile.sweep","profile.fill","solid.ordered"};
 bool builtin(const std::string &s) {
     return s=="primitive.box" || s=="primitive.sphere" || s=="profile.polygon" ||
-        s=="profile.extrude" || s=="placement.affine";
+        s=="profile.extrude" || s=="placement.affine" || s=="solid.csg";
 }
 void keys(const data::RecipeNode &n,std::initializer_list<const char *> allowed) {
     const auto *p=std::get_if<data::Value::Object>(&n.parameters.data);
@@ -67,7 +68,7 @@ data::MeshPrototype convert(const tri_emit::TriangleBuildBuffer &buffer,const da
 
 std::vector<data::Capability> PrimitiveGeometry::capabilities() const {
     std::vector<data::Capability> caps={{"matter.recipe.core",1},{"matter.asset.core",1},{"matter.material.pbr",1},
-        {"matter.geometry.primitive.v1",1}};
+        {"matter.geometry.primitive.v1",1},{"matter.geometry.csg.cpu.v1",1}};
     for(const auto &op:extra_ops) caps.push_back({"matter.operation."+op,1});
     return caps;
 }
@@ -102,7 +103,8 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
             if(n.operation=="placement.affine") require(n.materials.empty(),"placement cannot override shared prototype materials");
             else require(n.materials.size()<=1,"primitive geometry requires at most one material binding");
             if(!builtin(n.operation)) {
-                require((n.operation=="profile.sweep" || n.operation=="profile.fill") ? n.inputs.size()==1 : n.inputs.empty(),"invalid geometry operation inputs");
+                require(n.operation=="solid.ordered" ? !n.inputs.empty() :
+                    (n.operation=="profile.sweep" || n.operation=="profile.fill") ? n.inputs.size()==1 : n.inputs.empty(),"invalid geometry operation inputs");
                 require(n.output_type==(n.operation=="profile.contours"?data::ProductType::profile:data::ProductType::mesh),"invalid geometry operation output type");
                 if(n.operation=="profile.sweep" || n.operation=="profile.fill") require(n.inputs[0].kind==data::InputKind::node &&
                     n.inputs[0].type==data::ProductType::profile,"sweep requires a profile node");
@@ -115,7 +117,7 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
         std::string default_material="geometry.default";
         while(std::any_of(asset.materials.begin(),asset.materials.end(),[&](const auto &m){return m.id.value==default_material;})) default_material+=".default";
         bool default_added=false;
-        struct Product { std::optional<size_t> mesh; std::shared_ptr<CheckedProfile> profile; data::Mat4 transform{}; };
+        struct Product { std::optional<size_t> mesh; std::shared_ptr<CheckedProfile> profile; data::Mat4 transform{}; bool empty=false; };
         std::map<std::string,Product> products;
         std::map<std::string,const data::RecipeNode *> nodes;
         for(const auto &n:recipe.nodes) nodes.emplace(n.id.value,&n);
@@ -133,9 +135,15 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
             Product product;
             if(n.operation=="placement.affine") {
                 product=eval(n.inputs[0].reference.value,depth+1); active=id;
-                require(product.mesh.has_value(),"placement requires generated mesh");
+                require(product.mesh.has_value()||product.empty,"placement requires generated mesh");
                 product.transform=mm::multiply(n.transform,product.transform);
                 checked(data::validate_transform(product.transform));
+            } else if(n.operation=="solid.csg" || n.operation=="solid.ordered") {
+                auto field=lower_csg(n,nodes,csg_settings_,monitor,usage);
+                auto mesh=mesh_csg(field,n,monitor,usage);
+                product.transform=n.transform;
+                if(mesh) { product.mesh=asset.meshes.size(); asset.meshes.push_back(std::move(*mesh)); }
+                else product.empty=true;
             } else if(n.operation=="profile.polygon" || n.operation=="profile.contours") {
                 keys(n,n.operation=="profile.polygon"?std::initializer_list<const char *>{"points"}:std::initializer_list<const char *>{"points","holes"});
                 product.profile=std::make_shared<CheckedProfile>(detail::profile(n,monitor,usage));
@@ -265,6 +273,7 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
                 b.endShape();
                 product.mesh=asset.meshes.size(); asset.meshes.push_back(convert(b,n));
             }
+            if(product.empty) continue;
             require(product.mesh.has_value(),"recipe output has no mesh");
             const auto &mesh=asset.meshes[*product.mesh];
             asset.instances.push_back({out,mesh.id,data::InstanceTarget::mesh,{},product.transform});

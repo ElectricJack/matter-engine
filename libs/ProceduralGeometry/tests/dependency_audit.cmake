@@ -14,11 +14,12 @@ set(expected_includes "${module_root}/include" "${repo_root}/libs/MatterContract
 if(NOT public_includes STREQUAL expected_includes)
     message(FATAL_ERROR "Legacy or non-neutral includes leaked through the geometry public target")
 endif()
-set(expected_sources src/geometry.cpp src/profile.cpp src/session.cpp
+set(expected_sources src/geometry.cpp src/profile.cpp src/session.cpp src/csg.cpp src/csg_mesh.cpp
     "${build_root}/shared_triangle_emit.cpp"
-    "${repo_root}/MatterEngine3/src/polygon_triangulate.cpp")
+    "${repo_root}/MatterEngine3/src/polygon_triangulate.cpp"
+    "${repo_root}/libs/MatterSurfaceLib/src/fat_primitive.c")
 if(NOT geometry_sources STREQUAL expected_sources)
-    message(FATAL_ERROR "Geometry acquired a source outside the primitive/profile extraction")
+    message(FATAL_ERROR "Geometry acquired a source outside the primitive/profile/CSG extraction")
 endif()
 file(READ "${module_root}/include/matter/geometry/geometry.h" header)
 if(header MATCHES "raylib|triangle_emit|part_asset|dsl_state|Vulkan|quickjs|terrain")
