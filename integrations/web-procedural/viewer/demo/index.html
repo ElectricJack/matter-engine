@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matter procedural web view</title>
+<link rel="icon" href="data:,">
+<!-- The viewer imports the bare specifier 'three'; map it to the vendored build. -->
+<script type="importmap">{"imports": {"three": "../vendor/three/three.module.js"}}</script>
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+<div id="app"><p class="boot" id="boot">Loading runtime…</p></div>
+<script type="module">
+// Serve the repository root (tests/browser_tests.py --serve does this and maps
+// the compiled runtime/viewer and the WASM module). ?wasm= overrides the module URL.
+import {ProceduralRuntime} from '../../runtime/dist/index.mjs';
+import {startDemo} from '../dist/demo/app.mjs';
+const params = new URLSearchParams(location.search);
+const container = document.getElementById('app');
+try {
+  const runtime = new ProceduralRuntime({geometryModuleURL: new URL(params.get('wasm') ?? '/wasm/matter_geometry_wasm.mjs', location.href),
+    concurrency: 2, timeoutMs: 20000});
+  window.matterRuntime = runtime;
+  window.matterDemo = startDemo({container, runtime, baseURL: new URL('../../../../', import.meta.url),
+    initialFixture: params.get('fixture') ?? undefined, seed: params.has('seed') ? BigInt(params.get('seed')) : undefined});
+  addEventListener('pagehide', () => { window.matterDemo.dispose(); runtime.dispose(); });
+} catch (error) {
+  container.replaceChildren(Object.assign(document.createElement('pre'), {id: 'fatal', textContent: String(error?.stack ?? error)}));
+  window.matterDemoFailure = String(error?.stack ?? error);
+}
+</script>
+</body>
+</html>
