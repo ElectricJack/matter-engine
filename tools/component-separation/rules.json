@@ -1,0 +1,275 @@
+{
+  "schema": "matter.component-dependency-rules.v1",
+  "description": "Dependency and ownership rules for the independently buildable procedural components. Every exception names the path it covers and why it is tolerated; check_dependencies.py rejects an exception without a reason.",
+  "ownership_manifest": "libs/MatterContracts/component-ownership.json",
+  "capabilities": {
+    "vulkan-sdk": "Vulkan headers and loader discoverable by find_package(Vulkan) (the LunarG SDK on Windows, libvulkan-dev on Linux)"
+  },
+  "symbol_groups": {
+    "quickjs": "^_?JS_[A-Z]",
+    "vulkan": "^_?(vk[A-Z]|PFN_vk)",
+    "glfw": "^_?glfw[A-Z]",
+    "raylib": "^_?(InitWindow|CloseWindow|BeginDrawing|EndDrawing|LoadShader|LoadTexture|rlgl|rl[A-Z])",
+    "flecs": "^_?ecs_",
+    "dsl_state": "DslState",
+    "script_host": "ScriptHost",
+    "world_cache": "compute_resolved_hash|VariationRecorder",
+    "terrain_ns": "TerrainGenerator|N6matter7terrain|@terrain@matter@@",
+    "geometry_ns": "N6matter8geometry|@geometry@matter@@",
+    "graphics_ns": "N6matter8graphics|@graphics@matter@@"
+  },
+  "system_link_libraries": [
+    "m", "pthread", "dl", "rt", "stdc++", "c++", "gcc", "gcc_s",
+    "kernel32.lib", "user32.lib", "gdi32.lib", "winspool.lib", "shell32.lib", "ole32.lib",
+    "oleaut32.lib", "uuid.lib", "comdlg32.lib", "advapi32.lib"
+  ],
+  "forbidden_external_headers": [
+    "(^|/)vulkan/", "(^|/)vk_video/", "(^|/)GLFW/", "(^|/)quickjs[^/]*\\.h$", "(^|/)flecs", "(^|/)(raylib|rlgl)\\.h$"
+  ],
+  "probe_cache": {
+    "BUILD_TESTING": "OFF",
+    "MATTER_GEOMETRY_TESTS": "OFF",
+    "MATTER_TERRAIN_BUILD_TESTS": "OFF",
+    "MATTER_GRAPHICS_VULKAN": "OFF",
+    "MATTER_SCAFFOLD_GEOMETRY": "OFF",
+    "MATTER_SCAFFOLD_BUILD": "OFF",
+    "MATTER_SCAFFOLD_GRAPHICS": "OFF",
+    "MATTER_SCAFFOLD_TERRAIN": "OFF",
+    "MATTER_SCAFFOLD_ASSET_PIPELINE": "OFF",
+    "MATTER_SCAFFOLD_GEOMETRY_C": "OFF",
+    "MATTER_SCAFFOLD_HOST_QUICKJS": "OFF"
+  },
+  "duplicates": {
+    "roots": ["libs", "MatterEngine3", "MatterEditor", "packages", "bindings", "integrations", "projects"],
+    "exclude": ["*/build/*", "*/node_modules/*", "*/shaders_gen/*", "tests/component-separation/*"],
+    "window": 8,
+    "min_chars": 12,
+    "allow": []
+  },
+  "components": [
+    {
+      "name": "contracts",
+      "status": "implemented",
+      "kind": "native",
+      "directory": "libs/MatterContracts",
+      "description": "Neutral value, codec, validation, digest and service contracts every other component may depend on; depends on nothing but the header-only MathLib.",
+      "targets": ["matter_contracts"],
+      "public_include_dirs": ["libs/MatterContracts/include"],
+      "public_include_roots": ["libs/MathLib/include"],
+      "allowed_components": [],
+      "unbuilt_sources": [
+        {"path": "libs/MatterContracts/tests", "reason": "contract fixtures build only under BUILD_TESTING, in the component's own focused test run"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(geometry|graphics|terrain|portable_host)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$", "^flecs", "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["quickjs", "vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host", "world_cache",
+                            "terrain_ns", "geometry_ns", "graphics_ns"]
+    },
+    {
+      "name": "geometry",
+      "status": "implemented",
+      "kind": "native",
+      "directory": "libs/ProceduralGeometry",
+      "description": "Procedural geometry kernel: no JavaScript host, no renderer, no terrain.",
+      "targets": ["matter_geometry"],
+      "optional_targets": ["matter_geometry_recipe"],
+      "public_include_dirs": ["libs/ProceduralGeometry/include"],
+      "allowed_components": ["contracts"],
+      "legacy_sources": [
+        {"path": "MatterEngine3/src/polygon_triangulate.cpp", "reason": "engine source of truth for ear-clipping triangulation, compiled in place until ordered integration relocates it (CLAUDE.md: compile siblings from where they live)"},
+        {"path": "libs/MatterSurfaceLib/src/fat_primitive.c", "reason": "MatterSurfaceLib source of truth for fat-primitive SDF evaluation, compiled in place rather than copied"}
+      ],
+      "legacy_include_dirs": [
+        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place engine sources (triangle_emit prefix, polygon_triangulate); not propagated to consumers"},
+        {"paths": ["libs/SpatialQueryLib/include", "libs/MatterSurfaceLib/include", "libs/MatterSurfaceLib/src"], "reason": "PRIVATE include roots for the in-place MatterSurfaceLib sources and their precomp.h geometry types"},
+        {"path": "third_party/raylib/src", "reason": "PRIVATE include root for raylib's POD math types used by the legacy MatterSurfaceLib headers; the symbols check proves no raylib function is referenced"}
+      ],
+      "legacy_headers": [
+        {"paths": ["MatterEngine3/src/triangle_emit.hpp", "MatterEngine3/src/polygon_triangulate.hpp", "MatterEngine3/include/matter/compiler.h"], "reason": "declarations of the in-place engine sources (triangle_emit prefix, polygon_triangulate)"},
+        {"paths": ["MatterEngine3/src/part_asset_v2.h", "MatterEngine3/src/version_vector.h", "MatterEngine3/src/render/chart_atlas.h"], "reason": "the part-asset v2 record the triangle emitter fills, with its chart-atlas and version-vector fields; declarations only (the symbols check proves no world-cache or renderer code is referenced)"},
+        {"paths": ["libs/SpatialQueryLib/include/precomp.h", "libs/SpatialQueryLib/include/tri.h", "libs/SpatialQueryLib/include/bvh.h"], "reason": "SpatialQueryLib's Tri/float3 interchange types, reached through the in-place MatterSurfaceLib headers"},
+        {"paths": ["libs/MatterSurfaceLib/include/part_asset.h", "libs/MatterSurfaceLib/include/blas_manager.hpp", "libs/MatterSurfaceLib/include/tlas_manager.hpp", "libs/MatterSurfaceLib/include/profiler.hpp", "libs/MatterSurfaceLib/include/material_registry.h"], "reason": "MatterSurfaceLib part_asset.h and the POD BLAS/TLAS declarations it pulls in; no raylib or GL header is reached and the symbols check proves no GPU manager code is referenced"},
+        {"paths": ["libs/MatterSurfaceLib/include/fat_primitive.h", "libs/MatterSurfaceLib/src/mc_tables.h"], "reason": "headers of the in-place fat_primitive.c and the marching-cubes tables of the configure-time surface.c extraction"}
+      ],
+      "configure_inputs": [
+        {"path": "MatterEngine3/src/triangle_emit.cpp", "reason": "configure-time extraction of the triangle emitter prefix (before VariationRecorder::instance) from the engine source of truth"},
+        {"path": "libs/MatterSurfaceLib/src/surface.c", "reason": "configure-time extraction of smin_set/VertexInterpolation from the MatterSurfaceLib source of truth"}
+      ],
+      "unbuilt_sources": [
+        {"path": "libs/ProceduralGeometry/tests", "reason": "geometry fixtures build only under MATTER_GEOMETRY_TESTS, in the component's own focused test run"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(graphics|terrain|portable_host)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$", "^flecs", "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["quickjs", "vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host", "world_cache",
+                            "terrain_ns", "graphics_ns"]
+    },
+    {
+      "name": "graphics",
+      "status": "implemented",
+      "kind": "native",
+      "directory": "libs/MatterGraphics",
+      "description": "Renderer-neutral graphics services: no geometry, no terrain, no JavaScript host; Vulkan only in the opt-in vulkan variant.",
+      "targets": ["matter_graphics"],
+      "public_include_dirs": ["libs/MatterGraphics/include"],
+      "allowed_components": ["contracts"],
+      "legacy_sources": [
+        {"path": "MatterEngine3/src/render/matrix_math.cpp", "reason": "engine source of truth for dependency-free matrix math, compiled in place until ordered integration relocates it"}
+      ],
+      "legacy_include_dirs": [
+        {"paths": ["MatterEngine3/src/render", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place matrix_math.cpp; not propagated to consumers"}
+      ],
+      "legacy_headers": [
+        {"paths": ["MatterEngine3/src/render/matrix_math.h", "MatterEngine3/include/matter/math_types.h"], "reason": "declarations of the in-place matrix_math.cpp and the engine's POD math types it uses"}
+      ],
+      "unbuilt_sources": [
+        {"path": "libs/MatterGraphics/tests", "reason": "graphics fixtures build only under BUILD_TESTING, in the component's own focused test run"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(geometry|terrain|portable_host)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$", "^flecs", "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["quickjs", "vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host", "world_cache",
+                            "terrain_ns", "geometry_ns"],
+      "variants": [
+        {"name": "default", "description": "MATTER_GRAPHICS_VULKAN=OFF: the backend-neutral library only"},
+        {
+          "name": "vulkan",
+          "description": "MATTER_GRAPHICS_VULKAN=ON: the injected Vulkan resource device",
+          "cache": {"MATTER_GRAPHICS_VULKAN": "ON"},
+          "targets": ["matter_graphics_vulkan"],
+          "public_headers": ["include/matter/graphics/vulkan_resources.h"],
+          "sources": ["src/vulkan_resources.cpp"],
+          "requires_capability": "vulkan-sdk",
+          "unavailable_patterns": ["Could NOT find Vulkan(?: \\(missing: [^)]*\\))?"],
+          "allowed_external_headers": ["(^|/)vulkan/", "(^|/)vk_video/"],
+          "allowed_external_include_dirs": ["(?i)vulkan"],
+          "allowed_link_libraries": ["(?i)(^|[/\\\\])(lib)?vulkan(-1)?(\\.so[.0-9]*|\\.lib|\\.dylib)?$", "(?i)^-lvulkan$"],
+          "symbol_allowances": {"matter_graphics_vulkan": ["vulkan"]}
+        }
+      ]
+    },
+    {
+      "name": "terrain",
+      "status": "implemented",
+      "kind": "native",
+      "directory": "libs/TerrainGeneration",
+      "description": "Terrain field generation over the neutral contracts; may use geometry, never the host or renderer.",
+      "targets": ["matter_terrain"],
+      "public_include_dirs": ["libs/TerrainGeneration/include"],
+      "allowed_components": ["contracts", "geometry"],
+      "legacy_sources": [
+        {"path": "MatterEngine3/src/terrain_field.cpp", "reason": "engine source of truth for the terrain noise field, compiled in place until ordered integration relocates it"}
+      ],
+      "legacy_include_dirs": [
+        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place terrain_field.cpp; not propagated to consumers"}
+      ],
+      "legacy_headers": [
+        {"paths": ["MatterEngine3/src/terrain_field.h", "MatterEngine3/src/terrain_river_overlay.h", "MatterEngine3/src/hydrology/river_geometry.h"], "reason": "declarations of the in-place terrain_field.cpp and its river-overlay inputs"},
+        {"paths": ["MatterEngine3/include/matter/bounds.h", "MatterEngine3/include/matter/math_types.h", "MatterEngine3/include/matter/river_network.h", "MatterEngine3/include/matter/hydrology.h"], "reason": "engine POD types (bounds, math, river network, hydrology) named by terrain_field.h"}
+      ],
+      "unbuilt_sources": [
+        {"path": "libs/TerrainGeneration/tests", "reason": "terrain fixtures build only under MATTER_TERRAIN_BUILD_TESTS, in the component's own focused test run"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(graphics|portable_host)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$", "^flecs", "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["quickjs", "vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host", "world_cache",
+                            "graphics_ns"]
+    },
+    {
+      "name": "host_quickjs",
+      "status": "implemented",
+      "kind": "native",
+      "directory": "MatterEngine3/src/script/portable_host",
+      "description": "Portable QuickJS-ng script host over the neutral host contract; no renderer, geometry, terrain, ScriptHost or DslState.",
+      "targets": ["matter_host_quickjs"],
+      "vendored_targets": ["matter_quickjs"],
+      "public_include_dirs": ["MatterEngine3/src/script/portable_host/include"],
+      "allowed_components": ["contracts"],
+      "legacy_sources": [
+        {"path": "third_party/quickjs-ng", "reason": "vendored QuickJS-ng runtime sources compiled by the host-owned vendored matter_quickjs target"}
+      ],
+      "legacy_include_dirs": [
+        {"path": "third_party/quickjs-ng", "reason": "vendored QuickJS-ng headers; matter_quickjs is linked PRIVATE so consumers never inherit them"}
+      ],
+      "legacy_headers": [
+        {"path": "third_party/quickjs-ng", "reason": "vendored QuickJS-ng headers used by the host implementation only"}
+      ],
+      "configure_inputs": [
+        {"path": "third_party/quickjs-ng/quickjs.c", "reason": "quickjs-compat.cmake derives the patched quickjs-host.c from the vendored source of truth"},
+        {"paths": ["packages/matter-authoring/index.mjs", "packages/matter-authoring/values.mjs", "packages/matter-authoring/parameters.mjs",
+                   "packages/matter-authoring/rng.mjs", "packages/matter-authoring/recipe.mjs", "packages/matter-authoring/legacy.mjs"],
+         "reason": "the host embeds the portable authoring SDK modules byte-for-byte as module source data (no link or include dependency)"}
+      ],
+      "unbuilt_sources": [
+        {"path": "MatterEngine3/src/script/portable_host/tests", "reason": "host fixtures build only under BUILD_TESTING (they also need node), in the component's own focused test run"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(geometry|graphics|terrain)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$", "^flecs", "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host", "world_cache",
+                            "terrain_ns", "geometry_ns", "graphics_ns"]
+    },
+    {
+      "name": "authoring",
+      "status": "implemented",
+      "kind": "javascript",
+      "directory": "packages/matter-authoring",
+      "description": "Portable authoring SDK: standard JavaScript only, relative imports inside the package, no host or platform modules.",
+      "js": {
+        "include": ["*.mjs", "*.js", "*.mts"],
+        "exclude": ["tests/*"],
+        "forbidden_specifiers": ["^node:", "^(fs|os|std|path|child_process|process|worker_threads|http|https|net|url|module)(/|$)",
+                                 "^qjs:", "^https?:"],
+        "allowed_bare_specifiers": []
+      }
+    },
+    {
+      "name": "build",
+      "status": "scaffold",
+      "kind": "native",
+      "directory": "libs/ProceduralBuild",
+      "reason": "interface-only scaffold (CMakeLists.txt only); the build component has not been extracted yet",
+      "targets": ["matter_build"],
+      "allowed_components": ["contracts"]
+    },
+    {
+      "name": "asset_pipeline",
+      "status": "scaffold",
+      "kind": "native",
+      "directory": "libs/AssetPipeline",
+      "reason": "interface-only scaffold (CMakeLists.txt only); the asset pipeline has not been extracted yet",
+      "targets": ["matter_asset_pipeline"],
+      "allowed_components": ["contracts", "geometry"]
+    },
+    {
+      "name": "geometry_c",
+      "status": "scaffold",
+      "kind": "native",
+      "directory": "bindings/geometry-c",
+      "reason": "C ABI binding scaffold with WebAssembly profile tooling only; no C/C++ implementation exists yet",
+      "targets": ["matter_geometry_c"],
+      "allowed_components": ["contracts", "geometry"]
+    },
+    {
+      "name": "web_procedural",
+      "status": "absent",
+      "kind": "browser",
+      "directory": "integrations/web-procedural",
+      "reason": "the browser integration has not been created yet"
+    },
+    {
+      "name": "component_adapters",
+      "status": "absent",
+      "kind": "adapter",
+      "directory": "MatterEngine3/src/component_adapters",
+      "reason": "the engine-side component adapters have not been created yet"
+    }
+  ]
+}
