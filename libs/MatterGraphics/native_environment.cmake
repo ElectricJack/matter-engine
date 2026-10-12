@@ -38,4 +38,8 @@ if(BUILD_TESTING)
         set_tests_properties(matter_graphics_${suite} PROPERTIES
             WORKING_DIRECTORY "${_graphics_repo}/MatterEngine3/tests")
     endforeach()
+    add_executable(matter_graphics_cloud_shadow_reference_tests
+        tests/cloud_shadow_reference_tests.cpp)
+    target_link_libraries(matter_graphics_cloud_shadow_reference_tests PRIVATE matter_graphics_environment)
+    add_test(NAME matter_graphics_cloud_shadow_reference COMMAND matter_graphics_cloud_shadow_reference_tests)
 endif()

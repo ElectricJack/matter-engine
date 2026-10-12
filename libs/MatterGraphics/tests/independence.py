@@ -64,6 +64,7 @@ def audit(build):
         expected.update({"matter_graphics_vulkan", "matter_graphics_vulkan_tests", "matter_graphics_header_vulkan_resources",
                          "matter_graphics_header_vulkan_composition"})
         expected.add("matter_graphics_environment")
+        expected.add("matter_graphics_cloud_shadow_reference_tests")
         expected.update("matter_graphics_" + suite + "_tests" for suite in (
             "atmosphere", "cloud_layer", "cloud_shadow", "volumetric_quality"))
     for config in model["configurations"]:
