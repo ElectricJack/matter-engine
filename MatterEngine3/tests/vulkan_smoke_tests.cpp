@@ -15563,6 +15563,25 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
             const VkClearColorValue clear{{5.0f, 0.5f, 1.0f, 1.0f}};
             const VkImageSubresourceRange range{
                 VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            // The renderer hands DLSS a compute-storage output. This fake
+            // evaluator substitutes a transfer clear, so it owns the access
+            // conversion (including the incoming layout-transition write).
+            VkImageMemoryBarrier2 clear_barrier{
+                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+            clear_barrier.srcStageMask = resources.output.stage;
+            clear_barrier.srcAccessMask = resources.output.access;
+            clear_barrier.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+            clear_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            clear_barrier.oldLayout = resources.output.layout;
+            clear_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            clear_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            clear_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            clear_barrier.image = resources.output.image;
+            clear_barrier.subresourceRange = range;
+            VkDependencyInfo clear_dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            clear_dependency.imageMemoryBarrierCount = 1;
+            clear_dependency.pImageMemoryBarriers = &clear_barrier;
+            vkCmdPipelineBarrier2(command_buffer, &clear_dependency);
             vkCmdClearColorImage(command_buffer, resources.output.image,
                                  VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
             output = {true, VK_IMAGE_LAYOUT_GENERAL,

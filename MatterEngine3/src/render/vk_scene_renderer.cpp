@@ -10005,8 +10005,11 @@ bool VkSceneRenderer::upload_scene_buffers(
                         destination.buffer, 1, &copy);
         VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        // A prepared slot can be submitted without a cull/draw dispatch. Its
+        // next upload must also be ordered after this copy in that case.
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-                                VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                                VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
+                                VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.buffer = destination.buffer;
@@ -10014,7 +10017,7 @@ bool VkSceneRenderer::upload_scene_buffers(
         barrier.size = size;
         vkCmdPipelineBarrier(material_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, nullptr, 1, &barrier, 0, nullptr);
         return true;
     };
@@ -10125,7 +10128,10 @@ bool VkSceneRenderer::upload_scene_buffers(
             }
             VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+            // Later dirty uploads can overwrite a recycled or partially
+            // uploaded range; publish to those copies as well as readers.
+            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT |
+                                    VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.buffer = buffer.buffer;
@@ -10358,7 +10364,10 @@ bool VkSceneRenderer::upload_scene_buffers(
                 VkBufferMemoryBarrier barrier{
                     VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
                 barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+                // The preserved prefix includes allocation coverage that may
+                // still be pending a bounded upload in a subsequent frame.
+                barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT |
+                                        VK_ACCESS_TRANSFER_WRITE_BIT;
                 barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barrier.buffer = replacement.buffer;
