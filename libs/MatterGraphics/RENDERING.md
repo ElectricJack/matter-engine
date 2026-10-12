@@ -271,3 +271,33 @@ the moved code through the existing host's forwarding translation units. New
 facade producer APIs, an independently linked device host and complete live-world
 compatibility qualification remain integration work. This move does not
 advertise the pending atmosphere/cloud/volume producer capabilities.
+
+### Optimized CPU reference follow-up
+
+`clear-crest-48.4.10` resolves the three historical CPU failures above. The
+pinned MSVC 19.44.35211 `/O2 /Ob1` build miscompiles the reference helper's
+unrolled accumulation: when the step count is divisible by four, the aggregate
+member receives the correct local optical depth but the total uses a stale
+zero register. A standalone reproducer and the emitted instructions establish
+this cause; inlining can mask it.
+
+The helper now accumulates in a local float and assigns the aggregate member
+after the loop. It retains every per-step addition, input guard, step cap and
+optical-depth clamp. No shader, production dispatch, assertion, tolerance or
+optimization setting changes. The original full `cloud_shadow_tests.cpp` is
+byte-identical. A separate regression exercises the out-of-line helper across
+0–40 requested steps, froxel exits, invalid inputs and saturation; it reports
+35 failures against the original header and passes with the fix.
+
+The optimized native module now passes **10/10 CTests**, including the original
+cloud-shadow suite and the new regression. Rebuilt native `froxel-resize`
+passes with **zero validation errors**, including the seeded local/coarse
+optical-depth checks, cloud/fog separation, reprojection and resize gates. Both
+CPU suites also pass GCC `-O2` with address/undefined-behavior sanitizers. This
+closes the numerical reference gap without extending the relocation's facade
+or live-world qualification claims.
+
+[Cause, commands, assembly and full qualification logs](tests/evidence/cloud-shadow-msvc.txt)
+and the [standalone reproducer](tests/evidence/cloud-shadow-msvc-repro.cpp)
+preserve the original failing form for compiler/toolchain follow-up. The pinned
+toolchain remains supported with this bounded source workaround.
