@@ -1,3 +1,40 @@
+#include "mesh_raster.h"
+#include "image_transitions.h"
+#include "indirect_draw_runs.h"
+#include "profile.h"
+#include <climits>
+namespace viewer {
+namespace {
+inline void write_ts(VkCommandBuffer cmd, VkQueryPool pool, uint32_t zone, bool end) {
+    vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, zone * 2u + (end ? 1u : 0u));
+}
+void record_image_transition(VkCommandBuffer cmd, RasterImage& image,
+    VkImageLayout layout, VkPipelineStageFlags2 before, VkAccessFlags2 source,
+    VkPipelineStageFlags2 after, VkAccessFlags2 destination, VkImageAspectFlags aspect) {
+    raster_detail::record_image_transition(cmd, image.image, *image.layout,
+        image.mip_levels, image.array_layers, layout, before, source, after, destination, aspect);
+}
+
+void transition_for_use(VkCommandBuffer command_buffer,
+                        RasterImage& image,
+                        VkImageLayout new_layout,
+                        VkPipelineStageFlags2 destination_stage,
+                        VkAccessFlags2 destination_access,
+                        VkImageAspectFlags aspect) {
+    const bool undefined = *image.layout == VK_IMAGE_LAYOUT_UNDEFINED;
+    record_image_transition(
+        command_buffer, image, new_layout,
+        undefined ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+                  : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        undefined ? 0 : VK_ACCESS_2_MEMORY_READ_BIT |
+                            VK_ACCESS_2_MEMORY_WRITE_BIT,
+        destination_stage, destination_access, aspect);
+}
+
+using raster_detail::gbuffer_sampled_stages;
+using raster_detail::ray_depth_destination_stages;
+}
+void record_mesh_gbuffer(VkCommandBuffer command_buffer, const MeshRasterRecord& record) {
     const auto valid_skin_draw = [&record](const VkSkinRasterDraw& draw) {
         if (draw.output_frame_slot >= record.skin_buffer_count ||
             record.skin_vertex_buffers == nullptr ||
@@ -57,7 +94,7 @@
         host_dependency.pBufferMemoryBarriers = host_barriers;
         vkCmdPipelineBarrier2(command_buffer, &host_dependency);
     }
-    matter::VkImageResource* colors[] = {
+    RasterImage* colors[] = {
         record.albedo, record.normal, record.orm, record.velocity,
         record.material_instance, record.reactivity, record.vt_feedback};
     for (auto* color : colors) {
@@ -129,14 +166,14 @@
     // non-null only on the production frame path, which is the only path that
     // resets the query pool.
     const bool time_vt = record.ts_pool != VK_NULL_HANDLE &&
-                         record.ts_written != nullptr && record.vt_hooks;
+                         record.ts_written != nullptr && record.vt_pre;
     if (time_vt) {
         write_ts(command_buffer, record.ts_pool, record.vt_zone, false);
         record.ts_written[record.vt_zone] |= 1u;
     }
-    if (record.vt_hooks) {
+    if (record.vt_pre) {
         PROFILE_SCOPE("raster.vt_pre");
-        record.vt_hooks->vt_record_pre_pass(command_buffer);
+        record.vt_pre(command_buffer);
     }
     if (time_vt) {
         write_ts(command_buffer, record.ts_pool, record.vt_zone, true);
@@ -203,6 +240,7 @@
             if (record.recorded_draw_ranges) record.recorded_draw_ranges->push_back(range);
         });
     PROFILE_COUNT("raster.draw_calls", issued);
+    (void)issued;
     z_static.stop();
     // Accepted skin work is drawn from the per-frame compute output, never
     // from the immutable bind-pose arena.  Each draw carries the exact
@@ -254,14 +292,12 @@
             // A skinned draw is direct, so cull.comp never wrote a rung into
             // its transform slot. Hand the shader the rung this draw was
             // selected at, otherwise every animated part tints as rung 0.
-            const RasterDebugPushConstants skin_debug_push =
-                make_raster_debug_push_constants(
-                    draw.lod, true,
-                    record.raster_debug_push.lod_tint_enabled != 0u
-                        ? matter::GeometryDebugView::LodTint
-                        : matter::GeometryDebugView::None,
-                    record.raster_debug_push.wireframe_enabled != 0u,
-                    record.raster_debug_push.impostor_parallax_enabled != 0u);
+            RasterDebugPushConstants skin_debug_push{};
+            skin_debug_push.direct_lod = draw.lod;
+            skin_debug_push.direct_lod_valid = 1u;
+            skin_debug_push.lod_tint_enabled = record.raster_debug_push.lod_tint_enabled ? 1u : 0u;
+            skin_debug_push.wireframe_enabled = record.raster_debug_push.wireframe_enabled ? 1u : 0u;
+            skin_debug_push.impostor_parallax_enabled = record.raster_debug_push.impostor_parallax_enabled ? 1u : 0u;
             vkCmdPushConstants(command_buffer, record.raster_layout,
                                VK_SHADER_STAGE_VERTEX_BIT |
                                    VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -275,20 +311,19 @@
                              record.skin_transform_base + draw.instance_slot);
         }
     }
-    if (record.sparse_voxels && record.sparse_voxel_matrices)
-        record.sparse_voxels->record(command_buffer, *record.sparse_voxel_matrices, record.frame_slot);
+    if (record.sparse_draw) record.sparse_draw(command_buffer);
     if (record.raster_stats_pool != VK_NULL_HANDLE)
         vkCmdEndQuery(command_buffer, record.raster_stats_pool, 0);
     vkCmdEndRendering(command_buffer);
     // WP-E: extract visible requests into this frame slot's compact readback
     // buffer; it is consumed at the next begin_frame on the same slot.
-    if (record.vt_hooks) {
+    if (record.vt_post) {
         PROFILE_SCOPE("raster.vt_post");
         if (time_vt) {
             write_ts(command_buffer, record.ts_pool, record.vt_feedback_zone, false);
             record.ts_written[record.vt_feedback_zone] |= 1u;
         }
-        record.vt_hooks->vt_record_post_pass(command_buffer);
+        record.vt_post(command_buffer);
         if (time_vt) {
             write_ts(command_buffer, record.ts_pool, record.vt_feedback_zone, true);
             record.ts_written[record.vt_feedback_zone] |= 2u;
@@ -303,7 +338,7 @@
         auto* color = colors[index];
         const VkPipelineStageFlags2 sampled_stages = gbuffer_sampled_stages(
             index, record.native_ray_tracing_available);
-        matter::record_image_transition(
+        record_image_transition(
             command_buffer, *color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -311,12 +346,14 @@
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
-    matter::record_image_transition(
+    record_image_transition(
         command_buffer, *record.depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
             VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        vk_scene_detail::ray_depth_destination_stages(
+        ray_depth_destination_stages(
             record.native_ray_tracing_available),
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
     z_gbuffer.stop();
+}
+}

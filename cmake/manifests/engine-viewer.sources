@@ -10,6 +10,8 @@ MatterEngine3/src/render/gpu_meshing/gpu_solid_face_projector_vk.cpp|all
 MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp|all
 MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp|all
 MatterEngine3/src/render/vk_scene_renderer.cpp|all
+libs/MatterGraphics/src/native/mesh_raster.cpp|all
+libs/MatterGraphics/src/native/mesh_pipelines.cpp|all
 MatterEngine3/src/render/geometry_world_runtime.cpp|all
 MatterEngine3/src/render/vk_sparse_voxel.cpp|all
 MatterEngine3/src/render/vk_volumetrics.cpp|all

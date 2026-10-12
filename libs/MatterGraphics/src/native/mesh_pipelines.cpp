@@ -1,3 +1,22 @@
+#include "mesh_pipelines.h"
+#include "vk_pipeline_stats.h"
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+namespace viewer {
+namespace {
+bool fail_vk(const char* operation, VkResult result, std::string& error) {
+    error = std::string(operation) + " failed: VkResult " + std::to_string(result);
+    return false;
+}
+template<class Create, class Invoke>
+VkResult profile_pipeline_call(const char*, const char*, int, uint32_t, const Create*, Invoke invoke) {
+    return invoke();
+}
+}
+bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool wireframe_available,
+    const RasterShaderLoader& create_shader_module, const RasterPipelineCreator& create_pipeline,
+    MeshRasterPipelines& output, std::string& error) {
     VkShaderModule raster_vertex = VK_NULL_HANDLE;
     VkShaderModule skinned_raster_vertex = VK_NULL_HANDLE;
     VkShaderModule raster_fragment = VK_NULL_HANDLE;
@@ -159,7 +178,7 @@
     const VkFormat gbuffer_formats[] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16_SFLOAT,
-        VK_FORMAT_R32G32_UINT, VK_FORMAT_R8_UNORM, vt::kVtFeedbackFormat};
+        VK_FORMAT_R32G32_UINT, VK_FORMAT_R8_UNORM, VK_FORMAT_R32G32B32A32_UINT};
     VkPipelineRenderingCreateInfo rendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = 7;
@@ -178,14 +197,13 @@
     raster_create.pDepthStencilState = &depth_stencil;
     raster_create.pColorBlendState = &color_blend;
     raster_create.pDynamicState = &dynamic;
-    raster_create.layout = pipeline_layout_;
+    raster_create.layout = layout;
     if (std::getenv("MATTER_VK_PIPELINE_STATS") &&
         vkGetDeviceProcAddr(device, "vkGetPipelineExecutableStatisticsKHR"))
         raster_create.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR |
             VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
     VkResult result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &raster_create, [&] {
-        return vkCreateGraphicsPipelines(
-        device, VK_NULL_HANDLE, 1, &raster_create, nullptr, &raster_pipeline_);
+        return create_pipeline(raster_create, &output.raster);
     });
     if (result != VK_SUCCESS) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
@@ -193,7 +211,7 @@
         vkDestroyShaderModule(device, raster_vertex, nullptr);
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
     }
-    log_vk_pipeline_stats(device, raster_pipeline_, "gbuffer.frag");
+    log_vk_pipeline_stats(device, output.raster, "gbuffer.frag");
 
     // ---- the occlusion ID pipeline (M4) ----------------------------------
     //
@@ -261,11 +279,9 @@
         id_create.pDepthStencilState = &depth_stencil;
         id_create.pColorBlendState = &id_color_blend;
         id_create.pDynamicState = &dynamic;
-        id_create.layout = pipeline_layout_;
+        id_create.layout = layout;
         const VkResult id_result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &id_create, [&] {
-        return vkCreateGraphicsPipelines(
-            device, VK_NULL_HANDLE, 1, &id_create, nullptr,
-            &visibility_id_pipeline_);
+        return create_pipeline(id_create, &output.visibility);
     });
         vkDestroyShaderModule(device, id_fragment, nullptr);
         vkDestroyShaderModule(device, id_vertex, nullptr);
@@ -304,9 +320,7 @@
     vertex_input.vertexAttributeDescriptionCount = 6;
     vertex_input.pVertexAttributeDescriptions = skin_attributes;
     result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &raster_create, [&] {
-        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
-                                       &raster_create, nullptr,
-                                       &skinned_raster_pipeline_);
+        return create_pipeline(raster_create, &output.skin);
     });
     if (result != VK_SUCCESS) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
@@ -329,7 +343,7 @@
     }
     raster_stages[0].module = water_raster_vertex;
     const VkVertexInputBindingDescription water_vertex_binding{
-        0u, kWaterAnimationRasterVertexStride, VK_VERTEX_INPUT_RATE_VERTEX};
+        0u, 12u, VK_VERTEX_INPUT_RATE_VERTEX};
     const VkVertexInputAttributeDescription water_attributes[] = {
         {0u, 0u, VK_FORMAT_R32G32B32_UINT, 0u}};
     vertex_input.vertexBindingDescriptionCount = 1u;
@@ -337,9 +351,7 @@
     vertex_input.vertexAttributeDescriptionCount = 1u;
     vertex_input.pVertexAttributeDescriptions = water_attributes;
     result = profile_pipeline_call("graphics", __func__, __LINE__, 1u, &raster_create, [&] {
-        return vkCreateGraphicsPipelines(
-        device, VK_NULL_HANDLE, 1u, &raster_create, nullptr,
-        &water_animation_raster_pipeline_);
+        return create_pipeline(raster_create, &output.water);
     });
     vkDestroyShaderModule(device, water_raster_vertex, nullptr);
     if (result != VK_SUCCESS) {
@@ -360,7 +372,7 @@
     // created after this point (the composite pass among them), so mutating
     // them in place to add a line mode is how a fullscreen triangle ends up
     // rendered as three lines.
-    if (vulkan_->wireframe_available()) {
+    if (wireframe_available) {
         const VkPipelineRasterizationStateCreateInfo wireframe_rasterization =
             make_wireframe_rasterization(rasterization);
         VkGraphicsPipelineCreateInfo wireframe_create = raster_create;
@@ -379,9 +391,7 @@
         wireframe_vertex_input.pVertexAttributeDescriptions = attributes;
         wireframe_create.pVertexInputState = &wireframe_vertex_input;
         result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &wireframe_create, [&] {
-        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
-                                           &wireframe_create, nullptr,
-                                           &wireframe_raster_pipeline_);
+        return create_pipeline(wireframe_create, &output.wireframe);
     });
         if (result != VK_SUCCESS) {
             vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
@@ -397,9 +407,7 @@
         wireframe_vertex_input.vertexAttributeDescriptionCount = 6;
         wireframe_vertex_input.pVertexAttributeDescriptions = skin_attributes;
         result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &wireframe_create, [&] {
-        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
-                                           &wireframe_create, nullptr,
-                                           &wireframe_skinned_raster_pipeline_);
+        return create_pipeline(wireframe_create, &output.wireframe_skin);
     });
         if (result != VK_SUCCESS) {
             vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
@@ -413,3 +421,6 @@
     vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
     vkDestroyShaderModule(device, raster_fragment, nullptr);
     vkDestroyShaderModule(device, raster_vertex, nullptr);
+    return true;
+}
+}

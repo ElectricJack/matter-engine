@@ -107,6 +107,9 @@
 #endif
 #include "indirect_draw_runs.h"
 #include "vk_scene_renderer.h"
+#include "../../../libs/MatterGraphics/src/native/mesh_raster.h"
+#include "../../../libs/MatterGraphics/src/native/image_transitions.h"
+#include "../../../libs/MatterGraphics/src/native/mesh_pipelines.h"
 #include "vk_blas_cache.h"
 #include "vt_export.h"
 #include "vt_encoded_filler.h"
@@ -149,8 +152,7 @@
 #include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "matter/vt_budgets.h"
-#include "matter/world_definition.h"
-#include "matter/world_session.h"
+#include "../../../libs/MatterGraphics/src/native/fog_settings.h"
 #include "shaders_gen/embedded_spirv.h"
 #include "bc_encode.h"
 #include "streamline_bridge.h"
@@ -495,18 +497,7 @@ void clear_color_image_for_use(VkCommandBuffer command_buffer,
                                     next_access, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
-VkPipelineStageFlags2 gbuffer_sampled_stages(
-    uint32_t attachment_index, bool native_ray_tracing_available) {
-    VkPipelineStageFlags2 stages = 0;
-    if (attachment_index < 4)
-        stages |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    if (attachment_index == 1 || attachment_index == 3 ||
-        attachment_index == 4 || attachment_index == 5)
-        stages |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    if (native_ray_tracing_available && attachment_index < 3)
-        stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
-    return stages;
-}
+using raster_detail::gbuffer_sampled_stages;
 
 // One compute-cull dispatch, described by value so the same description can be
 // recorded inline into the frame command buffer (record_cull_dispatch_commands)
@@ -791,7 +782,79 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         if (record.ray_trace_ok) *record.ray_trace_ok = false;
         return;
     }
-#include "../../../libs/MatterGraphics/src/native/record_gbuffer.inl"
+    MeshRasterRecord mesh_record{};
+    RasterImage mesh_albedo{record.albedo->image, record.albedo->view, &record.albedo->layout, record.albedo->mip_levels, record.albedo->array_layers};
+    mesh_record.albedo = &mesh_albedo;
+    RasterImage mesh_normal{record.normal->image, record.normal->view, &record.normal->layout, record.normal->mip_levels, record.normal->array_layers};
+    mesh_record.normal = &mesh_normal;
+    RasterImage mesh_orm{record.orm->image, record.orm->view, &record.orm->layout, record.orm->mip_levels, record.orm->array_layers};
+    mesh_record.orm = &mesh_orm;
+    RasterImage mesh_velocity{record.velocity->image, record.velocity->view, &record.velocity->layout, record.velocity->mip_levels, record.velocity->array_layers};
+    mesh_record.velocity = &mesh_velocity;
+    RasterImage mesh_material_instance{record.material_instance->image, record.material_instance->view, &record.material_instance->layout, record.material_instance->mip_levels, record.material_instance->array_layers};
+    mesh_record.material_instance = &mesh_material_instance;
+    RasterImage mesh_reactivity{record.reactivity->image, record.reactivity->view, &record.reactivity->layout, record.reactivity->mip_levels, record.reactivity->array_layers};
+    mesh_record.reactivity = &mesh_reactivity;
+    RasterImage mesh_vt_feedback{record.vt_feedback->image, record.vt_feedback->view, &record.vt_feedback->layout, record.vt_feedback->mip_levels, record.vt_feedback->array_layers};
+    mesh_record.vt_feedback = &mesh_vt_feedback;
+    RasterImage mesh_depth{record.depth->image, record.depth->view, &record.depth->layout, record.depth->mip_levels, record.depth->array_layers};
+    mesh_record.depth = &mesh_depth;
+    RasterImage mesh_hdr{record.hdr->image, record.hdr->view, &record.hdr->layout, record.hdr->mip_levels, record.hdr->array_layers};
+    mesh_record.hdr = &mesh_hdr;
+    mesh_record.extent = record.extent;
+    mesh_record.raster_pipeline = record.raster_pipeline;
+    mesh_record.skinned_raster_pipeline = record.skinned_raster_pipeline;
+    mesh_record.raster_layout = record.raster_layout;
+    mesh_record.raster_debug_push = record.raster_debug_push;
+    mesh_record.vertex_buffer = record.vertex_buffer;
+    mesh_record.index_buffer = record.index_buffer;
+    mesh_record.indirect_buffer = record.indirect_buffer;
+    mesh_record.static_command_count = record.static_command_count;
+    mesh_record.index_count = record.index_count;
+    mesh_record.skin_vertex_buffers = record.skin_vertex_buffers;
+    mesh_record.skin_previous_vertex_buffers = record.skin_previous_vertex_buffers;
+    mesh_record.skin_vertex_counts = record.skin_vertex_counts;
+    mesh_record.skin_buffer_count = record.skin_buffer_count;
+    mesh_record.skin_draws = record.skin_draws;
+    mesh_record.skin_draw_count = record.skin_draw_count;
+    mesh_record.draw_transform_slots = record.draw_transform_slots;
+    mesh_record.skin_transform_base = record.skin_transform_base;
+    mesh_record.draw_ranges = record.draw_ranges;
+    mesh_record.draw_range_count = record.draw_range_count;
+    mesh_record.max_draw_indirect_count = record.max_draw_indirect_count;
+    mesh_record.recorded_draw_ranges = record.recorded_draw_ranges;
+    mesh_record.native_ray_tracing_available = record.native_ray_tracing_available;
+    mesh_record.ts_pool = record.ts_pool;
+    mesh_record.ts_written = record.ts_written;
+    mesh_record.gbuffer_zone = record.gbuffer_zone;
+    mesh_record.vt_zone = record.vt_zone;
+    mesh_record.vt_feedback_zone = record.vt_feedback_zone;
+    mesh_record.frame_slot = record.frame_slot;
+    mesh_record.water_vertices = record.water_vertices;
+    mesh_record.water_indices = record.water_indices;
+    mesh_record.water_vertex_bytes = record.water_vertex_bytes;
+    mesh_record.water_index_bytes = record.water_index_bytes;
+    mesh_record.water_upload_required = record.water_upload_required;
+    mesh_record.raster_stats_pool = record.raster_stats_pool;
+    mesh_record.raster_sets[0] = record.raster_sets[0];
+    mesh_record.raster_sets[1] = record.raster_sets[1];
+    if (record.vt_hooks) {
+        mesh_record.vt_pre = {record.vt_hooks, [](VkCommandBuffer cmd, void* owner) {
+            static_cast<VkSceneRenderer*>(owner)->vt_record_pre_pass(cmd);
+        }};
+        mesh_record.vt_post = {record.vt_hooks, [](VkCommandBuffer cmd, void* owner) {
+            static_cast<VkSceneRenderer*>(owner)->vt_record_post_pass(cmd);
+        }};
+    }
+    if (record.sparse_voxels && record.sparse_voxel_matrices)
+        mesh_record.sparse_draw = {&record, [](VkCommandBuffer cmd, void* owner) {
+            const auto& pass = *static_cast<RasterRecord*>(owner);
+            pass.sparse_voxels->record(cmd, *pass.sparse_voxel_matrices, pass.frame_slot);
+        }};
+    record_mesh_gbuffer(command_buffer, mesh_record);
+    const VkRect2D scissor{{0, 0}, record.extent};
+    const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
+
 
     if (record.renderer) {
         PROFILE_SCOPE("raster.rt");
@@ -1130,13 +1193,8 @@ size_t frame_constants_size_for_test() noexcept {
     return sizeof(FrameConstants);
 }
 
-VkPipelineStageFlags2 ray_depth_destination_stages(
-    bool native_ray_tracing_available) noexcept {
-    VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    if (native_ray_tracing_available)
-        stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
-    return stages;
+VkPipelineStageFlags2 ray_depth_destination_stages(bool available) noexcept {
+    return raster_detail::ray_depth_destination_stages(available);
 }
 
 VkPipelineStageFlags2 gbuffer_sampled_stages_for_test(
@@ -2408,7 +2466,33 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
 // CULL_MODE_NONE rasterization struct because it draws a fullscreen triangle.
 bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     const VkDevice device = vulkan_->device();
-#include "../../../libs/MatterGraphics/src/native/create_raster_pipelines.inl"
+    MeshRasterPipelines mesh_pipelines{};
+    const bool mesh_ok = create_mesh_raster_pipelines(device, pipeline_layout_, vulkan_->wireframe_available(),
+        create_shader_module,
+        [&](const VkGraphicsPipelineCreateInfo& info, VkPipeline* pipeline) {
+            return profile_pipeline_call("graphics", __func__, __LINE__, 1, &info, [&] {
+                return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, pipeline);
+            });
+        }, mesh_pipelines, error);
+    raster_pipeline_ = mesh_pipelines.raster;
+    skinned_raster_pipeline_ = mesh_pipelines.skin;
+    water_animation_raster_pipeline_ = mesh_pipelines.water;
+    visibility_id_pipeline_ = mesh_pipelines.visibility;
+    wireframe_raster_pipeline_ = mesh_pipelines.wireframe;
+    wireframe_skinned_raster_pipeline_ = mesh_pipelines.wireframe_skin;
+    if (!mesh_ok) return false;
+    VkResult result = VK_SUCCESS;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = viewport_state.scissorCount = 1;
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_values;
+
 
     std::array<VkDescriptorSetLayoutBinding, 12> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
