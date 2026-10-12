@@ -1,5 +1,8 @@
 # Production raster implementation
 
+The subsequent water/temporal/DLSS source move and its retained native host
+boundaries are documented in [WATER_TEMPORAL.md](WATER_TEMPORAL.md).
+
 These files were moved from the production engine by `bright-torrent-52`.
 The reference is commit `58289c187`. They preserve the native renderer's
 algorithms, shader ABI, draw order, specialization options and ownership.
