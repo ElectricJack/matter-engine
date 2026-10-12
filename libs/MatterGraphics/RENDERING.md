@@ -108,6 +108,11 @@ directive. See [the moved paths, retained ownership and native qualification](sr
 The original inventory rows below still identify the legacy entrypoints. This
 source move does not advertise any of the proposed standalone capabilities.
 
+`clear-crest-48.4.8` also relocates the three native environment producers and
+their pure parameter records into `src/native`, with engine forwarding paths.
+See [environment relocation evidence](#environment-relocation-evidence) for
+the retained platform boundary and the separately reported native test results.
+
 Follow-up owners A–E are temporary task keys in supervisor proposal
 `prop-9ef784b996c1`, vault file
 `plans/2026-10-11-graphics-producer-followups.json`. The daemon validated the
@@ -164,11 +169,11 @@ libs/MatterGraphics/build-windows.ps1 -Config RelWithDebInfo -Test
 ```
 
 The supported native wrapper resolves pinned MSVC/Vulkan SDK, configures Ninja,
-compiles production GLSL to embedded SPIR-V, and runs all five CTests. The optional
+compiles production GLSL to embedded SPIR-V, and runs the CTests. The optional
 Vulkan target requires glslc and Python 3.9+ even when tests are disabled; the core
 `matter_graphics` target has no Vulkan/shader-tool dependency. GLSL depfiles are
 normalized for paths containing spaces. The independence test audits the actual
-CMake graph, links, compiled dependency closure and exactly nine shader files.
+CMake graph, links, compiled dependency closure and the exact shader allowlist.
 
 Recorded on task baseline `bd498c5af` plus this module change: MSVC 19.44.35211,
 Vulkan SDK 1.4.357, NVIDIA GeForce RTX 4090, Khronos validation and synchronization
@@ -202,3 +207,67 @@ behind a host-gated GPU submission until its fence completes.
 These are selected production **shading** parity fixtures. They do not prove
 mesh rasterization, RT generation, full-scene temporal quality, water production,
 or performance. The inventory above records the additional acceptance owed.
+
+## Environment relocation evidence
+
+The `.4.8` move uses native producer sources from
+`6490dbab806876631465259cdf5b397f258c5837`. After normalizing include paths,
+the shader-registry namespace and the three-assignment sun-direction adapter,
+all six producer files match that reference. The four parameter headers and
+the FogSettings/GPU-emitter blocks match byte for byte. See the
+[native boundary](src/native/README.md#atmosphere-cloud-shadows-and-froxels).
+
+Commands from the repository root (Windows PowerShell, except the stated WSL
+build wrapper):
+
+```powershell
+libs/MatterGraphics/build-windows.ps1 -Config RelWithDebInfo -Test
+# WSL: ./tools/build-windows-from-wsl.sh RelWithDebInfo vulkan_smoke_tests
+$smoke = '.\MatterEditor\build\cmake\windows-msvc\relwithdebinfo\vulkan_smoke_tests.exe'
+$env:MATTER_VK_SMOKE_MODE = 'atmosphere'; & $smoke
+$env:MATTER_VK_SMOKE_MODE = 'froxel-resize'; & $smoke
+$env:MATTER_VK_SMOKE_MODE = 'rt-empty-tlas'; & $smoke
+```
+
+Recorded with MSVC 19.44.35211, toolset 14.44.35207, Windows SDK 10.0.26100.0,
+Vulkan SDK 1.4.357.0, NVIDIA GeForce RTX 4090 driver 610.74/API 1.4.341,
+Khronos validation enabled. All three smoke modes passed with **zero validation
+errors**, including teardown. Existing Epic overlay manifest and unused shader
+interface warnings appear separately in the full logs. All ten environment
+SPIR-V outputs match the host's outputs byte for byte (`vulkan1.3`, `-O`).
+
+- `atmosphere`: LUT/reference comparison, parameter invalidation, presentation,
+  irradiance last-valid state, transaction failures, and six-elevation raster/RT
+  direct-light and sky/SH receiver gates.
+- `froxel-resize`: cloud bundle allocation/disable/failure and lifetime,
+  density/prefix slab readback, reprojection/history/tile selection, numerical
+  scattering references, and 160x90x128 → 80x45x64 → 320x180x256 → 240x135x192
+  → 160x90x128 froxel transitions, with per-stage timestamps.
+- `rt-empty-tlas`: retained scene with empty/nonempty geometry selection,
+  initialized volume descriptors across frame slots, and reallocation.
+- Module CTest: **8/9 pass**. Atmosphere, cloud-layer, volumetric-quality,
+  lifetime, scene, composition, native Vulkan and dependency audit pass.
+  The native Vulkan test includes the existing matched `physical-sky-product`,
+  `environment-irradiance`, `cloud-optical-depth` and `integrated-volume` fixtures
+  plus explicit unsupported-capability and retention/failure checks.
+
+`matter_graphics_cloud_shadow` still fails three unchanged assertions: constant
+slab transmittance, local/coarse no-overlap, and froxel-exit truncation. An
+unmodified full test with exact original header blobs from the reference commit
+reproduces the same three failures with matched
+`/DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG /std:c++17 /MD /Zi` flags and SDK.
+The relocated full test gives the same result. Thus this failure predates the
+move under these build inputs; the suite is **not** reported as passing.
+Instrumenting the current full test shows local tau 5/2.5/1.5 and coarse tau 2,
+but total tau 2/2/2. With `/Od /Ob0`, that diagnostic passes with totals
+7/4.5/3.5. The unmodified test also passes on Linux g++ `-O2`. This establishes
+optimization-dependent behavior, not its root cause. No algorithm, assertion,
+tolerance or production optimization flag was changed to hide it.
+
+[Full test logs, matched baseline/current compiler commands and shader hashes](tests/evidence/environment-relocation.txt)
+retain the failure separately from GPU success. The static archive compiles
+independently against the audited platform declarations; runtime smoke exercises
+the moved code through the existing host's forwarding translation units. New
+facade producer APIs, an independently linked device host and complete live-world
+compatibility qualification remain integration work. This move does not
+advertise the pending atmosphere/cloud/volume producer capabilities.
