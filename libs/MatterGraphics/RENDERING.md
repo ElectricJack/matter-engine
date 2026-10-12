@@ -164,6 +164,13 @@ in [INTEGRATION.md](INTEGRATION.md) and `.9.1`; this leaf does not change them.
 
 ## Reproduction and evidence
 
+The later production source move for inventory E is documented in
+[native/WATER_TEMPORAL.md](src/native/WATER_TEMPORAL.md). Water resources,
+playback, shaders, temporal state and Streamline implementation now live in
+MatterGraphics, with legacy forwarding paths and exact renderer fragments.
+This establishes source ownership; the retained native host coupling does not
+advertise the pending standalone water/temporal capabilities above.
+
 ```powershell
 libs/MatterGraphics/build-windows.ps1 -Config RelWithDebInfo -Test
 ```

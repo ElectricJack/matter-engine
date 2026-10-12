@@ -458,7 +458,10 @@ build/shaders_vk/raster_water.vert.spv: ../libs/MatterGraphics/shaders/raster.ve
 # even through compatibility includes, after entrypoints to preserve $<.
 $(VK_SPV): ../libs/MatterGraphics/shaders/material_common.glsl \
            ../libs/MatterGraphics/shaders/impostor_common.glsl \
-           $(wildcard ../libs/MatterGraphics/shaders/vt_*)
+           $(wildcard ../libs/MatterGraphics/shaders/vt_*) \
+           ../libs/MatterGraphics/shaders/water_forward.glsl \
+           ../libs/MatterGraphics/shaders/water_surface.glsl \
+           ../libs/MatterGraphics/shaders/water_screen_space.glsl
 
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
 

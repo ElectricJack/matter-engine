@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../../libs/MatterGraphics/include/matter/graphics/dlss_mode.h"
+
 // MatterEngine3/include/matter/world_session.h
 //
 // The engine's primary public API. A WorldSession is ONE loaded world: it owns
@@ -153,14 +155,6 @@ enum class RenderPath { GpuDriven, Raytrace };
 // anyone was tuning. SectorLod is a superset -- it emits the same instances,
 // then adds per-sector rung selection and inline-cutover child expansion -- so
 // there is nothing PassThrough could express that survives its removal.)
-// Requested DLSS preset (RenderOptions::dlss_mode). Native renders at output
-// resolution with no upscaling; the other three are Streamline presets at
-// successively smaller internal render resolutions. This is a REQUEST: the mode
-// that actually ran, the internal/output extents and the reason for any
-// downgrade come back in FrameStats::dlss_*. dlss_mode_name() below gives the
-// display string.
-enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
-
 // Public, renderer-type-free copy-out of the atmosphere snapshot that actually
 // committed. The Vulkan renderer's richer viewer::ResolvedAtmosphereStatus
 // remains private to the render implementation; editor automation must read
@@ -177,8 +171,6 @@ struct ResolvedAtmospherePresentationStatus {
     Float3 sky_display_modifier_rgb{};
     Float3 sky_irradiance_modifier_rgb{};
 };
-
-const char* dlss_mode_name(DlssMode mode) noexcept;
 
 // Everything WorldSession::render needs beyond the camera and the frame: which
 // path to run, the debug/diagnostic switches, the LOD and culling budgets, and
