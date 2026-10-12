@@ -63,25 +63,39 @@ namespaces and types. The engine locations forward here. The mesh header's
 one changed include names the existing `IndexedPartGeometry` contract;
 welding and procedural impostor baking remain engine responsibilities.
 
-The four `.inl` files are **private implementation fragments**, included once
-at their original lexical positions in `VkSceneRenderer`. They deliberately
-share the host's existing resource ownership, helper functions, feature macros,
-profiling scopes and fault-injection definitions. They are not compiled as
-additional translation units or exposed as a standalone graphics API.
+`clear-crest-48.4.14` turns the G-buffer recorder and pipeline creation fragments
+into compiled `mesh_raster.cpp` and `mesh_pipelines.cpp`. The recorder borrows
+neutral image/buffer/pipeline/descriptor records, with explicit callbacks for VT
+pre/post recording and sparse draws. Host ownership stays in `VkSceneRenderer`;
+its call site forwards existing buffers, layout bookkeeping, timestamps, draw
+order, skin/water records and hooks. Pipeline creation receives a shader loader
+and profiling callback, preserving native variants and specialization controls.
+The shared image barrier and destination-stage rules live in
+`image_transitions.h`; the engine delegates to their single implementation.
+
+The standalone public `VulkanRaster` entrypoint consumes the existing immutable
+`SceneFrame` asset/scene facade. Its device binding owns native lifetimes and
+queue synchronization. Uniform opaque PBR geometry is packed per visible
+placement with inverse-transpose normals and winding parity, then the exact
+production pipeline and recorder produce G-buffers. Prepared texture, VT, skin,
+water and impostor products are not yet accepted by this facade adapter; they
+remain supported by the host's unchanged extensions. Unsupported materials
+fail before recording. There is no world/source/generator dependency and no
+alternate raster shader. `tests/raster_native.h` is the minimal GFX-IMPORTED
+caller and checks actual repeated/mirrored fixture pixels, identities, normals,
+materials, depth, clear state and atomic resource/appearance failures.
+
+Two `.inl` fragments still remain at their lexical host positions:
 
 | Fragment | Host boundary and dependencies |
 | --- | --- |
-| `record_gbuffer.inl` | Inside `record_raster`, borrowing its `RasterRecord`. Uses existing image transitions, timestamps, draw types, indirect-run helper and profiling. VT pre/post hooks and sparse draws remain calls into their existing owners. Leaves the existing viewport/scissor and attachments in scope for composition. |
-| `create_raster_pipelines.inl` | Inside `create_raster_pipelines`, borrowing the device, pipeline layout and output handles. Uses existing shader-module, pipeline-profile, error and statistics helpers. Retains static/skinned/water/wireframe/visibility variants and their shared pipeline state; composition continues afterward in the host. |
-| `impostor_atlas.inl` | In namespace `viewer`. Contains the existing upload/clear callbacks and atlas creation/descriptor methods; uses native device/resources, bake-layout constants and the existing tileset-image allocator. |
-| `adopt_part_impostors.inl` | In namespace `viewer`. Retains the existing part-input validation, mip preparation, slot allocation, upload, vertex patching and diagnostics. Uses the atlas fragment's upload callback and the renderer's retained resources. |
+| `impostor_atlas.inl` | Existing upload/clear callbacks and atlas creation/descriptors; native resources, bake constants and tileset image allocation. |
+| `adopt_part_impostors.inl` | Existing validation, mips, slot allocation, upload, vertex patching and diagnostics; retained host resources. |
 
-Expanding those four includes reconstructs the reference renderer source
-byte for byte. No renderer algorithm is copied into a second path. Source
-locations in compiler/profiler diagnostics naturally identify the moved files.
-This source separation retains host coupling; it does not establish standalone
-renderer independence. The independently built facade/compositor remains a
-separate boundary, with its own dependency audit.
+These atlas consumers do not add standalone impostor support. The standalone
+CMake graph separately compiles the raster pass and six original shader variants.
+Its source, link, compiler-header and shader-dependency audit admits only the
+exact platform/pure-data closure and the compile-out ProfileLib header.
 
 The complete `raster.vert`, `gbuffer.frag`, `material_common.glsl` and
 `impostor_common.glsl` files live in `../../shaders/`, unchanged. Root CMake
@@ -94,7 +108,7 @@ The rejected `.4.5` branch was not an ancestor of this task's base. Its rewritte
 `raster.cpp`, `vulkan_raster.cpp`, `mesh.vert`/`mesh.frag`, scene-draw and sparse
 producer implementations are therefore not imported. Its fixtures requiring
 those APIs cannot be treated as native behavior parity: for example,
-`raster_native.h` explicitly expects inverse-transpose normals to differ from
+that branch's `raster_native.h` expects inverse-transpose normals to differ from
 the legacy renderer. Preserve that incompatibility in validation evidence;
 do not change production semantics or weaken those fixtures to make them pass.
 

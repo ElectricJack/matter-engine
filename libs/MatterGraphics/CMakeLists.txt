@@ -39,8 +39,40 @@ if(MATTER_GRAPHICS_VULKAN)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_shaders.py"
             "${_composition_header}" ${_composition_spirv}
         DEPENDS ${_composition_spirv} tools/embed_shaders.py VERBATIM)
-    add_library(matter_graphics_vulkan STATIC src/vulkan_resources.cpp src/vulkan_composition.cpp "${_composition_header}")
-    target_include_directories(matter_graphics_vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    set(_raster_spirv)
+    foreach(shader raster.vert raster_skin.vert raster_water.vert gbuffer.frag visibility_id.vert visibility_id.frag)
+        set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}")
+        set(defines)
+        if(shader STREQUAL "raster_skin.vert")
+            set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raster.vert")
+            set(defines -DMATTER_SKINNED_VERTEX_INPUT=1)
+        elseif(shader STREQUAL "raster_water.vert")
+            set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raster.vert")
+            set(defines -DMATTER_WATER_ANIMATION_VERTEX_INPUT=1)
+        elseif(shader MATCHES "^visibility_id")
+            set(source "${_shader_dir}/${shader}")
+        endif()
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/${shader}.spv")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_shader.py"
+                "${MATTER_GRAPHICS_GLSLC}" "${source}" "${output}" vulkan1.3 -O "-I${_shader_dir}" ${defines}
+            DEPENDS "${source}" tools/compile_shader.py DEPFILE "${output}.d" VERBATIM)
+        list(APPEND _raster_spirv "${output}")
+    endforeach()
+    set(_raster_header "${CMAKE_CURRENT_BINARY_DIR}/raster_spirv.h")
+    add_custom_command(OUTPUT "${_raster_header}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_shaders.py"
+            "${_raster_header}" ${_raster_spirv}
+        DEPENDS ${_raster_spirv} tools/embed_shaders.py VERBATIM)
+    add_library(matter_graphics_vulkan STATIC src/vulkan_resources.cpp src/vulkan_composition.cpp src/vulkan_raster.cpp "${_raster_header}" src/native/mesh_raster.cpp src/native/mesh_pipelines.cpp "${_composition_header}")
+    target_include_directories(matter_graphics_vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${_graphics_repo}/libs/ProfileLib/include" "${_graphics_repo}/MatterEngine3/include")
+    target_compile_definitions(matter_graphics_vulkan PRIVATE MATTER_PROFILE_ENABLED=0
+        $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>)
+    if(NOT MSVC)
+        set_source_files_properties(src/native/mesh_raster.cpp src/native/mesh_pipelines.cpp
+            PROPERTIES COMPILE_OPTIONS -Wno-missing-field-initializers)
+    endif()
     target_link_libraries(matter_graphics_vulkan PUBLIC matter_graphics Vulkan::Vulkan)
     include(native_environment.cmake)
     if(MSVC)
@@ -84,10 +116,31 @@ if(BUILD_TESTING)
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_composition.cpp" "#include <matter/graphics/vulkan_composition.h>\n")
         add_library(matter_graphics_header_vulkan_composition OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_composition.cpp")
         target_link_libraries(matter_graphics_header_vulkan_composition PRIVATE matter_graphics_vulkan)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_raster.cpp" "#include <matter/graphics/vulkan_raster.h>\n")
+        add_library(matter_graphics_header_vulkan_raster OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_raster.cpp")
+        target_link_libraries(matter_graphics_header_vulkan_raster PRIVATE matter_graphics_vulkan)
         add_executable(matter_graphics_vulkan_tests tests/vulkan_tests.cpp)
         target_link_libraries(matter_graphics_vulkan_tests PRIVATE matter_graphics_vulkan)
+        add_executable(matter_graphics_raster_tests tests/raster_tests.cpp)
+        target_link_libraries(matter_graphics_raster_tests PRIVATE matter_graphics_vulkan)
+        target_compile_definitions(matter_graphics_raster_tests PRIVATE
+            MATTER_GRAPHICS_IMPORTED_ASSET="${CMAKE_CURRENT_SOURCE_DIR}/../MatterContracts/examples/repeated-assembly.asset.json")
+        add_test(NAME matter_graphics_raster COMMAND matter_graphics_raster_tests)
+        set_tests_properties(matter_graphics_raster PROPERTIES TIMEOUT 180)
         add_test(NAME matter_graphics_vulkan COMMAND matter_graphics_vulkan_tests)
         set_tests_properties(matter_graphics_vulkan PROPERTIES TIMEOUT 60)
+    endif()
+    if(MSVC)
+        foreach(header backend graphics scene_backend composition)
+            set_target_properties(matter_graphics_header_${header} PROPERTIES
+                COMPILE_PDB_NAME matter_graphics_header_${header})
+        endforeach()
+        if(MATTER_GRAPHICS_VULKAN)
+            foreach(header vulkan_resources vulkan_composition vulkan_raster)
+                set_target_properties(matter_graphics_header_${header} PROPERTIES
+                    COMPILE_PDB_NAME matter_graphics_header_${header})
+            endforeach()
+        endif()
     endif()
     if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         add_test(NAME matter_graphics_independence COMMAND ${Python3_EXECUTABLE}

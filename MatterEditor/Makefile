@@ -563,6 +563,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        ../libs/MatterGraphics/src/native/mesh_raster.cpp \
+        ../libs/MatterGraphics/src/native/mesh_pipelines.cpp \
         $(ME3_DIR)/src/render/vk_sparse_voxel.cpp \
         $(ME3_DIR)/src/sparse_voxel_bake.cpp \
         $(ME3_DIR)/src/surface_proxy.cpp \
@@ -603,6 +605,8 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    ../libs/MatterGraphics/src/native/mesh_raster.cpp \
+	    ../libs/MatterGraphics/src/native/mesh_pipelines.cpp \
 	    $(ME3_DIR)/src/render/vk_sparse_voxel.cpp \
 	    $(ME3_DIR)/src/sparse_voxel_bake.cpp \
 	    $(ME3_DIR)/src/surface_proxy.cpp \
