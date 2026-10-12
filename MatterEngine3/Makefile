@@ -838,6 +838,12 @@ $(VIEWER_ME3_OBJ) $(VIEWER_MSL_OBJ) $(VIEWER_BC7ENC_OBJ) $(VIEWER_PROFILE_OBJ): 
 $(VIEWER_OBJDIR)/%.o: %.cpp | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
 
+# Compiled MatterGraphics raster authorities live outside the engine vpath.
+$(VIEWER_OBJDIR)/mesh_raster.o: ../libs/MatterGraphics/src/native/mesh_raster.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+$(VIEWER_OBJDIR)/mesh_pipelines.o: ../libs/MatterGraphics/src/native/mesh_pipelines.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+
 # Sources deliberately kept off vpath (see the $(OBJDIR) twins above for why)
 # need explicit rules. bc7enc/rgbcx get a trailing -w for the same reason the
 # $(OBJDIR) rules do -- unmodified upstream sources whose warnings are not this

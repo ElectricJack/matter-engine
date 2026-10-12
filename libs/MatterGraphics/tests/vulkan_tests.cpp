@@ -6,100 +6,8 @@
 #include <cstring>
 #include <iostream>
 
-namespace mg = matter::graphics;
-namespace ms = matter::services;
-namespace mc = matter::contracts;
+#include "vulkan_device_fixture.h"
 namespace {
-void check(bool condition, const char *id) {
-  if (!condition) { std::cerr << "FAIL " << id << '\n'; std::exit(1); }
-}
-void vkcheck(VkResult r, const char *id) { check(r == VK_SUCCESS, id); }
-void valid(const mc::ValidationResult &r, const char *id) {
-  if (!r.ok()) for (const auto &d : r.diagnostics) std::cerr << d.message << '\n';
-  check(r.ok(), id);
-}
-std::atomic<unsigned> validation_errors{0};
-VKAPI_ATTR VkBool32 VKAPI_CALL message(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-    VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *data, void *) {
-  if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-    if (type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) ++validation_errors;
-    std::cerr << "VULKAN " << ((type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) ? "VALIDATION: " : "LOADER: ")
-              << data->pMessage << '\n';
-  }
-  return VK_FALSE;
-}
-struct NativeDevice {
-  VkInstance instance = VK_NULL_HANDLE;
-  VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
-  VkPhysicalDevice physical = VK_NULL_HANDLE;
-  VkDevice device = VK_NULL_HANDLE;
-  VkQueue queue = VK_NULL_HANDLE;
-  uint32_t family = 0;
-  std::shared_ptr<std::mutex> mutex = std::make_shared<std::mutex>();
-  NativeDevice() {
-    uint32_t count = 0; vkcheck(vkEnumerateInstanceLayerProperties(&count, nullptr), "VK layers");
-    std::vector<VkLayerProperties> layers(count);
-    vkcheck(vkEnumerateInstanceLayerProperties(&count, layers.data()), "VK layer names");
-    bool validation = false;
-    for (const auto &l : layers) if (std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation") == 0) validation = true;
-    if (std::getenv("MATTER_GRAPHICS_REQUIRE_VALIDATION")) check(validation, "VK required validation layer installed");
-    const char *layer = "VK_LAYER_KHRONOS_validation";
-    const char *extensions[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME};
-    VkApplicationInfo app{}; app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO; app.apiVersion = VK_API_VERSION_1_2;
-    VkDebugUtilsMessengerCreateInfoEXT debug{}; debug.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    debug.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    debug.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    debug.pfnUserCallback = message;
-    VkInstanceCreateInfo info{}; info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO; info.pApplicationInfo = &app;
-    VkValidationFeatureEnableEXT sync = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
-    VkValidationFeaturesEXT features{}; features.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
-    features.enabledValidationFeatureCount = 1; features.pEnabledValidationFeatures = &sync; features.pNext = &debug;
-    if (validation) {
-      info.enabledLayerCount = 1; info.ppEnabledLayerNames = &layer;
-      info.enabledExtensionCount = 2; info.ppEnabledExtensionNames = extensions; info.pNext = &features;
-    }
-    vkcheck(vkCreateInstance(&info, nullptr, &instance), "VK create instance");
-    if (validation) {
-      auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
-      check(create != nullptr, "VK debug function"); vkcheck(create(instance, &debug, nullptr, &messenger), "VK debug messenger");
-    }
-    vkcheck(vkEnumeratePhysicalDevices(instance, &count, nullptr), "VK enumerate devices");
-    std::vector<VkPhysicalDevice> devices(count);
-    vkcheck(vkEnumeratePhysicalDevices(instance, &count, devices.data()), "VK physical devices");
-    for (auto candidate : devices) {
-      vkGetPhysicalDeviceQueueFamilyProperties(candidate, &count, nullptr);
-      std::vector<VkQueueFamilyProperties> families(count);
-      vkGetPhysicalDeviceQueueFamilyProperties(candidate, &count, families.data());
-      for (uint32_t i = 0; i < count; ++i) if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-        physical = candidate; family = i; break;
-      }
-      if (physical) break;
-    }
-    check(physical != VK_NULL_HANDLE, "VK graphics device required");
-    const float priority = 1;
-    VkDeviceQueueCreateInfo q{}; q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    q.queueFamilyIndex = family; q.queueCount = 1; q.pQueuePriorities = &priority;
-    VkDeviceCreateInfo d{}; d.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO; d.queueCreateInfoCount = 1; d.pQueueCreateInfos = &q;
-    VkPhysicalDeviceTimelineSemaphoreFeatures timeline{}; timeline.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
-    timeline.timelineSemaphore = VK_TRUE; d.pNext = &timeline;
-    vkcheck(vkCreateDevice(physical, &d, nullptr, &device), "VK create device");
-    vkGetDeviceQueue(device, family, 0, &queue);
-    VkPhysicalDeviceProperties properties{}; vkGetPhysicalDeviceProperties(physical, &properties);
-    std::cout << "DEVICE " << properties.deviceName << "; validation=" << validation << '\n';
-  }
-  ~NativeDevice() {
-    vkDestroyDevice(device, nullptr);
-    if (messenger) {
-      auto destroy = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
-      destroy(instance, messenger, nullptr);
-    }
-    vkDestroyInstance(instance, nullptr);
-  }
-  mg::VulkanDeviceBinding binding(const std::shared_ptr<NativeDevice> &owner) {
-    return {physical, device, queue, family, owner, mutex};
-  }
-};
 ms::UploadRequest triangle() {
   mc::AssetDocument a; a.id = {"gpu.synthetic"};
   a.provenance = {{"gpu-fixture"}, "fixture://gpu", "1", {}, {}};
@@ -202,6 +110,7 @@ void exercise(const std::shared_ptr<NativeDevice> &native) {
 } // namespace
 #include "composition_native.h"
 int main() {
+  std::cout << std::unitbuf;
   auto native = std::make_shared<NativeDevice>(); exercise(native);
   exercise_composition(native);
   std::weak_ptr<NativeDevice> lifetime = native;

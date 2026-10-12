@@ -182,6 +182,8 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vk_resources.cpp
         MatterEngine3/src/render/vk_pipeline.cpp
         MatterEngine3/src/render/vk_scene_renderer.cpp
+        libs/MatterGraphics/src/native/mesh_raster.cpp
+        libs/MatterGraphics/src/native/mesh_pipelines.cpp
         MatterEngine3/src/render/vk_sparse_voxel.cpp
         MatterEngine3/src/sparse_voxel_bake.cpp
         MatterEngine3/src/surface_proxy.cpp

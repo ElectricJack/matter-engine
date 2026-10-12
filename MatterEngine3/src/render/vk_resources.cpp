@@ -32,6 +32,7 @@
 // (GCC/Clang), and the Win32 entry points used for process memory are
 // declared by hand and resolved at runtime rather than by including
 // <windows.h> or linking psapi.
+#include "../../../libs/MatterGraphics/src/native/image_transitions.h"
 #include "vk_resources.h"
 
 #include <algorithm>
@@ -1206,24 +1207,9 @@ void record_image_transition(VkCommandBuffer command_buffer,
                              VkPipelineStageFlags2 destination_stage,
                              VkAccessFlags2 destination_access,
                              VkImageAspectFlags aspect) {
-    VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    barrier.srcStageMask = source_stage;
-    barrier.srcAccessMask = source_access;
-    barrier.dstStageMask = destination_stage;
-    barrier.dstAccessMask = destination_access;
-    barrier.oldLayout = image.layout;
-    barrier.newLayout = new_layout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image.image;
-    barrier.subresourceRange.aspectMask = aspect;
-    barrier.subresourceRange.levelCount = image.mip_levels;
-    barrier.subresourceRange.layerCount = image.array_layers;
-    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount = 1;
-    dependency.pImageMemoryBarriers = &barrier;
-    vkCmdPipelineBarrier2(command_buffer, &dependency);
-    image.layout = new_layout;
+    viewer::raster_detail::record_image_transition(command_buffer, image.image,
+        image.layout, image.mip_levels, image.array_layers, new_layout,
+        source_stage, source_access, destination_stage, destination_access, aspect);
 }
 
 bool transition_image(VulkanDevice& vulkan, VkImageResource& image,
