@@ -6,8 +6,9 @@ namespaces, feature macros, resource lifetimes, shader ABI and test oracles.
 
 Accounting against the reference: 7,848 existing lines relocated (5,506 in
 eight C++ pairs, 1,316 in eleven renderer fragments, 1,016 shader lines, and
-10 enum/comment/declaration lines). Excluding documentation, `git diff --numstat`
-adds 111 adapter/build lines beyond those moves; no algorithms are newly written.
+10 enum/comment/declaration lines). In implementation commit `1d2b2df58`, excluding
+documentation, `git diff --numstat` adds 111 adapter/build lines beyond those
+moves; no algorithms are newly written. The later evidence commit adds records.
 Every new source file over 50 lines contains moved code. This longer document
 records the retained boundaries and reproducible validation evidence.
 
@@ -111,7 +112,9 @@ and toolchain (normalizing only Vulkan handle addresses). Both cull runs exit 1.
 The comparison predicate passed in 237.60 seconds; it establishes a pre-existing
 failure and does not turn either cull mode into a clean validation pass.
 Full candidate/baseline logs, layer configuration, comparison harness and shader
-hashes are retained at `/tmp/clear-crest-48.4.9-evidence/` and linked in the task.
+hashes are committed in the [evidence packet](../../tests/evidence/native-water-temporal/README.md).
+Follow-up `clear-crest-48.4.11` owns the bounded synchronization fix. The temporary
+build evidence also remains at `/tmp/clear-crest-48.4.9-evidence/`.
 
 Byte comparison against the reference confirms all moved C++ pairs (normalizing
 only the bridge include), all shader bodies, and exact expansion of the eleven
