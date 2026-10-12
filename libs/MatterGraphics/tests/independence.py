@@ -37,7 +37,9 @@ def audit(build):
         allowed_shaders = {shader_root / name for name in (
             "composite.vert", "composite.frag", "display_transform.frag",
             "vol_common.glsl", "impostor_common.glsl", "environment_common.glsl",
-            "cloud_shadow_common.glsl", "local_lighting.glsl", "local_light_types.glsl")}
+            "cloud_shadow_common.glsl", "local_lighting.glsl")}
+        # The moved local_lighting implementation includes its sibling types
+        # directly, so the engine's local_light_types wrapper is not in the closure.
         allowed_shaders.update(root / "shaders" / name for name in
                                ("impostor_common.glsl", "local_lighting.glsl", "local_light_types.glsl"))
         allowed_shaders.update(shader_root / name for name in environment_shaders + (
