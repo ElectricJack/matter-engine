@@ -3107,7 +3107,7 @@ void test_atmosphere_irradiance_dispatch_contract() {
               std::string::npos &&
               source.find("if (coefficient >= 9u) return;") != std::string::npos,
           "irradiance shader assigns exactly one row-major SH coefficient per invocation");
-    std::ifstream implementation("MatterEngine3/src/render/vk_atmosphere.cpp",
+    std::ifstream implementation("libs/MatterGraphics/src/native/vk_atmosphere.cpp",
                                 std::ios::binary);
     const std::string implementation_source(
         (std::istreambuf_iterator<char>(implementation)), std::istreambuf_iterator<char>());
