@@ -5,7 +5,7 @@
 function(matter_host_prepare_quickjs input output)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${input}")
   file(SHA256 "${input}" digest)
-  if(NOT digest STREQUAL "58f2c432fea9304bd1e07f233151e04c08b91a54f0d680e076cfb2128535cbf8")
+  if(NOT digest STREQUAL "fac281580c32b6540fd42970d887e496c18e28eb13c6d489a87efbaf6a642210")
     message(FATAL_ERROR "QuickJS changed: re-audit portable host backtrace ownership compatibility fix")
   endif()
   file(READ "${input}" source)

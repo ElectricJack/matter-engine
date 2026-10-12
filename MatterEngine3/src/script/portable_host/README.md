@@ -100,7 +100,13 @@ The pinned VM also needs an exception ownership fix: a second OOM during
 `build_backtrace` can free the pending error that the function still borrows.
 `quickjs-compat.cmake` retains/releases that value in a generated build-directory
 translation unit, after checking the exact vendor source SHA-256. No vendor file
-is edited. The sanitizer regression exercises array and Error allocation pressure.
+is edited by that transformation. The vendor also carries the parser and compiler bytecode
+OOM fixes documented in `third_party/quickjs-ng/MATTER_PATCHES.md`; its emitter
+regression injects allocation failures during parsing and checks
+cleanup and runtime reuse. The public compiler regression also sweeps later
+passes and function initialization, including malloc/calloc failures, and compares
+successful bytecode with the fault-free baseline. The backtrace regression exercises array and Error
+allocation pressure.
 SDK diagnostic codes, node IDs, source locations and dependency paths survive the
 boundary. Syntax/runtime stacks map module IDs back to supplied URIs and their
 line/column when available; missing VM locations are reported as zero, not guessed.
@@ -144,7 +150,8 @@ ctest --test-dir /tmp/matter-portable-host --output-on-failure -j 1
 For allocation-failure and lifetime regressions, configure a separate build with
 `-DCMAKE_C_FLAGS='-fsanitize=address -fno-omit-frame-pointer'` and
 `-DCMAKE_CXX_FLAGS='-fsanitize=address -fno-omit-frame-pointer'`, then run the same
-build and CTest commands. Both suites pass with AddressSanitizer enabled.
+build and CTest commands. CTest runs the controls, parity, parser OOM and compiler OOM suites.
+Enable leak checking with `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1`.
 
 `BUILD_TESTING=ON` requires Node; no packages are installed. Library-only builds
 need no Node. A parent can use `add_subdirectory` and supply existing
@@ -169,6 +176,8 @@ Tests are local, CPU-only and serial.
 | `HOST-INTERRUPT-DEADLINE-v1` | Pre-cancel, active cancellation, module/generator/promise loop deadlines, final cancellation, callback failure |
 | `HOST-RESOURCE-LIMITS-v1` | Source/heap/output/work/stack ceilings and OOM classification |
 | `HOST-OOM-BACKTRACE-OWNERSHIP-v1` | Repeated allocation failure while constructing errors at multiple heap limits; run under AddressSanitizer |
+| `matter_host_quickjs_parser_oom` | Parser allocation failures, partial bytecode cleanup, and reuse of the same runtime after failure; run under AddressSanitizer |
+| `matter_host_quickjs_compiler_oom` | Public compile-only allocation sweeps, executable bytecode equivalence, runtime recovery, and allocator balance; run under AddressSanitizer |
 | `HOST-NO-AMBIENT-SERVICES-v1` | Fresh globals, no file/network/browser/clock interfaces, explicit RNG |
 | `HOST-BIGINT-CONFORMANCE-v1` | Unsigned truncation at 0/1/32/63/64/65/128 bits, hexadecimal formatting, single width conversion and invalid-width rejection |
 
