@@ -160,6 +160,35 @@ let rejected=false; try { BigInt.asUintN(64n,1n); } catch { rejected=true; }
 if(!rejected) throw Error('BigInt width accepted');
 )JS" + valid_source)));
   std::cout << "PASS HOST-BIGINT-CONFORMANCE-v1\n";
+  // The vendor intrinsics themselves (no setup.js override): limb-boundary
+  // widths, signed truncation, every binary radix plus 10/36 against a
+  // division reference, and the allocation ceiling for huge widths.
+  passed(author(snapshot(R"JS(
+const values = [0n, 1n, -1n, 2n, -2n, 0x7fffffffn, 0x80000000n, -0x80000000n, 0xffffffffn,
+  2n**63n - 1n, 2n**63n, -(2n**63n), 2n**64n - 1n, -(2n**64n - 1n), 2n**64n, 2n**95n,
+  2n**96n - 1n, 2n**126n, 2n**127n + 12345n, 2n**128n - 1n, -(2n**128n), 0x9e3779b97f4a7c15n];
+for (const width of [0,1,2,31,32,33,63,64,65,95,96,97,127,128,129,200]) {
+  const modulus = 1n << BigInt(width), half = modulus >> 1n;
+  for (const n of values) {
+    const u = ((n % modulus) + modulus) % modulus, s = width && u >= half ? u - modulus : u;
+    if (BigInt.asUintN(width, n) !== u) throw Error(`asUintN(${width}, ${n})`);
+    if (BigInt.asIntN(width, n) !== s) throw Error(`asIntN(${width}, ${n})`);
+  }
+}
+const digits = '0123456789abcdefghijklmnopqrstuvwxyz';
+for (const radix of [2, 4, 8, 10, 16, 32, 36]) {
+  for (const n of values) {
+    let a = n < 0n ? -n : n, expected = '';
+    do { expected = digits[Number(a % BigInt(radix))] + expected; a /= BigInt(radix); } while (a);
+    if (n.toString(radix) !== (n < 0n ? '-' : '') + expected) throw Error(`${n}.toString(${radix})`);
+  }
+}
+if ((2n**63n).toString(2) !== '1' + '0'.repeat(63)) throw Error('binary radix formatting');
+let range = false; try { BigInt.asUintN(2**53 - 1, -1n); } catch (e) { range = e instanceof RangeError; }
+if (!range) throw Error('oversized asUintN accepted');
+if (BigInt.asUintN(2**53 - 1, 5n) !== 5n || BigInt.asIntN(2**53 - 1, -5n) !== -5n) throw Error('wide identity');
+)JS" + valid_source)));
+  std::cout << "PASS HOST-BIGINT-VENDOR-v1\n";
   return 0;
 }
 const d::Value::Object &object(const d::Value &v) { return std::get<d::Value::Object>(v.data); }
