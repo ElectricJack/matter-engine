@@ -1016,6 +1016,7 @@ TERRAINVERB_C = $(COMMON_MSL_C)
 # Phase C Task 7 — WorldSector.js + native world query verbs (sh flavor).
 SECTORBAKE_TARGET = build/sector_bake_tests
 SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
+                 $(SCRIPT_SOLID_COMMON_CPP) \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
