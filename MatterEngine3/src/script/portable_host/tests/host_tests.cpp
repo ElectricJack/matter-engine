@@ -1,5 +1,6 @@
 // Public header consumer: no QuickJS, editor, graphics or bake includes.
 #include <matter/portable_host/quickjs_host.h>
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <iterator>
