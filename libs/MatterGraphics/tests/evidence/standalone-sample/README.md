@@ -64,3 +64,30 @@ files over 50 lines are captured observations rather than implementations.
 The sample renders uniform opaque PBR. Textures, VT, skin/water/impostor products
 and unsupported required capabilities retain the producer's explicit failure
 behavior. No broader graphics capability or performance claim follows.
+
+## Required full Windows CI
+
+```powershell
+tools/ci-windows.ps1
+```
+
+The full native MSVC build succeeded, including `editor.exe`. CI exited 1:
+CTest exited 8 with 184/189 passing in 1916.96 seconds. Package creation and
+final package validation were not reached. This is a failed full CI run,
+separate from the successful standalone acceptance above.
+
+| Failed check | Observed diagnostic |
+| --- | --- |
+| solid_face_projection_gpu_tests | `InternalError: interrupted`; required PASS regex absent |
+| viewer_graph_tests | retopo=ON source census 219, expected 217 |
+| editor_registration_census | executable did not finish census within 30 seconds |
+| async_bake_tests | `request_bake returns < 50 ms` assertion failed |
+| windows_package_tests | timed out after 1500.40 seconds |
+
+`full-windows-ci.log` retains the entire native build/test output;
+`full-windows-ctest.xml` retains all 189 individual results and diagnostics.
+`full-windows-result.json` and `full-windows-toolchain.json` record the summary
+and resolved toolchain. No failing test was weakened, skipped or rerun, and no
+engine, central build or packaging source was modified by this task. Their
+sources are unchanged from the starting commit; this does not establish a
+baseline pass/fail verdict for them.
