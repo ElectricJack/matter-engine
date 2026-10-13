@@ -79,9 +79,9 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(LENGTH viewer_sources viewer_count)
         list(LENGTH viewer_sources_unique viewer_unique_count)
         if(MATTER_EXPECT_RETOPO)
-            set(expected_viewer_count 217)
+            set(expected_viewer_count 219)
         else()
-            set(expected_viewer_count 216)
+            set(expected_viewer_count 218)
         endif()
         foreach(required_source IN ITEMS
                 MatterEngine3/src/projected_face_cache.cpp
@@ -184,4 +184,4 @@ foreach(retopo IN ITEMS ON OFF)
     endif()
 endforeach()
 
-message(STATUS "viewer graph preserves 47-source editor, isolated 168+21 headless, and coherent 216/217-source viewer boundaries")
+message(STATUS "viewer graph preserves 47-source editor, isolated 168+21 headless, and coherent 218/219-source viewer boundaries")
