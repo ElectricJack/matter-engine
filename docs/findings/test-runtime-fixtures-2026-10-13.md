@@ -301,3 +301,30 @@ Receipt:/tmp/steady-harbor-final-collision-check/receipt.json;
 trace SHA256:f5eed25f12808cf99e6b15ff15da2d9d9994425629358d98769fd4536129a9b5.
 This focused target result leaves the mandatory full Linux OBJ qualification
 failure and corrected full native allocation/acceptance unresolved.
+
+
+A complete original-producer GNU control now reproduces all three exact
+failures. The held-task base1f4ff089a was exported to a private directory and
+all7876 Git blobs verified before building. The original full Make engine
+archive has215 members, exactly matching the current canonical inventory;
+archive SHA256:dcf1b644d30e0a959a1cb32466cc09c3daf79f2f106684c218d223770f5ae544.
+Original test, headers, world_demo, shared-lib and fixtures were used. The same
+actual Linux Box3D/Ozz/Raylib binaries were held constant and their hashes
+verified unchanged. Five isolated portability fixes were recorded: the two
+Make source-search directories, Flecs POSIX feature macro, hydrology's local
+final-to-final_status identifier rename, and a direct climits include for
+INT_MAX. No exporter/chart/mesh/material logic, numeric flag or guard changed.
+The build resumed after recorded portability failures; aggregate build time
+was411.37s, not just the final99.87s completion step. Original test compile/link
+passed3.67s; runtime failed25.18s. Its complete failure log is byte-identical to
+the original-test/current-archive control, SHA256:
+1dd9dbecc8a5bed06b8227d8a57c43151e273416cf4d95dc9e219f0208fdc479.
+Receipt:/tmp/steady-harbor-original-production-control/receipt.json contains
+source identities, build history, explicit exceptions, commands and artifacts.
+These failures occur with the pre-migration production code plus the recorded
+portability fixes in this GNU environment. Their numerical/compiler/platform
+cause is still unisolated. Existing golden files and mandatory predicates stay
+unchanged; this diagnostic neither qualifies the failing export nor replaces
+full Linux/native acceptance. The consumed supervisor wait confirmed the
+previous test-only control's limitation; no further native allocation has yet
+been received.
