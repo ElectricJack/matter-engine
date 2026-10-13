@@ -225,8 +225,8 @@ sampling reductions are disclosed above.
 
 Supervisor allocation places geometry's canonical native DEFAULT ALL build
 ahead of CORE. CORE follows its completion/source/log/artifact receipt, from
-final frozen sources and parallel1. CORE's one authorized native attempt is
-still unused.
+final frozen sources and parallel1. That initial allocation has now been consumed by the failed46702bcf5 attempt
+documented below; a further allocation is pending.
 
 The b05d60ba4 frozen-source Linux DEFAULT build completed with exit1 in1423.28s
 (total includes the successful real Linux Box3d44.29s). All1216 captured source/
@@ -276,3 +276,18 @@ viewer branch passes GNU syntax-only checking (30.66s); this is not a corrected
 native build receipt. Additional native allocation and full Linux/runtime
 acceptance remain pending. Actual native/Linux CPU registrations both contain
 the same136 test names, with no omission or extra test.
+
+
+The final terrain-ownedf7384de4 collision source is now integrated exactly
+(blob2d9c70b83b38f88454bc8984e5a0af723d6e2470); the registrar already matches
+blob4694f63d7e77fba6e9c39be1ecd858ea66977e7a. The14th guard uses the real
+production worker without a build callback, requiring nonempty encoded tile
+and manifest bytes, Box3D installation, identical cold/warm collision identity,
+and reuse of both immutable artifact handles. All13 existing lifecycle/race
+groups remain. The owned payload adds no production TU or shared build change.
+The read-lease adapter and fixture_io hashes exactly match the owner's
+independently qualified delivery. Their actual Make build passes and focused
+fixture_io/collision14/demand9 executions pass; the two-test CTest run takes0.99s.
+Receipt:/tmp/eager-dune-79-retained-read-handoff.json. Those are peer-scoped
+results, not full CORE Linux/native acceptance. OS persistence/IO-error coverage
+and the earlier fixture reductions remain disclosed; no guard is relaxed here.

@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <functional>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -369,6 +370,63 @@ bool status_snapshot_is_consistent(const matter::TerrainCollisionStatus& status)
             return !status.failure_code.empty() && !status.failure_message.empty();
     }
     return false;
+}
+
+void test_real_worker_fixture_cache_cold_and_warm() {
+    std::printf("-- real_worker_fixture_cache_cold_and_warm\n");
+    SessionFixture fixture("real_cache", true, 0.55f, "16");
+    if (!fixture.session) return;
+    // No build callback: exercise the production mesher, artifact codec,
+    // worker-selected fixture storage, and Box3D installation together.
+    fixture.session->request_bake();
+    TerminalEvents cold_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return cold_events.finished == 1 || cold_events.errors != 0;
+          }, cold_events), "real cold collision build reaches a terminal event");
+    const auto cold = fixture.session->terrain_collision_status();
+    const auto cold_physics = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    const auto manifest = manifest_path(
+        fixture.root / ".cache" / "TerrainSession", cold.generation_key);
+    const auto manifest_bytes = fixture.cache->open(manifest.generic_string());
+    CHECK(cold_events.finished == 1 && cold_events.errors == 0 &&
+              cold.state == matter::TerrainCollisionState::Installed &&
+              cold.triangle_count != 0 && cold_physics.shape_count == 1u &&
+              cold_physics.installation_key == cold.generation_key &&
+              manifest_bytes && !manifest_bytes->empty(),
+          "real worker publishes encoded collision bytes in the retained memory cache before Ready");
+
+    const auto artifact_root =
+        (fixture.root / ".cache" / "TerrainSession" /
+         "terrain_collision" / "v1").generic_string() + "/";
+    std::map<std::string, matter::CacheByteStorage::ReadHandle> artifacts;
+    for (const auto& entry : fixture.cache->entries()) {
+        if (entry.first.compare(0, artifact_root.size(), artifact_root) == 0)
+            artifacts.emplace(entry);
+    }
+    CHECK(artifacts.size() == 2u,
+          "one real tile and its generation manifest reside in the fixture byte store");
+
+    fixture.reload();
+    TerminalEvents warm_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return warm_events.finished == 1 || warm_events.errors != 0;
+          }, warm_events), "real warm collision reload reaches a terminal event");
+    const auto warm = fixture.session->terrain_collision_status();
+    const auto warm_physics = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(warm_events.finished == 1 && warm_events.errors == 0 &&
+              warm.state == matter::TerrainCollisionState::Installed &&
+              warm.generation_key == cold.generation_key &&
+              warm.geometry_key == cold.geometry_key &&
+              warm.triangle_count == cold.triangle_count &&
+              warm_physics.installation_key == cold_physics.installation_key &&
+              warm_physics.shape_count == cold_physics.shape_count,
+          "snapshot reload retains the real cache and restores the same accepted collision identity");
+    for (const auto& entry : artifacts) {
+        CHECK(fixture.cache->open(entry.first) == entry.second,
+              "warm collision validation reuses each immutable artifact without republishing it");
+    }
 }
 
 void test_worker_build_app_install_ready_gate_and_identity() {
@@ -1190,6 +1248,7 @@ void test_cancelled_build_publishes_no_manifest_or_physics() {
 
 int main() {
     std::printf("== terrain_collision_session_tests ==\n");
+    test_real_worker_fixture_cache_cold_and_warm();
     test_worker_build_app_install_ready_gate_and_identity();
     test_omitted_collision_clears_before_ready();
     test_builder_failure_reports_once_and_never_ready();
