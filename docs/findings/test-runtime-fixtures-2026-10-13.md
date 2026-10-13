@@ -291,3 +291,13 @@ fixture_io/collision14/demand9 executions pass; the two-test CTest run takes0.99
 Receipt:/tmp/eager-dune-79-retained-read-handoff.json. Those are peer-scoped
 results, not full CORE Linux/native acceptance. OS persistence/IO-error coverage
 and the earlier fixture reductions remain disclosed; no guard is relaxed here.
+
+The integrated990c19653 source passed the actual canonical Linux collision
+CMake target (real Make archive rebuilt,104.55s), then all14 groups in0.843s
+from an empty working directory. Every runtime path call was reviewed: one
+executable execve and six system-loader calls only; no fixture/source/asset/
+cache/evidence IO. Tracked source remained clean and unchanged across the run.
+Receipt:/tmp/steady-harbor-final-collision-check/receipt.json;
+trace SHA256:f5eed25f12808cf99e6b15ff15da2d9d9994425629358d98769fd4536129a9b5.
+This focused target result leaves the mandatory full Linux OBJ qualification
+failure and corrected full native allocation/acceptance unresolved.
