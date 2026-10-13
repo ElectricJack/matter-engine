@@ -168,7 +168,10 @@ executables compile. These gates still inspect the real production sources and
 build evidence; they are excluded from runtime CTest timing. Runtime fixtures
 generate their assets and JSON in memory, retain full numerical/pixel/fence
 checks, and write no shared image evidence. CPU tests need no source-tree working
-directory. The legacy engine Make targets retain their source qualification.
+directory. The two shared cloud-layer/volumetric-quality suites use the same
+qualifier and complete input manifest in graphics CMake, native core CMake and
+direct Make targets (`run-cloud-layers`, `run-volumetric-quality`). Their runtime
+binaries never scan sources; no compile define can disable qualification.
 Public headers compile individually. The audit inspects actual compiled targets,
 dependencies, sources, linker fragments and compiler-discovered headers with
 procedural/terrain/host targets absent. Only three exact legacy math source/header
