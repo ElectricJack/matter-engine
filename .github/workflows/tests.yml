@@ -2,11 +2,14 @@ name: Native Windows
 on:
   push:
     branches: ['aq/**']
-  pull_request:
-    branches: [dev, staging, main]
-    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
   workflow_call:
+# One build per commit: pull requests from aq/** branches are gated by the
+# push run on the same head SHA, so a pull_request trigger only doubled the
+# load on the single Windows runner. A newer push supersedes an older build.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/aq/') }}
 permissions:
   contents: read
 jobs:
