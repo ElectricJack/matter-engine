@@ -1,5 +1,4 @@
 #include <matter/terrain_coordinator/coordinator.h>
-#include <algorithm>
 #include <cmath>
 #include <map>
 #include <stdexcept>
