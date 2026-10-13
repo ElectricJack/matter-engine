@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../libs/MatterGraphics/include/matter/graphics/dlss_mode.h"
+#include "fixture_io.h"
 
 // MatterEngine3/include/matter/world_session.h
 //
@@ -138,6 +139,7 @@ struct WorldDesc {
     const char* engine_shared_lib_dir = nullptr;
 
     bool enable_live_edit = false;  // watch schemas/shared-lib dirs, cone-rebake on save (Linux inotify; no-op elsewhere)
+    std::shared_ptr<const WorldFixtureIO> fixture_io;
 };
 
 // Which renderer to run for a frame (RenderOptions::path). GpuDriven is the

@@ -32,6 +32,7 @@
 // `src/tileset_phase.cpp`.
 #include "part_graph_snapshot.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
+#include "matter/fixture_io.h"
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -260,8 +261,10 @@ class FileModuleResolver : public ModuleResolver {
 public:
     // Single-root convenience: the flat layout, and every test/tool that has
     // exactly one object tier (possibly containing grouping folders).
-    FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir);
-    FileModuleResolver(script_host::ScriptHost& host, std::vector<std::string> roots);
+    FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir,
+                       std::shared_ptr<const matter::SourceSnapshot> sources = {});
+    FileModuleResolver(script_host::ScriptHost& host, std::vector<std::string> roots,
+                       std::shared_ptr<const matter::SourceSnapshot> sources = {});
     bool load_source(const std::string& module, std::string& source_out) override;
     bool get_requires(const std::string& module, const Params& params,
                       std::vector<ChildRequest>& children_out) override;
@@ -275,13 +278,15 @@ public:
 private:
     script_host::ScriptHost&  host_;
     std::vector<std::string>  roots_;
+    std::shared_ptr<const matter::SourceSnapshot> sources_;
 };
 
 // Checks parts/<hash>.part existence (SP-1 cache_path_resolved) and delegates hashing/baking to
 // SP-2 ScriptHost (resolve_hash + bake_source). SP-2 is the hash authority (master C-2).
 class HostBaker : public Baker {
 public:
-    HostBaker(script_host::ScriptHost& host, std::string parts_dir);
+    HostBaker(script_host::ScriptHost& host, std::string parts_dir,
+              std::shared_ptr<matter::CacheByteStorage> storage = {});
     uint64_t resolve_hash(const std::string& source, const Params& params,
                           const std::vector<uint64_t>& child_hashes,
                           std::string* merged_params_out) override;
@@ -370,6 +375,7 @@ public:
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;
+    std::shared_ptr<matter::CacheByteStorage> storage_;
 
     // Task 2: transient-module state
     const std::set<std::string>* transient_modules_ = nullptr;
