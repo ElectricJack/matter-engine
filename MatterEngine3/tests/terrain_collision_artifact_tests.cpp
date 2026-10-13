@@ -1526,6 +1526,40 @@ void test_interrupted_temporary_file_never_becomes_addressable() {
           "only a complete validated generation receives the canonical manifest path");
 }
 
+void test_nested_builds_restore_and_isolate_storage() {
+    TestField field = make_field(kPlaneField);
+    const CanonicalDefinition definition = definition_for(field);
+    TerrainCollisionMemoryStorage outer_store, inner_store;
+    const std::filesystem::path root("memory/nested-stores");
+    TerrainCollisionCandidate inner{}, outer{};
+    std::string error;
+    bool nested = false;
+    matter::terrain_collision::detail::BuildTestHooks hooks;
+    hooks.storage = &outer_store;
+    hooks.before_publication_commit = [&](auto point) {
+        if (nested || point != matter::terrain_collision::detail::
+                PublicationCommitPoint::TileNoReplace) return;
+        nested = true;
+        matter::terrain_collision::detail::BuildTestHooks inner_hooks;
+        inner_hooks.storage = &inner_store;
+        std::string inner_error;
+        CHECK(matter::terrain_collision::detail::load_or_build_candidate_with_test_hooks(
+                  field.runtime, definition, root, {}, inner_hooks, inner, inner_error),
+              inner_error.c_str());
+    };
+    CHECK(matter::terrain_collision::detail::load_or_build_candidate_with_test_hooks(
+              field.runtime, definition, root, {}, hooks, outer, error), error.c_str());
+    CHECK(nested && same_tiles(inner, outer),
+          "nested builds use separate stores for the same logical cache root");
+    const auto manifest = manifest_path(root, definition.installation_key);
+    CHECK(matter::terrain_collision::detail::validate_generation_manifest(
+              manifest, definition, outer, error, &outer_store),
+          "outer publication resumes with its original store after the callback");
+    CHECK(matter::terrain_collision::detail::validate_generation_manifest(
+              manifest, definition, inner, error, &inner_store),
+          "inner publication retains its independently validated manifest");
+}
+
 }  // namespace
 
 int main() {
@@ -1550,5 +1584,6 @@ int main() {
 #endif
     test_cancellation_precedes_validated_winner_acceptance();
     test_interrupted_temporary_file_never_becomes_addressable();
+    test_nested_builds_restore_and_isolate_storage();
     return check_summary();
 }
