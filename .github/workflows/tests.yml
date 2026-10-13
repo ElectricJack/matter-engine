@@ -10,6 +10,8 @@ on:
 # AQ's cutover preview requires explicit PR targets. Same-repository aq/**
 # PRs use their push checks; other PRs run real checks below. This avoids
 # duplicate builds, and a newer aq/** push supersedes an older build.
+# Duplicate PR jobs have distinct names so their skipped results cannot
+# replace the required push checks in ordinary completion or merge gates.
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/aq/') }}
@@ -17,7 +19,7 @@ permissions:
   contents: read
 jobs:
   linux-foundations:
-    name: Linux foundation build and tests
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Linux (push checks apply)' || 'Linux foundation build and tests' }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || !startsWith(github.head_ref, 'aq/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -64,7 +66,7 @@ jobs:
           echo "needed=$needed" >> "$GITHUB_OUTPUT"
           echo "Native Windows build needed: $needed"
   native:
-    name: Native Windows build and tests
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Windows (push checks apply)' || 'Native Windows build and tests' }}
     needs: native-scope
     if: needs.native-scope.outputs.needed == 'true'
     runs-on: [self-hosted, Windows, X64, matter-engine-msvc]
