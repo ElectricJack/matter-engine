@@ -681,12 +681,12 @@ bool read_posix_descriptor(int file,
         offset += static_cast<std::size_t>(read);
     }
     std::uint8_t trailing = 0u;
-    struct stat final{};
-    if (::read(file, &trailing, 1u) != 0 || ::fstat(file, &final) != 0 ||
-        initial.st_dev != final.st_dev || initial.st_ino != final.st_ino ||
-        initial.st_size != final.st_size ||
-        initial.st_mtim.tv_sec != final.st_mtim.tv_sec ||
-        initial.st_mtim.tv_nsec != final.st_mtim.tv_nsec)
+    struct stat final_stat{};
+    if (::read(file, &trailing, 1u) != 0 || ::fstat(file, &final_stat) != 0 ||
+        initial.st_dev != final_stat.st_dev || initial.st_ino != final_stat.st_ino ||
+        initial.st_size != final_stat.st_size ||
+        initial.st_mtim.tv_sec != final_stat.st_mtim.tv_sec ||
+        initial.st_mtim.tv_nsec != final_stat.st_mtim.tv_nsec)
         return fail(error, "hydrology artifact changed while being read");
     return true;
 }
