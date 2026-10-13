@@ -343,3 +343,58 @@ reconciled against the core owner's final qualified graph/OID. CORE has
 acknowledged the failed native completion receipt and owns the next allocated
 native turn; this component still awaits its own retry allocation and a
 passing full native qualification.
+
+
+### Final reconciliation and git-first train disposition (2026-10-13)
+
+The core owner reconciled the missing five CPU cases and two compute cases
+in its own source graph at private checkpoint
+`ad635e0b8482c92842faafe127a0e66d4a83495f`. The five CPU test sources and
+GeometryCompute test/build policy sources byte-match this slice's delivered
+implementation. Its common CPU cases link the real engine/surface libraries
+and GNU raylib support; the two actual isolated compute graphs preserve
+backend macros, shaders, embedding, mandatory default ALL qualifications and
+runtime-target prerequisites. Common names are `matter_geometry_compute_off`
+and `matter_geometry_compute_on`; ON has GPU labeling and the `matter_gpu`
+resource lock. No peer binaries or private core source were imported here.
+
+The core's scoped seven-case parallel CTest/file trace passed in 12.607s;
+its clean-checkpoint target build passed in 8.946s and reran both compute
+qualifiers. Final source/macro/closure/name/tier receipts are in
+`/tmp/steady-harbor-geometry-supplement-check/receipt.json`; this worker's
+read-only reconciliation is
+`/tmp/clear-stone-99-core-supplement-reconciliation-ad635.json`.
+The supervisor independently verified the receipts in
+`msg-7848536a665742cbb919915dce998c12`. The 143-case inventory (142 CPU,
+one GPU) is registration evidence, not a passing aggregate suite. Full core
+GNU acceptance still has three mandatory OBJ golden failures, also reproduced
+with the original production archive; no goldens or predicates were changed.
+The private atlas tie-order experiment is not integrated or claimed as a fix.
+
+A later allocated exact-TU diagnostic was stopped before either compiler
+launch when the final Win32 census found concurrent CI work. Copied-original
+PDB and fresh-isolated PDB outcomes are both **NOT_RUN**. The original
+29,724,672-byte PDB still hashes to
+`a92c7586a8fce4752ebaf62f9c420b9aaac920981b1236d6bbe68763fd8dbf88`,
+and all 17 retained partial artifact hashes remain unchanged. Finalized
+prelaunch evidence is
+`/tmp/clear-stone-99-pdb-probe-prelaunch-blocker.json` (SHA-256
+`d353ebe2418aadf27151c8b138f8ab419589f1a72cdfb50a7a9eeaff2a479bc9`).
+The original preparation is preserved; the corrected isolated-output wrapper
+and exact command template remain under
+`C:/Users/webde/AppData/Local/Temp/clear-stone-99-native/`.
+No compiler/server was killed and no debug or assertion option was weakened.
+Neither this deferral nor any other branch's CI success is native acceptance
+of this slice.
+
+Supervisor message `msg-63181284a5c6466a8b26e2051352121d` applies Jack's
+2026-10-13 git-first train policy: complete the pushed branch using passing
+Linux-side verification, cancel the durable CI wait, and let the train run
+full Windows validation once per batch, with a repair task if it fails.
+That explicit completion instruction supersedes the earlier requirement to
+wait for this slice's passing full native build/shared aggregate delivery.
+The durable wait was cancelled; no new native compile was launched.
+Completion records the existing passing Linux source/build/runtime checks,
+the measured slice timings and every coverage weakening above. Full native
+acceptance and the aggregate under-one-minute goal remain unproven here and
+belong to subsequent batch/common-suite validation.
