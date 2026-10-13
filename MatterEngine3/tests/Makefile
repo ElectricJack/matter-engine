@@ -477,6 +477,10 @@ FLAVOR_qjsc_CC        := gcc
 FLAVOR_qjsc_FLAGS     := -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 FLAVOR_flecsc_CC      := gcc
 FLAVOR_flecsc_FLAGS   := -std=c17 -O2 -I$(FLECS_DIR)
+ifeq ($(UNAME_S),Linux)
+# Flecs uses POSIX networking and clocks; strict C17 hides their declarations.
+FLAVOR_flecsc_FLAGS   += -D_POSIX_C_SOURCE=200809L
+endif
 FLAVOR_physicsc_CC    := gcc
 FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
 
