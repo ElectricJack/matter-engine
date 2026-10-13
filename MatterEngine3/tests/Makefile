@@ -386,6 +386,11 @@ QJS_C    = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
 
 BOX3D_DIR = ../../third_party/box3d
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
+ifeq ($(UNAME_S),Linux)
+# Keep Linux objects separate from the checkout's possible MinGW archive.
+BOX3D_LINUX_BUILD = build/box3d-linux
+BOX3D_LIB = $(BOX3D_LINUX_BUILD)/src/libbox3d.a
+endif
 
 # Autoremesher_core detection (shared by the retopo integration test AND the GPU tests).
 # The archive is self-contained on every platform -- its TBB replacement is
@@ -1642,7 +1647,36 @@ GPU_ANIMATION_RUNTIME_CPP = \
     ../src/animation/anim_asset.cpp \
     ../src/animation/anim_bundle.cpp \
     ../src/render/indexed_part_geometry.cpp
+# Actual CPU definitions referenced by LocalProvider and PartStore. These stay
+# in their owning projects and are compiled with the existing gpu flavor.
+GPU_PROVIDER_CPU_CPP = $(SCRIPT_SOLID_COMMON_CPP) \
+    ../src/projected_face_cache.cpp ../src/part_surface.cpp \
+    ../src/brick_bond_detail.cpp ../src/brick_bond_atlas.cpp \
+    ../src/geometry/geometry_asset.cpp ../src/geometry/geometry_pages.cpp \
+    ../src/geometry/geometry_compiler.cpp ../src/geometry/geometry_cut.cpp \
+    ../src/sparse_voxel_bake.cpp ../src/sparse_voxel_hierarchy.cpp \
+    ../src/surface_proxy.cpp \
+    ../src/ecs/character_systems.cpp \
+    ../src/hydrology/authored_fluid_colliders.cpp \
+    ../src/hydrology/river_section_graph.cpp \
+    ../src/hydrology/river_section_coordinator.cpp \
+    ../src/hydrology/spillway_handoff.cpp ../src/hydrology/river_runtime.cpp \
+    ../src/hydrology/hydrology_network_artifact.cpp \
+    ../src/hydrology/hydrology_handoff_products.cpp \
+    ../src/hydrology/river_presentation_field.cpp \
+    ../src/hydrology/water_mesh_animation_capture.cpp \
+    ../src/hydrology/water_mesh_animation.cpp \
+    ../src/hydrology/water_mesh_animation_artifact.cpp \
+    ../src/hydrology/water_boundary_animation_source.cpp \
+    ../../libs/AssetStoreLib/src/store_hash.cpp \
+    ../../libs/AssetStoreLib/src/store_os.cpp \
+    ../../libs/AssetStoreLib/src/blob_store.cpp \
+    ../../libs/AssetStoreLib/src/ref_table.cpp \
+    ../../libs/AssetStoreLib/src/asset_pages.cpp
+GPU_MSL_C += $(MEMLIB)/src/mem_arena.c $(MEMLIB)/src/mem_bank.c
+
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
+              $(GPU_PROVIDER_CPU_CPP) \
               $(GPU_ANIMATION_RUNTIME_CPP) \
               ../../libs/ProfileLib/src/profile.cpp \
               ../src/render/vk_animation_bounds.cpp \
@@ -2764,7 +2798,17 @@ build/tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp
 	    $(BOX3D_DIR)/libbox3d.a -lm
 
 $(BOX3D_LIB):
+ifeq ($(UNAME_S),Linux)
+	cmake -S $(BOX3D_DIR) -B $(BOX3D_LINUX_BUILD) -DCMAKE_BUILD_TYPE=Release \
+	      -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DBUILD_SHARED_LIBS=OFF \
+	      -DBOX3D_SAMPLES=OFF -DBOX3D_UNIT_TESTS=OFF -DBOX3D_BENCHMARKS=OFF \
+	      -DBOX3D_DOCS=OFF -DBOX3D_PROFILE=OFF
+	cmake --build $(BOX3D_LINUX_BUILD) --target box3d --parallel 2
+else
 	$(MAKE) -C $(BOX3D_DIR)
+endif
+
+terrain-collision-session-tests demand-bake-tests: $(BOX3D_LIB)
 
 run-tilesetphysics: build/tileset_physics_tests
 	./build/tileset_physics_tests
@@ -3062,7 +3106,7 @@ run-asyncbake: async-bake-tests
 terrain-collision-session-tests: $(call obj_of,gpu,terrain_collision_session_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,terrain_collision_session_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/terrain_collision_session_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-terrain-collision-session: terrain-collision-session-tests
 	./build/terrain_collision_session_tests
@@ -3071,7 +3115,7 @@ run-terrain-collision-session: terrain-collision-session-tests
 demand-bake-tests: $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/demand_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-demandbake: demand-bake-tests
 	./build/demand_bake_tests
