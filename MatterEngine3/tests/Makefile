@@ -2483,6 +2483,18 @@ run-terrainverb: $(TERRAINVERB_TARGET)
 	./$(TERRAINVERB_TARGET)
 
 # Phase C Task 7 — WorldSector.js + world query verbs.
+TERRAIN_TEST_MODULE_INPUTS = \
+    ../../projects/world_demo/objects/templates/WorldSector.js \
+    ../../projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js \
+    ../../projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js \
+    $(wildcard ../../projects/world_demo/shared-lib/*.js ../shared-lib/*.js)
+
+build/terrain_test_modules.h: embed_terrain_modules.py $(TERRAIN_TEST_MODULE_INPUTS) | build
+	python3 embed_terrain_modules.py --repo-root ../.. --output $@
+
+$(call obj_of,sh,sector_bake_tests.cpp): build/terrain_test_modules.h
+$(call obj_of,sh,sector_bake_tests.cpp): FLAVOR_sh_FLAGS += -Ibuild
+
 $(SECTORBAKE_TARGET): $(SECTORBAKE_OBJS)
 	$(CC) $(SECTORBAKE_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)

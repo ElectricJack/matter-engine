@@ -8,8 +8,9 @@ Build the eight Make targets listed in MAKE_TESTS, then run:
 Optionally configure/build libs/TerrainGeneration separately with
 MATTER_TERRAIN_BUILD_EXAMPLES=OFF and pass --standalone-dir BUILD_DIR.
 Only its memory fixtures are registered; package reload and dependency audits
-read files and are deliberately excluded. This harness does not qualify the
-whole engine, collision sessions, demand-cache tests, or filesystem behavior.
+read files and are deliberately excluded. Add converted scripting fixtures with
+--script-fixture TARGET after building and checking their runtime file trace.
+This harness does not qualify the whole engine or filesystem behavior.
 """
 
 import argparse
@@ -27,6 +28,8 @@ MAKE_TESTS = (
     "terrain_collision_artifact_tests",
 )
 
+SCRIPT_FIXTURES = ("terrain_verb_tests", "sector_bake_tests", "demand_bake_tests")
+
 
 def quote(value):
     """CMake bracket arguments preserve spaces, semicolons and backslashes."""
@@ -43,8 +46,12 @@ def main():
     parser.add_argument("--build-dir", type=Path,
                         default=Path(__file__).resolve().parent / "build")
     parser.add_argument("--standalone-dir", type=Path)
+    parser.add_argument("--script-fixture", action="append", default=[],
+                        choices=SCRIPT_FIXTURES)
     args = parser.parse_args()
     cases = [(name, args.build_dir / name, (), ()) for name in MAKE_TESTS]
+    cases += [(name, args.build_dir / name, (), ())
+              for name in dict.fromkeys(args.script_fixture)]
     if args.standalone_dir:
         root = args.standalone_dir
         cases += [
