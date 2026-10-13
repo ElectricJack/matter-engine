@@ -8,7 +8,12 @@ import sys
 
 
 def qualify(repository):
+    manifest = Path(__file__).with_name("environment_qualification.inputs")
+    inputs = set(manifest.read_text(encoding="utf-8").splitlines())
+
     def read(relative):
+        if relative not in inputs:
+            raise ValueError("Qualification source missing from build dependencies: " + relative)
         return (repository / relative).read_text(encoding="utf-8")
 
     def require(condition, description):
