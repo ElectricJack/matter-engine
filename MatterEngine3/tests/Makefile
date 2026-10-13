@@ -1856,7 +1856,7 @@ gpu_CPP_SRCS := $(sort \
     $(GPU_ALL_CPP))
 
 # C-source flavors. Union across binaries that use them.
-mslc_C_SRCS := $(sort $(COMMON_MSL_C))
+mslc_C_SRCS := $(sort $(COMMON_MSL_C) $(GPU_MSL_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
 flecsc_C_SRCS := $(sort $(ECS_C) $(ANIMATION_RIGID_C))
 physicsc_C_SRCS := $(sort $(PHYSICS_C))
