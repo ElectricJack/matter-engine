@@ -1,3 +1,4 @@
+#include "part_bundle.h"
 #include "asset_export.h"
 // MatterEngine3/src/matter_engine.cpp
 //
@@ -3425,6 +3426,8 @@ void WorldSession::Impl::worker_loop() {
 // (interleaved with cancellation checks) -> finalize job -> BakeFinished.
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload) {
+    const auto fixture_io = cfg.fixture_io;
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     auto& token = cmd.token;
     auto is_cancelled = [token] { return token && token->is_cancelled(); };
 
@@ -3664,11 +3667,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             cfg.scene_objects_dir,
             cfg.object_sources_dir(),
             cfg.project_shared_lib_dir,
-            cfg.engine_shared_lib_dir);
+            cfg.engine_shared_lib_dir,
+            cfg.fixture_io ? cfg.fixture_io->sources.get() : nullptr);
         if (rc_cache_key != 0) {
             resolve_cache::ResolveCachePayload rc_payload;
             if (resolve_cache::load(cfg.cache_root, cfg.world_name,
-                                    rc_cache_key, rc_payload)) {
+                                    rc_cache_key, rc_payload,
+                                    cfg.fixture_io ? cfg.fixture_io->cache.get() : nullptr)) {
                 // Cache header valid — try to restore provider state.
                 std::string rc_err;
                 if (provider->restore_from_cache(rc_payload.snapshot,
@@ -3925,7 +3930,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_save.root_hashes = provider->install_result().root_hashes;
         rc_save.authored_world = provider->authored_world_cache();
         if (!resolve_cache::save(cfg.cache_root, cfg.world_name,
-                                 rc_cache_key, rc_save)) {
+                                 rc_cache_key, rc_save,
+                                 cfg.fixture_io ? cfg.fixture_io->cache.get() : nullptr)) {
             MATTER_LOGW("resolve", "resolve cache: save failed (non-fatal)\n");
         } else {
             MATTER_LOGI("resolve", "resolve cache: saved key %016llx\n",
@@ -4318,6 +4324,8 @@ void WorldSession::Impl::publish_pipeline(
     viewer::WorldManifest new_manifest,
     PublishPipelineParams p)
 {
+    const auto fixture_io = cfg.fixture_io;
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     static_assert(
         std::is_nothrow_swappable_v<matter::TerrainCollisionStatus>,
         "collision status commit must remain non-throwing");
@@ -4741,7 +4749,8 @@ void WorldSession::Impl::publish_pipeline(
         vk_temporal.invalidate();
 #endif
 
-        reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root);
+        reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root,
+            cfg.fixture_io ? cfg.fixture_io->cache : nullptr);
 #ifdef MATTER_VULKAN_VIEWER
         reset_out->new_store->set_geometry_pages_enabled(vk_geometry_pages_enabled &&
             engine->render_device && (engine->render_device->ray_tracing_available() ||
@@ -5604,6 +5613,8 @@ bool WorldSession::Impl::install_world(
     bool& terrain_collision_failed,
     std::string& err)
 {
+    const auto fixture_io = cfg.fixture_io;
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     terrain_collision_failed = false;
     const std::string& wmod = provider->world_module();
     if (wmod.empty()) { err = "install_world: no world module"; return false; }
@@ -5612,15 +5623,16 @@ bool WorldSession::Impl::install_world(
     std::string world_source;
     {
         const std::string world_js = cfg.world_path;
-        std::ifstream in(world_js, std::ios::binary);
-        if (!in) { err = "install_world: cannot read " + world_js; return false; }
-        std::ostringstream ss; ss << in.rdbuf();
-        world_source = ss.str();
+        if (!cfg.read_source(world_js, world_source)) {
+            err = "install_world: cannot read " + world_js;
+            return false;
+        }
     }
 
     // 2. eval_world with the root_params_json override.
     script_host::ScriptHost host;
-    host.set_shared_lib_roots(provider->shared_lib_roots());
+    host.set_shared_lib_roots(cfg.fixture_io && cfg.fixture_io->sources
+        ? std::vector<std::string>{} : provider->shared_lib_roots());
     std::string params_json = cfg.root_params_json.empty() ? "{}" : cfg.root_params_json;
     script_host::WorldEvalResult r = host.eval_world(world_source, params_json);
     if (!r.ok) { err = "install_world: eval_world failed: " + r.message; return false; }
@@ -5995,18 +6007,16 @@ bool WorldSession::Impl::install_world(
     //    sectors differently without either having to know the other exists.
     {
         const std::string sector_js = cfg.resolve_object_path("WorldSector");
-        std::ifstream in(sector_js.empty() ? std::string() : sector_js,
-                         std::ios::binary);
-        if (sector_js.empty() || !in) {
+        if (sector_js.empty() || !cfg.read_source(sector_js, world_sector_source)) {
             err = "install_world: cannot read WorldSector.js in any object root";
             for (const std::string& root : cfg.object_roots())
                 err += " [" + root + "]";
             return false;
         }
-        std::ostringstream ss; ss << in.rdbuf();
-        world_sector_source = ss.str();
+
         world_sector_identity_host = std::make_shared<script_host::ScriptHost>();
-        world_sector_identity_host->set_shared_lib_roots(provider->shared_lib_roots());
+        world_sector_identity_host->set_shared_lib_roots(cfg.fixture_io && cfg.fixture_io->sources
+            ? std::vector<std::string>{} : provider->shared_lib_roots());
     }
 
     // 8. Asset install: eval_requires on WorldSector to discover its child variants,
@@ -6080,9 +6090,7 @@ bool WorldSession::Impl::install_world(
         std::string source;
         {
             const std::string child_js = cfg.resolve_object_path(module);
-            std::ifstream in(child_js.empty() ? std::string() : child_js,
-                             std::ios::binary);
-            if (child_js.empty() || !in) {
+            if (child_js.empty() || !cfg.read_source(child_js, source)) {
                 // Name the module, not a composed path: with a search path there
                 // is no single path that "should" have existed, and printing one
                 // root's guess sent readers looking in the wrong tier.
@@ -6097,8 +6105,7 @@ bool WorldSession::Impl::install_world(
                 emit_bake(std::move(ev));
                 return false;
             }
-            std::ostringstream ss; ss << in.rdbuf();
-            source = ss.str();
+
         }
 
         // Recurse into this variant's own requires first (post-order bake).
@@ -7150,6 +7157,8 @@ bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
                                          const VtSurfaceClassifier* surface,
                                          float texels_per_meter,
                                          viewer::VkScenePart& out) {
+    const auto fixture_io = cfg.fixture_io;
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     out = viewer::VkScenePart{};
     out.part_hash = part_hash;
     const size_t tris = mesh.triangle_count();
@@ -9375,6 +9384,8 @@ void WorldSession::Impl::bake_and_stage_sector(
     const streaming::detail::TaggedRequest& request,
     size_t completion_index,
     const std::shared_ptr<viewer::LocalProvider>& provider_ref) {
+    const auto fixture_io = cfg.fixture_io;
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     struct TrackedRequestGuard {
         Impl* owner = nullptr;
         size_t index = kNoPublicationCompletion;
@@ -10777,6 +10788,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
 // rendering (last-good artifacts intact).
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
+    const auto fixture_io = cfg.fixture_io;
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     auto& token = cmd.token;
     auto is_cancelled = [token] { return token && token->is_cancelled(); };
 
@@ -11255,11 +11268,11 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
             desc.project_dir, desc.world_name,
             desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "", [] {
                 return std::make_shared<hydrology::PhysxRuntime>();
-            });
+            }, desc.fixture_io);
 #else
         simpl->cfg = viewer::make_engine_local_provider_config(
             desc.project_dir, desc.world_name,
-            desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
+            desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "", {}, desc.fixture_io);
 #endif
 #if defined(MATTER_VULKAN_VIEWER) && defined(_WIN32)
         if (impl_->render_device) {
@@ -11293,7 +11306,11 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
         bool any_object_root = false;
         for (const std::string& root : simpl->cfg.object_roots()) {
             ec.clear();
-            if (fs::is_directory(root, ec)) { any_object_root = true; break; }
+            const auto sources = desc.fixture_io ? desc.fixture_io->sources : nullptr;
+            if (sources ? sources->is_directory(root) : fs::is_directory(root, ec)) {
+                any_object_root = true;
+                break;
+            }
         }
         if (!any_object_root) {
             err = "open_world: no object directory found for world '" +
@@ -11303,7 +11320,9 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
             return nullptr;
         }
         ec.clear();
-        if (!fs::is_regular_file(simpl->cfg.world_path, ec)) {
+        const auto sources = desc.fixture_io ? desc.fixture_io->sources : nullptr;
+        if (!(sources ? sources->exists(simpl->cfg.world_path)
+                      : fs::is_regular_file(simpl->cfg.world_path, ec))) {
             err = "open_world: world source not found: " + simpl->cfg.world_path;
             return nullptr;
         }

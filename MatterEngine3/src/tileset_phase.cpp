@@ -34,6 +34,7 @@
 // in tileset_phase.h.
 
 #include "tileset_phase.h"
+#include "part_bundle.h"
 
 #ifdef MATTER_HAVE_SCRIPT_HOST
 
@@ -51,7 +52,9 @@
 
 namespace tileset {
 
-static bool read_file_str(const std::string& path, std::string& out) {
+static bool read_file_str(const std::string& path, std::string& out,
+                          const matter::SourceSnapshot* sources) {
+    if (sources) return sources->read(path, out);
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
     std::ostringstream ss; ss << f.rdbuf();
@@ -63,13 +66,14 @@ static bool read_file_str(const std::string& path, std::string& out) {
 // as FileModuleResolver, so the tileset root and the children installed below
 // always come from the same tier.
 static std::string find_object_source(const std::vector<std::string>& object_roots,
-                                      const std::string& module) {
+                                      const std::string& module,
+                                      const matter::SourceSnapshot* sources) {
     std::error_code ec;
     for (const std::string& root : object_roots) {
         const std::string path =
             (std::filesystem::path(root) / (module + ".js")).string();
         ec.clear();
-        if (std::filesystem::is_regular_file(path, ec)) return path;
+        if (sources ? sources->exists(path) : std::filesystem::is_regular_file(path, ec)) return path;
     }
     return {};
 }
@@ -97,18 +101,23 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_tiers,
                                    const std::string& parts_cache_dir,
                                    SettledTorus& out, std::string& err,
                                    const std::vector<std::string>& shared_lib_roots,
-                                   std::vector<uint64_t>* out_sorted_child_hashes = nullptr)
+                                   std::vector<uint64_t>* out_sorted_child_hashes,
+                                   std::shared_ptr<const matter::WorldFixtureIO> fixture_io)
 {
-    const auto object_roots = matter::project_layout::object_roots(object_tiers);
+    const auto sources = fixture_io ? fixture_io->sources : nullptr;
+    const auto storage = fixture_io ? fixture_io->cache : nullptr;
+    part_bundle::ScopedStorage cache_scope(storage);
+    const auto object_roots = sources ? sources->object_roots(object_tiers)
+        : matter::project_layout::object_roots(object_tiers);
     // -----------------------------------------------------------------------
     // 1. Load the tileset root's source.
     //    The root is NOT a Part (no .part output) — we only read its source to
     //    discover children and evaluate the tileset spec.
     // -----------------------------------------------------------------------
-    const std::string root_path = find_object_source(object_roots, root_module);
+    const std::string root_path = find_object_source(object_roots, root_module, sources.get());
 
     std::string root_source;
-    if (root_path.empty() || !read_file_str(root_path, root_source)) {
+    if (root_path.empty() || !read_file_str(root_path, root_source, sources.get())) {
         err = "tileset_phase: cannot read root module source for '" + root_module +
               "' in any object root";
         for (const std::string& root : object_roots) err += " [" + root + "]";
@@ -124,7 +133,7 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_tiers,
     // (e.g. Pebble.js imports shared-lib/rng) can resolve their dependencies.
     // An empty shared_lib_root is a no-op (tileset children with no shared-lib
     // imports, or callers that don't need it).
-    host.set_shared_lib_roots(shared_lib_roots);
+    host.set_shared_lib_roots(sources ? std::vector<std::string>{} : shared_lib_roots);
     std::vector<script_host::RequiredChild> required =
         host.eval_requires(root_source, canonical_root_params_json);
 
@@ -134,8 +143,8 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_tiers,
     //    The graph resolves requires recursively, deduplicates, and bakes in
     //    topo order.  parts_cache_dir is the directory that CONTAINS parts/.
     // -----------------------------------------------------------------------
-    part_graph::FileModuleResolver resolver(host, object_roots);
-    part_graph::HostBaker baker(host, parts_cache_dir);
+    part_graph::FileModuleResolver resolver(host, object_roots, sources);
+    part_graph::HostBaker baker(host, parts_cache_dir, storage);
     part_graph::PartGraph graph(resolver, baker);
 
     std::vector<part_graph::ChildRequest> child_roots;
@@ -247,7 +256,7 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_tiers,
         script_source_hash, sorted_hashes, canonical_root_params_json);
 
     // Try warm cache first; parts_cache_dir doubles as the cache root.
-    if (settle_cache_load(parts_cache_dir, cache_key, out)) {
+    if (settle_cache_load(parts_cache_dir, cache_key, out, storage.get())) {
         out.report.from_cache = true;
         return true;
     }
@@ -257,7 +266,7 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_tiers,
     }
 
     // Best-effort save; a failure here is non-fatal (next run will re-settle).
-    settle_cache_save(parts_cache_dir, cache_key, out);
+    settle_cache_save(parts_cache_dir, cache_key, out, storage.get());
 
     return true;
 }
@@ -266,14 +275,15 @@ bool run_tileset_phase_from_objects(const std::string& objects_dir,
                                     const std::string& root_module,
                                     const std::string& parts_cache_dir,
                                     SettledTorus& out, std::string& err,
-                                    const std::string& shared_lib_root)
+                                    const std::string& shared_lib_root,
+                                    std::shared_ptr<const matter::WorldFixtureIO> fixture_io)
 {
     const std::vector<std::string> roots = shared_lib_root.empty()
         ? std::vector<std::string>{}
         : std::vector<std::string>{shared_lib_root};
     return run_tileset_phase_impl(std::vector<std::string>{objects_dir},
                                   root_module, "{}",
-                                  parts_cache_dir, out, err, roots);
+                                  parts_cache_dir, out, err, roots, nullptr, std::move(fixture_io));
 }
 
 bool run_tileset_phase_from_objects(
@@ -283,12 +293,13 @@ bool run_tileset_phase_from_objects(
     const std::string& parts_cache_dir,
     SettledTorus& out, std::string& err,
     const std::vector<std::string>& shared_lib_roots,
-    std::vector<uint64_t>* out_sorted_child_hashes)
+    std::vector<uint64_t>* out_sorted_child_hashes,
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io)
 {
     return run_tileset_phase_impl(std::vector<std::string>{objects_dir}, root_module,
                                   canonical_root_params_json,
                                   parts_cache_dir, out, err,
-                                  shared_lib_roots, out_sorted_child_hashes);
+                                  shared_lib_roots, out_sorted_child_hashes, std::move(fixture_io));
 }
 
 bool run_tileset_phase_from_object_roots(
@@ -298,12 +309,13 @@ bool run_tileset_phase_from_object_roots(
     const std::string& parts_cache_dir,
     SettledTorus& out, std::string& err,
     const std::vector<std::string>& shared_lib_roots,
-    std::vector<uint64_t>* out_sorted_child_hashes)
+    std::vector<uint64_t>* out_sorted_child_hashes,
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io)
 {
     return run_tileset_phase_impl(object_roots, root_module,
                                   canonical_root_params_json,
                                   parts_cache_dir, out, err,
-                                  shared_lib_roots, out_sorted_child_hashes);
+                                  shared_lib_roots, out_sorted_child_hashes, std::move(fixture_io));
 }
 
 } // namespace tileset
@@ -318,7 +330,8 @@ namespace tileset {
 
 bool run_tileset_phase_from_objects(const std::string&, const std::string&,
                                     const std::string&, SettledTorus&,
-                                    std::string& err, const std::string&)
+                                    std::string& err, const std::string&,
+                                    std::shared_ptr<const matter::WorldFixtureIO>)
 {
     err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
     return false;
@@ -327,7 +340,8 @@ bool run_tileset_phase_from_objects(const std::string&, const std::string&,
 bool run_tileset_phase_from_objects(
     const std::string&, const std::string&, const std::string&,
     const std::string&, SettledTorus&, std::string& err,
-    const std::vector<std::string>&, std::vector<uint64_t>*)
+    const std::vector<std::string>&, std::vector<uint64_t>*,
+    std::shared_ptr<const matter::WorldFixtureIO>)
 {
     err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
     return false;
@@ -336,7 +350,8 @@ bool run_tileset_phase_from_objects(
 bool run_tileset_phase_from_object_roots(
     const std::vector<std::string>&, const std::string&, const std::string&,
     const std::string&, SettledTorus&, std::string& err,
-    const std::vector<std::string>&, std::vector<uint64_t>*)
+    const std::vector<std::string>&, std::vector<uint64_t>*,
+    std::shared_ptr<const matter::WorldFixtureIO>)
 {
     err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
     return false;
