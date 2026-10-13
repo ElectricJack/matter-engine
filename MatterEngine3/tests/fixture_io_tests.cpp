@@ -1,10 +1,62 @@
 #include "check.h"
 #include "memory_fixture_io.h"
 #include "../src/part_bundle.h"
+#include "../src/source_snapshot_modules.h"
 #include <atomic>
 #include <thread>
 
+static void source_tier_guards() {
+    matter::SourceSnapshot::Files files{
+        {"/project/shared-lib/leaf.js", "import { b } from 'shared-lib/branch.js'; export const a = 1;"},
+        {"/engine/shared-lib/leaf.js", "export const a = 2;"},
+        {"/engine/shared-lib/branch.js", "import { a } from 'shared-lib/leaf'; export const b = 3;"},
+        {"/project/shared-lib/empty.js", ""},
+        {"/project/shared-lib/nested/escape.js", "nested"},
+        {"/project/shared-lib/.hidden.js", "hidden"}};
+    const std::vector<std::string> roots{"/project/shared-lib", "/engine/shared-lib"};
+    const matter::SourceSnapshot before(files);
+    const auto modules = matter::source_snapshot_modules(before, roots);
+    CHECK(modules.size() == 3, "shared module tiers exclude hidden and nested inputs");
+    const auto fold = [](const std::string& source, const auto& selected,
+                         module_resolver::FoldResult& output, std::string& error) {
+        return module_resolver::fold_sources_with_loader(source,
+            [&selected](const std::string& specifier, module_resolver::ResolvedModule& module,
+                        std::string& reason) {
+                for (const auto& candidate : selected)
+                    if (candidate.specifier == specifier) { module = candidate; return true; }
+                reason = "missing owned module";
+                return false;
+            }, output, error);
+    };
+    module_resolver::FoldResult original, alias, empty, changed;
+    std::string error;
+    const std::string source = "import { a } from 'shared-lib/leaf';";
+    CHECK(fold(source, modules, original, error), "actual transitive fold closes a cycle");
+    CHECK(original.modules.size() == 2 &&
+              original.modules[1].source == files.at("/project/shared-lib/leaf.js") &&
+              original.modules[1].source_path == "/project/shared-lib/leaf.js",
+          "project tier bytes and diagnostic path win over engine duplicates");
+    CHECK(fold("import { a } from 'shared-lib/leaf.js';", modules, alias, error) &&
+              alias.resolved_specifiers == original.resolved_specifiers &&
+              alias.modules.size() == 2,
+          "canonical .js alias deduplicates transitive cyclic modules");
+    CHECK(fold("import { a } from 'shared-lib/empty';", modules, empty, error) &&
+              empty.modules.size() == 1 && empty.modules[0].source.empty(),
+          "present empty module bytes remain distinct from absence");
+    CHECK(!fold("import { a } from 'shared-lib/missing';", modules, empty, error) &&
+              !fold("import { a } from 'shared-lib/../escape';", modules, empty, error),
+          "missing and illegal imports fail closed without filesystem fallback");
+    files["/project/shared-lib/leaf.js"] += "\n// next source generation\n";
+    const auto next = matter::source_snapshot_modules(matter::SourceSnapshot(files), roots);
+    CHECK(fold(source, next, changed, error) && changed.folded != original.folded &&
+              modules[2].source == "import { b } from 'shared-lib/branch.js'; export const a = 1;",
+          "next generation changes the actual hash fold while prior owned bytes survive");
+    CHECK(matter::source_snapshot_modules(before, {}).empty(),
+          "explicit empty roots do not import unrelated sources");
+}
+
 int main() {
+    source_tier_guards();
     using namespace part_bundle;
     matter::SourceSnapshot sources({
         {"/project/scenes/group/Demo/Demo.js", "world"},

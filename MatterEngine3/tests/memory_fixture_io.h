@@ -17,8 +17,17 @@ public:
         auto next = std::make_shared<const Bytes>(bytes);
         std::lock_guard<std::mutex> guard(lock_);
         if (fail_publication_) return false;
+        ++publication_count_;
         files_[SourceSnapshot::key(path)] = std::move(next);
         return true;
+    }
+    std::map<std::string, ReadHandle> entries() const {
+        std::lock_guard<std::mutex> guard(lock_);
+        return files_;
+    }
+    std::size_t publication_count() const {
+        std::lock_guard<std::mutex> guard(lock_);
+        return publication_count_;
     }
     void fail_publication(bool fail) {
         std::lock_guard<std::mutex> guard(lock_);
@@ -34,5 +43,6 @@ private:
     mutable std::mutex lock_;
     std::map<std::string, ReadHandle> files_;
     bool fail_publication_ = false;
+    std::size_t publication_count_ = 0;
 };
 } // namespace matter::test
