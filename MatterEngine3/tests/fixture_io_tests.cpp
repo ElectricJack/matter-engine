@@ -4,6 +4,7 @@
 #include "../src/source_snapshot_modules.h"
 #include "../src/terrain_collision/fixture_artifact_storage.h"
 #include <atomic>
+#include <functional>
 #include <thread>
 
 static void source_tier_guards() {
@@ -104,7 +105,52 @@ static void collision_storage_guards() {
           "collision erasure preserves outstanding immutable reads");
 }
 
+static void collision_read_generation_guards() {
+    using Bytes = matter::CacheByteStorage::Bytes;
+    auto cache = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    matter::terrain_collision::detail::FixtureArtifactStorage storage(cache);
+    const char* path = "/collision/read-generation";
+    const Bytes first{11, 12, 13, 14, 15, 16};
+    const Bytes second{21, 22, 23, 24, 25, 26, 27, 28, 29};
+    CHECK(cache->publish(path, first), "initial collision read generation publishes");
+    std::atomic<int> ready{0};
+    std::atomic<bool> release{false}, readers_ok{true};
+    auto read = [&](const Bytes& expected) {
+        std::error_code error;
+        std::uint8_t header[2]{};
+        if (storage.file_size(path, error) != expected.size() || error ||
+            !storage.read(path, 0, 2, header) || header[0] != expected[0] ||
+            header[1] != expected[1]) readers_ok = false;
+        ++ready;
+        while (!release.load()) std::this_thread::yield();
+        Bytes full(expected.size(), 0);
+        if (!storage.read(path, 0, full.size(), full.data()) || full != expected)
+            readers_ok = false;
+    };
+    std::thread older(read, std::cref(first));
+    while (ready.load() != 1) std::this_thread::yield();
+    CHECK(cache->publish(path, second), "replacement collision read generation publishes");
+    std::thread newer(read, std::cref(second));
+    while (ready.load() != 2) std::this_thread::yield();
+    CHECK(cache->publish(path, {31, 32, 33, 34}) && cache->erase(path),
+          "both readers retain their own size/header/payload generation after replace and erase");
+    release = true;
+    older.join(); newer.join();
+    CHECK(readers_ok, "concurrent same-path readers never mix byte generations");
+    std::error_code error;
+    CHECK(storage.file_size(path, error) == std::uintmax_t(-1) && error,
+          "a missing acquisition is an immutable read result");
+    CHECK(cache->publish(path, {41, 42, 43}), "future generation can publish after missing acquisition");
+    std::uint8_t value = 99;
+    CHECK(!storage.read(path, 0, 1, &value) && value == 99,
+          "a read cannot silently reopen a generation after its missing acquisition");
+    CHECK(storage.file_size(path, error) == 3 && !error &&
+          storage.read(path, 0, 1, &value) && value == 41,
+          "a fresh size acquisition selects the newest immutable generation");
+}
+
 int main() {
+    collision_read_generation_guards();
     collision_storage_guards();
     source_tier_guards();
     using namespace part_bundle;

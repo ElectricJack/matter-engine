@@ -50,7 +50,7 @@ def discover(repository):
     by_source['fixture_io_tests.cpp'] = {
         'directory': 'MatterEngine3/tests', 'binary': 'build/fixture_io_tests',
         'build_target': 'build/fixture_io_tests'}
-    peer_graphs = {'terrain_collision_session_tests'}
+    peer_graphs = set()
     core = {}
     unsupported = {}
     for match in re.finditer(r'matter_add_engine_cpu_test\((\w+)\s+([^)]*)\)', engine):

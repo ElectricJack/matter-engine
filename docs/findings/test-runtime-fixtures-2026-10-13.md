@@ -52,6 +52,9 @@ or new persistence policy is introduced.
 | Terrain ravine mesh fixture crops the outer field | Resolution0.5, the authored ravine and retained material/mesh predicates remain | Outside scan extent64m→8m reduces large peripheral scan coverage |
 | Demand bake and terrain verbs use owned source snapshots and private caches | All nine demand groups, hierarchy, roots-only/lazy/full policies, actual section validation and session behavior remain | OS directory creation, source writes and cache cleanup become owned generations |
 | Sector-streamer uniform part-count comparison uses the actual desired map | Same full authored reach/pitch,78201-sector count, independent grid census and nested ratio; historical complete uniform publication drain runs in mandatory filesystem qualification | Runtime no longer drains every uniform request merely to count it; cap8, hole/upgrade/dwell/publication/interleaving guards are unchanged |
+| Terrain collision session uses owned source snapshots and byte cache | All 13 lifecycle groups retain original app-publication/candidate-observer timing, tile-N replacement before releasing blocked A, collision-free B, cancellation/winner/manifest/failure predicates | OS source/cache persistence and IO-error behavior become snapshot/byte-store semantics; those transport behaviors are not qualified |
+| Cave-field parity uses original ray endpoints | All 1600 rays, exact y192/-127.75 endpoint signs, mesh/roof/seam predicates and original parity assertion remain | 2044800 interior density evaluations are no longer executed |
+| Large-index QEM uses 128 real triangles above UINT16_MAX | Real indexed simplifier, >65535 input vertices/indices, significant reduction, finite/bounded output and other collapse fixtures remain | The original 166400-triangle/83781-referenced-position dense scalability workload is optional --dense-qem, outside default CTest and mandatory build qualification |
 | Editor viewport capture uses explicit byte publication | Exact capture header, extents, plane bytes, existing-path and failed publication guards | OS fopen/rename outcomes replaced by injected publication |
 | Screenshot completion marker uses RAM publication | Exact captured-newline bytes and failed publication | Runtime OS fopen/fwrite/fclose/remove guard is dropped |
 | Editor registration census and Windows wrapper contract become ALL build qualification | Original registry/device/PE/source/contract predicates | Runtime no longer starts native editor for census; startup allowance increased from30s to120s |
@@ -161,12 +164,12 @@ portable CPU build rejects GPU arguments with exit2 rather than silently
 accepting an unavailable mode. Its candidate passed in0.03s with only executable/
 loader file reads. Evidence:/tmp/steady-harbor-geometry-cpu-candidate/.
 
-The integrated common Linux graph configures135 actual CPU tests, including
-geometry, Vulkan, cloud-layer and volumetric-quality suites. Both environment
-suites invoke the owner's exact shared source qualifier. The collision-session
-test remains a peer-owned pending fixture until the worker-generation API is
-checkpointed and its owner delivers the updated test; this is not a complete
-linked-suite receipt.
+The first integrated common Linux graph configured135 actual CPU tests,
+including geometry, Vulkan, cloud-layer and volumetric-quality suites. Both
+invoke the environment owner's shared qualifier. The collision-session owner
+has since delivered19369273bffa6becab8cbfd1c0eece055f0634ee. Its two files are
+imported selectively without the integration parent; the root registrar now
+includes that real target. Final-source full Linux/native acceptance is pending.
 
 The integrated worker reload/collision route passed actual GNU `matter_engine.cpp`
 syntax checking and the actual fixture-IO codec/atomic-publication executable.
@@ -179,8 +182,7 @@ replacement moves to the explicit cache; failed moves preserve both generations
 and old immutable read leases survive successful replacement. These checks do
 not establish a complete linked session runtime or native success.
 
-Before acceptance: integrate the remaining owner terrain fixture payload, finish runtime
-fixture census and reductions, run the full real Linux CTest graph and native CPU
+Before acceptance: finish runtime fixture census and reductions, run the full real Linux CTest graph and native CPU
 suite under one minute, run the one authorized full native build from the active
 workspace, record before/after slowest20, publish commits and open the PR.
 
@@ -195,3 +197,43 @@ continued CPU work; that wait was cancelled once. There has been no repeated
 prime retry, blocker report or native full attempt. GNU syntax evidence covers
 six earlier fixture/qualification translation units plus resolve cache, tracer
 and chart atlas. The later migrations still need compilation and runtime checks.
+
+## Later integration checks
+
+All ten actual integrated editor CPU executables passed under strace in0.36s
+CTest time (runner0.494s), with no non-loader path calls in their test processes.
+Trace SHA256:8c236a5806dd2b5459ad85601ee777e47af5688023a393a8ff9f84fcfa9b048e.
+This is an editor-only result, not full-suite acceptance.
+
+The collision owner found mixed-generation reads in the provisional adapter:
+size/header/payload calls reopened mutable cache keys. The adapter now retains
+one immutable handle per caller/path from file_size through reads; a later
+file_size refreshes it, including a missing acquisition. Two concurrent readers
+acquire different generations of the same path, then replacement and erasure
+precede their complete reads. Each must retain its own exact bytes. The corrected
+fixture executable passed every guard; the original adapter negative control
+failed the new concurrent-generation and missing-acquisition guards (exit1).
+Actual module_resolver, part_asset_v2 and SurfaceLib part_asset TUs were compiled
+and linked without substitutes. Corrected runtime tracing has no non-loader
+path calls; SHA256:636acd9183c282aee4bfb0bf6be50fd0a8a9d0b59dfd5885058cf35f2f317bec.
+Receipts:/tmp/steady-harbor-collision-read-lease-candidate/build-receipt.json
+and runtime-evidence.json. Full integrated session acceptance remains pending.
+
+Geometry4e90883 imports preserve its endpoint-parity/MSVC fixes and the terrain
+owner's8m ravine crop/ordered mate together. The dense-QEM and cave interior
+sampling reductions are disclosed above.
+
+Supervisor allocation places geometry's canonical native DEFAULT ALL build
+ahead of CORE. CORE follows its completion/source/log/artifact receipt, from
+final frozen sources and parallel1. CORE's one authorized native attempt is
+still unused.
+
+The b05d60ba4 frozen-source Linux DEFAULT build completed with exit1 in1423.28s
+(total includes the successful real Linux Box3d44.29s). All1216 captured source/
+build identities remained unchanged. The actual Make archive failed because
+the source search omitted src/terrain_collision and ar could not find its
+objects. The Makefile now includes that actual directory; no producer is removed
+or substituted. Full log:/tmp/steady-harbor-b05d60ba4-linux-default-build.log,
+SHA256:d7871ad08fe70a8ed3b32cfe81c4811434c62eb83392b31c1b91f90dd78f4486.
+Final integrated graph configures136 real tests, with no peer fixture omission.
+This configuration is not yet a full linked-suite or successful build receipt.
