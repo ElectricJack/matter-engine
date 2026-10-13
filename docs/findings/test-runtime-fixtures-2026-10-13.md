@@ -328,3 +328,17 @@ unchanged; this diagnostic neither qualifies the failing export nor replaces
 full Linux/native acceptance. The consumed supervisor wait confirmed the
 previous test-only control's limitation; no further native allocation has yet
 been received.
+
+The geometry owner's corrected read-only UV audit was independently checked
+against the retained outputs. AlpineFlower vt16 (one-based) is expected
+(0.367188,0.754078), actual (0.542969,0.754078). All228 emitted positions,
+normals, face lines and V coordinates match;24 U components exceed the original
+tolerance. The complete OBJ from the original-producer control is byte-identical
+to the current-producer OBJ, SHA256:
+621c88a8a837ac0088b158bb3a245a87131fce5215c83e20f3e2ec0c03e7b4d6.
+Receipt:/tmp/steady-harbor-obj-corrected-coordinate-audit.json.
+The current shelf_pack comparator orders only by chart height, without a
+tie-break. Reciprocal horizontal placement changes are consistent with an
+equal-height ordering difference, but exact chart heights and sorted placement
+order have not been captured; the cause remains unproven. No source, golden,
+tolerance or qualification predicate was changed by this read-only check.
