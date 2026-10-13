@@ -447,3 +447,47 @@ Independent process proof SHA256:
 2f2b0ed4258c30a75a5dee1a371cf4786b6a40e16287c219f6929504c1e47741.
 The receipt records tool identities, all44 resulting partial artifact hashes,
 original failed-tree provenance and complete source-freeze verification.
+
+### Owned golden reference and portable chart packing
+
+The retained ad635 native log records the unchanged OBJ golden qualifier
+passing at step26 before the later C1128 failure. Its surviving exports were
+preserved with timestamps inside that run. Independent PNG CRC/filter decoding
+recovered all15 raw maps; their framed dimensions/pixels hashes match every
+checked-in golden. This qualifies the reference producer's golden outputs,
+not the failed DEFAULT build or the current source.
+
+Reference receipt: /tmp/steady-harbor-ad635-native-golden-reference/receipt.json,
+SHA256 e909dbc152b2b88d11564380d7e47a5aac3db1bb486f1d7ffc79f27100281f6a.
+The original/current GNU boundary controls remain sufficient and were not
+repeated. Comparison against the owned native outputs recovered every chart
+placement. The pinned MSVC median-partition/insertion algorithm, applied to
+the actual GNU heights and deterministic triangle-construction input order,
+reproduces all223 CastleStone,42 AlpineFlower and6 CastlePavingSlab placements.
+This explains the previously unsupported equal-height permutations without
+an asset-specific or chart-index comparator.
+
+The texel packer now fixes that ordering algorithm in an internal header,
+with a deterministic heap fallback and a leaf check before index doubling.
+Microsoft STL attribution, pinned compiler-header identity and its Apache2.0
+with LLVM exception license are retained. Generic RAM guards cover empty,
+single, ordered, reversed, equal and repeated keys, the31/32/33 and40/41/42
+thresholds, repeatability, descending heights and permutation preservation.
+All156 cases, including48 forced heap cases, and the prior charting guards
+passed with address/undefined-behavior sanitizers before source integration.
+
+One private real-producer candidate run retained the original three mandatory
+part cases and DSL predicates:35.310s, exit1, one CastleStone normal-digest
+failure. Its14 other raw maps match the owned native reference byte for byte,
+including every AlpineFlower predicate and CastleStone albedo/roughness/UVs.
+The remaining91 normal bytes on Stone charts0/26/7 differ only as127 versus128;
+30 exported normal lines also differ in their last decimal. Neither observation
+justifies a quantization change or tolerance. Fixtures, all original failures
+and both failed native artifact sets remain preserved.
+
+Candidate receipt: /tmp/steady-harbor-portable-pack-order-candidate/receipt.json,
+SHA256 7f56e5d11a913abb392681ec79448e7847497f1ab6717776cd96df9e04ce56fa.
+The integrated source still requires its owned mandatory qualification and
+the remaining normal repair. No full Linux/native result or acceptance is
+claimed. The existing native continuation must bind to the final corrected
+source rather than launch the old ed1 freeze.
