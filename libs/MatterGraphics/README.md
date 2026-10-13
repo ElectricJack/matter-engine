@@ -32,6 +32,12 @@ Textured appearances fail explicitly. Native skin/water/VT/sparse extensions
 remain in the existing host, which delegates to the same extracted mesh pass.
 See the [native boundary and provenance](src/native/README.md).
 
+The [standalone native sample](examples/README.md) connects imported and
+hand-built assets to those production passes, with camera, directional lighting,
+shared-instance updates, resource retirement and reproducible image captures.
+It builds through the component's supported MSVC wrapper and is included in
+the forbidden-dependency audit.
+
 ```cpp
 #include <matter/graphics/vulkan_raster.h>
 matter::graphics::VulkanRaster raster(binding);
