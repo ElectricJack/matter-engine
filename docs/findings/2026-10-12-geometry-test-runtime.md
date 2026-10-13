@@ -285,3 +285,61 @@ core owner on `steady-harbor-62-coordination`
 supervisor's next serialized allocation. Shared graph delivery remains a
 separate pending item; the passing component results and disclosed coverage
 boundaries above are unchanged.
+
+### Linux coverage reconciliation and supplemental cases
+
+The core owner's configured 136-case inventory at checkpoint
+`46702bcf5b26fa44edf88efd6d8f852fcf0abd00` includes 20 of this slice's
+25 CPU cases. Its inventory SHA-256 is
+`0ba5d420fed1322ffacdede83c43183ea9809106076ef796957c1b95a1d2de91`.
+It remains a configured/building checkpoint, not a qualified aggregate.
+The five cases outside that inventory are `polygon_triangulate_tests`,
+`mesh_indexed_tests`, `mesh_transform_tests`, `mesh_smooth_tests` and
+`oriented_cube_tests`. The inventory has no composed peer graphs; the
+standalone enabled/disabled GeometryCompute cases also need composition.
+
+Prepared `/tmp/clear-stone-99-geometry-supplement` registers those seven
+actual binaries, with their paths and SHA-256 values in `registration.json`.
+The four SurfaceLib binaries are the actual Make outputs documented above.
+The polygon binary was additionally built from its canonical Make target
+using private objects, without a mock or copied algorithm:
+
+```sh
+make -C MatterEngine3/tests -j1 OBJDIR=build/geometry-supplement \
+  CFLAGS='-O3 -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DMATTER_VULKAN_ONLY -UNDEBUG' \
+  build/polygon_triangulate_tests
+```
+
+That build passed in 13.09s. The supplemental CMake project's default ALL
+target rebuilds the actual disabled and enabled compute test targets before
+runtime CTest, preserving their mandatory generated-graph/source
+qualification prerequisites. Its GPU environment uses the same actual
+Lavapipe loader and validation layer described above; shader/synchronization
+oracles and the persistent-cache disabling settings are unchanged.
+
+```sh
+cmake -S /tmp/clear-stone-99-geometry-supplement \
+  -B /tmp/clear-stone-99-geometry-supplement/build
+cmake --build /tmp/clear-stone-99-geometry-supplement/build --parallel 1
+ctest --test-dir /tmp/clear-stone-99-geometry-supplement/build -j4 \
+  --output-on-failure \
+  --output-junit /tmp/clear-stone-99-geometry-supplement/results.xml
+```
+
+Configure and exact seven-command registration verification passed. The
+mandatory build qualifications passed in 8.81s; all seven runtime cases
+passed together in 14.98s under `strace` (15.11s wrapper wall time). The
+runtime audit covers 58 actual test/descendant process/thread IDs and 68
+platform paths, with zero unexpected paths. Loader libraries, Vulkan
+ICD/layer inputs and proc/sys information are counted separately from
+CTest registration/log reads; actual tests read no fixture, source, asset,
+build/evidence data or persistent shader cache. Receipts are
+`qualification.json`, `results.xml`, `runtime.json`, `runtime.trace` and
+`runtime-file-read-audit.json` inside the supplemental directory.
+
+This local supplement does not qualify the core graph, replace the matched
+before/after table, or establish aggregate runtime. Composition must be
+reconciled against the core owner's final qualified graph/OID. CORE has
+acknowledged the failed native completion receipt and owns the next allocated
+native turn; this component still awaits its own retry allocation and a
+passing full native qualification.
