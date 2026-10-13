@@ -22,6 +22,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -1543,6 +1544,21 @@ void test_nested_builds_restore_and_isolate_storage() {
         matter::terrain_collision::detail::BuildTestHooks inner_hooks;
         inner_hooks.storage = &inner_store;
         std::string inner_error;
+        inner_hooks.before_publication_commit = [](auto) {
+            throw std::runtime_error("nested storage fault");
+        };
+        bool fault_observed = false;
+        try {
+            matter::terrain_collision::detail::load_or_build_candidate_with_test_hooks(
+                field.runtime, definition, root, {}, inner_hooks, inner, inner_error);
+        } catch (const std::runtime_error& fault) {
+            fault_observed = std::string(fault.what()) == "nested storage fault";
+        }
+        CHECK(fault_observed,
+              "a nested publication exception unwinds its store scope before the caller resumes");
+        CHECK(!inner_store.exists(manifest_path(root, definition.installation_key)),
+              "a failed inner build cannot publish a generation manifest");
+        inner_hooks.before_publication_commit = {};
         CHECK(matter::terrain_collision::detail::load_or_build_candidate_with_test_hooks(
                   field.runtime, definition, root, {}, inner_hooks, inner, inner_error),
               inner_error.c_str());
@@ -1558,6 +1574,41 @@ void test_nested_builds_restore_and_isolate_storage() {
     CHECK(matter::terrain_collision::detail::validate_generation_manifest(
               manifest, definition, inner, error, &inner_store),
           "inner publication retains its independently validated manifest");
+}
+
+void test_parallel_callers_isolate_storage() {
+    TestField field = make_field(kPlaneField);
+    const CanonicalDefinition definition = definition_for(field);
+    TerrainCollisionMemoryStorage stores[2];
+    ConcurrentBuildResult results[2];
+    TwoPublisherBarrier barrier(true, true);
+    const std::filesystem::path root("memory/parallel-stores");
+    auto run = [&](unsigned index) {
+        matter::terrain_collision::detail::BuildTestHooks hooks;
+        // The caller explicitly supplies this worker's store; thread-local
+        // state from a parent thread is never relied on for propagation.
+        hooks.storage = &stores[index];
+        hooks.before_publication_commit = [&](auto point) { barrier.arrive(point); };
+        results[index].ok =
+            matter::terrain_collision::detail::load_or_build_candidate_with_test_hooks(
+                field.runtime, definition, root, {}, hooks,
+                results[index].candidate, results[index].error);
+    };
+    std::thread first([&] { run(0); });
+    std::thread second([&] { run(1); });
+    first.join();
+    second.join();
+    CHECK(!barrier.timed_out(), "independent stores overlap at both publication boundaries");
+    for (unsigned index = 0; index != 2; ++index) {
+        CHECK(results[index].ok, results[index].error.c_str());
+        std::string error;
+        CHECK(matter::terrain_collision::detail::validate_generation_manifest(
+                  manifest_path(root, definition.installation_key), definition,
+                  results[index].candidate, error, &stores[index]),
+              "each parallel caller publishes its own complete generation");
+    }
+    CHECK(same_tiles(results[0].candidate, results[1].candidate),
+          "parallel stores produce identical candidates at the same logical path");
 }
 
 }  // namespace
@@ -1585,5 +1636,6 @@ int main() {
     test_cancellation_precedes_validated_winner_acceptance();
     test_interrupted_temporary_file_never_becomes_addressable();
     test_nested_builds_restore_and_isolate_storage();
+    test_parallel_callers_isolate_storage();
     return check_summary();
 }
