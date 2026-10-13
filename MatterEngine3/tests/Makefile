@@ -61,6 +61,7 @@ endif
 INCLUDE_PATHS = -I../include -I.. -I../src -I../src/render -I../src/provider -I../../libs/MatterSurfaceLib/include -I../../libs/SpatialQueryLib/include -I../../libs/MemoryLib/include -I../../libs/MathLib/include -I$(RAYLIB_PATH) -I../../third_party/raylib/src -I../../libs/ParticleFlowLib/include -I../../third_party/Vulkan-Headers/include -I$(BOX3D_DIR)/include
 INCLUDE_PATHS += -I$(FLECS_DIR)
 INCLUDE_PATHS += -I../../libs/ProfileLib/include
+INCLUDE_PATHS += -I../../libs/AssetStoreLib/include
 OZZ_DIR = ../../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
 OZZ_INCLUDE = $(OZZ_DIR)/include
