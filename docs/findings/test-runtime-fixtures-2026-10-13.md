@@ -237,3 +237,12 @@ or substituted. Full log:/tmp/steady-harbor-b05d60ba4-linux-default-build.log,
 SHA256:d7871ad08fe70a8ed3b32cfe81c4811434c62eb83392b31c1b91f90dd78f4486.
 Final integrated graph configures136 real tests, with no peer fixture omission.
 This configuration is not yet a full linked-suite or successful build receipt.
+
+The d75101260 frozen-source Linux DEFAULT build failed in151.10s at the next
+archive member:gpu_visual_mesher_common.o. A census of every archive member
+found exactly three missing objects, all with canonical sources in
+src/render/gpu_meshing. Make's source search now includes that directory too;
+the producer and archive membership remain unchanged. All1557 captured source
+identities matched after the completed build. Log:
+/tmp/steady-harbor-d75101260-linux-default-build.log,
+SHA256:aa5f92a1f6dad99e42d8030a4c9b3d499a363f151b9c4e2edad69d34f08035f7.
