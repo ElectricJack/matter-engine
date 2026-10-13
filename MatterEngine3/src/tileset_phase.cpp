@@ -1,4 +1,5 @@
 #include "matter/project_layout.h"
+#include "source_snapshot_modules.h"
 // tileset_phase.cpp — world-bake wiring: manifest root → SettledTorus.
 //
 // Glue layer (~100 lines). No new logic; delegates to:
@@ -133,7 +134,9 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_tiers,
     // (e.g. Pebble.js imports shared-lib/rng) can resolve their dependencies.
     // An empty shared_lib_root is a no-op (tileset children with no shared-lib
     // imports, or callers that don't need it).
-    host.set_shared_lib_roots(sources ? std::vector<std::string>{} : shared_lib_roots);
+    host.set_shared_lib_roots(shared_lib_roots);
+    if (sources)
+        host.set_module_sources(matter::source_snapshot_modules(*sources, shared_lib_roots));
     std::vector<script_host::RequiredChild> required =
         host.eval_requires(root_source, canonical_root_params_json);
 

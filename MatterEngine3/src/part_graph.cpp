@@ -811,8 +811,12 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
             bool all_present = true;
             for (uint64_t h : existing.hashes) {
                 const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
-                std::ifstream probe(vpath);
-                if (!probe.good()) { all_present = false; break; }
+                if (storage_) {
+                    if (!storage_->open(vpath)) { all_present = false; break; }
+                } else {
+                    std::ifstream probe(vpath);
+                    if (!probe.good()) { all_present = false; break; }
+                }
             }
             if (all_present) return true;
         }
@@ -924,8 +928,12 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
             bool all_present = true;
             for (uint64_t h : existing.level_hashes) {
                 const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
-                std::ifstream probe(vpath);
-                if (!probe.good()) { all_present = false; break; }
+                if (storage_) {
+                    if (!storage_->open(vpath)) { all_present = false; break; }
+                } else {
+                    std::ifstream probe(vpath);
+                    if (!probe.good()) { all_present = false; break; }
+                }
             }
             if (all_present) return true;
         }

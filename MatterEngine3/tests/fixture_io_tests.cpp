@@ -1,10 +1,112 @@
 #include "check.h"
 #include "memory_fixture_io.h"
 #include "../src/part_bundle.h"
+#include "../src/source_snapshot_modules.h"
+#include "../src/terrain_collision/fixture_artifact_storage.h"
 #include <atomic>
 #include <thread>
 
+static void source_tier_guards() {
+    matter::SourceSnapshot::Files files{
+        {"/project/shared-lib/leaf.js", "import { b } from 'shared-lib/branch.js'; export const a = 1;"},
+        {"/engine/shared-lib/leaf.js", "export const a = 2;"},
+        {"/engine/shared-lib/branch.js", "import { a } from 'shared-lib/leaf'; export const b = 3;"},
+        {"/project/shared-lib/empty.js", ""},
+        {"/project/shared-lib/nested/escape.js", "nested"},
+        {"/project/shared-lib/.hidden.js", "hidden"}};
+    const std::vector<std::string> roots{"/project/shared-lib", "/engine/shared-lib"};
+    const matter::SourceSnapshot before(files);
+    const auto modules = matter::source_snapshot_modules(before, roots);
+    CHECK(modules.size() == 3, "shared module tiers exclude hidden and nested inputs");
+    const auto fold = [](const std::string& source, const auto& selected,
+                         module_resolver::FoldResult& output, std::string& error) {
+        return module_resolver::fold_sources_with_loader(source,
+            [&selected](const std::string& specifier, module_resolver::ResolvedModule& module,
+                        std::string& reason) {
+                for (const auto& candidate : selected)
+                    if (candidate.specifier == specifier) { module = candidate; return true; }
+                reason = "missing owned module";
+                return false;
+            }, output, error);
+    };
+    module_resolver::FoldResult original, alias, empty, changed;
+    std::string error;
+    const std::string source = "import { a } from 'shared-lib/leaf';";
+    CHECK(fold(source, modules, original, error), "actual transitive fold closes a cycle");
+    CHECK(original.modules.size() == 2 &&
+              original.modules[1].source == files.at("/project/shared-lib/leaf.js") &&
+              original.modules[1].source_path == "/project/shared-lib/leaf.js",
+          "project tier bytes and diagnostic path win over engine duplicates");
+    CHECK(fold("import { a } from 'shared-lib/leaf.js';", modules, alias, error) &&
+              alias.resolved_specifiers == original.resolved_specifiers &&
+              alias.modules.size() == 2,
+          "canonical .js alias deduplicates transitive cyclic modules");
+    CHECK(fold("import { a } from 'shared-lib/empty';", modules, empty, error) &&
+              empty.modules.size() == 1 && empty.modules[0].source.empty(),
+          "present empty module bytes remain distinct from absence");
+    CHECK(!fold("import { a } from 'shared-lib/missing';", modules, empty, error) &&
+              !fold("import { a } from 'shared-lib/../escape';", modules, empty, error),
+          "missing and illegal imports fail closed without filesystem fallback");
+    files["/project/shared-lib/leaf.js"] += "\n// next source generation\n";
+    const auto next = matter::source_snapshot_modules(matter::SourceSnapshot(files), roots);
+    CHECK(fold(source, next, changed, error) && changed.folded != original.folded &&
+              modules[2].source == "import { b } from 'shared-lib/branch.js'; export const a = 1;",
+          "next generation changes the actual hash fold while prior owned bytes survive");
+    CHECK(matter::source_snapshot_modules(before, {}).empty(),
+          "explicit empty roots do not import unrelated sources");
+}
+
+static void collision_storage_guards() {
+    auto cache = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    matter::terrain_collision::detail::FixtureArtifactStorage storage(cache);
+    CHECK(cache->publish("/collision/left", {1, 2}) &&
+          cache->publish("/collision/right", {3, 4}), "collision stages use owned bytes");
+    const auto retained_left = cache->open("/collision/left");
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::uint32_t result[2] = {99, 99};
+    auto publish = [&](int index, const char* source) {
+        ++ready;
+        while (!go.load()) std::this_thread::yield();
+        result[index] = storage.move(source, "/collision/winner", false);
+    };
+    std::thread left(publish, 0, "/collision/left");
+    std::thread right(publish, 1, "/collision/right");
+    while (ready.load() != 2) std::this_thread::yield();
+    go = true;
+    left.join(); right.join();
+    CHECK((result[0] == 0 && result[1] == 183) ||
+          (result[1] == 0 && result[0] == 183), "one atomic no-replace publisher wins");
+    const char* remaining = result[0] == 0 ? "/collision/right" : "/collision/left";
+    const auto winner = cache->open("/collision/winner");
+    const auto staged = cache->open(remaining);
+    CHECK(winner && staged && *retained_left == matter::CacheByteStorage::Bytes({1, 2}),
+          "loser stage and old immutable lease survive publication");
+    cache->fail_publication(true);
+    CHECK(storage.move(remaining, "/collision/winner", true) != 0 &&
+          cache->open("/collision/winner") == winner && cache->open(remaining) == staged,
+          "failed collision replacement preserves both generations");
+    cache->fail_publication(false);
+    CHECK(storage.move(remaining, "/collision/winner", true) == 0 &&
+          cache->open("/collision/winner") == staged && !cache->open(remaining) &&
+          winner->size() == 2, "replacement transfers owned bytes without invalidating old lease");
+    std::uint8_t value = 77;
+    CHECK(!storage.read("/collision/winner", 2, 1, &value) && value == 77 &&
+          storage.read("/collision/winner", 1, 1, &value) && value == (*staged)[1],
+          "collision reads validate bounds before touching caller bytes");
+    std::error_code error;
+    CHECK(storage.file_size("/collision/winner", error) == 2 && !error &&
+          storage.file_size("/collision/missing", error) == std::uintmax_t(-1) &&
+          error == std::errc::no_such_file_or_directory,
+          "collision size and missing-key errors use memory storage");
+    storage.remove("/collision/winner");
+    CHECK(!cache->open("/collision/winner") && staged->size() == 2,
+          "collision erasure preserves outstanding immutable reads");
+}
+
 int main() {
+    collision_storage_guards();
+    source_tier_guards();
     using namespace part_bundle;
     matter::SourceSnapshot sources({
         {"/project/scenes/group/Demo/Demo.js", "world"},

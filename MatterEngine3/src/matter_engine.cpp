@@ -1,4 +1,6 @@
 #include "part_bundle.h"
+#include "source_snapshot_modules.h"
+#include "terrain_collision/fixture_artifact_storage.h"
 #include "asset_export.h"
 // MatterEngine3/src/matter_engine.cpp
 //
@@ -880,6 +882,14 @@ struct WorldSession::Impl {
     // reference, ensuring the provider outlives all in-flight publish jobs even
     // if a superseded bake creates a new provider before the old jobs complete.
     viewer::LocalProviderConfig cfg;
+    // cfg.fixture_io stays immutable after construction. The worker
+    // publishes source generations atomically for app-thread readers.
+    std::shared_ptr<const WorldFixtureIO> fixture_io_override;
+    std::shared_ptr<const WorldFixtureIO> fixture_inputs() const {
+        auto current = std::atomic_load_explicit(
+            &fixture_io_override, std::memory_order_acquire);
+        return current ? current : cfg.fixture_io;
+    }
     std::shared_ptr<viewer::LocalProvider> provider;
 
     // World data.
@@ -1507,7 +1517,8 @@ struct WorldSession::Impl {
     // --- Phase B: async bake worker helpers (defined below) ------------------
     // Start the worker thread if not already running.
     void ensure_worker_started();
-    void enqueue_full_bake(matter_async::CommandKind kind);
+    void enqueue_full_bake(matter_async::CommandKind kind,
+        std::shared_ptr<const SourceSnapshot> fixture_sources = {});
     // Worker thread entry point.
     void worker_loop();
     // Existing provider/live-edit polling, called after each valid ECS tick.
@@ -3045,7 +3056,8 @@ void WorldSession::Impl::ensure_worker_started() {
     worker = std::thread([this] { worker_loop(); });
 }
 
-void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind) {
+void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind,
+    std::shared_ptr<const SourceSnapshot> fixture_sources) {
     std::lock_guard<std::recursive_mutex> generation_lock(
         hydrology_generation_mutex);
     std::lock_guard<std::recursive_mutex> terrain_generation_lock(
@@ -3069,6 +3081,7 @@ void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind) {
     }
     matter_async::Command command;
     command.kind = kind;
+    command.fixture_sources = std::move(fixture_sources);
     commands.push(std::move(command));
 }
 
@@ -3345,6 +3358,16 @@ void WorldSession::Impl::worker_loop() {
                 // Impl::end_bake_run and matter/events/bake_events.h.
                 BakeRunScope bake_run(this);
                 try {
+                    if (cmd.fixture_sources &&
+                        (!cmd.token || !cmd.token->is_cancelled())) {
+                        auto next = std::make_shared<WorldFixtureIO>();
+                        next->sources = cmd.fixture_sources;
+                        const auto previous = fixture_inputs();
+                        next->cache = previous ? previous->cache : nullptr;
+                        std::atomic_store_explicit(&fixture_io_override,
+                            std::shared_ptr<const WorldFixtureIO>(std::move(next)),
+                            std::memory_order_release);
+                    }
                     switch (cmd.kind) {
                         case matter_async::CommandKind::BakeAll:
                             execute_bake(cmd, /*is_reload=*/false);
@@ -3426,7 +3449,7 @@ void WorldSession::Impl::worker_loop() {
 // (interleaved with cancellation checks) -> finalize job -> BakeFinished.
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload) {
-    const auto fixture_io = cfg.fixture_io;
+    const auto fixture_io = fixture_inputs();
     part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     auto& token = cmd.token;
     auto is_cancelled = [token] { return token && token->is_cancelled(); };
@@ -3645,7 +3668,9 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         cfg.root_params_module = seed_root_params_module;
     }
 
-    provider = std::make_shared<viewer::LocalProvider>(cfg);
+    auto provider_cfg = cfg;
+    provider_cfg.fixture_io = fixture_io;
+    provider = std::make_shared<viewer::LocalProvider>(std::move(provider_cfg));
 
     // Instrumentation rider (Phase C): coarse phase timing for large-world
     // attribution. Tileset phase is embedded inside compose_world (not
@@ -3668,12 +3693,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             cfg.object_sources_dir(),
             cfg.project_shared_lib_dir,
             cfg.engine_shared_lib_dir,
-            cfg.fixture_io ? cfg.fixture_io->sources.get() : nullptr);
+            fixture_io ? fixture_io->sources.get() : nullptr);
         if (rc_cache_key != 0) {
             resolve_cache::ResolveCachePayload rc_payload;
             if (resolve_cache::load(cfg.cache_root, cfg.world_name,
                                     rc_cache_key, rc_payload,
-                                    cfg.fixture_io ? cfg.fixture_io->cache.get() : nullptr)) {
+                                    fixture_io ? fixture_io->cache.get() : nullptr)) {
                 // Cache header valid — try to restore provider state.
                 std::string rc_err;
                 if (provider->restore_from_cache(rc_payload.snapshot,
@@ -3931,7 +3956,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_save.authored_world = provider->authored_world_cache();
         if (!resolve_cache::save(cfg.cache_root, cfg.world_name,
                                  rc_cache_key, rc_save,
-                                 cfg.fixture_io ? cfg.fixture_io->cache.get() : nullptr)) {
+                                 fixture_io ? fixture_io->cache.get() : nullptr)) {
             MATTER_LOGW("resolve", "resolve cache: save failed (non-fatal)\n");
         } else {
             MATTER_LOGI("resolve", "resolve cache: saved key %016llx\n",
@@ -4324,7 +4349,7 @@ void WorldSession::Impl::publish_pipeline(
     viewer::WorldManifest new_manifest,
     PublishPipelineParams p)
 {
-    const auto fixture_io = cfg.fixture_io;
+    const auto fixture_io = fixture_inputs();
     part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     static_assert(
         std::is_nothrow_swappable_v<matter::TerrainCollisionStatus>,
@@ -5613,7 +5638,7 @@ bool WorldSession::Impl::install_world(
     bool& terrain_collision_failed,
     std::string& err)
 {
-    const auto fixture_io = cfg.fixture_io;
+    const auto fixture_io = fixture_inputs();
     part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     terrain_collision_failed = false;
     const std::string& wmod = provider->world_module();
@@ -5631,8 +5656,10 @@ bool WorldSession::Impl::install_world(
 
     // 2. eval_world with the root_params_json override.
     script_host::ScriptHost host;
-    host.set_shared_lib_roots(cfg.fixture_io && cfg.fixture_io->sources
-        ? std::vector<std::string>{} : provider->shared_lib_roots());
+    host.set_shared_lib_roots(provider->shared_lib_roots());
+    if (fixture_io && fixture_io->sources)
+        host.set_module_sources(source_snapshot_modules(
+            *fixture_io->sources, provider->shared_lib_roots()));
     std::string params_json = cfg.root_params_json.empty() ? "{}" : cfg.root_params_json;
     script_host::WorldEvalResult r = host.eval_world(world_source, params_json);
     if (!r.ok) { err = "install_world: eval_world failed: " + r.message; return false; }
@@ -5874,9 +5901,20 @@ bool WorldSession::Impl::install_world(
             const bool built = test_builder
                 ? test_builder(*world_field, canonical, cfg.cache_root,
                                cancelled, candidate, collision_error)
-                : terrain_collision::load_or_build_candidate(
-                      *world_field, canonical, cfg.cache_root, cancelled,
-                      candidate, collision_error);
+                : [&] {
+                    if (fixture_io && fixture_io->cache) {
+                        terrain_collision::detail::FixtureArtifactStorage storage(
+                            fixture_io->cache);
+                        terrain_collision::detail::BuildTestHooks hooks;
+                        hooks.storage = &storage;
+                        return terrain_collision::detail::load_or_build_candidate_with_test_hooks(
+                            *world_field, canonical, cfg.cache_root, cancelled, hooks,
+                            candidate, collision_error);
+                    }
+                    return terrain_collision::load_or_build_candidate(
+                        *world_field, canonical, cfg.cache_root, cancelled,
+                        candidate, collision_error);
+                }();
             if (cancelled()) {
                 set_cancelled_error();
                 return false;
@@ -6015,8 +6053,10 @@ bool WorldSession::Impl::install_world(
         }
 
         world_sector_identity_host = std::make_shared<script_host::ScriptHost>();
-        world_sector_identity_host->set_shared_lib_roots(cfg.fixture_io && cfg.fixture_io->sources
-            ? std::vector<std::string>{} : provider->shared_lib_roots());
+        world_sector_identity_host->set_shared_lib_roots(provider->shared_lib_roots());
+        if (fixture_io && fixture_io->sources)
+            world_sector_identity_host->set_module_sources(source_snapshot_modules(
+                *fixture_io->sources, provider->shared_lib_roots()));
     }
 
     // 8. Asset install: eval_requires on WorldSector to discover its child variants,
@@ -7157,7 +7197,7 @@ bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
                                          const VtSurfaceClassifier* surface,
                                          float texels_per_meter,
                                          viewer::VkScenePart& out) {
-    const auto fixture_io = cfg.fixture_io;
+    const auto fixture_io = fixture_inputs();
     part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     out = viewer::VkScenePart{};
     out.part_hash = part_hash;
@@ -9384,7 +9424,7 @@ void WorldSession::Impl::bake_and_stage_sector(
     const streaming::detail::TaggedRequest& request,
     size_t completion_index,
     const std::shared_ptr<viewer::LocalProvider>& provider_ref) {
-    const auto fixture_io = cfg.fixture_io;
+    const auto fixture_io = fixture_inputs();
     part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     struct TrackedRequestGuard {
         Impl* owner = nullptr;
@@ -10788,7 +10828,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
 // rendering (last-good artifacts intact).
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
-    const auto fixture_io = cfg.fixture_io;
+    const auto fixture_io = fixture_inputs();
     part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     auto& token = cmd.token;
     auto is_cancelled = [token] { return token && token->is_cancelled(); };
@@ -11005,7 +11045,9 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     // will re-install with the same seed override — the cone only touches the
     // changed files' subtree, so this is correct and consistent.
     // Re-create the provider so it picks up the updated cfg_ callbacks.
-    provider = std::make_shared<viewer::LocalProvider>(cfg);
+    auto provider_cfg = cfg;
+    provider_cfg.fixture_io = fixture_io;
+    provider = std::make_shared<viewer::LocalProvider>(std::move(provider_cfg));
 
     {
         std::string ierr;
@@ -11071,6 +11113,8 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
 // instance_count() const can trigger it via the mutable members.
 // ---------------------------------------------------------------------------
 bool WorldSession::Impl::ensure_tracer() const {
+    const auto fixture_io = fixture_inputs();
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     if (!tracer_dirty && tracer) return true;
 
     // Build TraceInstance list from state root entries.
@@ -11756,6 +11800,12 @@ void WorldSession::reload() {
     // (mirroring old reload() semantics).
     impl_->ensure_worker_started();
     impl_->enqueue_full_bake(matter_async::CommandKind::Reload);
+}
+
+void WorldSession::reload_fixture_sources(std::shared_ptr<const SourceSnapshot> sources) {
+    if (!sources) throw std::invalid_argument("reload_fixture_sources: null snapshot");
+    impl_->ensure_worker_started();
+    impl_->enqueue_full_bake(matter_async::CommandKind::Reload, std::move(sources));
 }
 
 void WorldSession::regenerate(uint64_t world_seed) {

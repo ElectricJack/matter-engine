@@ -169,7 +169,24 @@ if(BUILD_TESTING)
     add_test(NAME vulkan_compat_tests COMMAND vulkan_compat_tests)
     set_tests_properties(vulkan_compat_tests PROPERTIES LABELS vulkan)
 
+    # Actual CPU contract implementations shared with the portable
+    # Linux validation graph; the native GPU object closure retains
+    # every original production source exactly once.
+    set(matter_vulkan_cpu_contract_sources
+        MatterEngine3/src/render/vk_scene_renderer.cpp
+        MatterEngine3/src/render/vk_context.cpp
+        MatterEngine3/src/render/vk_instance_cache.cpp
+        MatterEngine3/src/render/vk_temporal.cpp
+        MatterEngine3/src/render/vk_gi_math.cpp
+        MatterEngine3/src/render/vk_lighting_controls.cpp
+        MatterEngine3/src/render/streamline_bridge.cpp
+        MatterEngine3/src/render/raster_mesh.cpp
+        MatterEngine3/src/render/frame_matrices.cpp
+        MatterEngine3/src/render/matrix_math.cpp
+        MatterEngine3/src/render/indexed_part_geometry.cpp
+    )
     set(matter_vulkan_smoke_sources
+        ${matter_vulkan_cpu_contract_sources}
         MatterEngine3/src/geometry/geometry_compiler.cpp
         MatterEngine3/src/geometry/geometry_pages.cpp
         MatterEngine3/src/geometry/geometry_cut.cpp
@@ -177,11 +194,8 @@ if(BUILD_TESTING)
         MatterEngine3/src/mesh_error.cpp
         libs/MatterSurfaceLib/src/mesh_simplifier.cpp
         libs/MatterSurfaceLib/src/mesh_indexed.cpp
-        MatterEngine3/src/render/streamline_bridge.cpp
-        MatterEngine3/src/render/vk_context.cpp
         MatterEngine3/src/render/vk_resources.cpp
         MatterEngine3/src/render/vk_pipeline.cpp
-        MatterEngine3/src/render/vk_scene_renderer.cpp
         libs/MatterGraphics/src/native/mesh_raster.cpp
         libs/MatterGraphics/src/native/mesh_pipelines.cpp
         MatterEngine3/src/render/vk_sparse_voxel.cpp
@@ -216,14 +230,6 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vk_atmosphere.cpp
         MatterEngine3/src/render/vk_cloud_shadows.cpp
         MatterEngine3/src/render/vk_emitter_gather.cpp
-        MatterEngine3/src/render/raster_mesh.cpp
-        MatterEngine3/src/render/indexed_part_geometry.cpp
-        MatterEngine3/src/render/vk_instance_cache.cpp
-        MatterEngine3/src/render/frame_matrices.cpp
-        MatterEngine3/src/render/vk_temporal.cpp
-        MatterEngine3/src/render/vk_gi_math.cpp
-        MatterEngine3/src/render/vk_lighting_controls.cpp
-        MatterEngine3/src/render/matrix_math.cpp
         MatterEngine3/src/render/lod_trace.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp
@@ -394,6 +400,13 @@ if(BUILD_TESTING)
         matter_engine_viewer_objects)
     add_test(NAME vulkan_smoke_tests COMMAND vulkan_smoke_tests)
     set_tests_properties(vulkan_smoke_tests PROPERTIES
+        LABELS "cpu;core"
+        ENVIRONMENT "MATTER_VK_SMOKE_MODE=cpu"
+        PASS_REGULAR_EXPRESSION "ALL PASS"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    add_test(NAME vulkan_smoke_gpu_tests COMMAND vulkan_smoke_tests)
+    set_tests_properties(vulkan_smoke_gpu_tests PROPERTIES
         LABELS vulkan
         PASS_REGULAR_EXPRESSION "ALL PASS"
         FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"

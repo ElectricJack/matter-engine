@@ -1,4 +1,5 @@
 #include "part_bundle.h"
+#include "source_snapshot_modules.h"
 // MatterEngine3/src/provider/local_provider.cpp
 //
 // Implementation of the in-process WorldProvider. See local_provider.h for the
@@ -1650,7 +1651,8 @@ bool LocalProvider::ensure_part_surface(uint64_t hash, const part_graph::BakeInp
     part_surface::Stats stats;gpu_meshing::Error error;
     if (!part_surface_cache_) part_surface_cache_=std::make_unique<part_surface::SourceCache>();
     if (!part_surface::prepare(recipe,abs_cache_root_,queued_project,queued_shade,
-                               prepared,stats,error,cfg_.surface_control,part_surface_cache_.get())) {message=error.message;return false;}
+                               prepared,stats,error,cfg_.surface_control,part_surface_cache_.get(),
+                               cfg_.fixture_io ? cfg_.fixture_io->cache.get() : nullptr)) {message=error.message;return false;}
     const auto publish=cfg_.publish_part_surface;
     auto invoke=[prepared,publish](std::string& text){return publish(prepared,text);};
     if (!(run?run("finite_publish",invoke,message):invoke(message))) return false;
@@ -3723,8 +3725,10 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // it through BakeOptions.parts_dir so bake_source writes artifacts to absolute
     // paths (Task 3 Phase B: no chdir required).
     host_ = std::make_unique<script_host::ScriptHost>();
-    host_->set_shared_lib_roots(cfg_.fixture_io && cfg_.fixture_io->sources
-        ? std::vector<std::string>{} : abs_shared_lib_roots_);
+    host_->set_shared_lib_roots(abs_shared_lib_roots_);
+    if (cfg_.fixture_io && cfg_.fixture_io->sources)
+        host_->set_module_sources(matter::source_snapshot_modules(
+            *cfg_.fixture_io->sources, abs_shared_lib_roots_));
     bind_solid_source_baker(*host_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_,
         cfg_.fixture_io ? cfg_.fixture_io->sources : nullptr);
@@ -4351,8 +4355,10 @@ bool LocalProvider::run_tileset_deferred(
             std::string descriptor_source;
             if (cfg_.read_source(descriptor_path, descriptor_source)) {
                 script_host::ScriptHost detail_host;
-                detail_host.set_shared_lib_roots(cfg_.fixture_io && cfg_.fixture_io->sources
-                    ? std::vector<std::string>{} : abs_shared_lib_roots_);
+                detail_host.set_shared_lib_roots(abs_shared_lib_roots_);
+                if (cfg_.fixture_io && cfg_.fixture_io->sources)
+                    detail_host.set_module_sources(matter::source_snapshot_modules(
+                        *cfg_.fixture_io->sources, abs_shared_lib_roots_));
                 const std::string merged = detail_host.merged_params_json(
                     descriptor_source, root_params_json);
                 detail_bake::BrickBondDescriptor descriptor;
@@ -4949,8 +4955,10 @@ bool LocalProvider::restore_from_cache(
     // Initialise ScriptHost + HostBaker so ensure_part_baked() can re-bake
     // individual cache-miss parts without running a global resolve.
     host_ = std::make_unique<script_host::ScriptHost>();
-    host_->set_shared_lib_roots(cfg_.fixture_io && cfg_.fixture_io->sources
-        ? std::vector<std::string>{} : abs_shared_lib_roots_);
+    host_->set_shared_lib_roots(abs_shared_lib_roots_);
+    if (cfg_.fixture_io && cfg_.fixture_io->sources)
+        host_->set_module_sources(matter::source_snapshot_modules(
+            *cfg_.fixture_io->sources, abs_shared_lib_roots_));
     bind_solid_source_baker(*host_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_,
         cfg_.fixture_io ? cfg_.fixture_io->sources : nullptr);

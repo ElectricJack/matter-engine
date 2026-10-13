@@ -1,7 +1,6 @@
 #include "vulkan_device_fixture.h"
 #include <matter/graphics/vulkan_raster.h>
-#include <fstream>
-#include <iterator>
+#include "imported_asset_fixture.h"
 #include <cmath>
 #include "raster_native.h"
 int main() {
