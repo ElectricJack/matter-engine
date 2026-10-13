@@ -1651,6 +1651,7 @@ GPU_ANIMATION_RUNTIME_CPP = \
 # in their owning projects and are compiled with the existing gpu flavor.
 GPU_PROVIDER_CPU_CPP = $(SCRIPT_SOLID_COMMON_CPP) \
     ../src/projected_face_cache.cpp ../src/part_surface.cpp \
+    ../src/finite_surface_stamp.cpp ../src/mesh_error.cpp \
     ../src/brick_bond_detail.cpp ../src/brick_bond_atlas.cpp \
     ../src/geometry/geometry_asset.cpp ../src/geometry/geometry_pages.cpp \
     ../src/geometry/geometry_compiler.cpp ../src/geometry/geometry_cut.cpp \
@@ -1663,6 +1664,7 @@ GPU_PROVIDER_CPU_CPP = $(SCRIPT_SOLID_COMMON_CPP) \
     ../src/hydrology/spillway_handoff.cpp ../src/hydrology/river_runtime.cpp \
     ../src/hydrology/hydrology_network_artifact.cpp \
     ../src/hydrology/hydrology_handoff_products.cpp \
+    ../src/hydrology/water_mesh_continuity.cpp \
     ../src/hydrology/river_presentation_field.cpp \
     ../src/hydrology/water_mesh_animation_capture.cpp \
     ../src/hydrology/water_mesh_animation.cpp \
