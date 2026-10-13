@@ -238,9 +238,50 @@ OID is `9b689a8c03609948e454a890d52ec900a8a00328`. Core retains CastleStone
 8-seed/23-operation identity, dependency-change, cancellation/runaway and
 prior-result guards using its actual shared fixture implementation.
 
-Core must deliver its qualified graph/OID and the next serialized full native
-build slot. That final-source full build is required by this task's component
-CMake change; the native component/slice receipts above do not substitute for it.
-CI files belong to keen-current-19. Coordination is on
-`clear-stone-99-native-qualification`. This checkpoint does not close the task
-or claim the aggregate project suite meets its one-minute goal.
+Core must still deliver its qualified graph/OID. Supervisor message
+`msg-b8ebd1b2d89849bca89304bc7a4adafe` superseded the earlier core-first native
+order and allocated one canonical full native attempt to this ready component.
+That final-source full build is required by this task's component CMake change;
+the native component/slice receipts above do not substitute for it. CI files
+belong to keen-current-19. Current coordination and graph delivery are on
+`clear-stone-99-memory-fixtures`. This checkpoint does not close the task or
+claim the aggregate project suite meets its one-minute goal.
+
+### Canonical full native attempt: failed qualification
+
+The allocated attempt froze clean source at
+`4e90883eb88dc7b45e67a136cf31d8efcf437377`, unchanged before/after the run.
+It invoked the project canonical `./tools/build-windows-from-wsl.sh
+RelWithDebInfo` default target graph with `CMAKE_BUILD_PARALLEL_LEVEL=1`;
+the running Windows Ninja PID 94432 independently confirmed `-j 1`.
+A fresh native `Win32_Process` check immediately before launch found no
+competing build/compiler/wrapper processes in the checked process inventory.
+No process was killed and no implementation or build policy changed.
+
+Configure succeeded (exit 0). Build/wrapper failed (exit 1) after 1,541.79s
+(25m42s), from 2026-10-13 06:04:48 to 06:30:29 UTC. The graph contained 1,309
+steps; 560 completed before step 561 failed while compiling the unchanged
+`MatterEngine3/src/animation/animation_runtime_asset.cpp`. MSVC's fatal
+diagnostic at line 1095 was:
+
+```text
+fatal error C1090: PDB API call failed, error code '23': (0x000006BA)
+```
+
+No source compile error preceded this PDB API failure. No editor/product
+artifact was produced, so **full native qualification has not passed**.
+The complete log is `/tmp/clear-stone-99-full-native.log`, SHA-256
+`b4dc5bee7df43a157ff75e1997f842989b28981ec94a247e613a3627020fdca5`.
+`/tmp/clear-stone-99-full-native-receipt.json` records the frozen source,
+claim epoch, start/end/wall/exit status, process and parallelism checks, and
+hashes/timestamps of 17 partial library/compiler-probe artifacts. These partial
+artifacts are not product qualification. The native build tree remains intact.
+A post-exit native query found no checked build/compiler or `mspdbsrv` process.
+
+Actual completion/failure receipts were sent once to the supervisor on the
+current delivery thread (`msg-26c5acf057b3409784f475a9dc0ae3e2`) and to the
+core owner on `steady-harbor-62-coordination`
+(`msg-b1fad5bb010846ecaa35bb57a726b03b`). A further native attempt awaits the
+supervisor's next serialized allocation. Shared graph delivery remains a
+separate pending item; the passing component results and disclosed coverage
+boundaries above are unchanged.
