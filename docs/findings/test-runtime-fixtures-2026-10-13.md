@@ -246,3 +246,33 @@ the producer and archive membership remain unchanged. All1557 captured source
 identities matched after the completed build. Log:
 /tmp/steady-harbor-d75101260-linux-default-build.log,
 SHA256:aa5f92a1f6dad99e42d8030a4c9b3d499a363f151b9c4e2edad69d34f08035f7.
+
+The46702bcf5 actual Linux DEFAULT ALL run failed its mandatory OBJ golden
+qualification after1676.29s. CastleStone and AlpineFlower texture hashes differ,
+and AlpineFlower fails its original UV tolerance. The guards were neither
+disabled nor updated. Full log:/tmp/steady-harbor-46702bcf5-linux-default-build.log,
+SHA256:00e047b386f8eeb9509dc503de4070f144cc7ff26d0e1090a95ad5750c525a38.
+The original pre-migration test TU from held-task base1f4ff089a, compiled with
+the actual qualifier policy and linked against the actual current producer
+archive/closure, reproduces all three identical failures (33.59s,exit1).
+Control:/tmp/steady-harbor-obj-golden-migration-control/receipt.json;
+runtime-log SHA256:1dd9dbecc8a5bed06b8227d8a57c43151e273416cf4d95dc9e219f0208fdc479.
+Production exporter and MeshChartingLib have no changes against that base.
+This isolates the test migration; it does not establish a complete original
+production baseline or qualify the failing export. Investigation remains open.
+
+CORE's authorized fresh canonical native DEFAULT RelWithDebInfo allocation at
+46702bcf5 completed exit1 after1741.86s. The actual pre-start native process
+census was empty; the running Ninja PID96788 was independently verified-j1.
+Source HEAD and tracked status were clean and unchanged before/after. The
+build failed the viewer matter_engine.cpp at7200:static build_weld_part called
+the instance fixture_inputs without an object. No editor artifact was produced.
+Complete source/start/end/artifact receipt:
+/tmp/steady-harbor-46702bcf5-full-native-receipt.json. Full-log SHA256:
+5a32a535d7cd636ccbdf5a3f0a787a54253279388fcdee3c697573dd27fa6c1c.
+The private weld helper is now an instance member, preserving its session cache
+scope and sole instance caller. The actual canonical TU with the full Vulkan
+viewer branch passes GNU syntax-only checking (30.66s); this is not a corrected
+native build receipt. Additional native allocation and full Linux/runtime
+acceptance remain pending. Actual native/Linux CPU registrations both contain
+the same136 test names, with no omission or extra test.
