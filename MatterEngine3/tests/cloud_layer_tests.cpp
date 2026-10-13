@@ -27,7 +27,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
 #include <fstream>
+#endif
 #include <iterator>
 #include <string>
 
@@ -622,6 +624,9 @@ void test_gpu_packing_round_trip() {
 // This is the ABI boundary for the cloud SSBO. The density shader may not use
 // the new controls until Task 9, but changing C++ stride without extending its
 // GLSL mirror would make every following element read at the wrong offset.
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
+// MatterGraphics CMake runs these source predicates in qualify_environment.py
+// before compiling this fixture. Legacy Make keeps its existing qualification.
 void test_gpu_cloud_layer_shader_layout_contract() {
     std::ifstream input("../shaders_vk/vol_common.glsl", std::ios::binary);
     CHECK(static_cast<bool>(input), "cloud GLSL source is available to pin the SSBO contract");
@@ -636,6 +641,7 @@ void test_gpu_cloud_layer_shader_layout_contract() {
     CHECK(source.find("vec4 shape_bias_padding;") != std::string::npos,
           "GLSL appends shapeBias plus three zero padding lanes as one vec4");
 }
+#endif
 
 // The octave ceiling is a frame-cost guard, not a preference: octaves
 // multiply the per-froxel work directly across 1.84M froxels.
@@ -669,6 +675,7 @@ void test_sanitize_clamps_the_cost_dials() {
     CHECK(!degenerate.enabled, "an inverted layer is switched off, not kept");
 }
 
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
 void test_task9_shared_density_and_optional_r16f_contract() {
     std::ifstream density("../shaders_vk/cloud_density.glsl", std::ios::binary);
     const std::string shared((std::istreambuf_iterator<char>(density)),
@@ -719,6 +726,7 @@ void test_task9_shared_density_and_optional_r16f_contract() {
               std::string::npos,
           "Task 9 runtime allocation uses the canonical enhanced-cloud predicate");
 }
+#endif
 
 matter::GpuCloudLayer task9_numerical_layer(int index = 0) {
     matter::CloudLayer layer = make_layer(100.0f, 300.0f, 0.0375f, 20.0f, 30.0f);
@@ -832,9 +840,13 @@ int main() {
     test_disabled_layer_survives_compaction_and_reenable();
     test_seed_default_cloud_layer_makes_a_degenerate_layer_live();
     test_gpu_packing_round_trip();
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
     test_gpu_cloud_layer_shader_layout_contract();
+#endif
     test_sanitize_clamps_the_cost_dials();
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
     test_task9_shared_density_and_optional_r16f_contract();
+#endif
     test_task9_neutral_density_numerical_parity();
     test_task9_density_semantics();
     test_task9_derived_seeds_decorrelate_density_samples();

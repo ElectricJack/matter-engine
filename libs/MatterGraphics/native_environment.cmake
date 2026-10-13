@@ -30,16 +30,42 @@ if(MSVC)
     target_compile_options(matter_graphics_environment PRIVATE /W4 /permissive- /utf-8)
 endif()
 if(BUILD_TESTING)
+    # Pin the production wiring/layout during the build; CTest exercises only
+    # generated numerical fixtures and does not resolve production source files.
+    set(_environment_sources
+        "${_graphics_repo}/MatterEngine3/shaders_vk/vol_common.glsl"
+        "${_graphics_repo}/MatterEngine3/shaders_vk/cloud_density.glsl"
+        "${_graphics_repo}/MatterEngine3/shaders_vk/vol_density.comp"
+        "${_graphics_repo}/MatterEngine3/shaders_vk/composite.frag"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/native/vk_volumetrics.cpp"
+        "${_graphics_repo}/MatterEngine3/src/matter_engine.cpp"
+        "${_graphics_repo}/MatterEditor/src/main.cpp"
+        "${_graphics_repo}/MatterEngine3/src/render/vk_scene_renderer.cpp"
+        "${_graphics_repo}/MatterEngine3/tests/vulkan_smoke_tests.cpp")
+    set(_environment_qualified "${CMAKE_CURRENT_BINARY_DIR}/environment-qualified.stamp")
+    add_custom_command(OUTPUT "${_environment_qualified}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/qualify_environment.py"
+            "${_graphics_repo}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${_environment_qualified}"
+        DEPENDS tools/qualify_environment.py ${_environment_sources} VERBATIM)
+    add_custom_target(matter_graphics_environment_qualification
+        DEPENDS "${_environment_qualified}")
     foreach(suite atmosphere cloud_layer cloud_shadow volumetric_quality)
         add_executable(matter_graphics_${suite}_tests
             "${_graphics_repo}/MatterEngine3/tests/${suite}_tests.cpp")
         target_link_libraries(matter_graphics_${suite}_tests PRIVATE matter_graphics_environment)
+        if(suite STREQUAL "cloud_layer" OR suite STREQUAL "volumetric_quality")
+            target_compile_definitions(matter_graphics_${suite}_tests PRIVATE
+                MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD=1)
+            add_dependencies(matter_graphics_${suite}_tests matter_graphics_environment_qualification)
+        endif()
         add_test(NAME matter_graphics_${suite} COMMAND matter_graphics_${suite}_tests)
         set_tests_properties(matter_graphics_${suite} PROPERTIES
-            WORKING_DIRECTORY "${_graphics_repo}/MatterEngine3/tests")
+            LABELS "cpu;graphics" TIMEOUT 10)
     endforeach()
     add_executable(matter_graphics_cloud_shadow_reference_tests
         tests/cloud_shadow_reference_tests.cpp)
     target_link_libraries(matter_graphics_cloud_shadow_reference_tests PRIVATE matter_graphics_environment)
     add_test(NAME matter_graphics_cloud_shadow_reference COMMAND matter_graphics_cloud_shadow_reference_tests)
+    set_tests_properties(matter_graphics_cloud_shadow_reference PROPERTIES LABELS "cpu;graphics" TIMEOUT 10)
 endif()

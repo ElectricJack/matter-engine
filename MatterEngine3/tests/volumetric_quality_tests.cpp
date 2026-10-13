@@ -4,7 +4,9 @@
 
 #include <cmath>
 #include <cstdint>
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
 #include <fstream>
+#endif
 #include <limits>
 #include <string>
 
@@ -36,10 +38,12 @@ bool equal(const matter::CloudShadowSettings& a,
            a.update_fraction == b.update_fraction;
 }
 
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
 std::string read_file(const char* path) {
     std::ifstream file(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
+#endif
 
 float slice_to_depth(float slice, float depth_slices) {
     return 0.1f * std::pow(30000.0f, slice / depth_slices);
@@ -72,6 +76,9 @@ void test_dimension_independent_slice_mapping_and_shader_contract() {
             prior_transmittance = transmittance;
         }
     }
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
+    // The CMake graphics slice qualifies these exact source predicates at
+    // build time in qualify_environment.py; numerical slice mapping stays here.
     const std::string common = read_file("../shaders_vk/vol_common.glsl");
     CHECK(common.find("const uint VOL_W") == std::string::npos &&
               common.find("const uint VOL_H") == std::string::npos &&
@@ -79,6 +86,7 @@ void test_dimension_independent_slice_mapping_and_shader_contract() {
               common.find("slice_to_depth(float slice_index, float depth_slices)") != std::string::npos &&
               common.find("depth_to_slice_n(float depth, float depth_slices)") != std::string::npos,
           "volumetric shader helpers derive slice mapping from runtime depth dimensions");
+#endif
 }
 
 void test_froxel_grid_resolves_every_discrete_combination() {
@@ -230,6 +238,7 @@ void test_enhanced_lighting_derives_from_any_enhanced_feature() {
 // grid, memory, preset and wiring contracts they sat beside still cover the
 // shipped code.
 
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
 void test_effective_froxel_state_and_rejection_recovery_are_wired() {
     const std::string engine = read_file("../src/matter_engine.cpp");
     const std::string editor = read_file("../../MatterEditor/src/main.cpp");
@@ -269,6 +278,7 @@ void test_resize_smoke_observes_bundle_view_and_ceil_dispatch_coverage() {
               smoke.find("seen_frame_slots") != std::string::npos,
           "the resize smoke pins bundle-view replacement, ceil dispatch coverage, and both frame slots");
 }
+#endif
 
 } // namespace
 
@@ -280,9 +290,11 @@ int main() {
     test_froxel_memory_saturates_instead_of_wrapping_for_unrepresentable_dimensions();
     test_presets_apply_and_identify_exact_fixed_table_values();
     test_enhanced_lighting_derives_from_any_enhanced_feature();
+#ifndef MATTER_ENVIRONMENT_QUALIFIED_AT_BUILD
     test_effective_froxel_state_and_rejection_recovery_are_wired();
     test_froxel_candidate_descriptor_failure_is_transactionally_destroyed();
     test_neutral_volume_fallback_is_explicitly_cleared();
     test_resize_smoke_observes_bundle_view_and_ceil_dispatch_coverage();
+#endif
     return check_summary();
 }
