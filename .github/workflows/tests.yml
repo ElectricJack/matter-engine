@@ -28,8 +28,38 @@ jobs:
           make -C libs/MemoryLib -j2 test
           make -C libs/MeshChartingLib/tests -j2 run
           make -C libs/AssetStoreLib -j2 test
+  # Agents build and test on Linux as they work; the single Windows runner is
+  # the scarce resource. A branch whose changes cannot reach the native build
+  # (web/, docs/, Markdown only) skips it -- a skipped required job reports
+  # success. dev/staging/main and called runs always build in full.
+  native-scope:
+    name: Native build scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      needed: ${{ steps.scope.outputs.needed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: scope
+        shell: bash
+        run: |
+          needed=true
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/aq/* ]] \
+              && git fetch -q origin dev && base=$(git merge-base HEAD origin/dev); then
+            changed=$(git diff --name-only "$base" HEAD)
+            if [[ -n "$changed" ]] && ! grep -qvE '^(web/|docs/)|\.md$' <<<"$changed"; then
+              needed=false
+            fi
+          fi
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+          echo "Native Windows build needed: $needed"
   native:
     name: Native Windows build and tests
+    needs: native-scope
+    if: needs.native-scope.outputs.needed == 'true'
     runs-on: [self-hosted, Windows, X64, matter-engine-msvc]
     timeout-minutes: 90
     env:
