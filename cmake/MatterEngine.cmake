@@ -493,6 +493,21 @@ if(BUILD_TESTING)
         MatterEngine3/tests/authored_world_provider_cache_tests.cpp)
     matter_add_engine_cpu_test(material_registry_tests
         libs/MatterSurfaceLib/tests/material_registry_tests.cpp)
+    matter_add_engine_cpu_test(polygon_triangulate_tests
+        MatterEngine3/tests/polygon_triangulate_tests.cpp)
+    matter_add_engine_cpu_test(mesh_indexed_tests
+        libs/MatterSurfaceLib/tests/mesh_indexed_tests.cpp)
+    matter_add_engine_cpu_test(mesh_transform_tests
+        libs/MatterSurfaceLib/tests/mesh_transform_tests.cpp)
+    matter_add_engine_cpu_test(mesh_smooth_tests
+        libs/MatterSurfaceLib/tests/mesh_smooth_tests.cpp)
+    matter_add_engine_cpu_test(oriented_cube_tests
+        libs/MatterSurfaceLib/tests/oriented_cube_tests.cpp)
+    include("${CMAKE_SOURCE_DIR}/cmake/MatterGeometrySupplement.cmake")
+    matter_add_geometry_compute_test(matter_geometry_compute_off OFF cpu
+        "${CMAKE_SOURCE_DIR}" "${matter_vulkan_glslc}")
+    matter_add_geometry_compute_test(matter_geometry_compute_on ON gpu
+        "${CMAKE_SOURCE_DIR}" "${matter_vulkan_glslc}")
     matter_add_engine_cpu_test(terrain_collision_definition_tests
         MatterEngine3/tests/terrain_collision_definition_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_artifact_tests

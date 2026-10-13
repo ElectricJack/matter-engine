@@ -357,3 +357,62 @@ overcommit setting. No fixture/source/asset/cache/evidence file access occurred.
 Source remained clean and unchanged. Receipt:
 /tmp/steady-harbor-corrected-focused-check/receipt.json. These scoped checks do
 not qualify the failing full Linux build or the corrected native DEFAULT graph.
+
+The original full producer control was reused for a private atlas diagnosis,
+replacing exactly mesh_charting.o and mesh_export.o with actual original-source
+logging, then a one-comparator candidate. All other213 archive members, the
+original test object, fixtures and linked dependencies stayed byte-identical.
+AlpineFlower chart2/7 have exactly equal raw height0x1.3ed4dp-3, and12/38 have
+height0x1.db22d2p-4; their widths are near-equal, not identical. GNU height-only
+sort puts7 before2 and38 before12, at final scale0x1.456d9cp+7. Their placements
+are ox135/90,oy45 and ox157/139,oy144. The index tie-break reverses those pairs,
+fixing the original24 U deltas, but introduces12 other U deltas at vt172-177
+and196-201 (chart32/37, exactly equal height0x1.3ceb5cp-3). Both texture digest
+failures remain; both original and candidate runs exit1 with three failures.
+No candidate source or golden changes were integrated. This demonstrates the
+reported pair permutation, not a complete explanation or qualified correction.
+A cheap private actual-library42-rectangle equal-height order guard fails the
+old comparator and passes the candidate (0.002/0.003s); adjacent unequal float
+heights still sort tallest-first. Exact commands, hex traces, hashes and
+untouched-golden output are in /tmp/steady-harbor-atlas-order-control/receipt.json,
+affected-pair-analysis.json and tie_order_guard_receipt.json.
+
+The common native and GNU registration now also includes the unchanged real
+polygon_triangulate, mesh_indexed, mesh_transform, mesh_smooth and oriented_cube
+test sources, linked to the actual common engine implementation archive. Their
+implementation TUs are already in the engine/surface manifests; no additional
+shared implementation copies were added to these executables. The compute OFF
+and ON cases use separate builds of the actual GeometryCompute standalone
+project, with its real ComputeDevice/Contracts dependencies. ON compiles the
+actual Vulkan device, four real shaders and generated embedding, and uses the
+MATTER_GEOMETRY_COMPUTE=1 macro on the library and test. OFF omits that macro and
+backend by its actual canonical configuration. Both parent DEFAULT ALL targets
+always configure/build the corresponding actual child DEFAULT ALL graph; the
+source/generated-graph qualifier remains an unconditional ALL target and a
+runtime-executable dependency. Both generated closure audits have unique
+compiled source paths (OFF8, ON10), with no scene/host/terrain dependency.
+The five cases and OFF are CPU; ON is GPU with resource lock matter_gpu.
+The GNU inventory is now142 CPU cases plus this one compute GPU case.
+
+The seven own-source GNU targets built in93.73s and both dependency qualifiers
+passed. The first GPU runtime correctly failed because the required validation
+layer was absent. An actual Ubuntu1.3.275.0-1 validation-layer package was then
+extracted into an independent tool directory (package SHA256
+3f5e9b53fbaabe32d770d3608912c04a33b8683385df9a5472fe062c16850746).
+With the real layer, parallel CTest and file tracing passed all7 in10.64s.
+All six CPU traces contain only executable/system loader accesses. GPU uses
+actual Vulkan driver/layer configuration, shared libraries and device probes;
+its source enables in-memory validation and disables disk shader caches. An
+unchanged build of both compute graphs reruns both mandatory qualifiers in
+1.06s. These are scoped costs, not full common build or runtime acceptance.
+The GNU registrar accepts explicit actual layer/tool directories and records
+them in registration metadata and the GPU test environment. Evidence is in
+/tmp/steady-harbor-geometry-supplement-check/receipt.json, including actual
+source/macro/target closures, binary hashes, ALL graphs, JUnit and file traces.
+Native common graph configuration/build remains pending the existing host
+release wait. No corrected native build has launched or consumed its allocation.
+The final registration was also exercised with inherited VK_LAYER_PATH and
+LD_LIBRARY_PATH removed: all7 passed under parallel CTest/file tracing in12.61s,
+using only the GPU test's registered actual-tool environment. The same six CPU
+traces remain loader-only; successful GPU opens are actual driver/layer/system
+files, with no fixture/source/asset/cache/evidence opens or shader-cache writes.

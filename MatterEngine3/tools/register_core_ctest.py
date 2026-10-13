@@ -146,19 +146,27 @@ def main():
     parser.add_argument('--only', nargs='+', help='explicit partial graph')
     parser.add_argument('--build-core', action='store_true')
     parser.add_argument('--glslc', default='glslc', help='actual Linux shader compiler for the Make archive')
+    parser.add_argument('--vulkan-layer-dir', type=Path,
+                        help='actual Vulkan validation-layer manifests for the compute GPU test')
+    parser.add_argument('--vulkan-layer-library-dir', type=Path,
+                        help='actual validation-layer shared-library directory when outside the system loader path')
     parser.add_argument('--archive-core', action='store_true',
                         help='link every common core test against the canonical Make headless archive')
     args = parser.parse_args()
     repository = args.repository.resolve()
     output = args.test_dir.resolve()
     core, editor, unsupported, peers = discover(repository)
-    selected = set(args.only) if args.only else set(core) | set(editor) | set(unsupported)
+    components = {
+        'matter_geometry_compute_off': {'backend': 'OFF', 'tier': 'cpu'},
+        'matter_geometry_compute_on': {'backend': 'ON', 'tier': 'gpu'}}
+    selected = set(args.only) if args.only else set(core) | set(editor) | set(unsupported) | set(components)
     failures = {name: unsupported.get(name, 'unknown CPU test')
-                for name in selected if name not in core and name not in editor}
+                for name in selected if name not in core and name not in editor and name not in components}
     if failures:
         raise SystemExit(json.dumps({'unregistered': failures, 'peer_graphs': peers}, indent=2))
     core = {name: target for name, target in core.items() if name in selected}
     editor = {name: source for name, source in editor.items() if name in selected}
+    components = {name: target for name, target in components.items() if name in selected}
     if args.archive_core:
         core = {name: dict(target, archive=True)
                 for name, target in core.items()}
@@ -358,12 +366,31 @@ def main():
         lines.append(f'target_link_libraries({name} PRIVATE Threads::Threads)')
         lines.extend([f'add_test(NAME {name} COMMAND {name})',
                       f'set_tests_properties({name} PROPERTIES LABELS "cpu;editor")'])
+    if components:
+        lines += ['include(' + quote(repository / 'cmake/MatterGeometrySupplement.cmake') + ')',
+                  'set(Vulkan_INCLUDE_DIR ' + quote(repository / 'third_party/Vulkan-Headers/include') + ')',
+                  'find_library(Vulkan_LIBRARY NAMES vulkan libvulkan.so.1 REQUIRED)']
+        for name, target in sorted(components.items()):
+            lines += [f'matter_add_geometry_compute_test({name} {target["backend"]} {target["tier"]} '
+                      + quote(repository) + ' ' + quote(args.glslc) + ')']
+            if target['tier'] == 'gpu':
+                environment = []
+                if args.vulkan_layer_dir:
+                    environment.append('VK_LAYER_PATH=' + str(args.vulkan_layer_dir.resolve()))
+                if args.vulkan_layer_library_dir:
+                    environment.append('LD_LIBRARY_PATH=' + str(args.vulkan_layer_library_dir.resolve()))
+                if environment:
+                    lines += [f'set_tests_properties({name} PROPERTIES ENVIRONMENT ' +
+                              quote(';'.join(environment)) + ')']
     (output / 'CMakeLists.txt').write_text('\n'.join(lines) + '\n')
-    record = {'scope': 'partial' if args.only else 'common CPU slice',
+    record = {'scope': 'partial' if args.only else 'common CPU and compute GPU graph',
               'tests': sorted(selected), 'peer_graphs': peers,
               'unsupported_outside_selection': unsupported,
               'core_binaries': {name: str(path) for name, path in binaries.items()},
-              'editor_sources': editor, 'archive_sources': archive}
+              'editor_sources': editor, 'archive_sources': archive,
+              'geometry_compute_graphs': components,
+              'vulkan_layer_dir': str(args.vulkan_layer_dir.resolve()) if args.vulkan_layer_dir else None,
+              'vulkan_layer_library_dir': str(args.vulkan_layer_library_dir.resolve()) if args.vulkan_layer_library_dir else None}
     (output / 'registration.json').write_text(json.dumps(record, indent=2) + '\n')
     print(json.dumps(record, indent=2))
 
