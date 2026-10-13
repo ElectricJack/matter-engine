@@ -28,7 +28,10 @@ MAKE_TESTS = (
     "terrain_collision_artifact_tests",
 )
 
-SCRIPT_FIXTURES = ("terrain_verb_tests", "sector_bake_tests", "demand_bake_tests")
+SCRIPT_FIXTURES = (
+    "terrain_verb_tests", "sector_bake_tests", "demand_bake_tests",
+    "terrain_collision_session_tests",
+)
 
 
 def quote(value):
