@@ -1774,6 +1774,27 @@ int main() {
            editor_make.find("$(MAKE) -C $(ME3_DIR) vulkan-spirv") != std::string::npos);
     assert(editor_make.find("build/shaders_vk/vol_scatter.comp.spv: $(ME3_DIR)/shaders_vk/environment_common.glsl") ==
            std::string::npos);
+    const std::string smoke_irradiance = read_shader("../shaders_vk/atmosphere_irradiance.comp");
+    assert(!smoke_irradiance.empty());
+    assert(smoke_irradiance.find("gl_GlobalInvocationID.y * 3u + gl_GlobalInvocationID.x") != std::string::npos &&
+           smoke_irradiance.find("if (coefficient >= 9u) return;") != std::string::npos);
+    const std::string smoke_atmosphere = read_shader("../../libs/MatterGraphics/src/native/vk_atmosphere.cpp");
+    assert(smoke_atmosphere.find("bind_dispatch(irradiance_pass_, 3, 3)") != std::string::npos);
+    const std::string smoke_renderer = read_shader("../src/render/vk_scene_renderer.cpp");
+    const size_t smoke_froxel_prepare = smoke_renderer.find("volumetrics_->prepare_froxel_bundle(frame.frame_slot, error)");
+    const size_t smoke_composite_update = smoke_renderer.find("update_composite_descriptor(selected)", smoke_froxel_prepare);
+    assert(smoke_froxel_prepare != std::string::npos && smoke_composite_update != std::string::npos && smoke_froxel_prepare < smoke_composite_update);
+    const size_t smoke_composite_function = smoke_renderer.find("void VkSceneRenderer::update_composite_descriptor");
+    const size_t smoke_composite_end = smoke_renderer.find("bool VkSceneRenderer::update_environment_descriptor", smoke_composite_function);
+    assert(smoke_composite_function != std::string::npos && smoke_composite_end != std::string::npos);
+    const std::string smoke_selection = smoke_renderer.substr(smoke_composite_function, smoke_composite_end - smoke_composite_function);
+    assert(smoke_selection.find("ray_tracing_settings_.enabled") != std::string::npos &&
+           smoke_selection.find("vulkan_->ray_tracing_available()") != std::string::npos &&
+           smoke_selection.find("!rt_instances_.empty()") != std::string::npos &&
+           smoke_selection.find("rt_effective_observed()") == std::string::npos);
+    const std::string smoke_props = read_shader("../../MatterEditor/src/editor_props.cpp");
+    assert(!smoke_props.empty() && smoke_props.find("\"Cloud shadow transmittance\"") != std::string::npos &&
+           smoke_props.find(".enums(kVolDebugLabels, 6)") != std::string::npos);
     printf("shader source qualification: all passed\n");
     return 0;
 }

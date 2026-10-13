@@ -16,6 +16,7 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -51,8 +52,12 @@ struct ScopedCacheRootEnv {
 
 struct Fixture {
     fs::path root;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    matter::SourceSnapshot::Files files;
+#endif
 
     Fixture() {
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         const auto stamp = std::chrono::high_resolution_clock::now()
                                .time_since_epoch().count();
         root = fs::temp_directory_path() /
@@ -60,18 +65,28 @@ struct Fixture {
         fs::create_directories(root / "objects");
         fs::create_directories(root / "project-shared");
         fs::create_directories(root / "engine-shared");
+#else
+        static std::atomic<unsigned> next_id{0};
+        root = fs::path("/matter-world-definition") / std::to_string(next_id++);
+#endif
     }
 
     ~Fixture() {
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         std::error_code ignored;
         fs::remove_all(root, ignored);
+#endif
     }
 
     fs::path write(const fs::path& relative, const std::string& contents) {
         const fs::path path = root / relative;
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         fs::create_directories(path.parent_path());
         std::ofstream out(path, std::ios::binary);
         out << contents;
+#else
+        files[matter::SourceSnapshot::key(path.string())] = contents;
+#endif
         return path;
     }
 
@@ -81,12 +96,16 @@ struct Fixture {
         result.objects_dir = (root / "objects").string();
         result.project_shared_lib_dir = (root / "project-shared").string();
         result.engine_shared_lib_dir = (root / "engine-shared").string();
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+        result.source_snapshot = std::make_shared<const matter::SourceSnapshot>(files);
+#endif
         result.world_seed = 77;
         result.canonical_params_json = "{\"difficulty\":3}";
         return result;
     }
 };
 
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_project_layout_derives_runtime_paths() {
     Fixture fixture;
     fs::create_directories(fixture.root / "worlds");
@@ -357,6 +376,8 @@ void test_relative_project_dir_yields_absolute_cache_root() {
     CHECK(cfg_from_absolute.cache_root == cfg.cache_root,
           "an already-absolute project_dir produces the identical cache_root");
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_rejects_non_world_base_with_location_and_property() {
     Fixture fixture;
@@ -735,6 +756,7 @@ void test_surface_receiver_authoring() {
           "world receiver selection: explicit modules survive native world loading");
 }
 
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_surface_contact_material() {
     const fs::path project = "../../projects/world_demo";
     const fs::path path = project / "scenes/texturing/terrain/SurfaceContactProof/SurfaceContactProof.js";
@@ -1247,6 +1269,8 @@ void test_example_worlds_preserve_manifest_authoring() {
               (std::string(expected.name) + " procedural settings").c_str());
     }
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_authored_entity_override_cannot_intercept_collection() {
     Fixture fixture;
@@ -2902,6 +2926,7 @@ class RiverHydrology extends World {
           "hydrology dimensions are parsed as typed domain extents");
 }
 
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
     const fs::path project = fs::path("../../projects/world_demo");
     matter::WorldLoadDesc load{};
@@ -3061,6 +3086,8 @@ void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
     CHECK(collider_footprints_clear_terrain,
           "every boulder collider clears the rounded-V terrain across its footprint");
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_world_loader_leaves_hydrology_empty_when_absent() {
     Fixture fixture;
@@ -3892,6 +3919,7 @@ void test_world_loader_rejects_invalid_gi_bake() {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     ScopedCacheRootEnv clean_cache_environment(nullptr);
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
     if (argc == 2 && std::string(argv[1]) == "--surface-contact") {
         test_surface_receiver_authoring();
         test_surface_contact_material();
@@ -3918,6 +3946,15 @@ int main(int argc, char** argv) {
     test_surface_contact_material();
     test_surface_receiver_authoring();
     test_example_worlds_preserve_manifest_authoring();
+    test_checked_in_river_hydrology_uses_the_imperative_section_contract();
+    return check_summary();
+#else
+    if (argc != 1) {
+        std::fprintf(stderr, "Source qualification options moved to matter_world_source_qualifier.\n");
+        return 2;
+    }
+    (void)argv;
+    test_surface_receiver_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
     test_local_light_object_forms_and_runtime_publication();
@@ -3967,7 +4004,6 @@ int main(int argc, char** argv) {
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();
     test_world_loader_reads_static_hydrology();
-    test_checked_in_river_hydrology_uses_the_imperative_section_contract();
     test_world_loader_leaves_hydrology_empty_when_absent();
     test_world_loader_rejects_invalid_static_hydrology();
     test_world_loader_rejects_every_unknown_hydrology_property();
@@ -3989,4 +4025,5 @@ int main(int argc, char** argv) {
     test_world_loader_rejects_invalid_gi_bake();
     test_slot_binder_reset_union_is_exact();
     return check_summary();
+#endif
 }

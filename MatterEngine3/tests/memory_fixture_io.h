@@ -39,6 +39,21 @@ public:
         files_.erase(SourceSnapshot::key(path));
         return true;
     }
+    std::uint32_t move(const std::string& source, const std::string& destination,
+                       bool replace) override {
+        std::lock_guard<std::mutex> guard(lock_);
+        if (fail_publication_) return 5u;
+        const auto from_key = SourceSnapshot::key(source);
+        const auto to_key = SourceSnapshot::key(destination);
+        const auto from = files_.find(from_key);
+        if (from == files_.end()) return 2u;
+        if (from_key == to_key) return 0u;
+        if (!replace && files_.count(to_key)) return 183u;
+        files_[to_key] = from->second;
+        files_.erase(from);
+        ++publication_count_;
+        return 0u;
+    }
 private:
     mutable std::mutex lock_;
     std::map<std::string, ReadHandle> files_;

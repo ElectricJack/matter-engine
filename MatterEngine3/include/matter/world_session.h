@@ -1033,6 +1033,13 @@ public:
     // request_bake()/reload() succeeds (the old world is torn down before rebaking).
     void reload();
 
+    // Queue a Reload owning the next source generation. The nonnull
+    // snapshot replaces sources on the bake worker after the existing
+    // cancellation/quiescence barrier. Cache storage and configured
+    // paths stay unchanged; old providers retain their prior snapshot.
+    // A null snapshot throws std::invalid_argument without queuing work.
+    void reload_fixture_sources(std::shared_ptr<const SourceSnapshot> sources);
+
     // Phase C Task 9: world-kind sessions: the sea level from the world definition.
     // Returns true and sets `out` for world-kind sessions; returns false for
     // closed-world (expand/tileset) sessions (no water plane in those worlds).

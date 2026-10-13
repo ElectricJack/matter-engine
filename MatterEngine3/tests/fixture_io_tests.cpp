@@ -2,6 +2,7 @@
 #include "memory_fixture_io.h"
 #include "../src/part_bundle.h"
 #include "../src/source_snapshot_modules.h"
+#include "../src/terrain_collision/fixture_artifact_storage.h"
 #include <atomic>
 #include <thread>
 
@@ -55,7 +56,56 @@ static void source_tier_guards() {
           "explicit empty roots do not import unrelated sources");
 }
 
+static void collision_storage_guards() {
+    auto cache = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    matter::terrain_collision::detail::FixtureArtifactStorage storage(cache);
+    CHECK(cache->publish("/collision/left", {1, 2}) &&
+          cache->publish("/collision/right", {3, 4}), "collision stages use owned bytes");
+    const auto retained_left = cache->open("/collision/left");
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::uint32_t result[2] = {99, 99};
+    auto publish = [&](int index, const char* source) {
+        ++ready;
+        while (!go.load()) std::this_thread::yield();
+        result[index] = storage.move(source, "/collision/winner", false);
+    };
+    std::thread left(publish, 0, "/collision/left");
+    std::thread right(publish, 1, "/collision/right");
+    while (ready.load() != 2) std::this_thread::yield();
+    go = true;
+    left.join(); right.join();
+    CHECK((result[0] == 0 && result[1] == 183) ||
+          (result[1] == 0 && result[0] == 183), "one atomic no-replace publisher wins");
+    const char* remaining = result[0] == 0 ? "/collision/right" : "/collision/left";
+    const auto winner = cache->open("/collision/winner");
+    const auto staged = cache->open(remaining);
+    CHECK(winner && staged && *retained_left == matter::CacheByteStorage::Bytes({1, 2}),
+          "loser stage and old immutable lease survive publication");
+    cache->fail_publication(true);
+    CHECK(storage.move(remaining, "/collision/winner", true) != 0 &&
+          cache->open("/collision/winner") == winner && cache->open(remaining) == staged,
+          "failed collision replacement preserves both generations");
+    cache->fail_publication(false);
+    CHECK(storage.move(remaining, "/collision/winner", true) == 0 &&
+          cache->open("/collision/winner") == staged && !cache->open(remaining) &&
+          winner->size() == 2, "replacement transfers owned bytes without invalidating old lease");
+    std::uint8_t value = 77;
+    CHECK(!storage.read("/collision/winner", 2, 1, &value) && value == 77 &&
+          storage.read("/collision/winner", 1, 1, &value) && value == (*staged)[1],
+          "collision reads validate bounds before touching caller bytes");
+    std::error_code error;
+    CHECK(storage.file_size("/collision/winner", error) == 2 && !error &&
+          storage.file_size("/collision/missing", error) == std::uintmax_t(-1) &&
+          error == std::errc::no_such_file_or_directory,
+          "collision size and missing-key errors use memory storage");
+    storage.remove("/collision/winner");
+    CHECK(!cache->open("/collision/winner") && staged->size() == 2,
+          "collision erasure preserves outstanding immutable reads");
+}
+
 int main() {
+    collision_storage_guards();
     source_tier_guards();
     using namespace part_bundle;
     matter::SourceSnapshot sources({

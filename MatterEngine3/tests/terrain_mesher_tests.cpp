@@ -112,10 +112,12 @@ struct TriangleOccurrence {
 };
 
 static TriangleOccurrence find_ravine_plateau_mate(const SectorMesh& mesh) {
+    // Same world-space quad as the original 64 m fixture, rebased to the 8 m
+    // tile at (120,40,0). Pin the local floats produced by that arithmetic.
     constexpr std::array<float, 9> expected = {
-        61.5f, 44.0f, 0.5f,
-        61.7f, 44.0138016f, 0.3f,
-        61.3f, 44.0247993f, 0.3f,
+        5.5f, 4.0f, 0.5f,
+        5.7f, 4.0138016f, 0.3f,
+        5.3f, 4.02479839f, 0.3f,
     };
     TriangleOccurrence found{};
     for (size_t bucket_index = 0; bucket_index < mesh.buckets.size();
@@ -228,10 +230,14 @@ int main() {
                   "seaLevel -100\nbiome 0.65 0.35\n",
                   program, error), error.c_str());
         FieldRuntime field(std::move(program), overlay);
+        // Crop around the half-collapsed quad at world (125.5,44,0.5).
+        // Keep the original 0.5 m voxel, field, seam modes, ordered mate,
+        // material bucket and emission index. This scans fewer surrounding
+        // ravine triangles while preserving the concrete regression fixture.
         for (int contour_seams = 0; contour_seams <= 1; ++contour_seams) {
             bake_mode::forced_contour_seams() = contour_seams;
             SectorMesh mesh;
-            CHECK(mesh_sector_tiled(field, 1, 0, 0, 2, 64.0f,
+            CHECK(mesh_sector_tiled(field, 15, 5, 0, 2, 8.0f,
                                     mesh, nullptr, error), error.c_str());
             size_t scanned = 0;
             const bool outward =
