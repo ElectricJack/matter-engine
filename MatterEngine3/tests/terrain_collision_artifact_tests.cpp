@@ -14,7 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
+#include "terrain_collision_memory_storage.h"
 #include <functional>
 #include <iomanip>
 #include <limits>
@@ -29,6 +29,31 @@
 #include <vector>
 
 namespace {
+
+TerrainCollisionMemoryStorage memory_cache;
+
+bool load_in_memory(
+    const terrain_field::FieldRuntime& field,
+    const matter::terrain_collision::CanonicalDefinition& definition,
+    const std::filesystem::path& cache_root,
+    const matter::terrain_collision::CancelCheck& cancelled,
+    matter::terrain_collision::TerrainCollisionCandidate& candidate,
+    std::string& error) {
+    matter::terrain_collision::detail::BuildTestHooks hooks;
+    hooks.storage = &memory_cache;
+    return matter::terrain_collision::detail::load_or_build_candidate_with_test_hooks(
+        field, definition, cache_root, cancelled, hooks, candidate, error);
+}
+
+bool validate_manifest_in_memory(
+    const std::filesystem::path& path,
+    const matter::terrain_collision::CanonicalDefinition& definition,
+    const matter::terrain_collision::TerrainCollisionCandidate& candidate,
+    std::string& error) {
+    return matter::terrain_collision::detail::validate_generation_manifest(
+        path, definition, candidate, error, &memory_cache);
+}
+
 
 using matter::Float3;
 using matter::TerrainCollisionDefinition;
@@ -134,23 +159,25 @@ bool load_with_hooks(
     const matter::terrain_collision::detail::BuildTestHooks& hooks,
     TerrainCollisionCandidate& candidate,
     std::string& error) {
+    auto memory_hooks = hooks;
+    memory_hooks.storage = &memory_cache;
     return matter::terrain_collision::detail::load_or_build_candidate_with_test_hooks(
-        field.runtime, definition, cache_root, cancelled, hooks, candidate, error);
+        field.runtime, definition, cache_root, cancelled, memory_hooks, candidate, error);
 }
 
 class TempRoot {
 public:
     explicit TempRoot(const char* label) {
         static std::atomic<std::uint64_t> serial{0u};
-        path = std::filesystem::current_path() /
+        path = std::filesystem::path("memory") /
             (std::string(".terrain-collision-artifact-") + label + "-" +
              std::to_string(serial.fetch_add(1u, std::memory_order_relaxed)));
         std::error_code ignored;
-        std::filesystem::remove_all(path, ignored);
+        memory_cache.remove_all(path, ignored);
     }
     ~TempRoot() {
         std::error_code ignored;
-        std::filesystem::remove_all(path, ignored);
+        memory_cache.remove_all(path, ignored);
     }
     std::filesystem::path path;
 };
@@ -175,28 +202,19 @@ std::filesystem::path manifest_path(const std::filesystem::path& root,
 }
 
 std::vector<std::uint8_t> read_bytes(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    CHECK(static_cast<bool>(stream), "test fixture file opens for reading");
-    stream.seekg(0, std::ios::end);
-    const std::streamoff length = stream.tellg();
-    CHECK(length >= 0, "test fixture file has a nonnegative length");
-    stream.seekg(0, std::ios::beg);
-    std::vector<std::uint8_t> result(static_cast<std::size_t>(length));
-    if (!result.empty())
-        stream.read(reinterpret_cast<char*>(result.data()), length);
-    CHECK(static_cast<bool>(stream), "test fixture file reads completely");
-    return result;
+    std::error_code error;
+    const auto size = memory_cache.file_size(path, error);
+    CHECK(!error, "generated artifact exists in memory");
+    if (error) return {};
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+    CHECK(memory_cache.read(path, 0, bytes.size(), bytes.data()),
+          "generated artifact reads completely");
+    return bytes;
 }
 
 void write_bytes(const std::filesystem::path& path,
                  const std::vector<std::uint8_t>& bytes) {
-    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-    CHECK(static_cast<bool>(stream), "test fixture file opens for writing");
-    if (!bytes.empty())
-        stream.write(reinterpret_cast<const char*>(bytes.data()),
-                     static_cast<std::streamsize>(bytes.size()));
-    stream.flush();
-    CHECK(static_cast<bool>(stream), "test fixture file writes completely");
+    CHECK(memory_cache.write(path, bytes), "generated artifact writes completely");
 }
 
 bool float3_bytes_equal(const std::vector<Float3>& a,
@@ -314,10 +332,10 @@ void test_fixture_conversion_is_valid_and_repeatable() {
         TerrainCollisionCandidate first{};
         TerrainCollisionCandidate second{};
         std::string error;
-        const bool first_ok = matter::terrain_collision::load_or_build_candidate(
+        const bool first_ok = load_in_memory(
             field.runtime, definition, first_root.path, {}, first, error);
         CHECK(first_ok, error.c_str());
-        const bool second_ok = matter::terrain_collision::load_or_build_candidate(
+        const bool second_ok = load_in_memory(
             field.runtime, definition, second_root.path, {}, second, error);
         CHECK(second_ok, error.c_str());
         if (!first_ok || !second_ok) continue;
@@ -352,7 +370,7 @@ void test_all_material_buckets_are_flattened() {
         direct_triangles += bucket.positions.size() / 9u;
     TempRoot root("materials");
     TerrainCollisionCandidate candidate{};
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, definition, root.path, {}, candidate, error),
           error.c_str());
     CHECK(candidate.stats.triangle_count == direct_triangles,
@@ -372,7 +390,7 @@ void test_uniform_density_tiles_succeed_empty() {
         TempRoot root("empty");
         TerrainCollisionCandidate candidate{};
         std::string error;
-        CHECK(matter::terrain_collision::load_or_build_candidate(
+        CHECK(load_in_memory(
                   field.runtime, definition, root.path, {}, candidate, error),
               error.c_str());
         CHECK(candidate.tiles.size() == 1u && candidate.tiles[0].vertices.empty() &&
@@ -380,7 +398,7 @@ void test_uniform_density_tiles_succeed_empty() {
               "all-air and all-solid sectors remain successful empty tiles");
         CHECK(candidate.stats.empty_tiles == 1u,
               "successful empty tiles are counted in candidate statistics");
-        CHECK(std::filesystem::exists(tile_path(root.path, candidate.tiles[0].tile_key)),
+        CHECK(memory_cache.exists(tile_path(root.path, candidate.tiles[0].tile_key)),
               "successful empty tiles still publish deterministic artifacts");
     }
 }
@@ -417,7 +435,7 @@ void test_source_identity_validates_runtime_and_overlay_independently() {
     TempRoot plain_root("source-identity-plain");
     TerrainCollisionCandidate candidate{};
     std::string error;
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               plain.runtime, plain_definition, plain_root.path, {}, candidate,
               error),
           "a runtime without an overlay accepts its direct runtime hash");
@@ -431,7 +449,7 @@ void test_source_identity_validates_runtime_and_overlay_independently() {
     TempRoot overlaid_root("source-identity-overlaid");
     candidate = {};
     error.clear();
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               overlaid.runtime, overlaid_definition, overlaid_root.path, {},
               candidate, error),
           error.c_str());
@@ -441,7 +459,7 @@ void test_source_identity_validates_runtime_and_overlay_independently() {
     TempRoot overlay_mismatch_root("source-identity-overlay-mismatch");
     candidate = {};
     error.clear();
-    CHECK(!matter::terrain_collision::load_or_build_candidate(
+    CHECK(!load_in_memory(
               overlaid.runtime, overlay_mismatch, overlay_mismatch_root.path,
               {}, candidate, error) &&
               error ==
@@ -453,7 +471,7 @@ void test_source_identity_validates_runtime_and_overlay_independently() {
     TempRoot runtime_mismatch_root("source-identity-runtime-mismatch");
     candidate = {};
     error.clear();
-    CHECK(!matter::terrain_collision::load_or_build_candidate(
+    CHECK(!load_in_memory(
               overlaid.runtime, runtime_mismatch, runtime_mismatch_root.path,
               {}, candidate, error) &&
               error ==
@@ -475,10 +493,10 @@ void test_final_overlaid_runtime_is_meshed() {
     TerrainCollisionCandidate base_candidate{};
     TerrainCollisionCandidate overlay_candidate{};
     std::string error;
-    const bool base_ok = matter::terrain_collision::load_or_build_candidate(
+    const bool base_ok = load_in_memory(
         base.runtime, base_definition, base_root.path, {}, base_candidate, error);
     CHECK(base_ok, error.c_str());
-    const bool overlay_ok = matter::terrain_collision::load_or_build_candidate(
+    const bool overlay_ok = load_in_memory(
         overlaid.runtime, overlaid_definition, overlay_root.path, {},
         overlay_candidate, error);
     CHECK(overlay_ok, error.c_str());
@@ -633,7 +651,7 @@ void assert_equal_rung_pair(const char* label, const char* field_text,
     TempRoot root(label);
     TerrainCollisionCandidate candidate{};
     std::string error;
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, definition, root.path, {}, candidate, error),
           error.c_str());
     CHECK(candidate.tiles.size() == 2u,
@@ -730,7 +748,7 @@ void test_validators_reject_invalid_geometry_and_headers() {
 
     TempRoot root("count-overflow");
     TerrainCollisionCandidate candidate{};
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, definition, root.path, {}, candidate, error),
           error.c_str());
     std::vector<std::uint8_t> bytes =
@@ -751,14 +769,14 @@ void test_cache_hits_material_reuse_and_region_reuse() {
     TerrainCollisionCandidate cold{};
     TerrainCollisionCandidate warm{};
     std::string error;
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, base_definition, root.path, {}, cold, error),
           error.c_str());
     const std::filesystem::path base_tile =
         tile_path(root.path, cold.tiles[0].tile_key);
     const std::vector<std::uint8_t> original_bytes = read_bytes(base_tile);
-    const auto original_time = std::filesystem::last_write_time(base_tile);
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    const auto original_time = memory_cache.last_write_time(base_tile);
+    CHECK(load_in_memory(
               field.runtime, base_definition, root.path, {}, warm, error),
           error.c_str());
     CHECK(same_tiles(cold, warm),
@@ -766,7 +784,7 @@ void test_cache_hits_material_reuse_and_region_reuse() {
     CHECK(warm.stats.cache_hit_tiles == base_definition.sectors.size() &&
               warm.stats.built_tiles == 0u,
           "the second load validates every tile from cache without remeshing");
-    CHECK(matter::terrain_collision::detail::validate_generation_manifest(
+    CHECK(validate_manifest_in_memory(
               manifest_path(root.path, warm.installation_key), base_definition,
               warm, error), error.c_str());
 
@@ -774,7 +792,7 @@ void test_cache_hits_material_reuse_and_region_reuse() {
         field, {0.0f, 0.0f, 0.0f},
         {kSectorSize, kSectorSize, kSectorSize}, 0.25f, 0.4f);
     TerrainCollisionCandidate material{};
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, material_definition, root.path, {}, material, error),
           error.c_str());
     CHECK(material.geometry_key == cold.geometry_key &&
@@ -784,9 +802,9 @@ void test_cache_hits_material_reuse_and_region_reuse() {
               material.stats.cache_hit_tiles == 1u && material.stats.built_tiles == 0u,
           "material-only changes reuse the same immutable MTCT tile");
     CHECK(read_bytes(base_tile) == original_bytes &&
-              std::filesystem::last_write_time(base_tile) == original_time,
+              memory_cache.last_write_time(base_tile) == original_time,
           "material-only changes do not rewrite tile bytes or timestamps");
-    CHECK(std::filesystem::exists(
+    CHECK(memory_cache.exists(
               manifest_path(root.path, material.installation_key)),
           "material-only changes publish a distinct installation manifest");
 
@@ -794,14 +812,14 @@ void test_cache_hits_material_reuse_and_region_reuse() {
         field, {0.0f, 0.0f, 0.0f},
         {2.0f * kSectorSize, kSectorSize, kSectorSize});
     TerrainCollisionCandidate expanded{};
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, expanded_definition, root.path, {}, expanded, error),
           error.c_str());
     CHECK(expanded.tiles[0].tile_key == cold.tiles[0].tile_key &&
               expanded.stats.cache_hit_tiles == 1u && expanded.stats.built_tiles == 1u,
           "expanding a region reuses unchanged sector tiles and builds only new tiles");
     TerrainCollisionCandidate shrunk{};
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, base_definition, root.path, {}, shrunk, error),
           error.c_str());
     CHECK(shrunk.tiles[0].tile_key == cold.tiles[0].tile_key &&
@@ -818,14 +836,14 @@ void test_bake_modes_have_distinct_tile_and_generation_identities() {
     mode.contour_seams(true);
     const CanonicalDefinition default_definition = definition_for(field);
     TerrainCollisionCandidate default_candidate{};
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, default_definition, root.path, {},
               default_candidate, error),
           error.c_str());
 
     mode.contour_seams(false);
     TerrainCollisionCandidate stale_candidate{};
-    CHECK(!matter::terrain_collision::load_or_build_candidate(
+    CHECK(!load_in_memory(
               field.runtime, default_definition, root.path, {},
               stale_candidate, error),
           "a canonical definition from another bake mode is rejected");
@@ -834,7 +852,7 @@ void test_bake_modes_have_distinct_tile_and_generation_identities() {
 
     const CanonicalDefinition rollback_definition = definition_for(field);
     TerrainCollisionCandidate rollback_candidate{};
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, rollback_definition, root.path, {},
               rollback_candidate, error),
           error.c_str());
@@ -849,11 +867,11 @@ void test_bake_modes_have_distinct_tile_and_generation_identities() {
         tile_path(root.path, default_candidate.tiles[0].tile_key);
     const std::filesystem::path rollback_tile =
         tile_path(root.path, rollback_candidate.tiles[0].tile_key);
-    CHECK(std::filesystem::exists(default_tile) &&
-              std::filesystem::exists(rollback_tile) &&
-              std::filesystem::exists(manifest_path(
+    CHECK(memory_cache.exists(default_tile) &&
+              memory_cache.exists(rollback_tile) &&
+              memory_cache.exists(manifest_path(
                   root.path, default_candidate.installation_key)) &&
-              std::filesystem::exists(manifest_path(
+              memory_cache.exists(manifest_path(
                   root.path, rollback_candidate.installation_key)),
           "both bake modes remain independently addressable in one cache root");
     CHECK(read_bytes(default_tile) != read_bytes(rollback_tile),
@@ -881,7 +899,7 @@ void test_corrupt_artifacts_are_rebuilt_once_and_fail_closed() {
     TempRoot root("corruption");
     TerrainCollisionCandidate baseline{};
     std::string error;
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, definition, root.path, {}, baseline, error),
           error.c_str());
     const std::filesystem::path tile =
@@ -931,12 +949,12 @@ void test_corrupt_artifacts_are_rebuilt_once_and_fail_closed() {
                           repaired, error),
           error.c_str());
     CHECK(mesher_calls.load(std::memory_order_relaxed) == 0u &&
-              matter::terrain_collision::detail::validate_generation_manifest(
+              validate_manifest_in_memory(
                   manifest, definition, repaired, error),
           "a corrupt manifest is republished from validated tile artifacts");
 
     std::error_code filesystem_error;
-    CHECK(std::filesystem::remove(tile, filesystem_error) && !filesystem_error,
+    CHECK(memory_cache.remove(tile, filesystem_error) && !filesystem_error,
           "the referenced tile is removed for the missing-artifact fixture");
     mesher_calls.store(0u, std::memory_order_relaxed);
     CHECK(load_with_hooks(field, definition, root.path, {}, counting_hooks,
@@ -949,7 +967,7 @@ void test_corrupt_artifacts_are_rebuilt_once_and_fail_closed() {
     TempRoot failed_root("rebuild-failure");
     const std::filesystem::path failed_tile =
         tile_path(failed_root.path, baseline.tiles[0].tile_key);
-    std::filesystem::create_directories(failed_tile.parent_path());
+    memory_cache.create_directories(failed_tile.parent_path());
     std::vector<std::uint8_t> corrupt = pristine_tile;
     corrupt[0] ^= 0xffu;
     write_bytes(failed_tile, corrupt);
@@ -972,7 +990,7 @@ void test_corrupt_artifacts_are_rebuilt_once_and_fail_closed() {
           "the rebuild failure propagates as an actual mesher failure");
     CHECK(not_published.tiles.empty() &&
               read_bytes(failed_tile) == corrupt &&
-              !std::filesystem::exists(manifest_path(
+              !memory_cache.exists(manifest_path(
                   failed_root.path, definition.installation_key)),
           "a failed rebuild exposes no candidate and publishes no generation manifest");
 }
@@ -1029,26 +1047,17 @@ private:
 
 std::size_t count_files_with_extension(const std::filesystem::path& directory,
                                        const char* extension) {
-    std::error_code error;
-    if (!std::filesystem::exists(directory, error) || error) return 0u;
-    std::size_t count = 0u;
-    for (const auto& entry : std::filesystem::directory_iterator(directory))
-        if (entry.is_regular_file() && entry.path().extension() == extension)
-            ++count;
+    std::size_t count = 0;
+    for (const auto& path : memory_cache.paths_below(directory))
+        if (path.parent_path() == directory && path.extension() == extension) ++count;
     return count;
 }
 
 std::size_t count_publication_temps(const std::filesystem::path& root) {
-    std::error_code error;
-    if (!std::filesystem::exists(root, error) || error) return 0u;
-    std::size_t count = 0u;
-    for (std::filesystem::recursive_directory_iterator it(root, error), end;
-         it != end && !error; it.increment(error)) {
-        if (it->is_regular_file(error) && !error &&
-            it->path().filename().string().find(".tmp-") != std::string::npos)
-            ++count;
-    }
-    return error ? std::numeric_limits<std::size_t>::max() : count;
+    std::size_t count = 0;
+    for (const auto& path : memory_cache.paths_below(root))
+        if (path.filename().string().find(".tmp-") != std::string::npos) ++count;
+    return count;
 }
 
 void test_cancellation_is_polled_at_atomic_publication_boundaries() {
@@ -1057,7 +1066,7 @@ void test_cancellation_is_polled_at_atomic_publication_boundaries() {
     TempRoot reference_root("publication-reference");
     TerrainCollisionCandidate reference{};
     std::string error;
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, definition, reference_root.path, {}, reference,
               error),
           error.c_str());
@@ -1108,9 +1117,9 @@ void test_cancellation_is_polled_at_atomic_publication_boundaries() {
     cancel_at(
         "cancel-manifest-no-replace", PublicationCommitPoint::ManifestNoReplace,
         no_seed, [&](const TempRoot& root) {
-            CHECK(std::filesystem::exists(tile_path(
+            CHECK(memory_cache.exists(tile_path(
                       root.path, reference.tiles[0].tile_key)) &&
-                      !std::filesystem::exists(manifest_path(
+                      !memory_cache.exists(manifest_path(
                           root.path, definition.installation_key)),
                   "manifest no-replace cancellation leaves only the committed tile");
         });
@@ -1122,13 +1131,13 @@ void test_cancellation_is_polled_at_atomic_publication_boundaries() {
         [&](const TempRoot& root) {
             const std::filesystem::path destination =
                 tile_path(root.path, reference.tiles[0].tile_key);
-            std::filesystem::create_directories(destination.parent_path());
+            memory_cache.create_directories(destination.parent_path());
             write_bytes(destination, corrupt_tile);
         },
         [&](const TempRoot& root) {
             CHECK(read_bytes(tile_path(root.path, reference.tiles[0].tile_key)) ==
                           corrupt_tile &&
-                      !std::filesystem::exists(manifest_path(
+                      !memory_cache.exists(manifest_path(
                           root.path, definition.installation_key)),
                   "tile replacement cancellation preserves the prior corrupt file");
         });
@@ -1138,7 +1147,7 @@ void test_cancellation_is_polled_at_atomic_publication_boundaries() {
         [&](const TempRoot& root) {
             TerrainCollisionCandidate seeded{};
             std::string seed_error;
-            CHECK(matter::terrain_collision::load_or_build_candidate(
+            CHECK(load_in_memory(
                       field.runtime, definition, root.path, {}, seeded,
                       seed_error),
                   seed_error.c_str());
@@ -1146,7 +1155,7 @@ void test_cancellation_is_polled_at_atomic_publication_boundaries() {
         },
         [&](const TempRoot& root) {
             std::string validation_error;
-            CHECK(!matter::terrain_collision::detail::validate_generation_manifest(
+            CHECK(!validate_manifest_in_memory(
                       manifest_path(root.path, definition.installation_key),
                       definition, reference, validation_error),
                   "manifest replacement cancellation preserves the corrupt manifest");
@@ -1246,7 +1255,7 @@ void test_concurrent_publishers_validate_winners_and_converge() {
                   ".mtcm") == 1u,
           "concurrent publication leaves one canonical tile and generation file");
     std::string validation_error;
-    CHECK(matter::terrain_collision::detail::validate_generation_manifest(
+    CHECK(validate_manifest_in_memory(
               manifest_path(root.path, results[0].candidate.installation_key),
               definition, results[0].candidate, validation_error),
           validation_error.c_str());
@@ -1309,7 +1318,7 @@ void assert_windows_persistent_winner_open_denial_fails_closed(
               count_files_with_extension(
                   root.path / "terrain_collision" / "v1" / "generations",
                   ".mtcm") == 1u &&
-              matter::terrain_collision::detail::validate_generation_manifest(
+              validate_manifest_in_memory(
                   manifest_path(root.path, winner.candidate.installation_key),
                   definition, winner.candidate, validation_error),
           "persistent loser denial preserves one immutable validated winner");
@@ -1371,7 +1380,7 @@ void test_windows_transient_publication_denial_is_bounded_and_safe() {
               no_replace_attempts.load(std::memory_order_relaxed) == 0u,
           "tile and manifest corrupt-winner replacement retry transient denials boundedly");
     CHECK(count_publication_temps(root.path) == 0u &&
-              matter::terrain_collision::detail::validate_generation_manifest(
+              validate_manifest_in_memory(
                   manifest, definition, repaired, error),
           "replacement recovery leaves no temporary and one validated generation");
 
@@ -1477,7 +1486,7 @@ void assert_cancelled_existing_winner(PublicationCommitPoint race_point,
           "a cancelled validated-winner path cannot return a candidate");
     if (!winner.ok) return;
     std::string validation_error;
-    CHECK(matter::terrain_collision::detail::validate_generation_manifest(
+    CHECK(validate_manifest_in_memory(
               manifest_path(root.path, winner.candidate.installation_key),
               definition, winner.candidate, validation_error),
           "the non-cancelled publisher leaves one valid generation");
@@ -1500,19 +1509,19 @@ void test_interrupted_temporary_file_never_becomes_addressable() {
     TempRoot root("interrupted");
     const std::filesystem::path manifest =
         manifest_path(root.path, definition.installation_key);
-    std::filesystem::create_directories(manifest.parent_path());
+    memory_cache.create_directories(manifest.parent_path());
     const std::filesystem::path interrupted =
         manifest.parent_path() / (manifest.filename().string() + ".tmp-interrupted");
     write_bytes(interrupted, {0x4du, 0x54u, 0x43u});
     TerrainCollisionCandidate candidate{};
     std::string error;
-    CHECK(matter::terrain_collision::load_or_build_candidate(
+    CHECK(load_in_memory(
               field.runtime, definition, root.path, {}, candidate, error),
           error.c_str());
-    CHECK(std::filesystem::exists(interrupted),
+    CHECK(memory_cache.exists(interrupted),
           "an unrelated interrupted sibling remains quarantined and unaddressable");
-    CHECK(std::filesystem::exists(manifest) &&
-              matter::terrain_collision::detail::validate_generation_manifest(
+    CHECK(memory_cache.exists(manifest) &&
+              validate_manifest_in_memory(
                   manifest, definition, candidate, error),
           "only a complete validated generation receives the canonical manifest path");
 }
