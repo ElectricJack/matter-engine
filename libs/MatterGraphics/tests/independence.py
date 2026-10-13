@@ -74,7 +74,7 @@ def audit(build):
                 "matter_graphics_header_scene_backend", "matter_graphics_scene_tests",
                 "matter_graphics_header_composition", "matter_graphics_composition_tests"}
     if vulkan:
-        expected.update({"matter_graphics_vulkan", "matter_graphics_vulkan_tests", "matter_graphics_raster_tests", "matter_graphics_header_vulkan_resources",
+        expected.update({"matter_graphics_vulkan", "matter_graphics_sample", "matter_graphics_vulkan_tests", "matter_graphics_raster_tests", "matter_graphics_header_vulkan_resources",
                          "matter_graphics_header_vulkan_composition", "matter_graphics_header_vulkan_raster"})
         expected.add("matter_graphics_environment")
         expected.add("matter_graphics_cloud_shadow_reference_tests")

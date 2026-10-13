@@ -1,4 +1,5 @@
 // Included by vulkan_tests.cpp to reuse its validation-enabled native device.
+#include "../examples/image_capture.h"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -98,13 +99,6 @@ double display_reference(double value, const mg::CompositionInputs &in, size_t i
   constexpr int ranks[64]={37,12,54,1,46,27,61,8,18,43,5,58,31,50,14,40,63,22,35,10,48,3,56,29,16,45,7,60,25,52,11,38,33,0,47,20,57,15,42,30,9,53,24,62,4,36,19,51,41,13,55,28,59,6,44,21,26,49,2,39,17,34,23,32};
   int rank=ranks[((i/in.albedo.width)&7)*8+((i%in.albedo.width)&7)];
   return std::clamp(code+(rank-31.5)/31.5*(0.5/255),0.0,1.0);
-}
-void ppm(const std::string &name, uint32_t w,uint32_t h,const std::vector<mg::Rgba> &pixels) {
-  std::filesystem::create_directories("composition-evidence");
-  std::ofstream f("composition-evidence/"+name+".ppm",std::ios::binary);
-  f<<"P6\n"<<w<<' '<<h<<"\n255\n";
-  for(const auto &p:pixels)for(int c=0;c<3;++c)f.put(char(std::lround(std::clamp(p[c],0.f,1.f)*255)));
-  check(bool(f),"COMP write matched image evidence");
 }
 void matched(mg::VulkanComposition &backend,const std::string &name,const mg::CompositionInputs &in,
              const std::function<D3(size_t)> &reference) {
