@@ -342,3 +342,18 @@ tie-break. Reciprocal horizontal placement changes are consistent with an
 equal-height ordering difference, but exact chart heights and sorted placement
 order have not been captured; the cause remains unproven. No source, golden,
 tolerance or qualification predicate was changed by this read-only check.
+
+The subsequently delivered supervisor order msg-88d02c49 allocates one corrected
+canonical native DEFAULT RelWithDebInfo run at parallel1, following frontend's
+actual configure-only completion. The frontend ON/OFF checks both passed; its
+qualified viewer graph blobf0d72bd2 matches CORE exactly. Reuse of the retained
+partial native tree requires actual compatibility and a fresh host census.
+Before freezing, corrected CORE7b04a1a21 passed the three canonical CMake targets
+fixture_io, collision and demand (actual Make archive,12.31s). Runtime fixture
+I/O including concurrent retained reads passed0.020s; all14 collision groups
+passed0.714s; all9 demand groups passed0.273s. Every traced file operation was
+reviewed: executable/system loader only, plus demand's read-only kernel
+overcommit setting. No fixture/source/asset/cache/evidence file access occurred.
+Source remained clean and unchanged. Receipt:
+/tmp/steady-harbor-corrected-focused-check/receipt.json. These scoped checks do
+not qualify the failing full Linux build or the corrected native DEFAULT graph.
