@@ -690,6 +690,7 @@ POLYTRI_CPP = polygon_triangulate_tests.cpp ../src/polygon_triangulate.cpp
 
 SHADER_SOURCE_TARGET = build/shader_source_tests
 SHADER_SOURCE_CPP = shader_source_tests.cpp ../src/shader_source.cpp
+SHADER_SOURCE_QUALIFIER = build/qualify_shader_sources
 
 ASYNCQ_TARGET = build/async_queue_tests
 ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
@@ -2860,7 +2861,17 @@ run-tilesetmeadowmanifest: $(TILESETMEADOWMANIFEST_TARGET)
 	./$(TILESETMEADOWMANIFEST_TARGET)
 
 # Stage 1a — embedded shader lookup.
-$(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_OBJS) ../shaders_gen/embedded_shaders.h
+$(SHADER_SOURCE_QUALIFIER): ../tools/qualify_shader_sources.cpp | build
+	$(CC) -std=c++17 -Wall -UNDEBUG $< -o $@
+
+# Source contracts execute at build/lint time, never in the runtime suite.
+# The phony qualification reads current inputs on every supported invocation;
+# no partial source dependency list can accidentally reuse a stale result.
+.PHONY: qualify-shader-sources
+qualify-shader-sources: $(SHADER_SOURCE_QUALIFIER)
+	./$(SHADER_SOURCE_QUALIFIER)
+
+$(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_OBJS) ../shaders_gen/embedded_shaders.h | qualify-shader-sources
 	$(CC) $(SHADER_SOURCE_OBJS) -o $@ \
 	      $(CFLAGS) -I../include -I..
 

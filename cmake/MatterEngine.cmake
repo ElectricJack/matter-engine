@@ -654,6 +654,20 @@ if(BUILD_TESTING)
     matter_add_engine_cpu_test(shader_source_tests
         MatterEngine3/tests/shader_source_tests.cpp)
 
+    # Real source-text contracts belong to build qualification, not runtime
+    # CTest. Run on every relevant build so newly edited/added include files
+    # cannot leave a stale qualification stamp behind.
+    add_executable(matter_shader_source_qualifier
+        MatterEngine3/tools/qualify_shader_sources.cpp)
+    matter_apply_project_defaults(matter_shader_source_qualifier)
+    matter_apply_test_assertion_policy(matter_shader_source_qualifier)
+    add_custom_target(matter_shader_source_qualification ALL
+        COMMAND "$<TARGET_FILE:matter_shader_source_qualifier>"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        DEPENDS matter_shader_source_qualifier
+        VERBATIM)
+    add_dependencies(shader_source_tests matter_shader_source_qualification)
+
     add_custom_target(matter_character_integration_tests)
     add_dependencies(matter_character_integration_tests
         character_controller_tests
