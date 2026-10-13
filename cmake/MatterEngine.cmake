@@ -1,5 +1,12 @@
 include_guard(GLOBAL)
 
+# The viewer configuration of this TU exceeds MSVC's ordinary COFF section
+# limit (C1128). Keep the larger object format local to its core/viewer builds.
+if(MSVC)
+    set_property(SOURCE MatterEngine3/src/matter_engine.cpp APPEND PROPERTY
+        COMPILE_OPTIONS /bigobj)
+endif()
+
 function(matter_engine_include_directories target visibility)
     add_dependencies("${target}"
         matter_embedded_shader_text

@@ -409,10 +409,41 @@ The GNU registrar accepts explicit actual layer/tool directories and records
 them in registration metadata and the GPU test environment. Evidence is in
 /tmp/steady-harbor-geometry-supplement-check/receipt.json, including actual
 source/macro/target closures, binary hashes, ALL graphs, JUnit and file traces.
-Native common graph configuration/build remains pending the existing host
-release wait. No corrected native build has launched or consumed its allocation.
+At that checkpoint the native common graph remained pending the host release
+wait; the subsequent corrected native attempt is recorded below.
 The final registration was also exercised with inherited VK_LAYER_PATH and
 LD_LIBRARY_PATH removed: all7 passed under parallel CTest/file tracing in12.61s,
 using only the GPU test's registered actual-tool environment. The same six CPU
 traces remain loader-only; successful GPU opens are actual driver/layer/system
 files, with no fixture/source/asset/cache/evidence opens or shader-cache writes.
+
+After PR25 completed, the corrected canonical native DEFAULT ALL continuation
+actually ran at frozen source ad635e0b8482c92842faafe127a0e66d4a83495f,
+RelWithDebInfo, CMAKE_BUILD_PARALLEL_LEVEL=1, with no target override. Actual
+Win32 prestart censuses were empty at 12:14:31.2528733Z and 12:15:58.5929225Z.
+The original failed467 tree and all44 artifact hashes were preserved in
+relwithdebinfo.failed-46702bcf5-evidence before compatible retained-tree reuse.
+Source identities for7970 files and the Git index remained unchanged through
+harvest. Start was2026-10-13T12:16:47.155375Z, configure passed at12:16:51.895434Z,
+and the attempt ended at12:17:56.530919Z:69.331112s, exit1. Independent Win32
+Ninja/parent-chain evidence confirmed the actual root serial build.
+
+The headless engine TU compiled and its actual archive was updated, but the
+viewer compilation of MatterEngine3/src/matter_engine.cpp failed with MSVC
+C1128 (ordinary COFF section limit exceeded), after the previous C2352 fix.
+The compiler requested /bigobj. The source-specific MSVC COMPILE_OPTIONS
+property now appends that flag for this shared TU in both core/viewer object
+targets; other sources and existing target assertion/definition policies are
+unchanged. This new correction still requires actual native compilation.
+No editor artifact, completed DEFAULT build, full CTest result or acceptance
+is claimed. The granted corrected native allocation was consumed by this run.
+
+Receipt: /tmp/steady-harbor-ad635e0b8-after-pr25-corrected-native-receipt.json.
+Full log SHA256:
+1a3e7bbde0016386a9ae34402b1786928f940dcb10fb45af00ce8d69551244f0.
+Build log SHA256:
+b91269e73d4718b86b87140abea685c58cb11da2e9975c43f80fcf36a06aec34.
+Independent process proof SHA256:
+2f2b0ed4258c30a75a5dee1a371cf4786b6a40e16287c219f6929504c1e47741.
+The receipt records tool identities, all44 resulting partial artifact hashes,
+original failed-tree provenance and complete source-freeze verification.
