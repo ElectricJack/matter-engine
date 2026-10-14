@@ -84,10 +84,60 @@ else()
     target_compile_options(matter_geometry PRIVATE -Wall -Wextra)
 endif()
 option(MATTER_GEOMETRY_TESTS "Build geometry fixtures without host/renderer/terrain" ON)
+option(MATTER_GEOMETRY_FUZZING "Build the long-running standalone geometry property harness" OFF)
+option(MATTER_GEOMETRY_LIBFUZZER "Build the Clang libFuzzer geometry harness with ASan/UBSan" OFF)
+if(MATTER_GEOMETRY_LIBFUZZER AND NOT MATTER_GEOMETRY_FUZZING)
+    message(FATAL_ERROR "MATTER_GEOMETRY_LIBFUZZER requires MATTER_GEOMETRY_FUZZING=ON")
+endif()
+function(matter_geometry_property_target target entry)
+    add_executable(${target} ${entry} tests/geometry_properties.cpp)
+    target_link_libraries(${target} PRIVATE matter_geometry)
+    target_compile_definitions(${target} PRIVATE
+        MATTER_GEOMETRY_EXPECT_MODIFIERS=$<BOOL:${MATTER_GEOMETRY_MODIFIERS}>)
+    if(MATTER_GEOMETRY_LIBFUZZER)
+        target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link,address,undefined
+            -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    endif()
+    target_include_directories(${target} PRIVATE
+        "${MATTER_GEOMETRY_ROOT}/MatterEngine3/include"
+        "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/include"
+        "${MATTER_GEOMETRY_ROOT}/libs/SpatialQueryLib/include"
+        "${MATTER_GEOMETRY_ROOT}/third_party/raylib/src")
+endfunction()
+if(MATTER_GEOMETRY_FUZZING)
+    matter_geometry_property_target(matter_geometry_fuzz tests/geometry_property_tests.cpp)
+    target_compile_definitions(matter_geometry_fuzz PRIVATE MATTER_GEOMETRY_STANDALONE_FUZZ=1)
+    if(MATTER_GEOMETRY_LIBFUZZER)
+        if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR MSVC)
+            message(FATAL_ERROR "The libFuzzer harness requires the Clang GNU frontend")
+        endif()
+        # Instrument the algorithms and contract validators, not just the input
+        # adapter. Propagate sanitizer runtimes to all consumers in this build.
+        foreach(target matter_geometry matter_contracts)
+            target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link,address,undefined
+                -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+            target_link_options(${target} INTERFACE -fsanitize=address,undefined)
+        endforeach()
+        matter_geometry_property_target(matter_geometry_libfuzzer tests/geometry_fuzzer.cpp)
+        target_compile_options(matter_geometry_libfuzzer PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+        target_link_options(matter_geometry_libfuzzer PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
+endif()
 add_executable(matter_geometry_recipe examples/direct_recipe.cpp)
 target_link_libraries(matter_geometry_recipe PRIVATE matter_geometry)
 if(MATTER_GEOMETRY_TESTS)
     enable_testing()
+    matter_geometry_property_target(matter_geometry_property_tests tests/geometry_property_tests.cpp)
+    set(_property_groups primitives profiles csg queries)
+    if(MATTER_GEOMETRY_MODIFIERS)
+        list(APPEND _property_groups modifiers_lod)
+    endif()
+    set(_property_group 0)
+    foreach(group IN LISTS _property_groups)
+        add_test(NAME matter_geometry_properties_${group} COMMAND matter_geometry_property_tests ${_property_group})
+        set_tests_properties(matter_geometry_properties_${group} PROPERTIES TIMEOUT 5 LABELS "cpu;property")
+        math(EXPR _property_group "${_property_group} + 1")
+    endforeach()
     # Production baseline is test-only. The shipped CPU target never links the
     # unbounded surface traversal, spatial hash or its scratch allocator.
     add_executable(matter_geometry_csg_tests tests/csg_tests.cpp

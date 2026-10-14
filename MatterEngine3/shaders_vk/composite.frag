@@ -535,7 +535,7 @@ void main() {
         vec3 sun_half = normalize(view + to_sun);
         float n_dot_v = max(dot(normal, view), 1e-4);
         float n_dot_h = max(dot(normal, sun_half), 0.0);
-        float v_dot_h = max(dot(view, sun_half), 1e-4);
+        float v_dot_h = clamp(dot(view, sun_half), 1e-4, 1.0);
         float alpha = max(roughness * roughness, 0.0004);
         float a2 = alpha * alpha;
         float d_denom = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
