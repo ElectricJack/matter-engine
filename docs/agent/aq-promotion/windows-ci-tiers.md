@@ -99,11 +99,14 @@ foundation job, not Linux parity with every Windows engine/Vulkan test.
 | --- | ---: | --- |
 | epoch59 working diff, Linux cold portable foundations | 25.611 s | all three suites passed |
 | same Linux inputs, warm portable foundations | 4.728 s | all three suites passed; MemoryLib recompilation included |
+| clean commit `92936ed0`, warm portable foundations, two jobs | 4.468 s | all three suites passed; build/test commands and script hash retained |
 | preserved checkpoint2e67 forced-clean/cached Windows fast run | 480.605 s total | historical failed run: 158/159, hydrology failure; 892/892 cache hits |
 | epoch59 native current PR inventory | not measured | canonical build interrupted for supervisor resource order after 1298/1305 actions; CTest never started |
 
-Linux measurements are local WSL, `hosted: false`, with the working-source state
-recorded. The historical Windows fast result is not a controlled before/after
+Linux measurements are local WSL, `hosted: false`. The first cold/warm pair used
+three independent jobs and a recorded working diff; the final warm run used two
+jobs on clean commit `92936ed0c6fbe22f25a0d5d6edb079972d8e7223`, with the CI
+script hash and each build/test duration recorded. The historical Windows fast result is not a controlled before/after
 comparison. Hosted source qualification and native warm build/test timings remain
 required. The original full-suite target is less than 60 seconds, not the earlier
 10/20-minute advisory target. If the measured full test floor exceeds 60 seconds,
@@ -123,6 +126,7 @@ are capped at two jobs and require that actual measurement order to finish.
 
 Retained local evidence: [Linux cold](evidence/ci-performance-20261014/linux-cold.json),
 [Linux warm](evidence/ci-performance-20261014/linux-warm.json),
+[clean-commit Linux warm](evidence/ci-performance-20261014/linux-92936ed0-warm.json),
 [interrupted native source manifest](evidence/ci-performance-20261014/native-cold-source.json),
 [interruption record](evidence/ci-performance-20261014/native-interrupted-summary.json),
 [cache statistics](evidence/ci-performance-20261014/native-interrupted-cache.json),
