@@ -135,6 +135,8 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
   command FIFO grammar, and events.
 - **[QA cookbook](agent/qa-cookbook.md)** — builds, screenshots, replay/diff,
   smoke, seam, and performance gates.
+- **[Windows CI tiers](agent/aq-promotion/windows-ci-tiers.md)** — persistent
+  builds, compiler cache, test selection, timing evidence and promotion bindings.
 - **[Issue system](agent/issue-system.md)** — capture, file, and replay
   workflow.
 - **[Object evaluation adapter](agent/object-evaluation.md)** — frozen rock

@@ -24,10 +24,14 @@ jobs:
       - name: Test the attestation verifier
         run: python3 -m unittest discover -s tools/tests -p test_aq_attestation.py -v
       - name: Build and test the portable foundations
-        run: |
-          make -C libs/MemoryLib -j2 test
-          make -C libs/MeshChartingLib/tests -j2 run
-          make -C libs/AssetStoreLib -j2 test
+        run: python3 tools/ci-linux.py
+      - name: Upload Linux evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/ci-linux/
+          if-no-files-found: error
   # Agents build and test on Linux as they work; the single Windows runner is
   # the scarce resource. A branch whose changes cannot reach the native build
   # (web/, docs/, Markdown only) skips it -- a skipped required job reports
