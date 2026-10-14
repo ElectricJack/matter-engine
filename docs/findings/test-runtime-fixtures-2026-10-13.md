@@ -951,3 +951,75 @@ reconstruction receipt SHA256:
 The required Linux golden repair remains unestablished. These private controls
 neither replace mandatory qualifications nor justify another unchanged full
 build/runtime rerun.
+
+
+## Full Linux Clang producer comparison (source c4542b10)
+
+The supervisor's next diagnostic rebuilds the complete real producer rather
+than substituting only the texture baker. An isolated archive under
+`/tmp/steady-harbor-epoch9-clang-producer/` compiles all 215 canonical core
+archive members with Clang 18.1.3 C/C++, including QuickJS, Flecs, the shared
+mesher, smoothing, charting and full export pipeline. Source and optimization
+flags come from the actual Make recipes; no fast-math/FMA override is added.
+The archive build passes in 624.94 seconds. Its member names and order match
+the real GNU archive exactly, and the receipt binds 630 actual source/header
+dependency files. Real Ozz, Box3D and Raylib archives are reused and bound by
+SHA-256 in the link receipts; those external archives are not rebuilt with
+Clang. The canonical GNU archive is preserved.
+
+The original filesystem OBJ qualifier, with assertions enabled and every
+original part/DSL predicate retained, runs against this Clang archive both
+without instrumentation and with private capture hooks. A fresh GNU qualifier
+capture supplies the current comparison. All three qualification logs are
+identical: CastleStone's normal digest is the single failure, actual
+`a9b38f2de4de4fe2` versus required `281757a9a9886a07`; the other parts and DSL
+guards pass. Measured qualification times are 22.70 seconds for uninstrumented
+Clang, 25.31 seconds for captured Clang and 37.42 seconds for captured GNU.
+These are focused diagnostic qualifications, not whole CPU-suite measurements.
+
+Before replay, the actual GNU and Clang model/options captures are byte equal
+and both reproduce the retained GNU model SHA-256:
+`2c4395dc2787704943a2c9a13c57af954dba269411858a2f8dcede21924a205c`.
+This comparison includes topology/index/submesh order, per-vertex positions,
+normals, UVs, occlusion, tint and material fields, and all captured bake
+options. The real chart assignments, tangent/bitangent frames, minima,
+rectangles and packed placements are also byte equal. Their capture SHA-256
+is `ed95f27eb48336400832d2f17912f9d936f9fe28923d8209be4cfb1a7ddef255`.
+The model has 45506 vertices, 54054 triangles and 223 charts in the 256 atlas;
+resolved hash remains `730a3217c9a13581`. No unequal producer field is found.
+
+The actual Clang production baker then replays its actual full-producer model
+with the retained stage-print instrumentation. All six decoded maps match the
+GNU baseline. All 173950 stage writes match the GNU trace text byte for byte
+(SHA-256 `949098e900f001e085659dc43b6509d1d7d274b9fb268a4c0c05455acb209023`).
+At the specifically requested surviving pixel (157,178), triangle 152 and
+corners 141/131/130 match in every captured input and stage, including raw and
+orthogonalized tangent frames. Projection is
+`[-0x1.8p-25, -0x1p-25, 0x1p+0]`; scaled UNORM is
+`[0x1.fffffep+6, 0x1p+7, 0x1.ffp+7]`, producing RGB 127/128/255.
+This is the final covered write, not an earlier overwritten triangle.
+
+The experiment excludes a GNU-versus-Clang default Linux producer or baker
+difference for this fixture and source. It does not identify the first native
+reference divergence. The minimal missing reference experiment is to retain
+model/options and real chart fields at the same boundary, decoded normal bytes
+after dilation, and the final-writer stages for triangle 152 at (157,178) from
+a known golden-passing reference build. Compare those input bits first. If they
+agree, replay the exact captured model through the reference production baker
+and compare projection/UNORM stages and the actual decoded hash; otherwise
+locate the first unequal producer field before replay. This diagnostic scope
+adds no Windows acceptance or approval gate. Required Linux golden acceptance
+remains false, and no arithmetic, quantizer, tolerance, golden or production
+flag repair has been established.
+
+The experiment receipt is
+`/tmp/steady-harbor-epoch9-clang-producer/full-producer-experiment-receipt.json`;
+its SHA-256 is `f64e907c73655157f900136b7616f1fdf3b5ce752c37bee6a61dcfd336a7951e`.
+The same directory retains exact compile/link commands, original qualification
+logs, full model/chart bytes, the compressed Clang stage trace, requested
+sample, replayed maps and diagnostic readers. Supporting receipt SHA-256:
+
+- Build: `442a2acdeb5f0657dd6960c04962edca03576bbc98d3e676045dc43dcaa978a4`.
+- Capture: `9d6269aeb8b8b774781aa2c8d13f9cac9b9f28e7bf6e2d00080bd864abe02686`.
+- Model/chart comparison: `d5d59be189662b8f57eb1d2e0def5ab30d381c2803123c325929405d84830e0a`.
+- Stage replay: `0235c57e967abcab6346615c3a48d082e1050903768b5626ee96d7582a7171a7`.
