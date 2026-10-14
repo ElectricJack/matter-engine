@@ -1289,3 +1289,90 @@ repair is established; no arithmetic change, flag change, new native build or
 unchanged full-suite rerun was made. Original cache validation, goldens,
 three-part/DSL and negative predicates remain intact. Full Linux acceptance
 remains false until actual GNU generation passes.
+
+### Isolated native producer packet (source 701d4c52)
+
+The supervisor explicitly authorized one targeted native diagnostic after the
+Linux packet. A single ownership check found no matching runner worker/build
+process. The retained checkout stayed at native source
+`61c97f600d4b7edef886da16968bcd83fd7af432`; its source, objects, executables and
+archives remained read-only and their recorded hashes match before/after.
+Private sources, module context, fixtures, copied link inputs, outputs and cold
+caches live under `C:/aq-private/steady-harbor-62-e9-native-producer/` (WSL path
+`/mnt/c/aq-private/steady-harbor-62-e9-native-producer/`). No CI run, runner change,
+editor build, archive rebuild or unrelated test suite was started.
+
+Only the actual native `surface.c` TU was compiled with observation, preserving
+its Ninja definitions, includes and `/O2 /Ob1 /DNDEBUG -std:c17 -MT -Zi` flags and
+forced headless header. The original native golden test object and all required
+archives were copied privately. The explicit instrumented surface object precedes
+the private headless archive in the link; successful fresh trace emission proves
+that observation was selected. CMake's `vs_link_exe` wrapper suppresses successful
+link stdout, so an empty `native-link.log` is not presented as a verbose archive-
+member selection log. The receipt preserves exact commands, responses, selected
+object hash and 131 actual compilation header bindings, including SDK headers
+chosen by `vcvars64`. Whole `surface.c` differs between native/current source;
+the captured normal function, `CalculateScalarStaged` and `smin_set` text match.
+No whole-file or unrecorded historical SDK-header equivalence is claimed.
+
+One uninstrumented private baseline and one instrumented private execution both
+pass the original three-part and DSL golden test. Each starts with its own cold
+cache and real module generation. Both whole Stone bundles equal the retained
+native bundle SHA
+`2c918c47025a24d7a93512377b121cc4e5286d4693f7a08547b077fac3d89c05`.
+Every export file for all three parts is byte-identical between baseline and
+capture. Independent PNG decoding, CRC checks and original raw FNV semantics
+confirm Stone `281757a9a9886a07`, Paving `2cb79b540db2b1f6` and Alpine
+`244925b928edba4c`. Setup plus compilation/link and both executions took
+377.198 seconds, within the 15-minute bound. Capture caused no bundle/export drift.
+
+Ten native records cover the same exact positions and eight-stage primitive
+contexts as the GNU packet: one each for 2666 and 706, four identical each for
+2907 and unchanged control 2908. Positions, spacing, epsilon, all lo/hi sample
+coordinates, stage operation/kind/count identities and fallback flags match.
+For each changed position, the earliest available unequal recorded field is the
+**upper Y `CalculateScalarStaged` scalar return**:
+
+| Indexed vertex | GNU upper-Y scalar bits | Native upper-Y scalar bits | Other five scalar returns |
+| --- | --- | --- | --- |
+| 2666 | b7497568 | b7497569 | Equal |
+| 2907 | 363b9670 | 363b9668 | Equal |
+| 706 | b6c77650 | b6c7764c | Equal |
+| Control 2908 | 363bcd40 | 363bcd40 | Equal |
+
+The differing scalar feeds the recorded Y subtraction and gradient; subsequent
+length/normal changes follow. All captured native subtraction, denominator,
+gradient division and normal division results satisfy exact binary32 nearest-even
+rounding checks. Control 2908's entire float packet is identical. Native producer
+normal outputs match final bundle/model normals for 2666, 2907 and control 2908.
+At 706 the captured native producer output differs from its final bundle/model
+normal; that intervening boundary remains unlocalized. Bundle/export identity
+still holds, so this is not evidence of capture-induced drift. The global 44
+unattributed changed corner vectors remain unattributed.
+
+The actual scalar chain is `CalculateScalarStaged` -> fat-primitive
+`primitive_sdf` -> per-stage `smin_set` (`expf` accumulation and `logf`) -> ordered
+`fminf`/`fmaxf` CSG folding. Selected calls have zero additive particles and no
+clip/carve. This packet does not contain the numeric primitive parameters,
+individual primitive distances or intermediate stage accumulations. Matching
+stage/kind identities and module source bindings do not prove those float inputs
+are equal. The first unequal internal scalar operation is therefore unproved;
+no transform, transcendental, finite-difference or normalization change is yet a
+safe concrete repair.
+
+`native-targeted-experiment-receipt.json` SHA
+`7779943a878afb0db36a5d4920e8ce899181c7dbdc19f19362b05ba01c4afe4d`
+binds 1,073 private artifacts, retained input preservation, exact toolchain/link
+recipe, actual headers, module/fixture context, all outputs and source comparisons.
+`native-gnu-producer-comparison.json` SHA
+`3f6bae07d3a1c438e7a4da7bff66ca6e36f6483bdde65fe40b17d220f0ddfc83`
+preserves every field and arithmetic check; raw `native-producer-stages.txt` SHA
+`6bd9ac441a62f03b7e2cbc3ea3944f1a8cfc6bb3cc22b55e7783247bbcddd717`.
+
+The next missing boundary is exact numeric `FatPrim` inputs (inverse transforms,
+radii/extents) and primitive/per-stage values at these three upper-Y sample
+coordinates. Those distinguish parameter lowering from primitive evaluation,
+stage accumulation and CSG folding. No additional native execution or arithmetic
+candidate was attempted. Original predicates and tolerances remain intact.
+Windows CI remains waived; this diagnostic is not a native CI acceptance claim.
+Full Linux acceptance remains false until original real GNU generation passes.
