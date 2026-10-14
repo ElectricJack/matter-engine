@@ -9,10 +9,15 @@ function Get-MatterCiTier {
     if ($fullRequired -and $Tier -eq 'fast') { throw 'staging, main and scheduled runs require the full tier.' }
     if ($Tier -ne 'auto') { return $Tier }
     if ($fullRequired -or -not $Ref) { return 'full' }
-    # Existing AQ candidate and PR qualification uses the full-v1 check set.
-    # Only the direct dev feedback run is fast/advisory until trust support exists.
-    if ($Ref -eq 'refs/heads/dev') { return 'fast' }
     return 'full'
+}
+
+function Get-MatterCiPackageRequired {
+    param([string]$Ref, [string]$EventName, [string]$Tier, [switch]$Package)
+    $required = $Package -or $EventName -eq 'schedule' -or
+        ($EventName -eq 'push' -and $Ref -in @('refs/heads/staging', 'refs/heads/main'))
+    if ($required -and $Tier -ne 'full') { throw 'Packaging requires the full tier.' }
+    return [bool]$required
 }
 
 function Get-MatterCiFingerprint {
@@ -73,7 +78,6 @@ function Get-MatterCiBuildPlan {
         if ($state.fingerprint -ne $Fingerprint) { $reasons += 'toolchain_or_cmake_changed' }
         if ($state.repository_root -ne $source) { $reasons += 'checkout_moved' }
         if (-not $state.last_clean_utc) { $reasons += 'incomplete_clean_build' }
-        elseif ([DateTime]::Parse($state.last_clean_utc).ToUniversalTime().Date -lt $UtcNow.Date) { $reasons += 'daily_clean' }
     }
     if ($ForceClean) { $reasons += 'forced_clean' }
     [pscustomobject]@{ Root = $root; BuildDirectory = $build; StatePath = $statePath;
@@ -130,4 +134,4 @@ function Install-MatterCiSccache {
 }
 
 Export-ModuleMember -Function Get-MatterCiTier, Get-MatterCiFingerprint, Get-MatterCiBuildPlan,
-    Initialize-MatterCiBuild, Complete-MatterCiBuild, Install-MatterCiSccache
+    Initialize-MatterCiBuild, Complete-MatterCiBuild, Install-MatterCiSccache, Get-MatterCiPackageRequired

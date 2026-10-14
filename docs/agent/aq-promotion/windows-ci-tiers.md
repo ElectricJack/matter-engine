@@ -1,210 +1,133 @@
-# Native Windows CI tiers and persistent builds
+# CI selection, reuse and the one-minute target
 
-Implementation task: `keen-current-19`. This document describes the proposed
-source change; it does not activate an AQ trust policy. Hosted acceptance remains
-open until the owner delivers the reconciled source and retains its run artifacts.
+Task `keen-current-19` requires the complete PR build/test path to finish in less
+than 60 seconds on warm Linux and native Windows runners. The implementation and
+local measurements below do **not** yet establish full Windows acceptance.
+The prior implementation/evidence is preserved in
+[windows-ci-history.md](windows-ci-history.md).
 
-## Tier selection
+## Active workflow
 
-| Source/event | Windows tier | Check name | Packaging |
+`.github/workflows/native-windows.yml` is the sole active CI workflow in this
+checkout. PRs target `dev`, `staging` or `main`; pushes trigger only on those three
+branches. AQ branch pushes no longer queue a second native run before their PR.
+Concurrency uses the PR head SHA (otherwise push SHA). Checkout uses that exact
+SHA. Existing runs are allowed to finish; canceling a same-SHA run must not abort
+an unrelated source measurement or leave a partial build as a reusable baseline.
+Required names remain `Linux foundation build and tests` and
+`Native Windows build and tests`. There is no active advisory fast check.
+
+| Event | Behavioral selection | Source/build lint | Packaging |
 | --- | --- | --- | --- |
-| `dev` push | fast advisory | `Native Windows fast build and tests` | no |
-| task/parent/batch/integration/promotion/backmerge AQ push; PR to dev/staging/main | full v1 qualification | `Native Windows build and tests` | yes |
-| `staging`, `main` push | full | `Native Windows build and tests` | yes |
-| nightly schedule | full, forced clean, compiler cache disabled | `Native Windows build and tests` | yes |
-| dispatch | automatic by ref, or explicitly full | corresponding name | full only |
+| PR, dev push, ordinary dispatch | `ci-pr` | separate phase, required | no |
+| staging/main push, nightly | `ci-full` | separate phase, required | yes |
+| local explicit `-Tier fast` | historical `ci-fast` subset | separate phase | only with full tier |
+| local full with `-Package` | `ci-full` | separate phase | yes |
 
-An explicit fast request on staging/main, a PR to staging/main or a scheduled run
-fails. The script defaults to **full** when `-Tier` is omitted, preserving the
-meaning of legacy reusable callers. Only the standalone feedback workflow
-explicitly opts into automatic dev-fast selection. Reusable callers require an
-explicit `fast`/`full` choice and reject `auto`. The fast CTest label is `ci-fast`; full is
-`ci-full`. Every registered test, including third-party subdirectory tests, receives
-the full label. The inventory has 193 tests, with 159 selected for fast.
+Both full and automatic tier choices retain the full required-check name. The
+five historically slow CPU fixtures and all GPU tests still participate in
+`ci-pr`; they have **not** been silently discarded to claim a fast suite.
+`ci-full` preserves the behavioral tests plus promotion package tests. Source
+contracts run in lint, and the two contracts below move to custom lint targets. Existing composition proposals
+are historical, inactive files, and must not be installed as duplicate producers.
+The global supervisor's manual branch integration replaces prior train paperwork;
+this change does not edit daemon configuration or any human gate.
 
-Fast selects existing CPU, foundation, Python, compiler-policy, third-party and
-safety labels, plus the shader input-list contract. Five measured expensive CPU
-fixtures remain full: `world_definition_tests`, `viewer_logic_tests`,
-`sector_streamer_tests`, `part_flatten_tests`, `script_host_tests`. Vulkan/GPU,
-editor census, shader rebuild and package execution tests remain full. CPU tests
-with GPU-related names are still CPU contracts according to their existing
-registration. No fixture size, assertion, timeout or failure rule is reduced.
-The fast external-shader regression reuses the full shader dependency fixture on
-different source/build drives. It serializes with the original same-drive fixture
-because both create the same checkout-local source fixture.
+## Coverage shifts and data inputs
 
-`matter_ci_fast` builds the executable targets selected by these labels; it avoids
-the editor and full-only executable targets. Shared engine dependencies still
-compile on the first run. Both tiers use `ctest --no-tests=error`. Full packaging
-runs even after a test failure so package evidence is available; the original test
-failure still fails the job. Vulkan/GPU tests use the `matter-vulkan` resource lock
-to avoid simultaneous device use and shared smoke outputs. CPU tests retain their
-configured parallelism. Workflow concurrency remains per-ref, with an additional
-exclusive filesystem lock protecting the persistent tree across refs.
+| Check or behavior | Current disposition | Per-PR coverage given up |
+| --- | --- | --- |
+| `windows_ci_contract_tests` | renamed `tools/lint/windows_ci_contract_lint.ps1`, `matter_ci_lint` build target; required PR lint phase | no behavior removed; excluded from CTest timing |
+| `shader_external_build_tests` | `matter_ci_promotion_lint` build target, staging/main/nightly packaging phase | per-PR cross-drive rebuild fixture; complete fixture remains on promotion |
+| tests labeled `compiler-policy` or `shader`, `editor_registration_census`, `shader_source_tests` | inventory commands run by `ci-source-lint.py` in a required separate lint phase | no assertions removed; source/build inspection is outside behavioral CTest |
+| tests labeled `package`, `matter_dist` and package validation | staging/main/nightly or explicit `-Package` | per-PR packaging execution, retained on promotion |
+| `ci_test_report_tests` | XML literals supplied with `StringIO`, rather than temporary XML files | none |
+| compiler-policy/core behavioral assertions | unchanged | none |
 
-## Reuse and invalidation
+Lint executes the configured commands, working directories, environment,
+timeouts and pass/fail regexes from the post-build inventory. A missing command,
+failed child, absent success marker or forbidden failure marker fails lint. Lint
+failure does not suppress the behavioral run or become a passing test result.
+Source/build checks retain command registrations as the inventory authority.
+They are excluded from both behavioral selections and execute as separate lint
+commands, so promotion does not run the same source contract twice. Complete removal/conversion of shared core source and
+disk consumers is coordinated with `steady-harbor-62`; do not describe this branch
+alone as a wholly memory-fixture test suite. No runtime fixture/iteration/assertion
+reduction has been made by this orchestration change.
 
-The default external root is `C:\matter-ci\matter-engine`, with
-`build-relwithdebinfo` and a sibling ownership/state file. `actions/checkout` can
-clean its checkout without removing these objects. The root must be outside the
-checkout on a local drive; an unowned nonempty build directory or reparse-point
-root/build directory is rejected. The clean operation is bounded to the owned
-configuration directory.
+## Incremental and compiler cache contract
 
-The fingerprint includes root CMake files, all `cmake/` CMake/source manifests,
-the build wrapper, Windows tool modules/locks, resolved tool paths and compiler,
-CMake, Ninja and glslc binary hashes. Ordinary source/header changes reuse the
-tree and Ninja's dependency graph. CMake or toolchain changes, a moved checkout,
-an incomplete clean build, the first build, the first run of a new UTC day or
-`-ForceClean` rebuild the tree. A successful build records completion; cancelled
-or failed clean builds do not establish a reusable clean baseline. Tests always
-run, including after a prior failed test run. `-DisableCompilerCache` clears both
-compiler launchers and restores the normal PDB format.
+Native objects live outside the checkout, under
+`C:\matter-ci\matter-engine\build-relwithdebinfo`. Toolchain/CMake fingerprints,
+checkout identity, ownership markers and an incomplete clean baseline still force
+a clean rebuild. Date rollover alone no longer deletes a valid build: the nightly
+workflow explicitly requests a clean build and disables the compiler cache.
+Unowned nonempty trees and reparse points remain rejected. Failed clean builds do
+not establish a successful reusable baseline; failed tests always run again.
 
-The first local warm run exposed an existing glslc depfile limitation: an external
-`C:` tree and a spaced `D:` checkout produce absolute dependency paths with
-unescaped spaces. Ninja consequently recompiled shaders on each invocation.
-`normalize-glslc-depfile.py` escapes those cross-drive paths before CMake reads
-the depfile, and rejects unexpected/missing dependencies. Native same-drive and
-cross-drive shader fixtures verify no-op stability and selective source/include
-invalidation, with complete long-path shader inventory assertions retained.
+The existing SHA-256-verified sccache 0.18.0 launcher and toolchain lock are retained.
+Both C and C++ use the launcher with embedded MSVC debug information (`/Z7`).
+Cache requests/hits are retained in run artifacts. Zero requests during a no-op
+build are build reuse, not a 100% cache hit rate. Use a uniquely owned root for
+local measurements; do not alter another worker's native source/build tree.
+Canonical `tools/build-windows.ps1` resolves and enters the pinned MSVC toolchain.
 
-`tools/windows/toolchain.lock.json` pins the native toolchain and sccache 0.18.0.
-CI rejects a version mismatch. Installation verifies SHA-256 of both the release
-archive and executable, including an already installed executable. Cache data is
-under `sccache/<toolchain-lock-sha256>`, capped at 20 GB. A root-specific server
-port and the exclusive root lock isolate the server; cancelled servers are
-retired on the next run. Launcher failures fail the build. CMake CMP0141 and
-`Embedded` debug information select `/Z7`, which MSVC sccache supports. See the
-[sccache documentation](https://github.com/mozilla/sccache/blob/main/README.md)
-and [CMake MSVC debug information documentation](https://cmake.org/cmake/help/latest/prop_tgt/MSVC_DEBUG_INFORMATION_FORMAT.html).
+CTest parallelism defaults to the processor count, unless the caller explicitly
+limits it. The existing Vulkan resource lock still serializes shared device use;
+changing job count does not remove that safety or accelerate its serialized sum.
 
-The nightly clean run disables the compiler cache to exercise the complete
-compiler/toolchain path. The next cached run changes compiler flags back to `/Z7`
-and Ninja rebuilds affected objects. Retaining the nightly PDB build does not
-silently reuse objects with the cache-enabled flags.
+## Evidence and acceptance
 
-## Promotion and trust reconciliation
+Artifacts retain source identity, hosted/local status, toolchain/fingerprint,
+complete inventory, JUnit, all timing rows, slowest 20, missing/extra/duplicate
+selected tests, serialized resource sums, cache statistics and all phase durations.
+The measured scheduling lower bound is the largest individual duration, summed
+work divided by job count, or each serialized resource sum, whichever is larger.
+This is a bound for those measured fixtures on that platform, not a forecast for
+smaller inputs or a different runner. Skips and incomplete selection fail timing
+validation. Test success and the 60-second target are separate evidence fields;
+a slow passing test run does not prove task acceptance.
 
-At the task's base `f823151d8a06670efb007cee9a4b89ae48434535`, the only CI workflow
-is `native-windows.yml`; the active trust manifest and Linux/reusable workflow are
-absent. Read-only inspection of pending `aq/fleet-ridge-94` shows a v1 manifest
-requiring `Native Windows build and tests` and `Linux foundation build and tests`,
-and a `promotion-source-audit` set prefixed with `unattested-ci /`. That branch's
-acceptance run and deployed policy must remain untouched by this task.
+The Linux job runs the existing portable foundations (MemoryLib with ASan/UBSan
+and allocation interposition, MeshChartingLib, AssetStoreLib) in independent,
+bounded jobs. Each suite retains all existing assertions. MemoryLib's phony
+`test` target still compiles and executes together; its time is reported as
+`build_and_test`, never as an incremental no-op. This is the complete current Linux
+foundation job, not Linux parity with every Windows engine/Vulkan test.
 
-Owner reconciliation must implement the following binding before enabling dev
-attestations for this implementation:
-
-| Policy purpose | Exact Windows check | Linux check | Requirement |
-| --- | --- | --- | --- |
-| Existing `matter-engine-ci-v1` full source proof | `Native Windows build and tests` | `Linux foundation build and tests` | preserve full meaning; fast is never a substitute |
-| Dev-fast feedback | `Native Windows fast build and tests` | Linux remains in reusable workflow | advisory only; never satisfies the current v1 gate |
-| Staging/release source audit | `unattested-ci / Native Windows build and tests` | `unattested-ci / Linux foundation build and tests` | force full reusable-workflow input on the exact source SHA |
-| Unattested direct staging/main fallback | full check, with caller prefix if reusable | Linux foundation check | no missing/verifier-error path may select fast |
-
-Concrete owner composition templates are [tests.workflow.proposal.yml](tests.workflow.proposal.yml),
-[main-attestation.workflow.proposal.yml](main-attestation.workflow.proposal.yml)
-and [native-feedback.workflow.proposal.yml](native-feedback.workflow.proposal.yml).
-Install them together with the pending fleet verifier/tests/trust assets, after
-qualifying the reconciled source. They are stored outside `.github/workflows`
-and do not change current qualification or deployed policy. The reusable `tests.yml`
-defaults to full, has typed tier/clean/cache inputs, preserves both platforms and
-rejects automatic selection. The attestation caller always runs an independent
-explicit full audit on the exact dev SHA, including after a successful advisory
-proof. Staging/main fallback remains full on missing/error/invalid attestation.
-
-The reviewed AQ v1 source has one global check version; named sets select names,
-not an independently authenticated version. Both current promotion gates inherit
-root checks. Keep full-v1 gating and fast advisory. A separately trusted dev-fast
-version requires demonstrated **deployed** support across daemon, generator,
-selector, payload/verifier, App/protection and reviewed bindings; published source
-alone is insufficient. Do not rename v1 checks or reinterpret existing full proofs.
-
-The composed `tests.yml` owns task (`aq/*`), `aq/parent/**`, `aq/batches/**`,
-`aq/integration/**`, `aq/promote/**`, `aq/backmerge/**` push and all protected-base
-PR qualification. These always emit plain full-v1 Windows/Linux names. The
-feedback wrapper owns dev advisory (`advisory-ci / Native Windows fast build and tests`)
-and nightly/dispatch maintenance (`maintenance-ci / Native Windows build and tests`).
-The attestation workflow owns dev source audit and staging/main fallback with the
-existing `unattested-ci /` full aliases. Replace the standalone native workflow
-when installing the templates; leaving both full producer definitions would
-duplicate jobs. Current standalone source retains full candidate/PR execution
-and 12/6 parallelism, but the pending fleet qualification source is unchanged.
-AQ App identity,
-repository/SHA, check conclusion and provenance verification remain required.
-
-## Evidence and timing
-
-Every workflow uploads `artifacts/ci/` even on failure. Files include the native
-transcript, resolved toolchain, fingerprint inputs, full CTest inventory, selected
-JUnit results, slowest 20/over-60-second report, sccache JSON/text statistics and
-`run-summary.json` with source SHA, hosted/ref/tier, cleanup reasons, script hash,
-parallelism and phase durations. Failed phases and test failures remain visible.
-
-The historical hosted baseline is
-[run 38100939715](https://github.com/ElectricJack/matter-engine/actions/runs/38100939715),
-source `25a6601606bb1ed2fc730b9a710b5bf975bc306a`: 31m06s job, 30m41s build/test
-step, 848s CTest, 189 tests and seven failures. Packaging did not run after those
-failures. This is a historical different-source baseline, not a controlled
-before/after performance comparison.
-
-| Historical slowest test | Seconds | Decision |
+| Source-bound local measurement | Build plus tests | Result |
 | --- | ---: | --- |
-| world_definition_tests | 322.686 | full; complete world fixtures retained |
-| viewer_logic_tests | 223.966 | full; existing failure retained |
-| sector_streamer_tests | 150.889 | full; full streaming fixture retained |
-| part_flatten_tests | 126.302 | full; complete geometry/determinism fixture retained |
-| vt_feedback_visibility_tests | 92.754 | full; serialize device use, retain failure |
-| script_host_tests | 90.986 | full; complete script fixture retained |
-| vt_direct_source_tests | 90.860 | full; serialize device use |
-| vulkan_smoke_tests | 90.121 | full; serialize device use |
-| windows_package_tests | 47.553 | full; package tests retained |
-| vt_surface_material_tests | 41.811 | full; serialize device use |
-| windows_build_wrapper_contract | 33.650 | fast; native/WSL contracts retained |
-| obj_export_golden_tests | 31.109 | fast; existing failure retained |
-| sparse_voxel_gpu_tests | 29.448 | full; serialize device use |
-| mesh_simplifier_tests | 26.078 | fast |
-| smoke_vt_normal_frame | 22.423 | full; serialize device use |
-| vt_input_snapshot_tests | 18.354 | full; serialize device use |
-| event_hub_tests | 17.269 | fast |
-| geometry_pages_gpu_tests | 17.078 | full; serialize device use |
-| solid_face_projection_gpu_tests | 14.241 | full; serialize device use |
-| viewer_graph_tests | 11.647 | fast |
+| epoch59 working diff, Linux cold portable foundations | 25.611 s | all three suites passed |
+| same Linux inputs, warm portable foundations | 4.728 s | all three suites passed; MemoryLib recompilation included |
+| preserved checkpoint2e67 forced-clean/cached Windows fast run | 480.605 s total | historical failed run: 158/159, hydrology failure; 892/892 cache hits |
+| epoch59 native current PR inventory | not measured | canonical build interrupted for supervisor resource order after 1298/1305 actions; CTest never started |
 
-The >60s CPU fixtures are tiered rather than shortened. Their runtime still needs
-profiling for algorithmic improvements; the historical data alone does not prove
-a cause. GPU serialization addresses contention, but an improved full-tier
-duration must be measured. The seven baseline failures were export golden,
-viewer logic, shader source, VT feedback visibility, asset root, Windows/WSL build
-wrapper and editor registration census. They are not waived by this change.
+Linux measurements are local WSL, `hosted: false`, with the working-source state
+recorded. The historical Windows fast result is not a controlled before/after
+comparison. Hosted source qualification and native warm build/test timings remain
+required. The original full-suite target is less than 60 seconds, not the earlier
+10/20-minute advisory target. If the measured full test floor exceeds 60 seconds,
+retain the failures and slowest 20, then shorten or relocate the identified heavy
+fixtures with explicit coverage accounting and cheap regression equivalents.
 
-Read-only inspection of the pending Linux job identifies MemoryLib,
-MeshChartingLib and AssetStoreLib behavioral suites as overlaps with the Windows
-foundation tests. Keep them on Linux because the GCC/platform coverage differs;
-removing them solely because Windows runs similar assertions would lose compiler
-and ABI coverage. Its attestation-verifier tests also remain independent. No
-Linux job exists in this task's base checkout, so none is edited here.
+Reproduce with `python3 tools/ci-linux.py` and
+`tools/ci-windows.ps1 -Tier full -CiRoot <unique-local-root>`. Preserve artifacts
+before a warm rerun. Use `-Package` only for explicit promotion measurement.
 
-## Local reproduction and hosted acceptance
+Native resource coordination: supervisor message `msg-dd168540d72e48b2a8ee54d63361101f`
+identified active hosted graphics CI and ordered local qualification after clear99
+and core62. The local build was interrupted; its cache/build evidence is retained.
+The process-name probe before launch had shown no compiler/CTest process, but
+that probe did not establish hosted-runner availability. Future local large builds
+are capped at two jobs and require that actual measurement order to finish.
 
-Use a task-specific external root for local measurements so the hosted runner's
-tree/server are not modified:
-
-```powershell
-./tools/ci-windows.ps1 -Tier fast -CiRoot C:\matter-ci\keen-current-19
-# Copy artifacts/ci to a separate measurement directory before the next run.
-./tools/ci-windows.ps1 -Tier fast -CiRoot C:\matter-ci\keen-current-19
-# Force compiler invocations against the retained cache to measure real hits.
-./tools/ci-windows.ps1 -Tier fast -CiRoot C:\matter-ci\keen-current-19 -ForceClean
-./tools/ci-windows.ps1 -Tier full -CiRoot C:\matter-ci\keen-current-19
-```
-
-An incremental no-op build can have zero compiler requests; that is reuse, not a
-cache hit-rate measurement. Use the forced-clean cached run for the latter and
-retain both summaries. Local runs have `hosted: false` and do not satisfy hosted
-acceptance. Owner delivery must first reconcile the promotion workflows/policy,
-then retain exact-source warm dev and full staging Actions runs and artifact
-links. The target is fast CTest <10m and warm dev job approximately <20m. Record
-the measured full staging duration, failures, package validation and cache stats;
-do not label historical or local evidence as an accepted hosted run.
+Retained local evidence: [Linux cold](evidence/ci-performance-20261014/linux-cold.json),
+[Linux warm](evidence/ci-performance-20261014/linux-warm.json),
+[interrupted native source manifest](evidence/ci-performance-20261014/native-cold-source.json),
+[interruption record](evidence/ci-performance-20261014/native-interrupted-summary.json),
+[cache statistics](evidence/ci-performance-20261014/native-interrupted-cache.json),
+[Windows CI lint](evidence/ci-performance-20261014/windows-ci-lint.log) and
+[CMake label lint](evidence/ci-performance-20261014/cmake-label-lint.json).
+The cold native cache had 1,047 requests, zero hits, zero failed compilations and
+zero cache errors. There is no native CTest slowest-20 list for this interrupted
+run; the historical list stays in the preserved history document.

@@ -6,7 +6,7 @@ function Assert-Rejects([scriptblock]$Action, [string]$Pattern) {
     try { & $Action; throw 'Expected rejection was absent.' }
     catch { if ($_.Exception.Message -notmatch $Pattern) { throw } }
 }
-Assert ((Get-MatterCiTier -Ref 'refs/heads/dev') -eq 'fast') 'dev must use fast'
+Assert ((Get-MatterCiTier -Ref 'refs/heads/dev') -eq 'full') 'dev must retain the full required check'
 Assert ((Get-MatterCiTier -Ref 'refs/heads/aq/batches/test') -eq 'full') 'batch v1 qualification must use full'
 Assert ((Get-MatterCiTier -Ref 'refs/heads/aq/integration/test') -eq 'full') 'integration v1 qualification must use full'
 Assert ((Get-MatterCiTier -Ref 'refs/pull/17/merge' -BaseRef dev) -eq 'full') 'PR v1 qualification must use full'
@@ -18,6 +18,12 @@ Assert ((Get-MatterCiTier -Ref 'refs/pull/17/merge' -BaseRef main) -eq 'full') '
 Assert ((Get-MatterCiTier -Ref 'refs/pull/17/merge' -BaseRef staging) -eq 'full') 'PR to staging must use full'
 Assert-Rejects { Get-MatterCiTier -Ref 'refs/pull/17/merge' -BaseRef staging -Tier fast } 'require the full tier'
 Assert-Rejects { Get-MatterCiTier -Ref 'refs/heads/dev' -Tier auto -RequireExplicitTier } 'explicit fast or full tier'
+Assert (-not (Get-MatterCiPackageRequired -Ref 'refs/pull/17/merge' -EventName pull_request -Tier full)) 'PR must not package'
+Assert (-not (Get-MatterCiPackageRequired -Ref 'refs/heads/dev' -EventName push -Tier full)) 'dev must not package'
+Assert (Get-MatterCiPackageRequired -Ref 'refs/heads/staging' -EventName push -Tier full) 'staging promotion must package'
+Assert (Get-MatterCiPackageRequired -Ref 'refs/heads/main' -EventName push -Tier full) 'main promotion must package'
+Assert (Get-MatterCiPackageRequired -EventName schedule -Tier full) 'nightly must package'
+Assert-Rejects { Get-MatterCiPackageRequired -Tier fast -Package } 'requires the full tier'
 
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('matter-ci-contract-' + [Guid]::NewGuid().ToString('N'))
 $ciRoot = Join-Path $fixture 'ci'
@@ -102,7 +108,7 @@ Export-ModuleMember -Function Resolve-MatterWindowsToolchain
     Assert (-not (Test-Path -LiteralPath $marker)) 'invalidated object survived'
     Complete-MatterCiBuild $changed
     $nextDay = Get-MatterCiBuildPlan -RepositoryRoot $source -CiRoot $ciRoot -Fingerprint 'b' -UtcNow ([DateTime]::UtcNow.AddDays(1))
-    Assert ($nextDay.Reasons -contains 'daily_clean') 'next UTC day must clean'
+    Assert (-not $nextDay.Clean) 'date alone must not defeat persistent incremental builds'
     $forced = Get-MatterCiBuildPlan -RepositoryRoot $source -CiRoot $ciRoot -Fingerprint 'b' -ForceClean
     Assert ($forced.Reasons -contains 'forced_clean') 'nightly clean switch was ignored'
     $moved = Get-MatterCiBuildPlan -RepositoryRoot (Join-Path $fixture 'other-source') -CiRoot $ciRoot -Fingerprint 'b'

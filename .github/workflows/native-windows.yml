@@ -1,7 +1,7 @@
 name: Native Windows
 on:
   push:
-    branches: [main, dev, staging, 'aq/*', 'aq/parent/**', 'aq/batches/**', 'aq/integration/**', 'aq/promote/**', 'aq/backmerge/**']
+    branches: [main, dev, staging]
   pull_request:
     branches: [dev, staging, main]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -9,32 +9,51 @@ on:
     inputs:
       tier:
         type: choice
-        default: auto
-        options: [auto, fast, full]
+        default: full
+        options: [auto, full]
       clean:
         type: boolean
         default: false
   schedule:
     - cron: '17 10 * * *'
 concurrency:
-  group: native-windows-${{ github.ref }}
-  cancel-in-progress: true
+  group: native-windows-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
+  linux-foundations:
+    name: Linux foundation build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build and test portable foundations
+        run: python3 tools/ci-linux.py
+      - name: Upload Linux evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: artifacts/ci-linux/
+          if-no-files-found: error
   native:
-    name: ${{ (github.ref != 'refs/heads/staging' && github.ref != 'refs/heads/main' && github.base_ref != 'staging' && github.base_ref != 'main' && github.event_name != 'schedule' && (inputs.tier == 'fast' || ((inputs.tier == 'auto' || !inputs.tier) && github.ref == 'refs/heads/dev'))) && 'Native Windows fast build and tests' || 'Native Windows build and tests' }}
+    name: Native Windows build and tests
     runs-on: [self-hosted, Windows, X64, matter-engine-msvc]
     timeout-minutes: 90
     env:
       CMAKE_BUILD_PARALLEL_LEVEL: '12'
-      CTEST_PARALLEL_LEVEL: '6'
-      MATTER_CI_TIER: ${{ inputs.tier || 'auto' }}
+      MATTER_CI_TIER: ${{ inputs.tier || 'full' }}
+      MATTER_CI_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       MATTER_CI_FORCE_CLEAN: ${{ github.event_name == 'schedule' || inputs.clean == true }}
       MATTER_CI_DISABLE_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Build and test selected tier
         shell: powershell
@@ -43,6 +62,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-windows-${{ github.sha }}-${{ github.run_attempt }}
+          name: native-windows-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
           path: artifacts/ci/
           if-no-files-found: error

@@ -4,7 +4,8 @@ param(
     [string]$CiRoot = 'C:\matter-ci\matter-engine',
     [switch]$ForceClean,
     [switch]$DisableCompilerCache,
-    [switch]$RequireExplicitTier
+    [switch]$RequireExplicitTier,
+    [switch]$Package
 )
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -13,7 +14,7 @@ $evidence = Join-Path $repositoryRoot 'artifacts/ci'
 New-Item -ItemType Directory -Force -Path $evidence | Out-Null
 # A self-hosted checkout may retain ignored artifacts. Upload only this run.
 Get-ChildItem -LiteralPath $evidence -File | Remove-Item -Force
-$summary = [ordered]@{ schema = 'matter.windows-ci-run.v1'; source_sha = $env:GITHUB_SHA;
+$summary = [ordered]@{ schema = 'matter.windows-ci-run.v1'; source_sha = $env:MATTER_CI_SOURCE_SHA;
     hosted = ($env:GITHUB_ACTIONS -eq 'true'); ci_script_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $PSCommandPath).Hash.ToLowerInvariant();
     ref = $env:GITHUB_REF; event = $env:GITHUB_EVENT_NAME; requested_tier = $Tier; tier = $null;
     started_at_utc = [DateTime]::UtcNow.ToString('o'); status = 'failed'; phases = @() }
@@ -40,12 +41,17 @@ try {
     $selectedTier = Get-MatterCiTier -Ref $env:GITHUB_REF -BaseRef $env:GITHUB_BASE_REF `
         -EventName $env:GITHUB_EVENT_NAME -Tier $Tier -RequireExplicitTier:$RequireExplicitTier
     $summary.tier = $selectedTier
+    if (-not $summary.source_sha) { $summary.source_sha = $env:GITHUB_SHA }
+    $summary.package_required = Get-MatterCiPackageRequired -Ref $env:GITHUB_REF `
+        -EventName $env:GITHUB_EVENT_NAME -Tier $selectedTier -Package:$Package
+    $testLabel = if ($summary.package_required) { 'ci-full' } elseif ($selectedTier -eq 'fast') { 'ci-fast' } else { 'ci-pr' }
+    $summary.test_label = $testLabel
     if ($env:GITHUB_EVENT_NAME -eq 'schedule') {
         $ForceClean = $true
         $DisableCompilerCache = $true
     }
     if (-not $env:CMAKE_BUILD_PARALLEL_LEVEL) { $env:CMAKE_BUILD_PARALLEL_LEVEL = '4' }
-    if (-not $env:CTEST_PARALLEL_LEVEL) { $env:CTEST_PARALLEL_LEVEL = '2' }
+    if (-not $env:CTEST_PARALLEL_LEVEL) { $env:CTEST_PARALLEL_LEVEL = [string][Environment]::ProcessorCount }
     $summary.build_parallelism = $env:CMAKE_BUILD_PARALLEL_LEVEL
     $summary.test_parallelism = $env:CTEST_PARALLEL_LEVEL
     if (-not $env:VK_LOADER_LAYERS_DISABLE) {
@@ -122,15 +128,31 @@ try {
         Complete-MatterCiBuild -Plan $plan
     }
     $testFailure = $null
+    $lintFailure = $null
+    try { Invoke-CiPhase 'lint' {
+        & (Join-Path $PSScriptRoot 'build-windows.ps1') @buildArgs -Target matter_ci_lint
+        if ($LASTEXITCODE -ne 0) { throw "CI lint failed: $LASTEXITCODE" }
+        & $ctest --test-dir $plan.BuildDirectory --show-only=json-v1 |
+            Set-Content -Encoding UTF8 (Join-Path $evidence 'ctest-inventory.json')
+        if ($LASTEXITCODE -ne 0) { throw 'Post-build CTest inventory failed.' }
+        $lintArgs = @((Join-Path $PSScriptRoot 'ci-source-lint.py'),
+            '--inventory', (Join-Path $evidence 'ctest-inventory.json'),
+            '--output', (Join-Path $evidence 'source-lint.json'))
+        if ([IO.Path]::GetFileName($toolchain.Python) -ieq 'py.exe') { $lintArgs = @('-3.13') + $lintArgs }
+        & $toolchain.Python @lintArgs
+        if ($LASTEXITCODE -ne 0) { throw "Source lint failed: $LASTEXITCODE" }
+    } } catch { $lintFailure = $_ }
     try {
         Invoke-CiPhase 'ctest' {
-            & $ctest --test-dir $plan.BuildDirectory -L "^ci-$selectedTier`$" --no-tests=error --output-on-failure `
+            & $ctest --test-dir $plan.BuildDirectory -L "^$testLabel`$" --no-tests=error --output-on-failure `
                 --output-junit (Join-Path $evidence 'ctest.xml')
             if ($LASTEXITCODE -ne 0) { throw "CTest failed: $LASTEXITCODE" }
         }
     } catch { $testFailure = $_ }
-    if ($selectedTier -eq 'full') {
+    if ($summary.package_required) {
         Invoke-CiPhase 'package' {
+            & (Join-Path $PSScriptRoot 'build-windows.ps1') @buildArgs -Target matter_ci_promotion_lint
+            if ($LASTEXITCODE -ne 0) { throw "Promotion shader lint failed: $LASTEXITCODE" }
             & (Join-Path $PSScriptRoot 'build-windows.ps1') @buildArgs -Target matter_dist
             if ($LASTEXITCODE -ne 0) { throw "Package build failed: $LASTEXITCODE" }
             & (Join-Path $PSScriptRoot 'check-windows-msvc-package.ps1') -DistPath 'MatterEditor/build/dist/world_demo'
@@ -138,6 +160,7 @@ try {
         }
     }
     if ($testFailure) { throw $testFailure }
+    if ($lintFailure) { throw $lintFailure }
     $summary.status = 'passed'
 } catch {
     $failure = $_
@@ -157,7 +180,8 @@ try {
     if (Test-Path -LiteralPath (Join-Path $evidence 'ctest.xml')) {
         try {
             $pythonArgs = @((Join-Path $PSScriptRoot 'ci-test-report.py'), '--junit', (Join-Path $evidence 'ctest.xml'),
-                '--inventory', (Join-Path $evidence 'ctest-inventory.json'), '--output', (Join-Path $evidence 'test-timings.json'))
+                '--inventory', (Join-Path $evidence 'ctest-inventory.json'), '--output', (Join-Path $evidence 'test-timings.json'),
+                '--label', $testLabel, '--parallelism', $env:CTEST_PARALLEL_LEVEL)
             if ([IO.Path]::GetFileName($toolchain.Python) -ieq 'py.exe') { $pythonArgs = @('-3.13') + $pythonArgs }
             & $toolchain.Python @pythonArgs
             if ($LASTEXITCODE -ne 0) { throw 'CTest timing report failed.' }
@@ -168,6 +192,15 @@ try {
     }
     $summary.finished_at_utc = [DateTime]::UtcNow.ToString('o')
     $summary.total_seconds = $total.Elapsed.TotalSeconds
+    $buildPhase = @($summary.phases | Where-Object { $_.name -eq 'build' })
+    $testPhase = @($summary.phases | Where-Object { $_.name -eq 'ctest' })
+    if ($testPhase.Count) {
+        $summary.test_seconds = $testPhase[0].seconds
+        $summary.build_and_test_seconds = $testPhase[0].seconds
+        if ($buildPhase.Count) { $summary.build_and_test_seconds += $buildPhase[0].seconds }
+        $summary.test_under_60_seconds = $summary.test_seconds -lt 60
+        $summary.build_and_test_under_60_seconds = $summary.build_and_test_seconds -lt 60
+    }
     $summary | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 (Join-Path $evidence 'run-summary.json')
     if ($transcribing) { Stop-Transcript | Out-Null }
     if ($lock) { $lock.Dispose() }
