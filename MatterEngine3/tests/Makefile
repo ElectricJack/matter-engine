@@ -442,7 +442,7 @@ GPU_AR_CORE_LDFLAGS += $(OZZ_OFFLINE_LIBS)
 GPU_GRAPHICS := GRAPHICS_API_OPENGL_43
 
 FLAVOR_def_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS)
-FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC)
+FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) -Ibuild/test-fixtures
 FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -Ibuild/test-fixtures
 # Only the graph integration target carries the deterministic cache-race seam.
 # Production and ordinary script-host test objects have no hook API or storage.
@@ -1858,6 +1858,7 @@ sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
 build/test-fixtures/embedded_shared_modules.h: $(wildcard ../shared-lib/*.js shared-lib-fixtures/*.js) ../tools/embed_shared_test_sources.py
 	python3 ../tools/embed_shared_test_sources.py --repository ../.. --output $@
 $(call obj_of,sp2,shared_lib_tests.cpp): build/test-fixtures/embedded_shared_modules.h
+$(call obj_of,qjs,world_definition_tests.cpp): build/test-fixtures/embedded_shared_modules.h
 WORLD_FIXTURE_INPUTS := $(wildcard ../shared-lib/*.js ../../projects/world_demo/shared-lib/*.js ../../projects/world_demo/objects/texturing/bricks/*.js ../../projects/world_demo/objects/castle/materials/*.js) ../../projects/world_demo/objects/templates/WorldSector.js
 build/test-fixtures/embedded_world_modules.h: $(WORLD_FIXTURE_INPUTS) ../tools/embed_shared_test_sources.py
 	python3 ../tools/embed_shared_test_sources.py --repository ../.. --world --output $@
@@ -3803,3 +3804,15 @@ $(VIEWER_SOURCE_QUALIFIER_TARGET): check-viewer-logic-animation-sources $(VIEWER
 qualify-viewer-sources: $(VIEWER_SOURCE_QUALIFIER_TARGET)
 	./$(VIEWER_SOURCE_QUALIFIER_TARGET)
 $(VIEWER_LOGIC_TARGET): | qualify-viewer-sources
+
+FLATTEN_QUALIFIER_TARGET = build/matter_part_flatten_qualifier
+FLATTEN_QUALIFIER_CPP = ../tools/qualify_part_flatten.cpp
+$(eval $(call objrule_cpp,def,$(FLATTEN_QUALIFIER_CPP)))
+$(call obj_of,def,$(FLATTEN_QUALIFIER_CPP)): part_flatten_tests.cpp
+FLATTEN_QUALIFIER_OBJS = $(call obj_list,def,$(FLATTEN_QUALIFIER_CPP)) $(filter-out $(call obj_of,def,part_flatten_tests.cpp),$(FLATTEN_OBJS))
+$(FLATTEN_QUALIFIER_TARGET): $(FLATTEN_QUALIFIER_OBJS)
+	$(CC) $(FLATTEN_QUALIFIER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+.PHONY: qualify-part-flatten
+qualify-part-flatten: $(FLATTEN_QUALIFIER_TARGET)
+	./$(FLATTEN_QUALIFIER_TARGET)
+$(FLATTEN_TARGET): | qualify-part-flatten

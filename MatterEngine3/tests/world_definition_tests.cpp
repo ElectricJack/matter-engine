@@ -10,6 +10,9 @@
 #include "../src/render/vt_surface_tape.h"
 #include "../src/render/part_store.h"
 #include "../src/part_flatten.h"
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+#include "embedded_shared_modules.h"
+#endif
 
 extern "C" {
 #include "material_registry.h"
@@ -3430,6 +3433,11 @@ class CanonicalWaterWorld extends World {
 
 void test_world_loader_preserves_completed_dsl_curve_and_profile() {
     Fixture fixture;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    const auto shared_sources = embedded_shared_test_sources();
+    fixture.files.emplace("../shared-lib/river_curve.js",
+                          shared_sources.at("../shared-lib/river_curve.js"));
+#endif
     const fs::path path = fixture.write("AuthoredCurve.js", R"JS(
 import { riverCurve } from 'shared-lib/river_curve';
 class AuthoredCurve extends World {

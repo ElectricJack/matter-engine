@@ -268,9 +268,9 @@ def main():
             if definitions:
                 lines += [f'target_compile_definitions({name} PRIVATE ' +
                           ' '.join(quote(item) for item in definitions) + ')']
-            if name in {'shared_lib_tests', 'finite_surface_recipe_tests', 'solid_source_evaluation_tests', 'brick_bond_detail_tests', 'obj_export_golden_tests'}:
+            if name in {'shared_lib_tests', 'world_definition_tests', 'finite_surface_recipe_tests', 'solid_source_evaluation_tests', 'brick_bond_detail_tests', 'obj_export_golden_tests'}:
                 export = name == 'obj_export_golden_tests'
-                world = name not in {'shared_lib_tests', 'obj_export_golden_tests'}
+                world = name not in {'shared_lib_tests', 'world_definition_tests', 'obj_export_golden_tests'}
                 header = output / ('test-fixtures/embedded_export_fixtures.h' if export else
                                    'test-fixtures/embedded_world_modules.h' if world else
                                    'test-fixtures/embedded_shared_modules.h')

@@ -54,6 +54,7 @@ or new persistence policy is introduced.
 | Demand bake and terrain verbs use owned source snapshots and private caches | All nine demand groups, hierarchy, roots-only/lazy/full policies, actual section validation and session behavior remain | OS directory creation, source writes and cache cleanup become owned generations |
 | Sector-streamer uniform part-count comparison uses the actual desired map | Same full authored reach/pitch,78201-sector count, independent grid census and nested ratio; historical complete uniform publication drain runs in mandatory filesystem qualification | Runtime no longer drains every uniform request merely to count it; cap8, hole/upgrade/dwell/publication/interleaving guards are unchanged |
 | Sector-streamer stationary setup ends after eight quiet updates | Requests and evictions both reset the quiet counter; full 4000-update setup loops remain in mandatory filesystem qualification; moving coverage, variant-mismatch, failed-child and abandonment predicates remain | Runtime drops the remaining stationary idle soak after the setup has settled |
+| Dense flattening integration uses400 triangles/160-triangle clusters over the original200x100 extent | Split, format/codec, triangle conservation, retained-versus-rematerialized byte equality remain; original40k/16000 integration cases run in mandatory CMake and Make qualification; direct40k splitter/determinism remain runtime | Runtime integration drops the dense40k scalability workload; the full workload moves to builds |
 | Terrain collision session uses owned source snapshots and byte cache | All 13 lifecycle groups retain original app-publication/candidate-observer timing, tile-N replacement before releasing blocked A, collision-free B, cancellation/winner/manifest/failure predicates | OS source/cache persistence and IO-error behavior become snapshot/byte-store semantics; those transport behaviors are not qualified |
 | Cave-field parity uses original ray endpoints | All 1600 rays, exact y192/-127.75 endpoint signs, mesh/roof/seam predicates and original parity assertion remain | 2044800 interior density evaluations are no longer executed |
 | Large-index QEM uses 128 real triangles above UINT16_MAX | Real indexed simplifier, >65535 input vertices/indices, significant reduction, finite/bounded output and other collapse fixtures remain | The original 166400-triangle/83781-referenced-position dense scalability workload is optional --dense-qem, outside default CTest and mandatory build qualification |
@@ -661,3 +662,124 @@ The full40k/16000 integration workloads remain in the qualification macro
 branch, but its mandatory build attachment is not yet established. These
 private results do not establish a passing DEFAULT build, complete suite,
 runtime filesystem trace or native result.
+
+Supervisor message msg-c008c1519fe049fb8b81f34fec9b6130 confirms Jack's
+operative global directive msg-cd61d32c8a4145639a78966a94924d2d: Windows CI
+is not required for current Matter completion; Linux builds and tests must pass.
+This supersedes the earlier native completion/resource wait. No additional
+native build is launched, and the failed GNU golden remains a required repair.
+Existing native artifacts are diagnostic references only.
+
+Peer reply msg-c47db26f2b534a728bba2fd5bebfda32 confirms no overlapping edit in
+MatterEngine.cmake, the Linux registrar or tests/Makefile. The existing exact
+shared-module generation rule is now attached to world_definition_tests in
+CMake, the actual Linux registrar and Make; the AuthoredCurve RAM fixture
+selects the embedded repository river_curve.js bytes. Its private actual
+Release runtime passes in0.115s. The original filesystem qualification branch
+is unchanged. Dense flattening is now attached to the mandatory CMake ALL
+qualification and the Make runtime target's order-only qualification prerequisite;
+the updated Linux DEFAULT build is in progress. No qualification pass is
+inferred from the attachment itself.
+
+The already completed native CI run38514005777 at
+2fb388d7739fc38437cfdbc1e14230409c8914ad supplies a concrete old-source pass
+reference: original obj_export_golden_tests passed all three parts and the DSL
+checks in27.6812s. The run failed only shader_source_tests. Downloaded actual
+artifact: /tmp/steady-harbor-epoch9-existing-ci-artifact/ctest.xml, SHA256
+84a4e75e6c4885187aaff8eb0f8d0fe700935bac67ef6c9c7a5ddaa7af8720f9.
+It contains no model or texture bytes, so it does not establish the first
+cross-compiler divergence. A further private control compiles the unchanged
+production texture source with Clang and replays the same captured GNU input:
+all maps remain byte-identical to the GCC control, including the failed normal
+digest. Receipt: /tmp/steady-harbor-epoch9-normal-stage/clang-receipt.json.
+
+The actual mandatory part_flatten_tests_filesystem_qualification passes the
+complete original workload in357.174s (Ninja command timing), including the
+four-cluster40000-triangle census and both dense retention modes. This source
+bound result is in /tmp/steady-harbor-epoch9-linux-default-v2.log; the DEFAULT
+build itself remains failed on the unchanged normal golden and is continuing
+through independent qualifications. Make's dry-run confirms the qualifier
+compile/link/run precedes its runtime target; that is a graph check, not a
+second qualification execution.
+
+World and flattening private runtime traces contain no fixture data IO.
+World trace SHA256:
+17667dac3451f20d4b6387ae5fc8ae10f8e11c7c0877020dce3ae21f1e734700.
+Flatten trace SHA256:
+203d454e993bbaca642dc251097761e0d9848ce0e9f14e19740a88e884f7d613.
+Its two actual child processes still compare serialized artifacts with separate
+RAM stores; their shell launches stat the inherited working directory, while
+fixture paths occur only in argv. Review receipt:
+/tmp/steady-harbor-epoch9-runtime-candidates/world-flatten-trace-review.json.
+
+The updated Linux DEFAULT v2 build completed with only the retained CastleStone
+normal-map golden failure. All independent qualifications passed, including the
+original dense flattening, shipped worlds, viewer Demo and compute ON/OFF
+closures. Complete build log SHA256:
+b1ee95340b0cb9ae927e2f39d6caae788f74f8b3aed5140e1ef1568b7b4eba9a.
+
+The actual updated registered CPU run took40.86s (41.77s process wall time),
+with141 passes and the OBJ golden runtime not built because its mandatory
+qualification failed. This is a diagnostic comparison, not full acceptance.
+The before run took336.70s with138 passes, three failures and one not-run test.
+After JUnit SHA256:
+7c00371e29b3ceff9065e5ced0155b125bfe8ee8ee85faecf77942eb08ffe811.
+The slowest20 updated tests were:
+
+| Test | Seconds |
+|---|---:|
+| event_hub_tests | 36.291 |
+| sector_streamer_tests | 9.566 |
+| part_flatten_tests | 6.626 |
+| chart_atlas_tests | 3.460 |
+| script_host_tests | 2.745 |
+| conifer_lod_provider_tests | 2.068 |
+| surface_proxy_tests | 1.703 |
+| gi_bake_tests | 1.015 |
+| sector_bake_tests | 1.006 |
+| finite_surface_recipe_tests | 0.987 |
+| terrain_mesher_tests | 0.814 |
+| async_bake_tests | 0.715 |
+| sdf_candidate_bounds_tests | 0.652 |
+| brick_bond_atlas_tests | 0.648 |
+| tileset_bake_tests | 0.566 |
+| river_float_system_tests | 0.548 |
+| terrain_collision_session_tests | 0.547 |
+| physics_tests | 0.495 |
+| ecs_tests | 0.465 |
+| character_controller_tests | 0.424 |
+
+The separate whole-process syscall trace repeated141 passes and one not-run
+test in51.74s. It exposed remaining filesystem accesses, so it is not an
+IO-free suite receipt: the core BLAS queue wrapper created a BlobStore and the
+singleton ANLK rejection probed a missing animation commit file. Trace SHA256:
+17eb73da8f7fb7b33ec0332f9832bbeb27bf9d048c87595c66a465210adaca51.
+The reviewed residual calls and explicit failure disposition are in
+/tmp/steady-harbor-epoch9-cpu-after-trace-review.json. Loader calls, CTest's
+own log/graph IO, the compute dependency checker, shell cwd metadata, Linux
+allocator overcommit metadata and CPU-online queries are separate from fixture
+data IO.
+
+The BLAS queue runtime now uses the existing disabled initial worker directory
+for the same32-result backpressure, poll/ticket, cancellation and completed-miss
+predicates. It gives up opening a native BlobStore during runtime; the original
+canonical MatterGraphics disk test is unchanged and passes the actual mandatory
+CMake qualification. Its core runtime target depends on that qualification.
+Animation manifest reads now honor the explicitly selected bundle byte storage
+before the original native FILE path. This preserves the singleton test's exact
+ANLK missing-manifest rejection and parser predicates in owned RAM. The native
+FILE path and publication protocol remain unchanged. These final trace fixes
+still require their source-bound build/runtime verification; neither the earlier
+40.86s timing nor the earlier trace establishes acceptance of the new reader.
+
+Source-bound verification of those final fixes passes the original mandatory
+PartStore and BLAS queue disk qualifications, then all three registered runtime
+tests (singleton, PartStore and queue) in0.12s with no non-loader filesystem
+calls. Build log SHA256:
+c1f7cddbd3bcefd2823e5ff41939f6ebc3fe8f4ffabcd11ff936032528d625ca.
+Scoped trace SHA256:
+fc85afe10f558e4b320dc76bde52616dcc27126d20148584ed48b4f984353d27.
+Source hashes and reviewed scope:
+/tmp/steady-harbor-epoch9-fixture-tail-receipt.json. The full suite still needs
+an exact-source DEFAULT build and runtime run after the remaining normal golden
+repair; this scoped result does not replace that acceptance gate.

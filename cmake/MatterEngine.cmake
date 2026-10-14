@@ -421,6 +421,7 @@ if(BUILD_TESTING)
     matter_qualify_cpu_filesystem(blas_disk_cache_tests MatterEngine3/tests/blas_disk_cache_tests.cpp)
     matter_add_engine_cpu_test(blas_cache_queue_tests
         MatterEngine3/tests/blas_cache_queue_tests.cpp)
+    matter_qualify_cpu_filesystem(blas_cache_queue_tests MatterEngine3/tests/blas_cache_queue_tests.cpp)
     matter_add_engine_cpu_test(async_queue_tests
         MatterEngine3/tests/async_queue_tests.cpp)
     matter_add_engine_cpu_test(async_stage_pipeline_tests
@@ -535,6 +536,9 @@ if(BUILD_TESTING)
     target_sources(shared_lib_tests PRIVATE "${shared_test_source_header}")
     target_include_directories(shared_lib_tests PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    target_sources(world_definition_tests PRIVATE "${shared_test_source_header}")
+    target_include_directories(world_definition_tests PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
     file(GLOB world_test_source_inputs CONFIGURE_DEPENDS
         "${CMAKE_SOURCE_DIR}/projects/world_demo/shared-lib/*.js"
         "${CMAKE_SOURCE_DIR}/MatterEngine3/shared-lib/*.js"
@@ -587,6 +591,7 @@ if(BUILD_TESTING)
         MatterEngine3/tests/tileset_physics_tests.cpp)
     matter_add_engine_cpu_test(part_flatten_tests
         MatterEngine3/tests/part_flatten_tests.cpp)
+    matter_qualify_cpu_filesystem(part_flatten_tests MatterEngine3/tests/part_flatten_tests.cpp)
     # Explicit performance harness: fresh cache-miss jobs are not a regular
     # correctness test and must not run as part of the default CTest suite.
     add_executable(castle_part_bench MatterEngine3/tests/castle_part_bench.cpp)
