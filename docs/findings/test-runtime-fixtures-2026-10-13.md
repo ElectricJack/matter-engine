@@ -1,7 +1,9 @@
 # CPU runtime fixture migration checkpoint
 
-Task: steady-harbor-62. This is an incomplete validation checkpoint, not a full
-suite acceptance report. The root CMake project remains Windows/MSVC-only.
+Task: steady-harbor-62. Final Linux acceptance passed on 2026-10-14 under an
+explicit Windows native/CI waiver; see the final acceptance section below.
+Earlier sections retain their historical checkpoint status. The root CMake
+project remains Windows/MSVC-only.
 
 Generated sources use owned `SourceSnapshot` inputs. Generated cache artifacts
 use explicit `CacheByteStorage` publication and immutable read handles. The
@@ -1488,3 +1490,99 @@ made. Actual Linux acceptance remains false until production integration and
 its required original DEFAULT/CPU gates succeed; Windows/CI remains waived.
 This concrete minimal patch and its validated scope are submitted to the
 supervisor before any production promotion.
+
+## Final Linux acceptance — 2026-10-14
+
+The reviewed `smin_set` fix is committed as `e1251bdc2fdc43a978065306c1fafbefeb680233`. It evaluates
+`log((double)sum)` and explicitly rounds to float before the original float
+multiplication/subtraction. The sum, `expf` order, CSG operations and normal
+calculation retain their original arithmetic. This numerical fix changes no
+golden, fixture, tolerance, global compiler flag or platform-specific value.
+
+The actual supported Linux registrar was regenerated into memory from the current
+canonical core/editor declarations and matched the configured graph exactly.
+It selects 131 core tests, 10 editor tests and compute OFF: 142 CPU tests total.
+Compute ON remains outside this CPU runtime selection. The canonical Release
+DEFAULT build passed in 571.09 seconds, with all 26 mandatory core
+qualification commands executed successfully. These include the unchanged
+all-three-part and DSL OBJ goldens, original disk/cache qualifications, full
+40k/16000 flattening workload, original streamer setup, shipped worlds and the
+positive/negative source guards. Both compute ON/OFF build qualifications passed.
+The environment source qualification also passed; its time is recorded separately.
+The native editor census and Windows-only wrapper/transport acceptance remain
+covered by the explicit Windows waiver, with no new Windows run or host wait.
+
+One untraced `ctest -L cpu -j 2` run passed **142/142** in
+**34.96 seconds**, or **34.98 seconds**
+external process wall time. One complete traced run also passed **142/142**
+in 36.86 seconds. Build/source qualification time is excluded
+from these runtime measurements. The first incomplete audit was intentionally
+stopped after 395.30 seconds because ptrace was intercepting the test's
+50-million-iteration `yield()` loop; its trace/log/JUnit and reason are retained. Seccomp filtering
+preserves the same selected file/process syscalls and descendants. The successful
+untraced timing was not repeated. All parent core/editor/qualifier assertion
+compile flags are enabled. Compute OFF uses unconditional `check()`/exit guards
+that remain active with Release `NDEBUG`.
+
+The full `strace --seccomp-bpf -f -Y -e trace=%file,%process` audit includes every selected
+executable and its descendants, the now-built OBJ golden runtime and both cold
+flattening children. There are no missing selected executions and **zero
+unclassified runtime filesystem calls**, including failed path probes.
+The 859 allowed loader calls access loader cache/shared libraries;
+5 Linux overcommit/CPU-online calls and
+6 cold-child shell directory metadata calls are explicitly
+classified. CTest's own registration/cost/log/JUnit and loader file calls remain
+in the complete trace and are reviewed separately from test fixture I/O. This is
+a filesystem-path/process syscall audit; test standard streams and cold-child
+pipe payloads are memory/pipe transport.
+
+Acceptance used the actual canonical `MatterEngine3/build/libmatter_engine3.a`.
+Its `surface.o` member equals the newly built production object, which calls
+double `log`; no private object override or native-cache substitution was used.
+The receipt binds 1867 actual source/header/dependency/fixture inputs,
+all 142 runtime binary hashes, actual compile/link commands, assertion flags,
+current gate inventory, JUnit files and the complete trace. Validation ran over
+parent `ab85986a1542ade8ff9a5c1ce68e9ca851b77d7c` plus the exact committed
+surface change; this subsequent findings update changes no validated code.
+
+The historical before run is a **failing diagnostic**, not a passing baseline:
+138 passed, three failed and one was not run, taking 336.70 seconds CTest wall
+time (345.24 seconds external). It substituted the original sector setup binary
+and otherwise used the actual then-current CMake binaries. The table compares
+its recorded per-test timings with final acceptance and lists the union of each
+run's slowest 20; the earlier coverage-change table discloses every reduction.
+
+| Test (union of before/after slowest 20) | Before diagnostic (s) | Final CPU (s) |
+| --- | ---: | ---: |
+| part_flatten_tests | 326.251 | 5.553 |
+| event_hub_tests | 41.377 | 34.955 |
+| sector_streamer_tests | 24.849 | 7.476 |
+| chart_atlas_tests | 4.642 | 2.610 |
+| script_host_tests | 2.927 | 2.520 |
+| conifer_lod_provider_tests | 2.850 | 2.546 |
+| surface_proxy_tests | 2.368 | 1.538 |
+| async_bake_tests | 1.785 (failed) | 0.612 |
+| finite_surface_recipe_tests | 1.643 | 0.890 |
+| gi_bake_tests | 1.364 | 0.960 |
+| terrain_mesher_tests | 1.100 | 0.722 |
+| terrain_collision_session_tests | 0.907 | 0.572 |
+| sector_bake_tests | 0.877 | 0.599 |
+| physics_tests | 0.756 | 0.395 |
+| brick_bond_atlas_tests | 0.747 | 0.525 |
+| river_float_system_tests | 0.656 | 0.482 |
+| tileset_bake_tests | 0.631 | 0.550 |
+| character_controller_tests | 0.581 | 0.422 |
+| sdf_candidate_bounds_tests | 0.487 | 0.421 |
+| ecs_tests | 0.413 | 0.357 |
+
+Windows native/CI acceptance is explicitly waived. The selected scalar fix
+passes the original goldens, but the captured candidate whole bundle is not
+byte-identical to native. Target 706's later producer-to-REP0/FLAT/model
+transition remains unlocalized, and the global 44-corner attribution remains
+limited to the recorded paired observations. These are preserved diagnostic
+limits; no further native capture is an acceptance requirement.
+
+Machine-readable acceptance: `test-runtime-fixtures-linux-acceptance-2026-10-14.json`.
+Full retained evidence: `/tmp/steady-harbor-epoch9-accepted-linux/`; final receipt SHA256
+`f5d06b1f58f5e9ddf7a4f35c48641530230ac035ce38e47f6243beb67b733854`.
+Artifact manifest: 39 files, SHA256 `5f621022f7827a8c0bbd59954645d66690d577981fad50d9009802ca69cc9354`.
