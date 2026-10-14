@@ -173,7 +173,7 @@ are unchanged by this branch. `steady-harbor-62` owns its source/fixture fix. Af
 that qualification and a free host, measure the complete exact-source PR path,
 then target the largest individual and serialized GPU durations with smaller
 synthetic fixtures and retained regression assertions. Package duration is
-already removed from the PR path; the four heavy CPU fixtures above remain
+already removed from the PR path; the historically slow CPU fixtures remain
 required and await their peer-owned conversion. Do not discard them to report
 an orchestration-only success.
 
