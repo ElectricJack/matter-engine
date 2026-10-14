@@ -43,6 +43,20 @@ public:
     }
 };
 #ifdef MATTER_GEOMETRY_COMPUTE
+void memory_only_validation() {
+    // Keep shader/synchronization checks, but never reuse a disk validation
+    // result. Cover both older and current validation-layer setting names.
+    const auto setting = [](const char *name, const char *value) {
+#ifdef _WIN32
+        check(_putenv_s(name,value) == 0,"GPU-NO-DISK-CACHE-SETTING");
+#else
+        check(setenv(name,value,1) == 0,"GPU-NO-DISK-CACHE-SETTING");
+#endif
+    };
+    setting("VK_LAYER_DISABLES","VK_VALIDATION_FEATURE_DISABLE_SHADER_VALIDATION_CACHE_EXT");
+    setting("VK_LAYER_CHECK_SHADERS_CACHING","0");
+    setting("MESA_SHADER_CACHE_DISABLE","true");
+}
 void admission() {
     auto fake = std::make_shared<Fake>(); gc::SolidBackend backend(fake);
     auto r = sphere(fake->id()); auto options = ms::EvaluationOptions{};
@@ -160,6 +174,7 @@ int main() {
     check(fake->calls == 0,"GPU-DISABLED-NO-DISPATCH");
     std::cout << "PASS GPU-DISABLED / GPU-UNAVAILABLE\n";
 #else
+    memory_only_validation();
     admission(); gpu();
 #endif
 }

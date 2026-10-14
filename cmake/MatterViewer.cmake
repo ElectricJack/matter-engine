@@ -24,11 +24,11 @@ matter_read_manifest(
     PLATFORM windows
 )
 list(FILTER matter_engine_viewer_sources
-    INCLUDE REGEX "^MatterEngine3/src/.*\\.cpp$")
+    INCLUDE REGEX "^(MatterEngine3/src|libs/MatterGraphics/src/native)/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 27)
+if(NOT matter_engine_viewer_source_count EQUAL 29)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 27 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 29 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -51,9 +51,9 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 217)
+    set(matter_expected_viewer_product_count 219)
 else()
-    set(matter_expected_viewer_product_count 216)
+    set(matter_expected_viewer_product_count 218)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
@@ -182,6 +182,8 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vk_resources.cpp
         MatterEngine3/src/render/vk_pipeline.cpp
         MatterEngine3/src/render/vk_scene_renderer.cpp
+        libs/MatterGraphics/src/native/mesh_raster.cpp
+        libs/MatterGraphics/src/native/mesh_pipelines.cpp
         MatterEngine3/src/render/vk_sparse_voxel.cpp
         MatterEngine3/src/sparse_voxel_bake.cpp
         MatterEngine3/src/surface_proxy.cpp

@@ -25,6 +25,9 @@ target_compile_definitions(matter_quickjs PRIVATE
     WIN32_LEAN_AND_MEAN
 )
 matter_configure_vendor_target(matter_quickjs)
+# The vendored quickjs.c carries the build_backtrace exception-retention fix
+# (third_party/quickjs-ng/MATTER_PATCHES.md); portable_host checks this flag.
+set_property(TARGET matter_quickjs PROPERTY MATTER_QUICKJS_BACKTRACE_OWNERSHIP_FIXED TRUE)
 
 set(matter_flecs_sources ${matter_vendor_sources})
 list(FILTER matter_flecs_sources INCLUDE REGEX "^third_party/flecs/flecs\\.c$")

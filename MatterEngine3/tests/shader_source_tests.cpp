@@ -11,10 +11,44 @@
 #include <string>
 #include <vector>
 
+// Physical entry ownership matches the production shader graph. Helpers with
+// compatibility wrappers retain those paths so closures record both files.
+static std::filesystem::path shader_entry_path(std::filesystem::path relative) {
+    const std::string extension = relative.extension().string();
+    const std::string name = relative.filename().string();
+    if (relative.parent_path() == "shaders_vk" &&
+        (name == "raster.vert" || name == "gbuffer.frag" ||
+         extension == ".rgen" || extension == ".rmiss" ||
+         extension == ".rchit" || extension == ".rahit" ||
+         name == "gi_temporal.comp" || name == "gi_atrous.comp" ||
+         name == "primary_light_cull.comp" || name == "sparse_voxel_shadow.comp"))
+        return std::filesystem::path("../libs/MatterGraphics/shaders") / relative.filename();
+    return relative;
+}
+
 static std::string read_shader(const char* path) {
-    std::ifstream file(path, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(file)),
-                       std::istreambuf_iterator<char>());
+    std::filesystem::path physical(path);
+    if (physical.parent_path() == "../shaders_vk")
+        physical = std::filesystem::path("..") /
+                   shader_entry_path(std::filesystem::path("shaders_vk") / physical.filename());
+    std::ifstream file(physical, std::ios::binary);
+    std::string source((std::istreambuf_iterator<char>(file)),
+                        std::istreambuf_iterator<char>());
+    // These private fragments are compiled in place by the renderer. Keep
+    // the existing semantic assertions over that same expanded source.
+    const std::string prefix = "#include \"../../../libs/MatterGraphics/src/native/";
+    for (size_t at = source.find(prefix); at != std::string::npos;
+         at = source.find(prefix, at)) {
+        const size_t quote = at + 10u;
+        const size_t end = source.find('"', quote);
+        assert(end != std::string::npos);
+        const auto include = physical.parent_path() / source.substr(quote, end - quote);
+        const std::string body = read_shader(include.string().c_str());
+        assert(!body.empty());
+        source.replace(at, end + 2u - at, body);
+        at += body.size();
+    }
+    return source;
 }
 
 static size_t count_occurrences(const std::string& text,
@@ -94,6 +128,34 @@ static std::string without_comments(const std::string& text) {
         }
     }
     return code;
+}
+
+// A compatibility entry must actually include the shared production body.
+// Reading the library file alone would hide a removed/commented include, a
+// private implementation or a conditional that prevents the body compiling.
+static bool shader_wrapper_reaches(const std::string& wrapper_source,
+                                   const std::filesystem::path& wrapper_path,
+                                   const std::filesystem::path& implementation_path) {
+    const std::string code = without_comments(wrapper_source);
+    size_t includes = 0;
+    for (size_t start = 0; start < code.size();) {
+        size_t end = code.find('\n', start);
+        if (end == std::string::npos) end = code.size();
+        const std::string line = without_whitespace(code.substr(start, end - start));
+        start = end + 1u;
+        if (line.empty() || line == "#version460" ||
+            line == "#extensionGL_GOOGLE_include_directive:require")
+            continue;
+        const std::string prefix = "#include\"";
+        if (line.rfind(prefix, 0) != 0 || line.back() != '"') return false;
+        const std::string include = line.substr(prefix.size(),
+                                                line.size() - prefix.size() - 1u);
+        if ((wrapper_path.parent_path() / include).lexically_normal() !=
+            implementation_path.lexically_normal())
+            return false;
+        ++includes;
+    }
+    return includes == 1u;
 }
 
 // The braces and body of the first function defined by `signature`, or empty.
@@ -419,6 +481,28 @@ static bool water_forward_uses_world_normal(const std::string& forward_source,
                "{color=normal_ws*0.5+0.5;}";
 }
 
+// Valid water surfaces use the bounded screen samplers and feed the accepted
+// refraction distance into optics. Definitions or comments in an include
+// closure cannot stand in for these calls, and diagnostics must bypass them.
+static bool water_forward_uses_screen_optics(const std::string& source) {
+    const std::string main = function_body(without_comments(source), "void main()");
+    const std::string optics = function_body(main, "else if (surface_valid)");
+    if (optics.empty()) return false;
+    for (const auto& [name, arguments] :
+         std::map<std::string, std::vector<std::string>>{
+             {"water_refract_scene", {"in_world_pos", "surface.shading_normal",
+                                      "view_direction", "surface.field.depth"}},
+             {"water_reflect_scene", {"in_world_pos", "reflection_direction"}},
+             {"water_evaluate_optics", {"record", "refracted.distance_m",
+                                        "surface.foam.coverage"}}}) {
+        const auto calls = call_sites(optics, name);
+        if (calls.size() != 1u || call_sites(main, name).size() != 1u ||
+            call_arguments(optics, calls[0]) != arguments)
+            return false;
+    }
+    return optics.find("water_refract_scene(") < optics.find("water_evaluate_optics(");
+}
+
 // Raster local-direct lighting never brute-forces the scene light list
 // (local_light_counts.x lights). Each pixel walks either its bounded per-tile
 // primary list or, as the fallback, its hashed cell span followed by every
@@ -465,7 +549,10 @@ struct ShaderClosure {
 
 static void collect_shader_closure(const std::filesystem::path& relative,
                                    ShaderClosure& closure) {
-    const std::string key = relative.lexically_normal().generic_string();
+    std::filesystem::path physical = shader_entry_path(relative.lexically_normal());
+    if (!std::filesystem::is_regular_file(std::filesystem::path("..") / physical))
+        physical = std::filesystem::path("shaders_vk") / physical.filename();
+    const std::string key = physical.lexically_normal().generic_string();
     if (!closure.files.insert(key).second) return;
     const std::string source = read_shader(("../" + key).c_str());
     if (source.empty()) {
@@ -486,7 +573,7 @@ static void collect_shader_closure(const std::filesystem::path& relative,
                 closure.complete = false;
             else
                 collect_shader_closure(
-                    relative.parent_path() /
+                    physical.parent_path() /
                         line.substr(quote + 1u, end_quote - quote - 1u),
                     closure);
         }
@@ -574,9 +661,8 @@ static bool rt_local_lighting_splits_receiver_and_origin(
 }
 
 // Normal prerequisites of every explicit build/shaders_vk/*.spv rule, merged
-// per target. `$(wildcard shaders_vk/*.glsl)` is kept as the pattern
-// `shaders_vk/*.glsl`; order-only prerequisites never trigger a rebuild and
-// are dropped.
+// per target. Wildcards remain patterns in either production shader directory;
+// order-only prerequisites never trigger a rebuild and are dropped.
 static std::map<std::string, std::set<std::string>> spirv_prerequisites(
     const std::string& makefile) {
     std::map<std::string, std::set<std::string>> rules;
@@ -593,12 +679,25 @@ static std::map<std::string, std::set<std::string>> spirv_prerequisites(
         }
         return words;
     };
+    std::string spirv_inventory;
     auto add_rule = [&](std::string logical) {
         logical = logical.substr(0, logical.find('#'));
-        const std::string wildcard = "$(wildcard shaders_vk/*.glsl)";
+        if (logical.rfind("VK_SPV =", 0) == 0) {
+            spirv_inventory = logical.substr(8);
+            return;
+        }
+        const size_t inventory_at = logical.find("$(VK_SPV)");
+        if (inventory_at != std::string::npos)
+            logical.replace(inventory_at, 9, spirv_inventory);
+        const std::string wildcard = "$(wildcard ";
         for (size_t at = logical.find(wildcard); at != std::string::npos;
-             at = logical.find(wildcard, at))
-            logical.replace(at, wildcard.size(), "shaders_vk/*.glsl");
+             at = logical.find(wildcard, at)) {
+            const size_t end = logical.find(')', at);
+            if (end == std::string::npos) break;
+            const std::string pattern = logical.substr(at + wildcard.size(),
+                end - at - wildcard.size());
+            logical.replace(at, end - at + 1u, pattern);
+        }
         const size_t colon = logical.find(':');
         if (colon == std::string::npos ||
             logical.find('=') < colon + 2u)  // :=, ::=, = and target vars
@@ -651,14 +750,23 @@ static bool spirv_rule_covers_includes(
     const std::set<std::string>& prerequisites =
         rule == rules.end() ? none : rule->second;
     for (const std::string& dependency : closure.files) {
-        if (dependency == entry || prerequisites.count(dependency)) continue;
-        const bool glsl_in_shader_dir =
-            dependency.rfind("shaders_vk/", 0) == 0 &&
-            dependency.find('/', 11u) == std::string::npos &&
-            dependency.size() > 5u &&
-            dependency.compare(dependency.size() - 5u, 5u, ".glsl") == 0;
-        if (glsl_in_shader_dir && prerequisites.count("shaders_vk/*.glsl"))
-            continue;
+        if (dependency == shader_entry_path(entry).generic_string() ||
+            prerequisites.count(dependency)) continue;
+        bool covered = false;
+        for (const auto& pattern : prerequisites) {
+            const size_t star = pattern.find('*');
+            if (star == std::string::npos || pattern.find('*', star + 1u) != std::string::npos)
+                continue;
+            const std::string prefix = pattern.substr(0, star);
+            const std::string suffix = pattern.substr(star + 1u);
+            if (dependency.size() >= prefix.size() + suffix.size() &&
+                dependency.compare(0, prefix.size(), prefix) == 0 &&
+                dependency.compare(dependency.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+                dependency.substr(prefix.size(), dependency.size() - prefix.size() - suffix.size())
+                    .find('/') == std::string::npos)
+                covered = true;
+        }
+        if (covered) continue;
         missing = "build/" + entry + ".spv lacks " + dependency;
         return false;
     }
@@ -819,13 +927,59 @@ int main() {
                                    "shaders_vk/cloud_shadow_common.glsl"})
         assert(water_forward_dependency_rule.find(dependency) !=
                std::string::npos);
-    const std::string water_forward =
-        read_shader("../shaders_vk/water_forward.frag");
-    const std::string water_screen =
-        read_shader("../shaders_vk/water_screen_space.glsl");
+    // Water entries now forward to MatterGraphics. Check the real include
+    // links before applying every existing semantic assertion to their bodies;
+    // keep read_shader/ShaderClosure unexpanded so build-dependency checks
+    // still see both the wrappers and the included production files.
+    auto read_shared_body = [](const char* entry, const char* implementation) {
+        const std::string wrapper = read_shader(entry);
+        assert(shader_wrapper_reaches(wrapper, entry, implementation));
+        const std::string body = read_shader(implementation);
+        assert(!body.empty());
+        const std::string include = "#include \"../../libs/MatterGraphics/shaders/" +
+            std::filesystem::path(implementation).filename().generic_string() + "\"";
+        assert(shader_wrapper_reaches("/* compatibility */\r\n  " +
+                                      include + " // production body\r\n",
+                                      entry, implementation));
+        assert(!shader_wrapper_reaches(mutated(wrapper, include, ""),
+                                      entry, implementation));
+        assert(!shader_wrapper_reaches(mutated(wrapper, include, "// " + include),
+                                      entry, implementation));
+        assert(!shader_wrapper_reaches(mutated(wrapper, include,
+                                      "#if 0\n" + include + "\n#endif"),
+                                      entry, implementation));
+        assert(!shader_wrapper_reaches(mutated(wrapper, include,
+                                      "#include \"missing.glsl\""),
+                                      entry, implementation));
+        assert(!shader_wrapper_reaches(wrapper + "\n" + include,
+                                      entry, implementation));
+        assert(!shader_wrapper_reaches(wrapper + "\nvoid main() {}\n",
+                                      entry, implementation));
+        return body;
+    };
+    const std::string water_forward = read_shared_body(
+        "../shaders_vk/water_forward.frag",
+        "../../libs/MatterGraphics/shaders/water_forward.glsl");
+    const std::string water_screen = read_shared_body(
+        "../shaders_vk/water_screen_space.glsl",
+        "../../libs/MatterGraphics/shaders/water_screen_space.glsl");
     assert(water_forward.find("water_refract_scene") != std::string::npos);
     assert(water_forward.find("water_reflect_scene") != std::string::npos);
     assert(water_forward.find("water_evaluate_optics") != std::string::npos);
+    assert(water_forward_uses_screen_optics(water_forward));
+    for (const char* sampler : {"water_refract_scene", "water_reflect_scene",
+                                "water_evaluate_optics"})
+        assert(!water_forward_uses_screen_optics(
+            mutated(water_forward, sampler, "disabled_sampler") +
+            "\n// " + sampler + "( retained only in a comment\n"));
+    assert(!water_forward_uses_screen_optics(mutated(
+        water_forward, "record, refracted.distance_m, surface.foam.coverage",
+        "record, surface.field.depth, surface.foam.coverage")));
+    assert(!water_forward_uses_screen_optics(mutated(
+        water_forward, "in_world_pos, surface.shading_normal, view_direction",
+        "in_world_pos, in_normal, view_direction")));
+    assert(!water_forward_uses_screen_optics(mutated(
+        water_forward, "else if (surface_valid)", "else")));
     assert(water_screen.find("const int WATER_REFLECTION_STEPS = 24;") !=
            std::string::npos);
     assert(water_screen.find(
@@ -911,19 +1065,21 @@ int main() {
     // River presentation Task 8: raster and RT must share one bounded water
     // evaluator. Private copies inevitably drift at reset boundaries and make
     // the static mesh appear different in reflections than in the G-buffer.
-    const std::string water_common =
-        read_shader("../shaders_vk/water_surface.glsl");
+    const std::string water_common = read_shared_body(
+        "../shaders_vk/water_surface.glsl",
+        "../../libs/MatterGraphics/shaders/water_surface.glsl");
     const std::string water_raster =
         read_shader("../shaders_vk/gbuffer.frag");
     // The RT lighting entry points are thin specializations of one shared
     // implementation (rt_lighting_impl.glsl owns main()), so RT water
     // contracts are stated against that implementation and every entry is
     // checked to reach it.
-    const std::string rt_impl_path = "../shaders_vk/rt_lighting_impl.glsl";
-    const std::string water_rt = read_shader(rt_impl_path.c_str());
+    const std::string water_rt = read_shared_body(
+        "../shaders_vk/rt_lighting_impl.glsl",
+        "../../libs/MatterGraphics/shaders/rt_lighting_impl.glsl");
     std::vector<std::string> rt_lighting_entries;
     for (const auto& entry :
-         std::filesystem::directory_iterator("../shaders_vk")) {
+         std::filesystem::directory_iterator("../../libs/MatterGraphics/shaders")) {
         if (entry.path().extension() != ".rgen") continue;
         const std::string relative =
             "shaders_vk/" + entry.path().filename().generic_string();
@@ -944,8 +1100,8 @@ int main() {
         // private: its whole include closure defines water_backtrace_rk2 once.
         const ShaderClosure closure = shader_closure(entry);
         assert(closure.complete);
-        assert(closure.files.count("shaders_vk/rt_lighting_impl.glsl") == 1u);
-        assert(closure.files.count("shaders_vk/water_surface.glsl") == 1u);
+        assert(closure.files.count("../libs/MatterGraphics/shaders/rt_lighting_impl.glsl") == 1u);
+        assert(closure.files.count("../libs/MatterGraphics/shaders/water_surface.glsl") == 1u);
         assert(count_occurrences(without_comments(closure.text),
                                  "vec2 water_backtrace_rk2(") == 1u);
     }
@@ -1124,9 +1280,9 @@ int main() {
                "        return;\n"
                "    }") != std::string::npos);
     const std::string gi_temporal =
-        read_shader("../shaders_vk/gi_temporal.comp");
+        read_shader("../../libs/MatterGraphics/shaders/gi_temporal.comp");
     const std::string gi_atrous =
-        read_shader("../shaders_vk/gi_atrous.comp");
+        read_shader("../../libs/MatterGraphics/shaders/gi_atrous.comp");
     assert(gi_temporal.find("reactivityTex") != std::string::npos &&
            gi_temporal.find("float alpha = mix") != std::string::npos);
     assert(gi_atrous.find("reactivityTex") != std::string::npos &&
@@ -1207,8 +1363,9 @@ int main() {
     const std::string composite = read_shader("../shaders_vk/composite.frag");
     const std::string rt = water_rt;  // the shared RT lighting implementation
     const std::string volume = read_shader("../shaders_vk/vol_scatter.comp");
-    const std::string local_lighting =
-        read_shader("../shaders_vk/local_lighting.glsl");
+    const std::string local_lighting = read_shared_body(
+        "../shaders_vk/local_lighting.glsl",
+        "../../libs/MatterGraphics/shaders/local_lighting.glsl");
     assert(!local_lighting.empty());
     for (const char* binding : {
              "layout(set = 2, binding = 0, std430)",
@@ -1346,7 +1503,8 @@ int main() {
            saved_shading_world < pom_lift && pom_lift < primary_local_direct);
     assert(rt_local_lighting_splits_receiver_and_origin(rt));
     const std::string rt_surface =
-        read_shader("../shaders_vk/rt_surface_common.glsl");
+        read_shared_body("../shaders_vk/rt_surface_common.glsl",
+                        "../../libs/MatterGraphics/shaders/rt_surface_common.glsl");
     assert(without_whitespace(without_comments(rt_surface))
                .find("vec3visibility_position;") != std::string::npos);
     assert(without_whitespace(without_comments(rt_surface))
@@ -1562,7 +1720,9 @@ int main() {
                std::string::npos &&
            neutral_environment_tail.find("matter::flush_buffer(frame.environment_constants,") !=
                std::string::npos);
-    const std::string engine_make = read_shader("../Makefile");
+    const std::string engine_make = mutated(read_shader("../Makefile"),
+        "include ../libs/MatterGraphics/native-ray-shaders.mk",
+        read_shader("../../libs/MatterGraphics/native-ray-shaders.mk"));
     const std::string editor_make = read_shader("../../MatterEditor/Makefile");
     assert(engine_make.find("build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl") !=
            std::string::npos);
@@ -1598,11 +1758,14 @@ int main() {
         engine_make,
         "    shaders_vk/local_lighting.glsl shaders_vk/local_light_types.glsl",
         "    shaders_vk/local_light_types.glsl")));
-    // Shared RT implementation edge dropped from the two primary wrappers.
+    // Shared RT implementation edge dropped from its owning Make fragment.
     assert(!spirv_rules_cover(mutated(
         engine_make,
-        "build/shaders_vk/rt_primary_adaptive.rgen.spv "
-        "build/shaders_vk/rt_lighting.rgen.spv: shaders_vk/rt_lighting_impl.glsl",
+        "$(VK_SPV): ../libs/MatterGraphics/shaders/rt_lighting_impl.glsl",
+        "$(VK_SPV):")));
+    // Moved VT helpers still need normal dependencies, even behind wrappers.
+    assert(!spirv_rules_cover(mutated(engine_make,
+        "$(wildcard ../libs/MatterGraphics/shaders/vt_*)",
         "")));
     // Culling/audit wrappers narrowed to the implementation file alone.
     assert(!spirv_rules_cover(mutated(engine_make, "    $(wildcard shaders_vk/*.glsl)",

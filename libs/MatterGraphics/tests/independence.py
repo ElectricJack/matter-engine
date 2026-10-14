@@ -29,20 +29,57 @@ def audit(build):
                     repository / "MatterEngine3/src/render/matrix_math.h",
                     repository / "MatterEngine3/include/matter/math_types.h"}
     if vulkan:
+        legacy_files.add(repository / "libs/ProfileLib/include/profile.h")
         shader_root = repository / "MatterEngine3/shaders_vk"
+        environment_shaders = tuple(name + ".comp" for name in (
+            "atmosphere_transmittance", "atmosphere_multiscatter", "atmosphere_sky_view",
+            "atmosphere_irradiance", "cloud_shadow_density", "cloud_shadow_integrate",
+            "cloud_shadow_reproject", "vol_density", "vol_scatter", "vol_integrate"))
         allowed_shaders = {shader_root / name for name in (
             "composite.vert", "composite.frag", "display_transform.frag",
             "vol_common.glsl", "impostor_common.glsl", "environment_common.glsl",
-            "cloud_shadow_common.glsl", "local_lighting.glsl", "local_light_types.glsl")}
+            "cloud_shadow_common.glsl", "local_lighting.glsl")}
+        # The moved local_lighting implementation includes its sibling types
+        # directly, so the engine's local_light_types wrapper is not in the closure.
+        allowed_shaders.update(root / "shaders" / name for name in
+                               ("impostor_common.glsl", "local_lighting.glsl", "local_light_types.glsl"))
+        allowed_shaders.update(shader_root / name for name in environment_shaders + (
+            "atmosphere_common.glsl", "cloud_density.glsl", "vt_noise.glsl"))
+        raster_shaders = ("raster.vert", "raster_skin.vert", "raster_water.vert", "gbuffer.frag",
+                          "visibility_id.vert", "visibility_id.frag")
+        allowed_shaders.update(shader_root / name for name in (
+            "visibility_id.vert", "visibility_id.frag", "tileset_common.glsl", "surface_detail.glsl", "wang_common.glsl"))
+        allowed_shaders.update(root / "shaders" / name for name in (
+            "raster.vert", "gbuffer.frag", "material_common.glsl", "vt_chart_types.glsl", "vt_common.glsl",
+            "vt_draw_inputs.glsl", "vt_normal_frame.glsl", "vt_parallax.glsl", "vt_seed_walk.glsl",
+            "vt_surface_walk.glsl", "vt_visible_input.glsl", "water_surface.glsl"))
         legacy_files.update(allowed_shaders)
+        # Exact native platform/data closure; never grant the whole engine tree.
+        legacy_files.update(repository / "MatterEngine3" / name for name in (
+            "src/render/vk_resources.h",
+            "src/render/vk_cloud_shadows.h", "src/render/vk_volumetrics.h",
+            "src/render/frame_matrices.h", "src/render/gpu_matrix_pack.h",
+            "include/matter/vulkan_device.h", "include/matter/camera.h",
+            "include/matter/atmosphere.h", "include/matter/atmosphere_lighting.h",
+            "include/matter/cloud_layers.h", "include/matter/cloud_shadow_settings.h",
+            "include/matter/volumetric_quality.h", "include/matter/display_dither.h",
+            "include/matter/sun_angles.h", "include/matter/log.h", "include/matter/compiler.h",
+            "tests/check.h", "tests/atmosphere_tests.cpp", "tests/cloud_layer_tests.cpp",
+            "tests/cloud_shadow_tests.cpp", "tests/volumetric_quality_tests.cpp"))
     legacy_includes = {repository / "MatterEngine3/src/render", repository / "MatterEngine3/include"}
+    if vulkan:
+        legacy_includes.add(repository / "libs/ProfileLib/include")
     expected = {"matter_contracts", "matter_graphics", "matter_graphics_tests",
                 "matter_graphics_header_backend", "matter_graphics_header_graphics",
                 "matter_graphics_header_scene_backend", "matter_graphics_scene_tests",
                 "matter_graphics_header_composition", "matter_graphics_composition_tests"}
     if vulkan:
-        expected.update({"matter_graphics_vulkan", "matter_graphics_vulkan_tests", "matter_graphics_header_vulkan_resources",
-                         "matter_graphics_header_vulkan_composition"})
+        expected.update({"matter_graphics_vulkan", "matter_graphics_sample", "matter_graphics_vulkan_tests", "matter_graphics_raster_tests", "matter_graphics_header_vulkan_resources",
+                         "matter_graphics_header_vulkan_composition", "matter_graphics_header_vulkan_raster"})
+        expected.add("matter_graphics_environment")
+        expected.add("matter_graphics_cloud_shadow_reference_tests")
+        expected.update("matter_graphics_" + suite + "_tests" for suite in (
+            "atmosphere", "cloud_layer", "cloud_shadow", "volumetric_quality"))
     for config in model["configurations"]:
         all_targets = {t["name"]: json.loads((reply / t["jsonFile"]).read_text()) for t in config["targets"]}
         utilities = {name for name, t in all_targets.items() if t["type"] == "UTILITY"}
@@ -100,7 +137,7 @@ def audit(build):
     assert required_headers <= checked, f"Shared renderer math headers not compiled: {required_headers - checked}"
     if vulkan:
         shader_deps = set()
-        for shader in ("composite.vert", "composite.frag", "display_transform.frag"):
+        for shader in ("composite.vert", "composite.frag", "display_transform.frag") + environment_shaders + raster_shaders:
             raw = (build / (shader + ".spv.d")).read_text()
             # compile_shader.py escapes paths; split only the target delimiter.
             shader_deps.update(Path(p).resolve() for p in shlex.split(raw.split(": ", 1)[1]))

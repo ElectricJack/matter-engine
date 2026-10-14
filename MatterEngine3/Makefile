@@ -392,6 +392,17 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/selection_line.vert.spv \
          build/shaders_vk/selection_line.frag.spv
 
+# Physical ownership moved; embedded names and shader options remain unchanged.
+build/shaders_vk/raster.vert.spv: ../libs/MatterGraphics/shaders/raster.vert
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
+
+build/shaders_vk/gbuffer.frag.spv: ../libs/MatterGraphics/shaders/gbuffer.frag
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
+
+include ../libs/MatterGraphics/native-ray-shaders.mk
+
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
@@ -435,13 +446,22 @@ build/shaders_vk/environment_sampling_test.comp.spv: \
 
 # C2 uses the same source and descriptor ABI as raster.vert, but a compile
 # time specialization adds location 5 for the previous skinned position.
-build/shaders_vk/raster_skin.vert.spv: shaders_vk/raster.vert shaders_vk/material_common.glsl
+build/shaders_vk/raster_skin.vert.spv: ../libs/MatterGraphics/shaders/raster.vert shaders_vk/material_common.glsl
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_SKINNED_VERTEX_INPUT $< -o $@
 
-build/shaders_vk/raster_water.vert.spv: shaders_vk/raster.vert shaders_vk/material_common.glsl
+build/shaders_vk/raster_water.vert.spv: ../libs/MatterGraphics/shaders/raster.vert shaders_vk/material_common.glsl
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_WATER_ANIMATION_VERTEX_INPUT $< -o $@
+
+# The rollback Make graph does not use glslc depfiles. Track moved helpers
+# even through compatibility includes, after entrypoints to preserve $<.
+$(VK_SPV): ../libs/MatterGraphics/shaders/material_common.glsl \
+           ../libs/MatterGraphics/shaders/impostor_common.glsl \
+           $(wildcard ../libs/MatterGraphics/shaders/vt_*) \
+           ../libs/MatterGraphics/shaders/water_forward.glsl \
+           ../libs/MatterGraphics/shaders/water_surface.glsl \
+           ../libs/MatterGraphics/shaders/water_screen_space.glsl
 
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
 
@@ -816,6 +836,12 @@ $(VIEWER_ME3_OBJ): | shaders_gen/embedded_shaders.h shaders_gen/embedded_spirv.h
 $(VIEWER_ME3_OBJ) $(VIEWER_MSL_OBJ) $(VIEWER_BC7ENC_OBJ) $(VIEWER_PROFILE_OBJ): $(VIEWER_LIB_FLAGS_STAMP)
 
 $(VIEWER_OBJDIR)/%.o: %.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+
+# Compiled MatterGraphics raster authorities live outside the engine vpath.
+$(VIEWER_OBJDIR)/mesh_raster.o: ../libs/MatterGraphics/src/native/mesh_raster.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+$(VIEWER_OBJDIR)/mesh_pipelines.o: ../libs/MatterGraphics/src/native/mesh_pipelines.cpp | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
 
 # Sources deliberately kept off vpath (see the $(OBJDIR) twins above for why)

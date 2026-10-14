@@ -20,7 +20,7 @@
 
 #include "check.h"
 #include "matter/cloud_layers.h"
-#include "matter/world_definition.h"
+#include "../../libs/MatterGraphics/src/native/fog_settings.h"
 
 #include <array>
 #include <algorithm>
@@ -676,7 +676,7 @@ void test_task9_shared_density_and_optional_r16f_contract() {
     std::ifstream shader("../shaders_vk/vol_density.comp", std::ios::binary);
     const std::string volume((std::istreambuf_iterator<char>(shader)),
                              std::istreambuf_iterator<char>());
-    std::ifstream host("../src/render/vk_volumetrics.cpp", std::ios::binary);
+    std::ifstream host("../../libs/MatterGraphics/src/native/vk_volumetrics.cpp", std::ios::binary);
     const std::string vk((std::istreambuf_iterator<char>(host)),
                          std::istreambuf_iterator<char>());
     std::ifstream composite_file("../shaders_vk/composite.frag", std::ios::binary);

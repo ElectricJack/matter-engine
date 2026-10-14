@@ -39,7 +39,6 @@
 #include "terrain_river_overlay.h"
 
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <sstream>
 #include <stdexcept>

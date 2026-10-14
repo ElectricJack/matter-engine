@@ -201,7 +201,7 @@
         {"path": "third_party/quickjs-ng", "reason": "vendored QuickJS-ng headers used by the host implementation only"}
       ],
       "configure_inputs": [
-        {"path": "third_party/quickjs-ng/quickjs.c", "reason": "quickjs-compat.cmake derives the patched quickjs-host.c from the vendored source of truth"},
+        {"path": "third_party/quickjs-ng/quickjs.c", "reason": "portable_host compiles the patched vendored source directly (MATTER_PATCHES.md)"},
         {"paths": ["packages/matter-authoring/index.mjs", "packages/matter-authoring/values.mjs", "packages/matter-authoring/parameters.mjs",
                    "packages/matter-authoring/rng.mjs", "packages/matter-authoring/recipe.mjs", "packages/matter-authoring/legacy.mjs"],
          "reason": "the host embeds the portable authoring SDK modules byte-for-byte as module source data (no link or include dependency)"}

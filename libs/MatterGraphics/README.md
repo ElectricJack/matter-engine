@@ -20,8 +20,48 @@ composition and display into an offscreen pass with explicit evaluated inputs.
 It owns images, pipelines, descriptors and GPU submissions. Fourteen native
 matched image fixtures cover selected shading behavior. See the
 [rendering contract, capability map and producer inventory](RENDERING.md) for
-precise support and pending raster/RT/environment/water extraction; a composition
+precise support and pending RT/environment/water integration; a composition
 consumer does not imply its product producer is available.
+
+`VulkanRaster` consumes `SceneFrame` and produces mesh G-buffers using the
+production raster shaders, pipeline creation and command recorder. It accepts
+uniform opaque PBR meshes, including nested assemblies and mirrored/nonuniform
+placements. It applies the facade's inverse-transpose normal contract and packs
+geometry per placement; this adapter makes no batching/performance claim.
+Textured appearances fail explicitly. Native skin/water/VT/sparse extensions
+remain in the existing host, which delegates to the same extracted mesh pass.
+The adapter specializes the shared G-buffer shader for this admitted material
+domain, allowing software Vulkan compilers to remove unused texture/POM paths.
+Uniform material evaluation and every G-buffer attachment remain active; the
+native host defaults to the full shader without this specialization.
+See the [native boundary and provenance](src/native/README.md).
+
+The [standalone native sample](examples/README.md) connects imported and
+hand-built assets to those production passes, with camera, directional lighting,
+shared-instance updates, resource retirement and reproducible image captures.
+It builds through the component's supported MSVC wrapper and is included in
+the forbidden-dependency audit.
+
+```cpp
+#include <matter/graphics/vulkan_raster.h>
+matter::graphics::VulkanRaster raster(binding);
+matter::graphics::SceneFrame frame;
+auto status = scene->frame(frame);
+matter::graphics::RasterOutput gbuffer;
+if (status.ok()) status = raster.render(frame, 128, 128, gbuffer);
+// Feed albedo/normal/orm/depth/identity/materials into CompositionInputs;
+// the coordinator supplies evaluated lighting/environment products separately.
+```
+
+The injected device must enable Vulkan 1.3 dynamic rendering, synchronization2,
+shader demote, buffer device address, nonuniform sampled-image indexing, shader
+draw parameters and indirect first-instance draws. `render` waits for retirement,
+reads back native attachments, and commits output only on success. Identity
+channels index returned material records and coordinator instance/path records.
+The camera uses a reversed-Z, zero-to-one projection without an additional Y
+flip, matching the host's negative viewport. Raster budgets bound dimensions,
+triangle packing and padded GPU allocations. The native imported-fixture test
+exercises real pixels and validation.
 
 ```cpp
 #include <matter/graphics/graphics.h>
@@ -123,9 +163,9 @@ cmake --build /tmp/matter-graphics-vulkan --parallel 2
 ctest --test-dir /tmp/matter-graphics-vulkan --output-on-failure -j 1
 ```
 
-The native test requires Vulkan 1.2 timeline semaphores for its deterministic
-retirement gate and fails if no suitable graphics device is available; it does
-not silently pass via a fake device. Validation is enabled when installed; set
+The raster fixture requires Vulkan 1.3 and the features above. The existing
+resource/composition fixture retains its Vulkan 1.2 timeline-semaphore device
+requirement. Both fail if no suitable graphics device is available. Validation is enabled when installed; set
 `MATTER_GRAPHICS_REQUIRE_VALIDATION=1` to require it (the MSVC wrapper does so).
 `BUILD_TESTING=OFF` with Vulkan disabled needs no Python/Node. The optional
 Vulkan target requires glslc and Python 3.9+ to compile/embed production shaders.
