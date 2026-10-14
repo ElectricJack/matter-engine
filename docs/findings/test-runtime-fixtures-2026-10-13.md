@@ -1101,3 +1101,104 @@ Stage comparison SHA-256:
 `8ca7cfc8f59e4f26e5aaf2301056ee6ea634eee317deec090383430986e5e6fe`.
 Private semantic guard receipt SHA-256:
 `5e32a46e3e854ba13d9208de789a13383f72efa37b2b2388841133ea866c352d`.
+
+### Golden-matching native cache replay (source e5ce098f)
+
+Supervisor supplied a preserved reference from the already-running native job
+`38597054763` / `115966519855`, source
+`61c97f600d4b7edef886da16968bcd83fd7af432`. This is actual output/cache evidence,
+not a full native CI pass. No native producer was started, cancelled or awaited.
+The CastleStone bundle is 24,658,029 bytes, SHA-256
+`2c918c47025a24d7a93512377b121cc4e5286d4693f7a08547b077fac3d89c05`.
+A private copy was loaded through the existing cache-only `export_part` path,
+with real `ScopedReadSnapshot` schema/hash/directory/all-section checksum
+validation. Bundle format 1, version digest `144cdeb99c68f1a7`, resolved hash
+`730a3217c9a13581`, LOD 0, texture size 256, gutter/dilation 4 and smooth normal
+space remain unchanged. There is no module bake/flatten fallback in this path;
+baked and flattened counts are zero and the copied bundle remains byte-identical.
+
+A private adapter includes the original full golden test source with assertions
+enabled. Only CastleStone's input origin is redirected to the real bundle-only
+exporter; every original golden, structural, OBJ and MTL predicate stays intact.
+Paving, AlpineFlower and the DSL cases use their original paths. All these
+predicates pass in 2.65 seconds. This input control bypasses CastleStone module
+generation/flattening and therefore is not complete Linux migration acceptance.
+The production arithmetic, compiler flags, fixtures and negative probes were
+not edited. Existing complete DEFAULT/runtime evidence remains at its earlier
+production checkpoint, with Linux acceptance false.
+
+The actual Linux exporter and unchanged uninstrumented baker reproduce required
+normal hash `281757a9a9886a07`. The normal payload is byte-identical to the
+preserved native decoded PNG, SHA-256
+`0f6f0b0c7475e267c9139dd717d305d40dd87f5ab3c97db7c3fd8fc402abc382`.
+Traced and untraced replay agree on all six maps; the other five maps remain
+byte-identical to the GNU baseline. Actual model/chart capture at the existing
+baker boundary produces model SHA-256
+`eec7879eecdfd4b9d32fdadc0a61ca64b1af6c122ac42972a42bbe7efa893c51`.
+Against GNU model `2c4395dc...`, only 186 indexed normal components differ.
+Every option/count, position, UV, occlusion, tint, material ID, index, submesh and
+material field is byte-identical. All actual chart fields and metadata also
+match; chart SHA-256 remains `ed95f27e...`. The first different field is normal
+component 3 (vertex 1 X): GNU bits `7b9055bf`, native-cache input `7c9055bf`.
+
+All 173,950 write identities, indices, barycentrics, face normals and raw
+geometric tangent/bitangent values agree between the two Linux input replays.
+The 18,936 seed sets, surviving writers and dilation parent graphs also agree.
+Actual native-versus-GNU output has 91 changed pixels/channels, maximum delta 1,
+starting from precisely three changed surviving seeds:
+
+| Pixel | GNU RGB | Native-cache Linux / actual native RGB | GNU/native-cache Linux writer | Changed pixels descended from seed |
+| --- | --- | --- | --- | --- |
+| (41,4) | 128,127,255 | 128,128,255 | triangle 1641; 2666/2615/2664 | 5 |
+| (90,149) | 128,128,255 | 128,127,255 | triangle 1856; 2908/2980/2907 | 5 |
+| (244,187) | 128,128,255 | 127,128,255 | triangle 538; 705/706/707 | 81 |
+
+The first differing recorded stage at all three is the input vertex normals.
+Reconstruction follows actual last writes and integer averaging through all
+four dilation passes and matches the native raw payload byte-for-byte. The
+prior sample (157,178) is 127,128,255 in both actual outputs; changing it was not
+repairing the native mismatch. These writer/stage identities are measured in
+Linux native-cache replay; no native writer/stage capture is claimed.
+
+One fresh, unchanged real GNU CastleStone generation into a private empty cache
+confirms baked=1, hits=0, flattened=1 and the original failing `a9b38f2d...` normal
+(40.28 seconds). Actual validated REP0 and FLAT loaders show identical positions
+between producers, but 657 differing normal components across 279 raw corners
+already in REP0. The changed position/GNU-normal/native-normal corner multisets
+are preserved through FLAT, whose triangle order changes. Thus the divergence
+predates flattening, charting and texture baking.
+
+A private trace of the real `surface.c::compute_staged_normals` captures the
+actual position, central-difference gradient, length and normalized output
+without changing arithmetic. It records 184,595 vertices across calls and
+leaves the entire generated GNU bundle byte-identical to the uninstrumented
+run (bundle SHA-256 `f95e3859...`; traced generation 40.98 seconds). The first
+REP0 differing corner, triangle 0 corner 1, exactly matches this producer's
+GNU output, and 235 of the 279 differing corner-normal vectors do likewise.
+The other 44 corners are not attributed by this capture. The first captured
+GNU gradient is `(-0x1.a3585cp-1, -0x1.14584ap-1, -0x1.573116p-5)`, length
+`0x1.f6ab78p-1`; the native bundle supplies its differing normalized result,
+not the native gradient/length. The traced source chain is staged field normals
+through `MarchingCubesAlgorithm::generate`, `convert_mesh_to_triangles`, the
+script host's finite-normal-preserving TriEx packing, and REP0 serialization.
+The confirmed repair investigation belongs to this geometry-normal producer
+chain. The first cross-platform arithmetic operation and a production repair
+remain unconfirmed; neither sqrt alone nor quantization is established as the
+cause. Native cached geometry must not replace real GNU generation acceptance.
+
+All commands, current source/fixture/link bindings, private diffs, validated
+bundle use, original predicates, model fields, full trace packets, 91-pixel
+lineage and scoped producer results are under
+`/tmp/steady-harbor-epoch9-native-cache/`. Experiment receipt SHA-256:
+`9de90b87695b915e53257548b4ba2b9c31f1e006dd3923eed90f7db25655526a`.
+Stage comparison SHA-256:
+`c4fd3ae42f9f18a7f158a604f4612d474395761a255d135edbe12b5ef5dff361`.
+Real producer comparison SHA-256:
+`8fa017ea5185d3264414339a232e07aaac9ff00d20bdfe56071f33b3679622b6`.
+
+The prior numerical-control reader was actually at
+`/tmp/steady-harbor-epoch9-normal-stage/numerical_controls.py`; it is now also
+preserved at the previously listed precision root, unchanged SHA-256
+`52ca6ad2998705efc681a8bbf6046de43617ccce18016dfe8a13de86a178c26f`.
+No numerical variant was rerun. No production repair has been adopted and full
+Linux acceptance remains false.
