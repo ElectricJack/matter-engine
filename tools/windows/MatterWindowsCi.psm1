@@ -22,7 +22,7 @@ function Get-MatterCiPackageRequired {
 
 function Get-MatterCiFingerprint {
     param([string]$RepositoryRoot, $Toolchain)
-    $inputs = @('CMakeLists.txt', 'CMakePresets.json', 'tools/build-windows.ps1')
+    $inputs = @('CMakeLists.txt', 'CMakePresets.json', 'tools/build-windows.ps1', 'cmake/ci-checks.json')
     $inputs += @(Get-ChildItem (Join-Path $RepositoryRoot 'cmake') -Recurse -File |
         Where-Object { $_.Name -eq 'CMakeLists.txt' -or $_.Extension -in @('.cmake', '.sources') } |
         ForEach-Object { $_.FullName.Substring($RepositoryRoot.Length + 1).Replace('\', '/') })

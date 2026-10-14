@@ -39,10 +39,27 @@ this change does not edit daemon configuration or any human gate.
 | --- | --- | --- |
 | `windows_ci_contract_tests` | renamed `tools/lint/windows_ci_contract_lint.ps1`, `matter_ci_lint` build target; required PR lint phase | no behavior removed; excluded from CTest timing |
 | `shader_external_build_tests` | `matter_ci_promotion_lint` build target, staging/main/nightly packaging phase | per-PR cross-drive rebuild fixture; complete fixture remains on promotion |
-| tests labeled `compiler-policy` or `shader`, `editor_registration_census`, `shader_source_tests` | inventory commands run by `ci-source-lint.py` in a required separate lint phase | no assertions removed; source/build inspection is outside behavioral CTest |
+| exact 11 qualifiers in [ci-checks.json](../../../cmake/ci-checks.json) | reviewed inventory commands run by `ci-source-lint.py` in a required separate lint phase | no assertions removed; source/build and mixed disk qualifiers execute outside behavioral CTest |
 | tests labeled `package`, `matter_dist` and package validation | staging/main/nightly or explicit `-Package` | per-PR packaging execution, retained on promotion |
 | `ci_test_report_tests` | XML literals supplied with `StringIO`, rather than temporary XML files | none |
-| compiler-policy/core behavioral assertions | unchanged | none |
+| `matter_engine_headless_consumer_tests`, `matter_mesh_allocator_policy_tests` | explicit behavioral policy exemptions, retained in `ci-pr`/`ci-full` | none; the allocator dispatch and public provider-interface probes execute as runtime tests |
+
+The conversion manifest records each exact name, command suffix, original labels
+and preserved semantics. CMake rejects a missing listed qualifier or a newly
+unclassified shader/compiler-policy test. Post-build lint rejects duplicate,
+missing, unreviewed, relabeled or substituted commands and records the manifest
+SHA-256; an empty or incomplete qualifier set cannot pass. The prior broad-label
+implementation is superseded: two compiler-policy executables have runtime
+assertions and remain behavioral CTest.
+
+`editor_registration_census` retains a real editor census, its reviewed disk
+manifest and the unregistered PE-string mutation probe. It is a **mixed** runtime
+and disk qualifier, not a pure source check. `compiler_return_address_gnu_tests`
+likewise still compiles and executes its caller-identity probe. These mandatory
+qualifiers remain intact while `steady-harbor-62` owns pure-runtime conversions;
+no disk-free claim is made for them here. `vt_link_inventory_tests` inspects only
+Ninja link commands; its former CTest dependency on `vt_compositor_tests` was
+ordering, not a GPU input. The compositor runtime remains in behavioral CTest.
 
 Lint executes the configured commands, working directories, environment,
 timeouts and pass/fail regexes from the post-build inventory. A missing command,
@@ -78,6 +95,11 @@ changing job count does not remove that safety or accelerate its serialized sum.
 
 ## Evidence and acceptance
 
+The native summary includes `qualification_under_60_seconds`, requiring both a
+passing outcome and the entire script wall time (including lint/setup) below 60;
+build and test subset durations remain separate diagnostic fields. Missing lint
+or JUnit evidence fails the outcome.
+
 Artifacts retain source identity, hosted/local status, toolchain/fingerprint,
 complete inventory, JUnit, all timing rows, slowest 20, missing/extra/duplicate
 selected tests, serialized resource sums, cache statistics and all phase durations.
@@ -87,6 +109,14 @@ This is a bound for those measured fixtures on that platform, not a forecast for
 smaller inputs or a different runner. Skips and incomplete selection fail timing
 validation. Test success and the 60-second target are separate evidence fields;
 a slow passing test run does not prove task acceptance.
+
+The Linux job requires the existing GNU invalid-format compile probe to fail for
+the expected `-Werror=format` diagnostic, compiles and executes the existing GNU
+caller-identity probe, and runs report/lint/depfile/embedding qualifiers. Their
+exit codes, diagnostics and timings are retained outside behavioral CTest. The
+Windows-specific MSVC/editor/package contracts remain native qualification; this
+is not Linux parity with the engine/editor suite. A lint failure fails the whole
+Linux job while all foundation suites still execute.
 
 The Linux job runs the existing portable foundations (MemoryLib with ASan/UBSan
 and allocation interposition, MeshChartingLib, AssetStoreLib) in independent,

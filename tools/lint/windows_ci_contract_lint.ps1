@@ -35,7 +35,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $source 'cmake'),
         (Join-Path $source 'tools/windows'), (Join-Path $source 'vs/VC/Tools/MSVC/fixture/bin/Hostx64/x64') | Out-Null
     foreach ($name in @('CMakeLists.txt', 'CMakePresets.json', 'tools/build-windows.ps1',
-            'cmake/fixture.cmake', 'tools/windows/toolchain.lock.json',
+            'cmake/fixture.cmake', 'cmake/ci-checks.json', 'tools/windows/toolchain.lock.json',
             'cmake.exe', 'ninja.exe', 'glslc.exe', 'vs/VC/Tools/MSVC/fixture/bin/Hostx64/x64/cl.exe')) {
         Set-Content -LiteralPath (Join-Path $source $name) -Value 'initial'
     }
@@ -46,9 +46,12 @@ try {
     Assert ((Get-MatterCiFingerprint -RepositoryRoot $source -Toolchain $tools).Key -eq $before.Key) 'source edit defeated incremental build'
     Set-Content -LiteralPath (Join-Path $source 'cmake/fixture.cmake') -Value 'new build definition'
     $after = Get-MatterCiFingerprint -RepositoryRoot $source -Toolchain $tools
+    Set-Content -LiteralPath (Join-Path $source 'cmake/ci-checks.json') -Value 'changed qualification manifest'
+    Assert ((Get-MatterCiFingerprint -RepositoryRoot $source -Toolchain $tools).Key -ne $after.Key) 'qualification manifest did not invalidate fingerprint'
     Assert ($after.Key -ne $before.Key) 'CMake edit did not invalidate build'
+    $beforeToolUpgrade = Get-MatterCiFingerprint -RepositoryRoot $source -Toolchain $tools
     Set-Content -LiteralPath $tools.Glslc -Value 'upgraded compiler'
-    Assert ((Get-MatterCiFingerprint -RepositoryRoot $source -Toolchain $tools).Key -ne $after.Key) 'in-place tool upgrade did not invalidate build'
+    Assert ((Get-MatterCiFingerprint -RepositoryRoot $source -Toolchain $tools).Key -ne $beforeToolUpgrade.Key) 'in-place tool upgrade did not invalidate build'
     Copy-Item (Join-Path $repository 'tools/ci-windows.ps1') (Join-Path $source 'tools/ci-windows.ps1')
     Copy-Item (Join-Path $repository 'tools/windows/MatterWindowsCi.psm1') (Join-Path $source 'tools/windows/MatterWindowsCi.psm1')
     $oldEvidence = Join-Path $source 'artifacts/ci'

@@ -141,6 +141,11 @@ try {
         if ([IO.Path]::GetFileName($toolchain.Python) -ieq 'py.exe') { $lintArgs = @('-3.13') + $lintArgs }
         & $toolchain.Python @lintArgs
         if ($LASTEXITCODE -ne 0) { throw "Source lint failed: $LASTEXITCODE" }
+        if (-not (Test-Path -LiteralPath (Join-Path $evidence 'source-lint.json'))) {
+            throw 'Source lint did not produce current evidence.'
+        }
+        $lintEvidence = Get-Content -LiteralPath (Join-Path $evidence 'source-lint.json') -Raw | ConvertFrom-Json
+        if ($lintEvidence.status -ne 'passed') { throw 'Source lint evidence does not record a pass.' }
     } } catch { $lintFailure = $_ }
     try {
         Invoke-CiPhase 'ctest' {
@@ -189,9 +194,14 @@ try {
             if (-not $failure) { $failure = $_; $summary.error = $_.Exception.Message }
             $summary.status = 'failed'
         }
+    } elseif (@($summary.phases | Where-Object { $_.name -eq 'ctest' }).Count) {
+        $missingEvidence = [System.Exception]::new('CTest did not produce current JUnit evidence.')
+        if (-not $failure) { $failure = $missingEvidence; $summary.error = $missingEvidence.Message }
+        $summary.status = 'failed'
     }
     $summary.finished_at_utc = [DateTime]::UtcNow.ToString('o')
     $summary.total_seconds = $total.Elapsed.TotalSeconds
+    $summary.qualification_under_60_seconds = ($summary.status -eq 'passed' -and $summary.total_seconds -lt 60)
     $buildPhase = @($summary.phases | Where-Object { $_.name -eq 'build' })
     $testPhase = @($summary.phases | Where-Object { $_.name -eq 'ctest' })
     if ($testPhase.Count) {
