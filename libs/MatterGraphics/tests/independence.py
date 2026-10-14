@@ -25,9 +25,7 @@ def audit(build):
         loader = Path(settings["Vulkan_LIBRARY"]).resolve()
         assert loader.is_file() and loader.name.lower().startswith(("vulkan-1.lib", "libvulkan.so")), loader
         native_libraries.add(loader)
-    legacy_files = {repository / "MatterEngine3/src/render/matrix_math.cpp",
-                    repository / "MatterEngine3/src/render/matrix_math.h",
-                    repository / "MatterEngine3/include/matter/math_types.h"}
+    legacy_files = {repository / "MatterEngine3/include/matter/math_types.h"}
     if vulkan:
         legacy_files.add(repository / "libs/ProfileLib/include/profile.h")
         shader_root = repository / "MatterEngine3/shaders_vk"
@@ -66,7 +64,7 @@ def audit(build):
             "include/matter/sun_angles.h", "include/matter/log.h", "include/matter/compiler.h",
             "tests/check.h", "tests/atmosphere_tests.cpp", "tests/cloud_layer_tests.cpp",
             "tests/cloud_shadow_tests.cpp", "tests/volumetric_quality_tests.cpp"))
-    legacy_includes = {repository / "MatterEngine3/src/render", repository / "MatterEngine3/include"}
+    legacy_includes = {repository / "MatterEngine3/include"}
     if vulkan:
         legacy_includes.add(repository / "libs/ProfileLib/include")
     expected = {"matter_contracts", "matter_graphics", "matter_graphics_tests",
