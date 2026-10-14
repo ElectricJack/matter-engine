@@ -520,9 +520,37 @@ The complete historical qualification variant passes in98.56s, including
 the original uniform publication drain and all five4000-update setup soaks.
 Log: /tmp/steady-harbor-epoch9-sector-o2-qualification.log.
 
-An exact owned-source Windows export is prepared at
-C:/tmp/steady-harbor-62-e9-native-0z97ad7s. Native Git blob verification is
-ongoing. No native build has launched: the prestart process census found
-active native compiler/Ninja jobs, so the requested build serialization
-still applies. Native DEFAULT build, Linux full qualification and the
-previously observed Stone normal-map discrepancy remain unresolved.
+An owned-source Windows export at C:/tmp/steady-harbor-62-e9-native-0z97ad7s
+matches all10650 regular blobs of26d3e93c and the one tracked symlink target.
+Native Git verification used bounded batches, avoiding a stalled large
+interop pipe. Receipt: /tmp/steady-harbor-epoch9-native-source.json, SHA256
+ab5f4a66d3eb32797d2d01ac4249313808f0a5a5ef76d26dee7bc657f853d3d9.
+No native build has launched. The supervisor confirmed CI producer first,
+clear-stone-99 second, then this task, with explicit handoff and a fresh
+launch-time resource check. This source export must receive subsequent
+owned changes and be reverified before its build.
+
+The real Linux archive completed. The first serial DEFAULT build failed at
+step351/409 on the mandatory OBJ golden qualifier: CastleStone expected
+normal digest281757a9a9886a07, actuala9b38f2de4de4fe2, with unchanged resolved
+input hash. CastlePavingSlab, AlpineFlower and the DSL checks passed. Original
+goldens, tolerances and normal-production code are unchanged. All46 produced
+files and the failed build log are preserved at
+/tmp/steady-harbor-epoch9-golden-failure. Log SHA256:
+14a0a79ae7275246f95e5d9088142aa6d199c022e37eac82931121d29f2da01b.
+Independent PNG CRC/filter decoding gives998 pixels(127,128,255),46 pixels
+(128,127,255), and64492 pixels(128,128,255) in the256x256 RGB normal map.
+This supports further numeric diagnosis; it does not waive the failed guard.
+
+A keep-going continuation collects the remaining independent qualifications.
+It exposed a river-float test abort: its intentional absent measurement-hook
+lookups return entity0, while Flecs ecs_is_alive requires nonzero input.
+An external abort trace identifies ecs_is_alive called by the warmed
+allocation test. The test now checks the sentinel before querying liveness;
+both absence predicates and the real-system presence/liveness guard remain.
+The exact Release-flags candidate qualifier passes in0.81s, including phase
+order/replay/publication checks and all1000 measured phases with zero
+C++/Flecs/Box3D allocations. No production or regression coverage is removed.
+Trace: /tmp/steady-harbor-epoch9-river-abort.log. Candidate source/compile/link
+commands and result: /tmp/steady-harbor-epoch9-river-fix/.
+The corrected CMake target and remaining full graph still require completion.
