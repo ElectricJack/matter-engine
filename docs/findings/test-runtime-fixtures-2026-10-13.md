@@ -783,3 +783,29 @@ Source hashes and reviewed scope:
 /tmp/steady-harbor-epoch9-fixture-tail-receipt.json. The full suite still needs
 an exact-source DEFAULT build and runtime run after the remaining normal golden
 repair; this scoped result does not replace that acceptance gate.
+
+Supervisor message msg-74f4850c1e414db3b0305ab7660c5325 identifies the
+historical native shader-source failure at2fb388d7. The water-normal oracle is
+byte-identical in that historical test and the current source qualifier.
+The historical G-buffer geometric-normal RHS starts with`vt_slot != 0u`,
+where`vt_slot = GBUFFER_UNIFORM_PBR ? 0u : in_vt_slot`; the oracle requires
+`in_vt_slot != 0u` and exact agreement with the forward shader. The current
+G-buffer uses that required expression, while forward shader bytes are unchanged.
+A focused probe using the unchanged canonical predicate returns FAIL for the
+actual historical G-buffer blob and PASS for current shader sources. This
+diagnoses the source-contract mismatch; it does not establish an old rendering
+algorithm defect. No production shader or oracle is changed for this diagnosis.
+
+This check also exposed a Linux registrar qualification inventory gap: the root
+CMake and Make already require the real shader-source qualifier, but the private
+archive registrar omitted it. The registrar now creates its mandatory ALL gate
+and attaches it to shader_source_tests using the existing qualification mechanism.
+The earlier DEFAULT v2 log therefore proves only its attached qualifications,
+not complete required qualification. The newly attached actual build passes all
+source predicates and their retained negative mutations, and the registered
+in-memory shader lookup runtime passes. New build log SHA256:
+1cb980247bc22391d896c8188ad5a96c13c418d7d6b2000b250f9039a184a4dc.
+Source-bound diagnosis receipt:
+/tmp/steady-harbor-epoch9-shader-water-diagnosis/receipt.json. No full-suite
+rerun or native producer is inferred from this focused qualification; the
+retained CastleStone normal golden and final exact-source aggregate gates remain.

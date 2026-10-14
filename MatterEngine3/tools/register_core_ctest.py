@@ -241,7 +241,8 @@ def main():
             'part_asset_v2_tests': 'qualify_part_io.cpp',
             'partstore_tests': 'qualify_partstore_sources.cpp',
             'async_bake_tests': 'qualify_async_sources.cpp',
-            'viewer_logic_tests': 'qualify_viewer_sources.cpp'}
+            'viewer_logic_tests': 'qualify_viewer_sources.cpp',
+            'shader_source_tests': 'qualify_shader_sources.cpp'}
         generated_headers = set()
         for name, source in sorted(archive.items()):
             sources = core[name].get('sources', [source])
