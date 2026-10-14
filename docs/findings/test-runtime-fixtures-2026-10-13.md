@@ -52,6 +52,7 @@ or new persistence policy is introduced.
 | Terrain ravine mesh fixture crops the outer field | Resolution0.5, the authored ravine and retained material/mesh predicates remain | Outside scan extent64m→8m reduces large peripheral scan coverage |
 | Demand bake and terrain verbs use owned source snapshots and private caches | All nine demand groups, hierarchy, roots-only/lazy/full policies, actual section validation and session behavior remain | OS directory creation, source writes and cache cleanup become owned generations |
 | Sector-streamer uniform part-count comparison uses the actual desired map | Same full authored reach/pitch,78201-sector count, independent grid census and nested ratio; historical complete uniform publication drain runs in mandatory filesystem qualification | Runtime no longer drains every uniform request merely to count it; cap8, hole/upgrade/dwell/publication/interleaving guards are unchanged |
+| Sector-streamer stationary setup ends after eight quiet updates | Requests and evictions both reset the quiet counter; full 4000-update setup loops remain in mandatory filesystem qualification; moving coverage, variant-mismatch, failed-child and abandonment predicates remain | Runtime drops the remaining stationary idle soak after the setup has settled |
 | Terrain collision session uses owned source snapshots and byte cache | All 13 lifecycle groups retain original app-publication/candidate-observer timing, tile-N replacement before releasing blocked A, collision-free B, cancellation/winner/manifest/failure predicates | OS source/cache persistence and IO-error behavior become snapshot/byte-store semantics; those transport behaviors are not qualified |
 | Cave-field parity uses original ray endpoints | All 1600 rays, exact y192/-127.75 endpoint signs, mesh/roof/seam predicates and original parity assertion remain | 2044800 interior density evaluations are no longer executed |
 | Large-index QEM uses 128 real triangles above UINT16_MAX | Real indexed simplifier, >65535 input vertices/indices, significant reduction, finite/bounded output and other collapse fixtures remain | The original 166400-triangle/83781-referenced-position dense scalability workload is optional --dense-qem, outside default CTest and mandatory build qualification |
@@ -491,3 +492,37 @@ The integrated source still requires its owned mandatory qualification and
 the remaining normal repair. No full Linux/native result or acceptance is
 claimed. The existing native continuation must bind to the final corrected
 source rather than launch the old ed1 freeze.
+
+### Epoch 9 Linux continuation
+
+The supervisor-delivered startup packet resumed actual owned HEAD
+7badf2b24d25e988ee7e55caa3e6be9442b71e10. The older temporary evidence trees
+are absent on this host; their historical receipts above are not claimed as
+fresh results. A new complete registrar graph contains143 tests (131 core,
+10 editor, two compute), with142 CPU tests. Actual Ozz, Box3D and Raylib
+Linux prerequisites built; a private packaged glslc and Vulkan validation
+layer supply the missing host tools. The serial DEFAULT build of the real
+Make headless archive and generated CMake qualification graph is ongoing.
+
+All10 editor tests pass at-j2 in0.05s. A separate file-syscall trace of their
+actual processes shows only executable/dynamic-loader accesses, with no
+fixture/source/asset/cache/evidence IO. Trace SHA256:
+e0919415e5ae1c3ec17512be559ed1d2fc068b715aff74163e91b3b557efb20c.
+The chart sort suite passes156 generic cases and48 forced heap cases.
+
+The stationary setup change above passes the complete existing standalone
+sector suite. Same-host, same-O2-flags runs take50.20s before and28.48s after;
+their printed regression results are identical. The ordinary unoptimized
+Make baseline takes288.65s. These measurements ran alongside the serial
+archive build and are not whole-suite acceptance or before/after slowest20.
+Logs and timing files: /tmp/steady-harbor-epoch9-sector-o2-{before,after}.*.
+The complete historical qualification variant passes in98.56s, including
+the original uniform publication drain and all five4000-update setup soaks.
+Log: /tmp/steady-harbor-epoch9-sector-o2-qualification.log.
+
+An exact owned-source Windows export is prepared at
+C:/tmp/steady-harbor-62-e9-native-0z97ad7s. Native Git blob verification is
+ongoing. No native build has launched: the prestart process census found
+active native compiler/Ninja jobs, so the requested build serialization
+still applies. Native DEFAULT build, Linux full qualification and the
+previously observed Stone normal-map discrepancy remain unresolved.
