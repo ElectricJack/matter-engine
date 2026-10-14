@@ -809,3 +809,82 @@ Source-bound diagnosis receipt:
 /tmp/steady-harbor-epoch9-shader-water-diagnosis/receipt.json. No full-suite
 rerun or native producer is inferred from this focused qualification; the
 retained CastleStone normal golden and final exact-source aggregate gates remain.
+
+## Source-bound reader, queue and complete qualification audit
+
+Supervisor message msg-4b16475aadab4ea39655cfcc77b543d2 confirms the animation
+reader and core BLAS wrapper changes are within this task's source/cache seam.
+It requests a full Linux syscall audit after the affected original qualifications;
+it preserves manifest/nonce/checksum/version/binding, ANLK rejection and original
+queue saturation/ticket/completion/cancellation predicates. The Linux-only
+completion directive remains operative.
+
+At575db7d9ebc48cde5a6d0facbdb9fd7b98c42053, the actual archive-backed Linux
+DEFAULT build completed with exit1. All26 mandatory core qualification gates
+from the root CMake graph are attached and executed;25 pass, and only the
+unchanged CastleStone normal golden fails. The168 recorded test/qualifier compile
+commands have assertions enabled. The original dense flattening, Demo viewer,
+shipped worlds, disk queue and newly attached shader qualification pass, as do
+the actual compute ON/OFF build qualifications. DEFAULT log SHA256:
+8178f23b92defd79c111d63c334dbe5c65d373ba9797913a1b3dacb17c25842c.
+The exact receipt contains the full commands, graph/source hashes and outcomes:
+/tmp/steady-harbor-epoch9-linux-default-v4-receipt.json.
+
+The current-source registered CPU run with two jobs takes48.52s (50.58s external
+process wall time):141 pass, with obj_export_golden_tests not run because its
+mandatory qualification failed. JUnit SHA256:
+a94ec631545a3fa3b05fcc742951977c99a2df8391af361dbf5b9226e73c4b8d.
+The actual current-source slowest20 are:
+
+| Test | Seconds |
+|---|---:|
+| event_hub_tests | 46.147 |
+| sector_streamer_tests | 11.543 |
+| part_flatten_tests | 9.009 |
+| chart_atlas_tests | 4.341 |
+| script_host_tests | 2.763 |
+| conifer_lod_provider_tests | 2.600 |
+| surface_proxy_tests | 2.201 |
+| finite_surface_recipe_tests | 1.591 |
+| gi_bake_tests | 1.290 |
+| terrain_mesher_tests | 1.113 |
+| river_float_system_tests | 0.982 |
+| sector_bake_tests | 0.979 |
+| brick_bond_atlas_tests | 0.959 |
+| async_bake_tests | 0.930 |
+| terrain_collision_session_tests | 0.919 |
+| physics_tests | 0.903 |
+| character_controller_tests | 0.843 |
+| tileset_bake_tests | 0.780 |
+| ecs_tests | 0.683 |
+| sdf_candidate_bounds_tests | 0.608 |
+
+The separate full process/file syscall trace repeats141 passes and the same
+not-run golden in53.91s. It follows775 runtime process/thread IDs and143 test
+executable launches, including the two extra cold flatten child processes.
+All executed runtime file calls are accounted for:853 loader calls to the
+dynamic-loader cache and five shared libraries, five Linux overcommit/CPU-online
+metadata reads, and six shell working-directory metadata calls. No fixture
+read/write/probe remains, including the former animation commit ENOENT probes
+and queue BlobStore creation. Loader classification rejects write/create flags.
+CTest's own graph/log IO and the CMake dependency-check harness are excluded;
+actual test executables and their descendants are included. The unbuilt OBJ
+golden is explicitly outside this executed audit scope. Trace SHA256:
+1299465fba72b0569b285eb47b11199bc471537871e8d0b75e96bc00d55e0460.
+Traced JUnit SHA256:
+8ee71b88c8234ea09511b3d78a36050da9c5260e6b1cd73374abd4c94284f038.
+Complete lineage, calls, inventory comparison, source/build/assertion binding
+and timings are in /tmp/steady-harbor-epoch9-final-linux-receipt.json and
+/tmp/steady-harbor-epoch9-cpu-final-trace-review.json. The audit reader reproduces
+the earlier trace's fixture failures and the corrected three-test scoped pass.
+These receipts explicitly mark full Linux acceptance false: the required normal
+golden remains unrepaired, despite the passing executed runtimes and shorter
+timing. No further runtime coverage reduction is made for this audit.
+
+The previously launched native run38575850707 at26d3e93c has now completed with
+a MemFree linker failure in oriented_cube_tests before CTest. Its retained
+artifact11905221118 contains only transcript/toolchain metadata, with no model,
+normal image or intermediate-stage reference. The read-only diagnosis receipt
+is /tmp/steady-harbor-epoch9-existing-native26d-receipt.json. This supplies no
+new normal-map cause evidence; no native producer is launched, and native
+completion remains waived.
