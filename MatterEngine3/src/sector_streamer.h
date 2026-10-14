@@ -458,6 +458,9 @@ public:
     void clear();
 
     VisibleSectorStatus visible_status() const;
+    // Count the complete desired map, including held and unissued work.
+    // Read-only O(tracked sectors), like resident_count().
+    size_t desired_count() const;
     size_t resident_count() const;
     size_t inflight_count() const;
 

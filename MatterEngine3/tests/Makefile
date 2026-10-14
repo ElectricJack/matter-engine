@@ -386,6 +386,11 @@ QJS_C    = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
 
 BOX3D_DIR = ../../third_party/box3d
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
+ifeq ($(UNAME_S),Linux)
+# Keep Linux objects separate from the checkout's possible MinGW archive.
+BOX3D_LINUX_BUILD = build/box3d-linux
+BOX3D_LIB = $(BOX3D_LINUX_BUILD)/src/libbox3d.a
+endif
 
 # Autoremesher_core detection (shared by the retopo integration test AND the GPU tests).
 # The archive is self-contained on every platform -- its TBB replacement is
@@ -437,8 +442,8 @@ GPU_AR_CORE_LDFLAGS += $(OZZ_OFFLINE_LIBS)
 GPU_GRAPHICS := GRAPHICS_API_OPENGL_43
 
 FLAVOR_def_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS)
-FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC)
-FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
+FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) -Ibuild/test-fixtures
+FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -Ibuild/test-fixtures
 # Only the graph integration target carries the deterministic cache-race seam.
 # Production and ordinary script-host test objects have no hook API or storage.
 FLAVOR_sh_test_FLAGS  := $(FLAVOR_sh_FLAGS) -DMATTER_TEST_CACHE_VALIDATION_HOOK
@@ -448,7 +453,7 @@ FLAVOR_partstore_test_FLAGS := $(FLAVOR_def_FLAGS) -DMATTER_TEST_CACHE_VALIDATIO
 # sensitive) + winpthreads for std::thread. MATTER_MALLOC64_HOOK routes
 # MALLOC64/FREE64 through the harness's page-guard allocator (see precomp.h).
 FLAVOR_race_FLAGS := $(FLAVOR_def_FLAGS) -O2 -pthread -DMATTER_MALLOC64_HOOK
-FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
+FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) -Ibuild/test-fixtures
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(QJS_INC)
 # MATTER_VULKAN_ONLY (Phase 5a): the GL renderer/raster-composer/GpuCuller
@@ -477,6 +482,10 @@ FLAVOR_qjsc_CC        := gcc
 FLAVOR_qjsc_FLAGS     := -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 FLAVOR_flecsc_CC      := gcc
 FLAVOR_flecsc_FLAGS   := -std=c17 -O2 -I$(FLECS_DIR)
+ifeq ($(UNAME_S),Linux)
+# Flecs uses POSIX networking and clocks; strict C17 hides their declarations.
+FLAVOR_flecsc_FLAGS   += -D_POSIX_C_SOURCE=200809L
+endif
 FLAVOR_physicsc_CC    := gcc
 FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
 
@@ -691,6 +700,7 @@ POLYTRI_CPP = polygon_triangulate_tests.cpp ../src/polygon_triangulate.cpp
 
 SHADER_SOURCE_TARGET = build/shader_source_tests
 SHADER_SOURCE_CPP = shader_source_tests.cpp ../src/shader_source.cpp
+SHADER_SOURCE_QUALIFIER = build/qualify_shader_sources
 
 ASYNCQ_TARGET = build/async_queue_tests
 ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
@@ -716,6 +726,19 @@ SUNANGLES_HEADERS = check.h ../include/matter/sun_angles.h
 CLOUDLAYER_TARGET = build/cloud_layer_tests
 CLOUDLAYER_CPP    = cloud_layer_tests.cpp
 CLOUDLAYER_HEADERS = check.h ../include/matter/cloud_layers.h                      ../include/matter/world_definition.h
+
+# Source wiring/layout is qualified before either shared environment suite can
+# run. Keep the complete input list shared with the CMake registrations.
+ENVIRONMENT_PYTHON ?= python3
+ENVIRONMENT_QUALIFIER = ../../libs/MatterGraphics/tools/qualify_environment.py
+ENVIRONMENT_INPUT_MANIFEST = ../../libs/MatterGraphics/tools/environment_qualification.inputs
+ENVIRONMENT_SOURCES := $(addprefix ../../,$(shell cat $(ENVIRONMENT_INPUT_MANIFEST)))
+ENVIRONMENT_QUALIFICATION = $(OBJDIR)/environment-qualified.stamp
+
+$(ENVIRONMENT_QUALIFICATION): $(ENVIRONMENT_QUALIFIER) $(ENVIRONMENT_INPUT_MANIFEST) $(ENVIRONMENT_SOURCES) | build
+	$(ENVIRONMENT_PYTHON) $(ENVIRONMENT_QUALIFIER) ../..
+	@mkdir -p $(dir $@)
+	@touch $@
 
 PROPS_TARGET = build/props_tests
 PROPS_CPP    = props_tests.cpp ../src/props/props.cpp ../src/util/json_doc.cpp
@@ -1016,6 +1039,7 @@ TERRAINVERB_C = $(COMMON_MSL_C)
 # Phase C Task 7 — WorldSector.js + native world query verbs (sh flavor).
 SECTORBAKE_TARGET = build/sector_bake_tests
 SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
+                 $(SCRIPT_SOLID_COMMON_CPP) \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -1637,7 +1661,38 @@ GPU_ANIMATION_RUNTIME_CPP = \
     ../src/animation/anim_asset.cpp \
     ../src/animation/anim_bundle.cpp \
     ../src/render/indexed_part_geometry.cpp
+# Actual CPU definitions referenced by LocalProvider and PartStore. These stay
+# in their owning projects and are compiled with the existing gpu flavor.
+GPU_PROVIDER_CPU_CPP = $(SCRIPT_SOLID_COMMON_CPP) \
+    ../src/projected_face_cache.cpp ../src/part_surface.cpp \
+    ../src/finite_surface_stamp.cpp ../src/face_material_bake.cpp ../src/mesh_error.cpp \
+    ../src/brick_bond_detail.cpp ../src/brick_bond_atlas.cpp \
+    ../src/geometry/geometry_asset.cpp ../src/geometry/geometry_pages.cpp \
+    ../src/geometry/geometry_compiler.cpp ../src/geometry/geometry_cut.cpp \
+    ../src/sparse_voxel_bake.cpp ../src/sparse_voxel_hierarchy.cpp \
+    ../src/surface_proxy.cpp \
+    ../src/ecs/character_systems.cpp \
+    ../src/hydrology/authored_fluid_colliders.cpp \
+    ../src/hydrology/river_section_graph.cpp \
+    ../src/hydrology/river_section_coordinator.cpp \
+    ../src/hydrology/spillway_handoff.cpp ../src/hydrology/river_runtime.cpp \
+    ../src/hydrology/hydrology_network_artifact.cpp \
+    ../src/hydrology/hydrology_handoff_products.cpp \
+    ../src/hydrology/water_mesh_continuity.cpp \
+    ../src/hydrology/river_presentation_field.cpp \
+    ../src/hydrology/water_mesh_animation_capture.cpp \
+    ../src/hydrology/water_mesh_animation.cpp \
+    ../src/hydrology/water_mesh_animation_artifact.cpp \
+    ../src/hydrology/water_boundary_animation_source.cpp \
+    ../../libs/AssetStoreLib/src/store_hash.cpp \
+    ../../libs/AssetStoreLib/src/store_os.cpp \
+    ../../libs/AssetStoreLib/src/blob_store.cpp \
+    ../../libs/AssetStoreLib/src/ref_table.cpp \
+    ../../libs/AssetStoreLib/src/asset_pages.cpp
+GPU_MSL_C += $(MEMLIB)/src/mem_arena.c $(MEMLIB)/src/mem_bank.c
+
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
+              $(GPU_PROVIDER_CPU_CPP) \
               $(GPU_ANIMATION_RUNTIME_CPP) \
               ../../libs/ProfileLib/src/profile.cpp \
               ../src/render/vk_animation_bounds.cpp \
@@ -1800,6 +1855,16 @@ partstore_test_CPP_SRCS := $(sort $(PARTSTORE_CPP))
 race_CPP_SRCS := $(sort $(PARTSTORE_RACE_CPP))
 
 sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
+build/test-fixtures/embedded_shared_modules.h: $(wildcard ../shared-lib/*.js shared-lib-fixtures/*.js) ../tools/embed_shared_test_sources.py
+	python3 ../tools/embed_shared_test_sources.py --repository ../.. --output $@
+$(call obj_of,sp2,shared_lib_tests.cpp): build/test-fixtures/embedded_shared_modules.h
+$(call obj_of,qjs,world_definition_tests.cpp): build/test-fixtures/embedded_shared_modules.h
+WORLD_FIXTURE_INPUTS := $(wildcard ../shared-lib/*.js ../../projects/world_demo/shared-lib/*.js ../../projects/world_demo/objects/texturing/bricks/*.js ../../projects/world_demo/objects/castle/materials/*.js) ../../projects/world_demo/objects/templates/WorldSector.js
+build/test-fixtures/embedded_world_modules.h: $(WORLD_FIXTURE_INPUTS) ../tools/embed_shared_test_sources.py
+	python3 ../tools/embed_shared_test_sources.py --repository ../.. --world --output $@
+build/test-fixtures/embedded_export_fixtures.h: $(wildcard fixtures/export/*.obj fixtures/export/*.mtl fixtures/export/*.golden) ../tools/embed_shared_test_sources.py
+	python3 ../tools/embed_shared_test_sources.py --repository ../.. --export --output $@
+$(call obj_of,sh,obj_export_golden_tests.cpp): build/test-fixtures/embedded_export_fixtures.h
 vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
 retopo_CPP_SRCS := $(sort $(RETOPO_INT_CPP))
 gpu_CPP_SRCS := $(sort \
@@ -1817,7 +1882,7 @@ gpu_CPP_SRCS := $(sort \
     $(GPU_ALL_CPP))
 
 # C-source flavors. Union across binaries that use them.
-mslc_C_SRCS := $(sort $(COMMON_MSL_C))
+mslc_C_SRCS := $(sort $(COMMON_MSL_C) $(GPU_MSL_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
 flecsc_C_SRCS := $(sort $(ECS_C) $(ANIMATION_RIGID_C))
 physicsc_C_SRCS := $(sort $(PHYSICS_C))
@@ -2488,6 +2553,18 @@ run-terrainverb: $(TERRAINVERB_TARGET)
 	./$(TERRAINVERB_TARGET)
 
 # Phase C Task 7 — WorldSector.js + world query verbs.
+TERRAIN_TEST_MODULE_INPUTS = \
+    ../../projects/world_demo/objects/templates/WorldSector.js \
+    ../../projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js \
+    ../../projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js \
+    $(wildcard ../../projects/world_demo/shared-lib/*.js ../shared-lib/*.js)
+
+build/terrain_test_modules.h: embed_terrain_modules.py $(TERRAIN_TEST_MODULE_INPUTS) | build
+	python3 embed_terrain_modules.py --repo-root ../.. --output $@
+
+$(call obj_of,sh,sector_bake_tests.cpp): build/terrain_test_modules.h
+$(call obj_of,sh,sector_bake_tests.cpp): FLAVOR_sh_FLAGS += -Ibuild
+
 $(SECTORBAKE_TARGET): $(SECTORBAKE_OBJS)
 	$(CC) $(SECTORBAKE_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
@@ -2752,7 +2829,17 @@ build/tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp
 	    $(BOX3D_DIR)/libbox3d.a -lm
 
 $(BOX3D_LIB):
+ifeq ($(UNAME_S),Linux)
+	cmake -S $(BOX3D_DIR) -B $(BOX3D_LINUX_BUILD) -DCMAKE_BUILD_TYPE=Release \
+	      -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DBUILD_SHARED_LIBS=OFF \
+	      -DBOX3D_SAMPLES=OFF -DBOX3D_UNIT_TESTS=OFF -DBOX3D_BENCHMARKS=OFF \
+	      -DBOX3D_DOCS=OFF -DBOX3D_PROFILE=OFF
+	cmake --build $(BOX3D_LINUX_BUILD) --target box3d --parallel 2
+else
 	$(MAKE) -C $(BOX3D_DIR)
+endif
+
+terrain-collision-session-tests demand-bake-tests: $(BOX3D_LIB)
 
 run-tilesetphysics: build/tileset_physics_tests
 	./build/tileset_physics_tests
@@ -2872,7 +2959,17 @@ run-tilesetmeadowmanifest: $(TILESETMEADOWMANIFEST_TARGET)
 	./$(TILESETMEADOWMANIFEST_TARGET)
 
 # Stage 1a — embedded shader lookup.
-$(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_OBJS) ../shaders_gen/embedded_shaders.h
+$(SHADER_SOURCE_QUALIFIER): ../tools/qualify_shader_sources.cpp | build
+	$(CC) -std=c++17 -Wall -UNDEBUG $< -o $@
+
+# Source contracts execute at build/lint time, never in the runtime suite.
+# The phony qualification reads current inputs on every supported invocation;
+# no partial source dependency list can accidentally reuse a stale result.
+.PHONY: qualify-shader-sources
+qualify-shader-sources: $(SHADER_SOURCE_QUALIFIER)
+	./$(SHADER_SOURCE_QUALIFIER)
+
+$(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_OBJS) ../shaders_gen/embedded_shaders.h | qualify-shader-sources
 	$(CC) $(SHADER_SOURCE_OBJS) -o $@ \
 	      $(CFLAGS) -I../include -I..
 
@@ -2900,7 +2997,7 @@ run-sun-angles: $(SUNANGLES_TARGET)
 	./$(SUNANGLES_TARGET)
 
 # Cloud layers. Same empty link closure as sun-angles.
-$(CLOUDLAYER_TARGET): $(CLOUDLAYER_OBJS)
+$(CLOUDLAYER_TARGET): $(CLOUDLAYER_OBJS) | $(ENVIRONMENT_QUALIFICATION)
 	$(CC) $(CLOUDLAYER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
 run-cloud-layers: $(CLOUDLAYER_TARGET)
@@ -3050,7 +3147,7 @@ run-asyncbake: async-bake-tests
 terrain-collision-session-tests: $(call obj_of,gpu,terrain_collision_session_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,terrain_collision_session_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/terrain_collision_session_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-terrain-collision-session: terrain-collision-session-tests
 	./build/terrain_collision_session_tests
@@ -3059,7 +3156,7 @@ run-terrain-collision-session: terrain-collision-session-tests
 demand-bake-tests: $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/demand_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-demandbake: demand-bake-tests
 	./build/demand_bake_tests
@@ -3554,7 +3651,7 @@ clean-atmosphere:
 VOLUMETRICQUALITY_TARGET = build/volumetric_quality_tests
 VOLUMETRICQUALITY_CPP = volumetric_quality_tests.cpp
 
-$(VOLUMETRICQUALITY_TARGET): $(VOLUMETRICQUALITY_CPP) ../include/matter/volumetric_quality.h ../include/matter/cloud_shadow_settings.h ../include/matter/math_types.h check.h | build
+$(VOLUMETRICQUALITY_TARGET): $(VOLUMETRICQUALITY_CPP) ../include/matter/volumetric_quality.h ../include/matter/cloud_shadow_settings.h ../include/matter/math_types.h check.h | build $(ENVIRONMENT_QUALIFICATION)
 	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 -I../include -o $@ $(VOLUMETRICQUALITY_CPP)
 
 run-volumetric-quality: $(VOLUMETRICQUALITY_TARGET)
@@ -3637,3 +3734,85 @@ run-rt-transmission:
 	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
 	cd ../../MatterEditor/build/windows && \
 	    MATTER_VK_SMOKE_MODE=rt-transmission ./vulkan_smoke_tests.exe
+
+# Isolated byte/source fixtures run the production bundle codec, hash and
+# atomic-file implementation. GC removes unrelated geometry entry points.
+build/fixture_io_tests: fixture_io_tests.cpp memory_fixture_io.h ../src/terrain_collision/fixture_artifact_storage.h ../src/terrain_collision/terrain_collision_artifact.h ../src/module_resolver.cpp ../src/source_snapshot_modules.h ../include/matter/fixture_io.h ../src/part_bundle.h ../src/part_asset_v2.cpp $(MSL)/part_asset.cpp
+	@mkdir -p build
+	$(CC) fixture_io_tests.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp $(MSL)/part_asset.cpp -o $@ $(CFLAGS) $(INCLUDE_PATHS) -ffunction-sections -fdata-sections -pthread -Wl,--gc-sections
+
+.PHONY: run-fixture-io
+run-fixture-io: build/fixture_io_tests
+	./build/fixture_io_tests
+
+# Source/layout predicates and shipped-world bakes remain real build gates.
+WORLD_SOURCE_QUALIFIER_TARGET = build/matter_world_source_qualifier
+WORLD_SOURCE_QUALIFIER_CPP = ../tools/qualify_world_sources.cpp
+$(eval $(call objrule_cpp,qjs,$(WORLD_SOURCE_QUALIFIER_CPP)))
+$(call obj_of,qjs,$(WORLD_SOURCE_QUALIFIER_CPP)): world_definition_tests.cpp
+WORLD_SOURCE_QUALIFIER_OBJS = $(call obj_list,qjs,$(WORLD_SOURCE_QUALIFIER_CPP)) $(filter-out $(call obj_of,qjs,world_definition_tests.cpp),$(WORLD_DEFINITION_OBJS))
+$(WORLD_SOURCE_QUALIFIER_TARGET): $(WORLD_SOURCE_QUALIFIER_OBJS)
+	$(CC) $(WORLD_SOURCE_QUALIFIER_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
+.PHONY: qualify-world-sources
+qualify-world-sources: $(WORLD_SOURCE_QUALIFIER_TARGET)
+	./$(WORLD_SOURCE_QUALIFIER_TARGET)
+$(WORLD_DEFINITION_TARGET): | qualify-world-sources
+
+PART_IO_QUALIFIER_TARGET = build/matter_part_io_qualifier
+PART_IO_QUALIFIER_CPP = ../tools/qualify_part_io.cpp
+$(eval $(call objrule_cpp,def,$(PART_IO_QUALIFIER_CPP)))
+$(call obj_of,def,$(PART_IO_QUALIFIER_CPP)): part_asset_v2_tests.cpp
+PART_IO_QUALIFIER_OBJS = $(call obj_list,def,$(PART_IO_QUALIFIER_CPP)) $(filter-out $(call obj_of,def,part_asset_v2_tests.cpp),$(PARTV2_OBJS))
+$(PART_IO_QUALIFIER_TARGET): $(PART_IO_QUALIFIER_OBJS)
+	$(CC) $(PART_IO_QUALIFIER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+.PHONY: qualify-part-io
+qualify-part-io: $(PART_IO_QUALIFIER_TARGET)
+	./$(PART_IO_QUALIFIER_TARGET)
+$(PARTV2_TARGET): | qualify-part-io
+
+PARTSTORE_SOURCE_QUALIFIER_TARGET = build/matter_partstore_source_qualifier
+PARTSTORE_SOURCE_QUALIFIER_CPP = ../tools/qualify_partstore_sources.cpp
+$(eval $(call objrule_cpp,partstore_test,$(PARTSTORE_SOURCE_QUALIFIER_CPP)))
+$(call obj_of,partstore_test,$(PARTSTORE_SOURCE_QUALIFIER_CPP)): partstore_tests.cpp
+PARTSTORE_SOURCE_QUALIFIER_OBJS = $(call obj_list,partstore_test,$(PARTSTORE_SOURCE_QUALIFIER_CPP)) $(filter-out $(call obj_of,partstore_test,partstore_tests.cpp),$(PARTSTORE_OBJS))
+$(PARTSTORE_SOURCE_QUALIFIER_TARGET): $(PARTSTORE_SOURCE_QUALIFIER_OBJS)
+	$(CC) $(PARTSTORE_SOURCE_QUALIFIER_OBJS) -o $@ $(FLAVOR_partstore_test_FLAGS) $(LDFLAGS) $(LDLIBS)
+.PHONY: qualify-partstore-sources
+qualify-partstore-sources: $(PARTSTORE_SOURCE_QUALIFIER_TARGET)
+	./$(PARTSTORE_SOURCE_QUALIFIER_TARGET)
+$(PARTSTORE_TARGET): | qualify-partstore-sources
+
+ASYNC_SOURCE_QUALIFIER_TARGET = build/matter_async_source_qualifier
+ASYNC_SOURCE_QUALIFIER_CPP = ../tools/qualify_async_sources.cpp
+$(eval $(call objrule_cpp,gpu,$(ASYNC_SOURCE_QUALIFIER_CPP)))
+$(call obj_of,gpu,$(ASYNC_SOURCE_QUALIFIER_CPP)): async_bake_tests.cpp
+$(ASYNC_SOURCE_QUALIFIER_TARGET): $(call obj_of,gpu,$(ASYNC_SOURCE_QUALIFIER_CPP)) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
+	$(CC) $(call obj_of,gpu,$(ASYNC_SOURCE_QUALIFIER_CPP)) $(GPU_SHARED_OBJS) -o $@ $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+.PHONY: qualify-async-sources
+qualify-async-sources: $(ASYNC_SOURCE_QUALIFIER_TARGET)
+	./$(ASYNC_SOURCE_QUALIFIER_TARGET)
+async-bake-tests: | qualify-async-sources
+
+VIEWER_SOURCE_QUALIFIER_TARGET = build/matter_viewer_source_qualifier
+VIEWER_SOURCE_QUALIFIER_CPP = ../tools/qualify_viewer_sources.cpp
+$(eval $(call objrule_cpp,vl,$(VIEWER_SOURCE_QUALIFIER_CPP)))
+$(call obj_of,vl,$(VIEWER_SOURCE_QUALIFIER_CPP)): viewer_logic_tests.cpp
+VIEWER_SOURCE_QUALIFIER_OBJS = $(call obj_list,vl,$(VIEWER_SOURCE_QUALIFIER_CPP)) $(filter-out $(call obj_of,vl,viewer_logic_tests.cpp),$(VIEWER_LOGIC_OBJS))
+$(VIEWER_SOURCE_QUALIFIER_TARGET): check-viewer-logic-animation-sources $(VIEWER_SOURCE_QUALIFIER_OBJS) $(OZZ_OFFLINE_LIBS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(VIEWER_SOURCE_QUALIFIER_OBJS) -o $@ $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
+.PHONY: qualify-viewer-sources
+qualify-viewer-sources: $(VIEWER_SOURCE_QUALIFIER_TARGET)
+	./$(VIEWER_SOURCE_QUALIFIER_TARGET)
+$(VIEWER_LOGIC_TARGET): | qualify-viewer-sources
+
+FLATTEN_QUALIFIER_TARGET = build/matter_part_flatten_qualifier
+FLATTEN_QUALIFIER_CPP = ../tools/qualify_part_flatten.cpp
+$(eval $(call objrule_cpp,def,$(FLATTEN_QUALIFIER_CPP)))
+$(call obj_of,def,$(FLATTEN_QUALIFIER_CPP)): part_flatten_tests.cpp
+FLATTEN_QUALIFIER_OBJS = $(call obj_list,def,$(FLATTEN_QUALIFIER_CPP)) $(filter-out $(call obj_of,def,part_flatten_tests.cpp),$(FLATTEN_OBJS))
+$(FLATTEN_QUALIFIER_TARGET): $(FLATTEN_QUALIFIER_OBJS)
+	$(CC) $(FLATTEN_QUALIFIER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+.PHONY: qualify-part-flatten
+qualify-part-flatten: $(FLATTEN_QUALIFIER_TARGET)
+	./$(FLATTEN_QUALIFIER_TARGET)
+$(FLATTEN_TARGET): | qualify-part-flatten

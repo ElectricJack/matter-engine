@@ -54,6 +54,7 @@
 #include "raster_mesh.h"        // RasterMeshData
 #include "seam_boundary.h"      // seam::SectorBoundary (stdlib-only by contract)
 #include "animation/animation_asset_store.h"
+#include "matter/fixture_io.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include "part_render_policy.h"
 #include "shared_surface_asset.h"
@@ -361,7 +362,8 @@ struct WarpAnchor {
 // calling anything from a worker thread — the safe set is small and explicit.
 class PartStore {
 public:
-    explicit PartStore(std::string cache_root);
+    explicit PartStore(std::string cache_root,
+                       std::shared_ptr<matter::CacheByteStorage> storage = {});
     ~PartStore();
 
     // True if the part is loaded in memory OR a .part exists on disk. Drives reconcile.
@@ -636,6 +638,7 @@ private:
         return geometry_pages_enabled_ && (!geometry_filter_active_ || geometry_filter_.count(hash));
     }
     std::string                       cache_root_;
+    std::shared_ptr<matter::CacheByteStorage> cache_storage_;
     geometry::RootCache               geometry_roots_;
     prepared_sector::Cache& prepared_sectors();
     mutable std::mutex               prepared_sectors_mutex_;

@@ -4,6 +4,8 @@ param(
     [string]$MinGWEditor,
     [string]$MsvcEditor,
     [string]$OutputDirectory,
+    [ValidateRange(1, 600)]
+    [int]$StartupTimeoutSeconds = 120,
     [switch]$CompareMinGW
 )
 
@@ -55,9 +57,9 @@ function Invoke-RuntimeCensus([string]$Path, [string]$LogPath) {
     [void]$process.Start()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit(30000)) {
+    if (-not $process.WaitForExit($StartupTimeoutSeconds * 1000)) {
         $process.Kill()
-        throw "$Path did not finish its runtime registration census within 30 seconds"
+        throw "$Path did not finish its registration qualification within $StartupTimeoutSeconds seconds"
     }
     $stdout = $stdoutTask.Result
     $stderr = $stderrTask.Result
