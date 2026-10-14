@@ -23,6 +23,7 @@ or new persistence policy is introduced.
 | Async generated fixtures use RAM | Existing event, cancellation, supersession, retention and publication guards | Linux disk live-edit and shipped animation/fluid cases run in `qualify_async_sources` |
 | Async request timing uses an actual worker barrier | Checks caller thread, return independence, terminal/pump behavior | The former 50ms performance threshold is removed |
 | Viewer runtime uses a tiny generated tree hierarchy | Cold/warm cache, flat root, retained children, hash chain and fetch progress checks; actual Demo checks in `matter_viewer_source_qualification` | Large particle-flow/import/material demo geometry is build qualification |
+| Async return proof blocks immediate worker delivery of `BakeStarted` | Request returns while the real command worker is blocked; no completion before pumping, eventual completion and fault-injection cases remain | The app cleanup barrier is pumped after the original pre-pump check so the worker reaches the subscriber; the old publication fault hook cannot be reached without pumping |
 | Resolve cache, world tracer and chart atlas use RAM | Same serialized source/key/corruption, allocation/duplicate decode/ray lifetime, chart byte-equivalence checks | OS artifact transport no longer runtime |
 | Flat reference scan uses RAM bundles | Full-loader parity, sentinel registry, corrupt grammar/trailers/hash and caller preservation remain | OS artifact transport no longer runtime |
 | Authored provider restore uses owned source snapshots | Actual cold JS load, key invalidation, throwing-source bypass, material/props restoration and corruption fallback remain | Mutable files become explicit source generations; final valid fallback uses a provider owning the next snapshot |
@@ -591,3 +592,72 @@ e98c2d06c483518783f647c398688ca6bb94149a25e2906fc7df679b653dc0bb.
 Artifacts: /tmp/steady-harbor-epoch9-normal-stage/. No production normal arithmetic,
 goldens or tolerances changed. The GNU controls do not establish a cross-compiler
 cause; actual native reference inputs/stages remain necessary.
+
+The first complete CPU diagnostic registration contains142 tests. With two
+CTest jobs,138 passed, three failed and one was not run; CTest wall time was
+336.70s. The external timing command reported345.24s. The baseline substituted
+only the original sector-streamer setup binary; other binaries came from the
+actual CMake build, which remains blocked by the OBJ qualifier. This diagnostic
+is not a passing baseline or final-source acceptance. Logs and JUnit:
+/tmp/steady-harbor-epoch9-cpu-before.{log,time,xml}; original sector source and
+compile/link receipt: /tmp/steady-harbor-epoch9-timing-before/source.json.
+
+| Slowest CPU diagnostic tests before | Seconds |
+| --- | ---: |
+| part_flatten_tests | 326.251 |
+| event_hub_tests | 41.377 |
+| sector_streamer_tests | 24.849 |
+| chart_atlas_tests | 4.642 |
+| script_host_tests | 2.927 |
+| conifer_lod_provider_tests | 2.850 |
+| surface_proxy_tests | 2.368 |
+| async_bake_tests (failed) | 1.785 |
+| finite_surface_recipe_tests | 1.643 |
+| gi_bake_tests | 1.364 |
+| terrain_mesher_tests | 1.100 |
+| terrain_collision_session_tests | 0.907 |
+| sector_bake_tests | 0.877 |
+| physics_tests | 0.756 |
+| brick_bond_atlas_tests | 0.747 |
+| river_float_system_tests | 0.656 |
+| tileset_bake_tests | 0.631 |
+| character_controller_tests | 0.581 |
+| sdf_candidate_bounds_tests | 0.487 |
+| ecs_tests | 0.413 |
+
+Failures exposed three generated-fixture setup problems: the async barrier
+waited for a publication hook before pumping the preceding app cleanup barrier;
+the tiny viewer Tree lacked the original seed42 default and its gallery was
+inlined rather than expanded; the RAM AuthoredCurve world lacked the actual
+river_curve shared module. The OBJ runtime binary was not built because its
+mandatory qualifier failed. The async proof now blocks the actual worker's
+immediate BakeStarted subscriber after the original pre-pump checks. The viewer
+fixture supplies seed42 and explicitly expands its gallery, preserving every
+original flat-root/child/hash/fetch assertion. The exact module attachment and
+the proposed dense-flattening qualification are pending peer CMake coordination.
+
+Private candidates use the actual CMake Release compile/link commands and the
+production archive. Viewer passes in0.165s, and the revised async barrier passes
+in0.867s. Their source hashes and commands are in
+/tmp/steady-harbor-epoch9-runtime-candidates/{receipt.json,async-event-pump-receipt.json}.
+Earlier failed candidates are retained there. One earlier async run additionally
+observed an open publish span after BakeFinished; the final successful run does
+not establish that this existing snapshot race is resolved.
+The revised async source also passes the actual CMake target's full mandatory
+source qualification and its registered runtime test. Build log SHA256:
+7b75b6226b03e8b2104b9a9f75faff6a3135f4b6b413420bcf6810cfdaa6f1fe.
+Registered runtime log SHA256:
+5c4e804529c1ff21ae82134d2edf7862d8f8879e7620034d7a31cb5c1ac48e5e.
+
+Private timing instrumentation around the original flattening main preserves
+its production algorithms and assertions: all groups passed, with92.256s in
+test_flatten_clustered_v3 and190.338s in test_flatten_retain_budget_identical.
+Receipt and complete log: /tmp/steady-harbor-epoch9-flatten-profile/.
+The pending runtime candidate uses400 triangles and a160-triangle cluster
+target over the same200x100 extent for those two groups, retaining codec,
+conservation and every-byte comparison predicates; its private run passes in
+10.358s. Original direct40k splitter and determinism guards remain runtime.
+The full40k/16000 integration workloads remain in the qualification macro
+branch, but its mandatory build attachment is not yet established. These
+private results do not establish a passing DEFAULT build, complete suite,
+runtime filesystem trace or native result.

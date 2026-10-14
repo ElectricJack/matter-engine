@@ -1718,9 +1718,9 @@ int main() {
     const std::string geometry = "this.fill(MAT.stone); this.beginShape(SHAPE.triangles); this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0); this.endShape();";
     files[fixture_project + "/objects/trees/Leaf.js"] = "class Leaf extends Part { build(p) {" + geometry + "} }";
     files[fixture_project + "/objects/trees/TreeBranch.js"] = "class TreeBranch extends Part { static requires = [{module:'Leaf'}]; build(p) {" + geometry + "this.placeChild('Leaf');} }";
-    files[fixture_project + "/objects/trees/Tree.js"] = "class Tree extends Part { static requires = [{module:'TreeBranch'}]; build(p) {" + geometry + "this.placeChild('TreeBranch');} }";
+    files[fixture_project + "/objects/trees/Tree.js"] = "class Tree extends Part { static params = {seed:42}; static requires = [{module:'TreeBranch'}]; build(p) {" + geometry + "this.placeChild('TreeBranch');} }";
     files[fixture_project + "/scenes/Demo/objects/TreeGallery.js"] = "class TreeGallery extends Part { static requires = [{module:'Tree',params:{seed:42}}]; build(p) { this.placeChild('Tree',{seed:42});} }";
-    files[fixture_project + "/scenes/Demo/Demo.js"] = "class Demo extends World { static roots = [{module:'TreeGallery'}]; }";
+    files[fixture_project + "/scenes/Demo/Demo.js"] = "class Demo extends World { static roots = [{module:'TreeGallery',expand:true}]; }";
     fixture_sources = std::make_shared<const matter::SourceSnapshot>(std::move(files));
     test_forward_moves_along_camera_forward();
     test_yaw_turns_camera_analytically();
