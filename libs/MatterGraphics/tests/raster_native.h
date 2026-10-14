@@ -46,6 +46,35 @@ void exercise_raster(const std::shared_ptr<NativeDevice> &native) {
     check(output.instances[i].instance == frame.visible[i].instance && output.instances[i].path == frame.visible[i].path,
           "GFX-RASTER coordinator identity preserved");
   }
+  // The uniform-PBR specialization must retain actual material evaluation,
+  // including nontrivial factors and the neutral auxiliary attachments.
+  auto colored = std::make_shared<mc::AssetDocument>(asset);
+  for (auto &material : colored->materials) {
+    material.base_color.factor = {0.2f, 0.4f, 0.8f, 1.0f};
+    material.roughness = 0.37f;
+    material.metallic = 0.61f;
+    material.emissive = {0.3f, 0.2f, 0.1f};
+  }
+  auto colored_asset = std::make_shared<mg::SceneAsset>(*frame.visible[0].asset);
+  colored_asset->inputs.asset = colored;
+  auto colored_frame = frame;
+  for (auto &draw : colored_frame.visible) draw.asset = colored_asset;
+  valid(raster.render(colored_frame, 128, 128, output), "GFX-RASTER uniform PBR factors draw");
+  size_t colored_pixels = 0;
+  for (size_t i = 0; i < output.identity.pixels.size(); ++i) if (output.identity.pixels[i][1] != UINT32_MAX) {
+    ++colored_pixels;
+    check(std::abs(output.albedo.pixels[i][0] - 0.2f) <= 0.5f/255 + 1e-6f &&
+          std::abs(output.albedo.pixels[i][1] - 0.4f) <= 0.5f/255 + 1e-6f &&
+          std::abs(output.albedo.pixels[i][2] - 0.8f) <= 0.5f/255 + 1e-6f &&
+          output.albedo.pixels[i][3] == 1 &&
+          std::abs(output.orm.pixels[i][0] - 0.37f) < 0.001f &&
+          std::abs(output.orm.pixels[i][1] - 0.61f) < 0.001f &&
+          output.orm.pixels[i][2] == 1 && output.orm.pixels[i][3] == 1 &&
+          output.normal.pixels[i][3] == 1 &&
+          output.velocity.pixels[i][0] == 0 && output.velocity.pixels[i][1] == 0 &&
+          output.reactivity.pixels[i][0] == 0, "GFX-RASTER uniform PBR and auxiliary pixels");
+  }
+  check(colored_pixels > 400, "GFX-RASTER uniform PBR coverage");
   // A tilted normal under nonuniform mirrored scale distinguishes the normal
   // contract from the native host's legacy linear transform.
   auto tilted = std::make_shared<mc::AssetDocument>(asset);
