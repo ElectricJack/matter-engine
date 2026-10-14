@@ -226,6 +226,21 @@ if(BUILD_TESTING)
     set_tests_properties(vt_residency_tests PROPERTIES LABELS cpu)
     set_property(GLOBAL APPEND PROPERTY MATTER_ENGINE_CPU_TARGETS vt_residency_tests)
 
+    # These header-only environment suites also run in standalone graphics and
+    # direct Make. All entry points share the production source qualifier.
+    include("${CMAKE_SOURCE_DIR}/libs/MatterGraphics/cmake/EnvironmentQualification.cmake")
+    foreach(suite cloud_layer volumetric_quality)
+        add_executable(${suite}_tests MatterEngine3/tests/${suite}_tests.cpp)
+        target_include_directories(${suite}_tests PRIVATE "${CMAKE_SOURCE_DIR}/MatterEngine3/include")
+        matter_apply_project_defaults(${suite}_tests)
+        matter_apply_test_assertion_policy(${suite}_tests)
+        matter_qualify_environment_test(${suite}_tests
+            "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments})
+        add_test(NAME ${suite}_tests COMMAND ${suite}_tests)
+        set_tests_properties(${suite}_tests PROPERTIES LABELS cpu TIMEOUT 10)
+        set_property(GLOBAL APPEND PROPERTY MATTER_ENGINE_CPU_TARGETS ${suite}_tests)
+    endforeach()
+
     function(matter_add_engine_cpu_test target)
         add_executable("${target}" ${ARGN})
         matter_engine_include_directories("${target}" PRIVATE)
