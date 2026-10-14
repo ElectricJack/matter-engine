@@ -61,6 +61,7 @@ endif
 INCLUDE_PATHS = -I../include -I.. -I../src -I../src/render -I../src/provider -I../../libs/MatterSurfaceLib/include -I../../libs/SpatialQueryLib/include -I../../libs/MemoryLib/include -I../../libs/MathLib/include -I$(RAYLIB_PATH) -I../../third_party/raylib/src -I../../libs/ParticleFlowLib/include -I../../third_party/Vulkan-Headers/include -I$(BOX3D_DIR)/include
 INCLUDE_PATHS += -I$(FLECS_DIR)
 INCLUDE_PATHS += -I../../libs/ProfileLib/include
+INCLUDE_PATHS += -I../../libs/AssetStoreLib/include
 OZZ_DIR = ../../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
 OZZ_INCLUDE = $(OZZ_DIR)/include
@@ -993,9 +994,14 @@ CONTOURENGINE_CPP    = contour_engine_tests.cpp ../src/terrain_field.cpp \
                        ../src/terrain_mesher.cpp
 CONTOURENGINE_HEADERS = check.h ../src/terrain_mesher.h ../src/bake_mode.h
 
+# CPU helpers required by the ScriptHost/DSL solid and finite-surface APIs.
+SCRIPT_SOLID_COMMON_CPP = ../src/render/gpu_meshing/gpu_solid_mesher_common.cpp \
+                          ../src/render/gpu_meshing/solid_face_projection_common.cpp
+
 # Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
 TERRAINVERB_TARGET = build/terrain_verb_tests
 TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
+                  $(SCRIPT_SOLID_COMMON_CPP) \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -1071,6 +1077,7 @@ PARTSTORE_RACE_C   = $(PARTSTORE_C)
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = build/script_host_tests
 SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+             $(SCRIPT_SOLID_COMMON_CPP) \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -2307,6 +2314,11 @@ run-lighting-garden: $(LIGHTING_GARDEN_TARGET)
 	./$(LIGHTING_GARDEN_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests.
+build/script_test_modules.h: EmbedScriptModules.cmake ../shared-lib/particleflow.js ../shared-lib/strands.js ../shared-lib/rng.js | build
+	cmake -DMATTER_SCRIPT_ROOT="$(abspath ../..)" -DMATTER_SCRIPT_HEADER="$(abspath $@)" -P EmbedScriptModules.cmake
+
+$(call obj_list,qjs,script_host_tests.cpp): build/script_test_modules.h
+
 $(SCRIPT_TARGET): $(SCRIPT_OBJS)
 	$(CC) $(SCRIPT_OBJS) -o $@ \
 	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)

@@ -204,8 +204,6 @@ void contour_tangent_axes(int axis, int& a_axis, int& b_axis) {
 }
 
 struct ContourVert {
-    int64_t ia = 0, ib = 0;   // the lattice point the crossed edge starts at
-    int     dir = 0;          // 0 = a-edge, 1 = b-edge
     double  pa = 0, pb = 0;   // interpolated world position, tangential coords
 };
 
@@ -301,7 +299,6 @@ Contour trace_contour(const terrain_field::FieldRuntime& field, int axis,
         // bitwise reproducible.
         const double t = double(da) / (double(da) - double(db));
         ContourVert v;
-        v.ia = i; v.ib = j; v.dir = dir;
         v.pa = contour_lat(i, vc) + (dir == 0 ? t * vc : 0.0);
         v.pb = contour_lat(j, vc) + (dir == 1 ? t * vc : 0.0);
         const int id = int(c.verts.size());
@@ -1629,6 +1626,10 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
     // The transient case they also covered -- a neighbour not yet resident --
     // now shows through as background rather than as a wall. That is the
     // intended trade: a streaming hole is momentary, a seam grid is not.
+#ifdef _MSC_VER
+    // Read the diagnostic switch without retaining or modifying the CRT value.
+#pragma warning(suppress: 4996)
+#endif
     if(std::getenv("MATTER_GEOMETRY_PAGES_PROFILE")) {
         const auto elapsed=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
         MATTER_LOGI("geometry","mesher_profile tx=%lld ty=%lld tz=%lld rung=%d density_bytes=%llu triangles=%zu density_ms=%.3f surface_ms=%.3f boundary_ms=%.3f",

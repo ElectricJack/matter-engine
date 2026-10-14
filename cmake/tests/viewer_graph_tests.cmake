@@ -89,6 +89,8 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
                 MatterEngine3/src/finite_surface_stamp.cpp
                 MatterEngine3/src/part_surface.cpp
                 MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp
+                libs/MatterGraphics/src/native/mesh_raster.cpp
+                libs/MatterGraphics/src/native/mesh_pipelines.cpp
                 MatterEngine3/src/render/vt_compositor.cpp
                 MatterEngine3/src/render/vt_residency.cpp)
             assert_list_contains("${viewer_sources}" "${required_source}"
@@ -184,4 +186,4 @@ foreach(retopo IN ITEMS ON OFF)
     endif()
 endforeach()
 
-message(STATUS "viewer graph preserves 47-source editor, isolated 168+21 headless, and coherent 218/219-source viewer boundaries")
+message(STATUS "viewer graph preserves 48-source editor, isolated 168+21 headless, and coherent 218/219-source viewer boundaries")
