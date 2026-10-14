@@ -537,6 +537,15 @@ public:
         return shared_lib_roots_;
     }
 
+    // Installs an owned source snapshot, including the empty snapshot. Imports
+    // are folded and evaluated from these exact bytes, without disk fallback.
+    // Configure on the host's owner thread before evaluating; replacing the
+    // snapshot invalidates folds. nullopt restores the shared-lib search path.
+    void set_module_sources(std::optional<std::vector<module_resolver::ResolvedModule>> sources) {
+        module_sources_ = std::move(sources);
+        clear_fold_cache();
+    }
+
     // Cached fold_sources: looks up (source, shared_lib_root) by FNV1a64 hash key.
     // Returns true on success (fold succeeded); false on fold failure (err set).
     // Increments fold_cache_hits on cache hit, fold_cache_misses on miss.
@@ -594,6 +603,7 @@ private:
     uint64_t solid_source_generation_ = 0;
 
     std::vector<std::string> shared_lib_roots_;
+    std::optional<std::vector<module_resolver::ResolvedModule>> module_sources_;
     // Scratch describing the MOST RECENT call, overwritten by the next one and
     // meaningless before the first. Surfaced through the `last_*` accessors
     // above; unguarded, unlike the fold cache below.
