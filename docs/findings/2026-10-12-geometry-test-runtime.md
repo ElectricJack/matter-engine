@@ -2,8 +2,8 @@
 
 Measured on 2026-10-12 from base `1f4ff089a9a81f8f54528df6a131a70757648853`.
 This is the portable geometry/surface slice, not the aggregate project suite.
-The independent component work is qualified below. Delivery of the shared
-engine graph and the serialized full native build remains pending.
+The independent component work is qualified below. The reopened viewer census
+qualification and subsequent Linux-only completion are recorded at the end.
 
 ## Changes and coverage
 
@@ -398,3 +398,95 @@ Completion records the existing passing Linux source/build/runtime checks,
 the measured slice timings and every coverage weakening above. Full native
 acceptance and the aggregate under-one-minute goal remain unproven here and
 belong to subsequent batch/common-suite validation.
+
+### Reopened viewer census qualification (2026-10-14)
+
+Claim epoch 17 restored the published slice with a guarded pull, then merged
+current `dev` at `75b5c583f1fe388d47902f711a2bbba84396f4a6`. The requested
+viewer census repair was already present: `f3912ec8` sets the ON/OFF counts
+to 219/218, and `2b1fede4` additionally requires the canonical
+`mesh_raster.cpp` and `mesh_pipelines.cpp` members. This continuation
+preserves those changes and the previously shipped geometry/surface work.
+The only additional script change corrects the success banner from 47
+editor sources to the 48 already required by its assertion. No assertion,
+fixture, runtime test, or coverage predicate is weakened.
+
+The actual canonical `cmake/tests/viewer_graph_tests.ps1` passed in 22.127s
+on the isolated Windows-drive checkout
+`D:/aq-clear-stone-99-e17-z3pl19_q`. Both native MSVC configurations passed:
+retopology ON has 219 unique viewer sources, OFF has 218, the editor has 48,
+and the headless graph retains 168 core plus 21 surface sources. The C-source,
+definition, direct-link, isolation, and required-source assertions also pass.
+The tested graph script SHA-256 is
+`045b63b9a1e376d9c0571658db3fbd4482f6c8bb2f6d06476c7cc65475dac938`.
+The source receipt, native graph log and timed receipt are
+`/tmp/clear-stone-99-e17-source.json`,
+`/tmp/clear-stone-99-e17-viewer-graph.log` and
+`/tmp/clear-stone-99-e17-viewer-graph.json`.
+
+The full canonical Windows build result is recorded below separately from
+the passing graph configuration. Previous runtime measurements above were
+not rerun or relabeled as measurements of this merged source.
+
+The initial `RelWithDebInfo all` wrapper run began at Unix time
+`1791984915.215` with parallelism four, before the queued supervisor resource
+correction was read. Supervisor message
+`msg-d3aca17c703b4051acd564ae48bbe8d2` identified an active CI producer and
+required serialized native turns with parallelism two. After reading that
+message, this worker stopped only its exact owned PowerShell producer
+(PID 10156) and its build descendants, preserving shared PDB servers and
+unrelated processes. This attempt was **ABORTED**, not a compiler failure or
+a passing build: wrapper exit 255 after 1124.509s, last completed Ninja step
+828/1309. The isolated source checkout and partial artifacts are retained.
+Receipts are
+`/tmp/clear-stone-99-e17-native-build.log`,
+`/tmp/clear-stone-99-e17-native-build.json` and
+`/tmp/clear-stone-99-e17-native-cancel.log`.
+
+Supervisor message `msg-484bea7703d7472e86ecde3ace1d07a2` verifies Jack's
+operative directive `msg-cd61d32c8a4145639a78966a94924d2d`: Windows CI is
+not required for Matter; applicable Linux build/tests must pass. This
+supersedes the native qualification/resource wait. The existing wait had
+already expired and was consumed; no replacement wait or native producer was
+started. The aborted build remains an aborted result, rather than acceptance
+evidence.
+
+Fresh Linux qualification compiled the actual merged repository sources at
+`75b5c583f1fe388d47902f711a2bbba84396f4a6`, with only the graph-banner and
+this report modified. GCC 13.3.0 and CMake 3.28.3 were used. The actual
+SurfaceLib Makefile built the eight targets listed in the command above with
+the same flags and compatibility implementation. The engine's actual test
+Makefile built `build/terrain_mesher_tests` and `build/seam_weld_tests`, using
+the same C++ flags, `LDFLAGS='-lm -lpthread -ldl -lrt'`, and empty `LDLIBS`.
+Assertions were enabled with `-UNDEBUG`; no fixture or predicate changed.
+All builds used parallelism one.
+
+The actual standalone GeometryCompute graph was configured with Ninja,
+`CMAKE_BUILD_TYPE=Release`, `BUILD_TESTING=ON`,
+`MATTER_GEOMETRY_COMPUTE=OFF`, and
+`CMAKE_CXX_FLAGS_RELEASE='-O3 -UNDEBUG'`. Its mandatory direct-link,
+neutral-source and generated-graph qualification passed during the build.
+
+| Fresh Linux step | Wall seconds | Result |
+| --- | ---: | --- |
+| Eight SurfaceLib Make targets | 30.445 | pass |
+| Terrain mesher and seam-weld Make targets | 20.016 | pass |
+| GeometryCompute configure / build with qualification | 0.472 / 24.697 | pass |
+| Ten actual surface/engine binaries, traced CTest `-j2` | 1.434 | 10/10 pass |
+| Disabled GeometryCompute, traced CTest `-j2` | 0.151 | 1/1 pass |
+
+The ten binaries were registered by absolute path in an external temporary
+CTest graph; the compute run used its actual standalone CTest registration.
+The two runtime commands traced `execve,openat,clone,clone3,fork,vfork`.
+All 12 test/descendant process or thread IDs opened only `/etc/ld.so.cache`
+and system libc/libgcc/libm/libstdc++ libraries. No fixture, source, asset,
+build-data or cache file was opened by the tests. CTest's own registration
+and result-file reads are excluded from that runtime audit.
+
+Commands, timings, compiler versions and binary hashes are retained in
+`/tmp/clear-stone-99-e17-linux-es4la4c3/receipt.json`; that directory also
+contains build logs, both JUnit results, raw syscall traces and
+`file-read-audit.json`. The graph-script hash still matches the native graph
+receipt above. These are fresh results for this bounded 11-test scope;
+the earlier 25-test and enabled GPU runs were not rerun or relabeled.
+No aggregate under-one-minute result or full native acceptance is claimed.
