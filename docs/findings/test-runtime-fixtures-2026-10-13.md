@@ -1023,3 +1023,81 @@ sample, replayed maps and diagnostic readers. Supporting receipt SHA-256:
 - Capture: `9d6269aeb8b8b774781aa2c8d13f9cac9b9f28e7bf6e2d00080bd864abe02686`.
 - Model/chart comparison: `d5d59be189662b8f57eb1d2e0def5ab30d381c2803123c325929405d84830e0a`.
 - Stage replay: `0235c57e967abcab6346615c3a48d082e1050903768b5626ee96d7582a7171a7`.
+
+
+## Isolated projection and orthogonalization controls (source 167f0270)
+
+Following the supervisor's next concrete guidance, three bounded private
+variants modify only the normal-frame/projection portion of the actual
+production `texture_bake.cpp`. The full GNU/Clang producer comparison above is
+reused. All controls replay the same real model/options capture and use the
+same canonical GNU compile flags; no further compiler-flag permutations are
+introduced. `encode_unorm8`, original float barycentrics/shading normals,
+raw UV frames, handedness, coverage, dilation and degenerate fallback values
+remain unchanged.
+
+`projection-wide` evaluates only the three final dot products in double from
+existing float components, then casts to the original float `ts` values.
+`gram-wide-unit` evaluates Gram–Schmidt projection, subtraction, length and
+normalization in double, returning a float tangent while retaining the unit
+normal assumption. `gram-wide-denominator` additionally divides that projection
+by `dot_wide(basis_n,basis_n)` rather than assuming exact unit length. The
+cross product, handedness and final projection remain the original float
+operations for both Gram–Schmidt controls. Exact private diffs are retained;
+none is adopted as a production repair.
+
+All traced/uninstrumented variant maps agree. Against the original GNU trace,
+every one of the 173950 writes has identical address/order, barycentrics,
+vertex/shading/face normals, raw tangent/bitangent and basis-normal bits.
+The 18936 covered seeds and every surviving triangle/corner tuple also agree.
+Only the normal map changes; the other five decoded maps remain byte equal.
+The following pixel counts compare with actual GNU output, not an unavailable
+raw golden-reference image:
+
+| Control | CastleStone normal hash | Changed final pixels vs GNU | Nonneutral seeds / final pixels |
+|---|---|---:|---:|
+| projection-wide | `fb78ced559d811a0` | 941 | 364 / 1786 |
+| gram-wide-unit | `8389d075a7f5a66f` | 939 | 62 / 495 |
+| gram-wide-denominator | `49d55d4622316dd0` | 1041 | 14 / 22 |
+
+At the surviving (157,178)/triangle152, all three controls change RGB
+127/128/255 to 128/128/255. Final projection is the earliest changed stage for
+`projection-wide`; the orthogonalized tangent is the earliest changed stage
+for both Gram–Schmidt variants. At (9,4)/triangle357, each control changes
+internal projection or tangent fields, respectively, but the encoded GNU
+RGB 128/128/255 stays unchanged. These controls hold the original GNU input/frame
+bits fixed; they do not inject the distinct FMA frame that produced green127
+in the earlier contraction experiment. The recorded basis length squared over
+its float bits is 1.000000021941208 at (157,178) and 1.0000000346007616 at (9,4),
+confirming the measured non-unit residual without proving native causality.
+
+Every variant runs the original complete filesystem OBJ export qualifier and
+passes its positive/negative predicates. Additional private analytic guards
+call the real `bake_maps` and pass identically for GNU baseline and all three
+controls: interpolated basis behavior, authored shading in flat mode, mirrored
+UV green sign, a degenerate UV line, and collapsed-geometry face/tangent
+fallbacks. These additional guards are separate from existing repository
+predicates; the GPU VT-export mirror guard belongs to a different producer and
+is outside this experiment.
+
+All three original golden qualifiers still fail: CastleStone remains different
+from required `281757a9a9886a07`, and AlpineFlower's previously passing normal also
+changes. CastlePavingSlab and DSL guards pass. AlpineFlower becomes
+`385bf6e2f20fe5c0` with wider final projection, and `665b7e837cc0af92` with either
+Gram–Schmidt variant, versus required `244925b928edba4c`. Thus reducing numerical
+nonneutral pixels, including the denominator control's 22 remaining pixels,
+does not restore the original predicates. Reference per-pixel mismatch counts
+cannot be inferred from hashes. This is a proven sensitivity boundary and
+failed repair hypothesis, not a minimal production fix. No additional unbounded
+controls, unchanged aggregate build/runtime rerun or native producer is needed
+for this disposition; required Linux acceptance remains false.
+
+Complete command/source/model/options, linked-input, fixture and guard bindings,
+all original qualification logs, traces, maps, exact private diffs and analysis
+are retained under `/tmp/steady-harbor-epoch9-normal-precision/`.
+`precision-experiment-receipt.json` SHA-256:
+`5e8092152b75751876ef41c3b5895832544b74cca9533481f30d79a5c6ac8485`.
+Stage comparison SHA-256:
+`8ca7cfc8f59e4f26e5aaf2301056ee6ea634eee317deec090383430986e5e6fe`.
+Private semantic guard receipt SHA-256:
+`5e32a46e3e854ba13d9208de789a13383f72efa37b2b2388841133ea866c352d`.
