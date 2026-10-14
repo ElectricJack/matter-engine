@@ -82,6 +82,10 @@ introduced.
 
 ## Deferred VT gap and reopen disposition
 
+The [2026-10-14 provenance follow-up](vt-smoke-provenance-2026-10-14.md) records
+historical source/shader comparisons and a pre-move scheduling/fixture mismatch.
+It does not supply a native runtime baseline or replace the failures below.
+
 The supervisor's decision supersedes the earlier reopen request to run VT and
 VT-RT on the pre-move baseline and bisect any regression. VT investigation is
 assigned to a separate follow-up; these failures no longer block this extraction.
