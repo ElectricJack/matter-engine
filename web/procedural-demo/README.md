@@ -60,6 +60,15 @@ geometry is drawn once per placed instance with the contract's row-major
 matrix; material groups, part IDs and per-triangle material IDs are retained.
 GPU objects are disposed on replacement, hot reload and page exit.
 
+The engine uses one persistent module worker. Results above 1,500 placed triangles
+receive a native simplified level targeting 35% of the base triangles. The viewer
+switches to that level when you zoom far out (distance greater than 2.5 times the
+object's radius/FOV distance); close views keep the original geometry.
+Shared placements still share geometry within each level. LODs use the same
+cancellation token and four-stage cache, and both GPU levels are released together.
+The Geometry metric includes the base evaluation and LOD generation; Triangles
+reports the full authored object. Smaller objects avoid simplification work.
+
 ## Verification
 
 ```sh
@@ -68,6 +77,8 @@ npm run build
 # Install Chromium once if not already in Playwright's cache:
 npx playwright install chromium
 npm run test:browser
+npm run test:smoke
+npm run capture:construction
 # Equivalent browser gate with AQ's resource controls, from repository root:
 aq test web/procedural-demo/frontend-tests/test_browser.py
 ```
@@ -75,12 +86,35 @@ aq test web/procedural-demo/frontend-tests/test_browser.py
 The Node tests cover dependency traversal, exact final outputs, cancellation,
 stale completions, cache eviction, shared geometry, row-major transforms and
 disposal. The Chromium gate loads the real worker/WASM, renders all thirteen
-default objects, edits dimensions, scrubs construction, toggles display modes,
+default objects, edits dimensions, checks all 112 construction stages, verifies
+heavy-chain LOD selection, toggles display modes,
 tests rapid selection/seed errors/reset, checks mobile overflow and serves the
 static build below `/workshop/`. Screenshots and JSON are written to the ignored
 `frontend-tests/artifacts/` directory. Set `DEMO_TEST_URL` to apply the same gate
 to a running development server. These browser checks use software WebGL2;
 they do not establish performance on every physical GPU.
+
+`test:smoke` has a strict 20-second wall-clock limit, including browser startup
+and shutdown. It selects all thirteen objects, checks native triangle counts,
+compares each canvas PNG against an empty frame at the same camera/grid position,
+and requires visible object pixels. It also asserts that just one worker serves
+the entire gallery and that the static server receives a real WASM request.
+It writes thirteen `<recipe-id>.png` screenshots and `smoke.json` with pixel
+counts and elapsed time. Build the app before either browser command.
+
+`capture:construction` separately records every arch construction stage at a
+readable pace to `frontend-tests/artifacts/construction.webm`, with stage labels
+in `construction.json`. Recording is separate from the timed smoke test.
+To export a shareable GIF with a local FFmpeg installation:
+
+```sh
+ffmpeg -i frontend-tests/artifacts/construction.webm \
+  -vf 'fps=6,scale=768:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse' \
+  frontend-tests/artifacts/construction.gif
+```
+
+Checked integration captures and verification results live in
+[`evidence/2026-10-14/`](evidence/2026-10-14/README.md).
 
 The recipe owner's native topology and parameter-range gates remain in
 `tests/` and are documented in `src/recipes/README.md`.
