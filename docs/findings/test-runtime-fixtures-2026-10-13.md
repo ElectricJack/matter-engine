@@ -888,3 +888,66 @@ normal image or intermediate-stage reference. The read-only diagnosis receipt
 is /tmp/steady-harbor-epoch9-existing-native26d-receipt.json. This supplies no
 new normal-map cause evidence; no native producer is launched, and native
 completion remains waived.
+
+## Native qualification reference and same-input arithmetic controls
+
+Supervisor message msg-3eb34c63c6c64be6a83ba2a48cdcc485 supplies a more complete
+reference for the existing26d run: its original filesystem OBJ golden qualifier
+did execute from MatterEngine3/tests at14:50:06Z, and CastleStone, paving slab,
+flower and DSL guards all passed at14:50:07Z. The later MemFree link failure
+still prevents a complete native build/test result. The small artifact contains
+no model or texture data. The retained full-log excerpt is
+scratchpad/patrol-cron-8b5506f2-tick9/native-obj-qualification-clean.txt,
+SHA2565bb26a117b260c73d4b15424704c404aedd8d5f2bcebd61c1913509ecc6a45d5.
+The existing native receipt now records that exact golden qualification pass.
+No new native producer or Windows acceptance dependency is introduced.
+
+Additional Linux controls use the identical captured model
+(SHA2562c4395dc2787704943a2c9a13c57af954dba269411858a2f8dcede21924a205c)
+and unchanged production texture source. Earlier contraction-off controls did
+not enable FMA; the new controls explicitly enable it on the supported host.
+They change only private diagnostic compile commands, with no production
+arithmetic, quantizer, golden, tolerance or build-policy edit:
+
+| Same-input texture compiler control | Normal digest | Other five maps |
+|---|---|---|
+| GNU baseline / GNU FMA contraction off | a9b38f2de4de4fe2 | Identical |
+| GNU FMA contraction fast | d0b409463d4f26fa | Identical |
+| Clang FMA contraction off | a9b38f2de4de4fe2 | Identical |
+| Clang FMA expression contraction on | ff590eec120dfe1f | Identical |
+
+None matches the required281757a9a9886a07. These measured controls establish
+normal-channel sensitivity to contraction over fixed inputs; they do not prove
+that native contraction caused the actual golden divergence. Exact compiler/link
+commands and outputs are in
+/tmp/steady-harbor-epoch9-normal-stage/fma-contraction-receipt.json and
+clang-fma-contraction-receipt.json. The traced GNU fused control remains
+byte-identical in all maps to its uninstrumented counterpart.
+
+A retained diagnostic reader reconstructs the baseline and fused normal images
+from each texel's final triangle write and the exact original four dilation
+passes; both reconstructed images match their actual decoded map bytes. The
+baseline has173950 writes to18936 covered texels,209 nonneutral covered texels
+and1044 nonneutral final pixels. The fused control has173783 writes to the same
+18936 covered texels,351 nonneutral covered texels and2333 nonneutral final
+pixels. Their final images differ at1957 pixels,254 directly covered in both.
+At the first image-order differing pixel covered in both, (9,4), surviving
+triangle357 and corners414/415/416, the corner inputs, barycentrics and shading
+normal are identical. The recorded face/raw tangent frame and subsequent
+tangent/bitangent/projection differ; baseline RGB128/128/255 becomes128/127/255.
+This is a measured Linux control difference, not an identified native pixel or
+first native stage. The raw frame computation precedes per-pixel projection,
+and the flat-mode option remains false.
+
+Compressed packets retain every surviving writer's exact corner position,
+normal and UV values, barycentric/frame/projection/scaled-UNORM fields, mesh
+field hashes and dilation-parent graph. Baseline packet SHA256:
+b53400e349cfe76f57b7abfed82e12eac69004813a8b038395dcd4745bbcecc4.
+Fused packet SHA256:
+3e3b5d4400e441ff6b776d891df842fbac90df58cc428c5c90b1aa5e20f3d608.
+Packets and reader are under /tmp/steady-harbor-epoch9-normal-stage/; complete
+reconstruction receipt SHA256:
+88f51f9be02987590000195bbb2f23d034f5462f457a43889eb3bf29d46088eb.
+The required Linux golden repair remains unestablished. These private controls
+neither replace mandatory qualifications nor justify another unchanged full
+build/runtime rerun.
