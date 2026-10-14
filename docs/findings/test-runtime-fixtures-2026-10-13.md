@@ -1202,3 +1202,90 @@ preserved at the previously listed precision root, unchanged SHA-256
 `52ca6ad2998705efc681a8bbf6046de43617ccce18016dfe8a13de86a178c26f`.
 No numerical variant was rerun. No production repair has been adopted and full
 Linux acceptance remains false.
+
+### Targeted geometry-normal samples (source a43c49cc)
+
+The follow-up private diagnostic maps each of the three changed covered seed
+writers' indexed normal inputs to exact position/GNU-normal/native-normal triples
+in both FLAT and REP0, then to the original captured staged-gradient records.
+Only one changed normal has nonzero barycentric weight at each writer:
+
+| Seed pixel | Changed influential indexed vertex | Matching REP0/FLAT corner indices | Matching captured producer records |
+| --- | --- | --- | --- |
+| (41, 4) | 2666 | 4916, 4917, 4920, 4923, 4926, 4932, 4937 | 1 |
+| (90, 149) | 2907 | 5377, 5380, 5385, 5570, 5571 | 4 identical records |
+| (244, 187) | 706 | 1588, 1591, 1598, 1608, 1612, 1615, 1618 | 1 |
+
+All three changed influential inputs belong to the 235 matched staged-gradient
+outputs. None requires attribution through the 44 unmatched changed corners.
+Vertex 2664 at the first seed is an unchanged, zero-weight input that also lacks
+a match to this gradient capture; it is recorded without attributing its
+producer. The global 44-corner attribution limit remains unchanged.
+
+For each matched changed input, exact rational arithmetic inverts the IEEE
+binary32 round-to-nearest-even interval for each native normal component, holding
+the captured GNU gradient fixed. The resulting positive normalization-length
+intervals have **no common real length**, and therefore no common binary32 length.
+The following closed ranges show the candidate positive float length bits for
+individual components; their intersections are empty:
+
+| Indexed vertex | X component length bits | Y component length bits | Z component length bits |
+| --- | --- | --- | --- |
+| 2666 | 3f7d789f–3f7d78a0 | 3f7d790d–3f7d790e | 3f7d789e–3f7d789f |
+| 2907 | 3f7db8d9–3f7db8da | 3f7db8df–3f7db8e0 | 3f7db8da |
+| 706 | 3f7beaa7 | 3f7beaac–3f7beaad | 3f7beaa7 |
+
+A separate GNU `-O2` arithmetic verifier asserts `FE_TONEAREST` and confirms all
+39 checks of component interval endpoints, adjacent excluded lengths and the
+captured GNU length using actual float divisions. This excludes a sqrt/length-only
+explanation **under the existing correctly rounded float division contract**.
+It does not establish a native gradient, native instruction sequence or first
+unequal native arithmetic operation.
+
+Exactly one targeted real-producer generation adds private observation to
+`surface.c::compute_staged_normals` and identifiers to its two real callers.
+Original scalar calls, finite differences, length expression, fallback branches
+and divisions keep their operation order. Selection uses exact position bits for
+vertices 2666, 2907, 706 and unchanged influential control 2908. The generated
+whole bundle remains byte-identical to the uninstrumented GNU bundle, SHA
+`f95e38597ef1bc0563cf1e38f69b5ac09785acd094a1e9367769006ff2410552`;
+actual generation still produces Stone normal FNV `a9b38f2de4de4fe2`.
+
+The capture has ten records: one each for 706 and 2666, four identical records
+each for 2907 and control 2908. All come from the staged extraction caller in
+`GenerateMeshInternal`, with eight ordered CSG stages, zero clip/carve counts,
+and neither coordinate nor normal fallback. Producer call identifiers are GNU
+observation identifiers, not assumed native ordering. Every record preserves
+exact sample spacing (`3b820821`, `0x1.041042p-8`), epsilon (`3685270c`,
+`0x1.0a4e18p-18`), lo/hi coordinates, six `CalculateScalarStaged` returns,
+subtraction results and division denominators, gradient, length, normal bits,
+caller/mesh identity, stage operations and fat-primitive stage/kind identities.
+The earlier gradient/length/normal records match exactly; exact rational rounding
+checks also validate the recorded finite differences and normal divisions.
+
+Artifacts and durable readers are under
+`/tmp/steady-harbor-epoch9-producer-samples/`:
+
+- `targeted-producer-experiment-receipt.json`, SHA
+  `13c2f2f68d9005030c9ace71a3766a624da27b1b663e5ed83e8042e87e3b60e5`,
+  binds 30 artifacts, source/claim, original production/predicate/fixture hashes,
+  exact compile/link commands and archive hashes, prior inputs and bundle identity.
+- `influential-inputs.json`, SHA
+  `3e17f6afc910453be61ea819f06c59fdbff9233cfb69ed49fa8c3e41765a5c35`,
+  preserves all nine writer inputs, raw corner/producer mappings and rational intervals.
+- `selected-producer-analysis.json`, SHA
+  `a718f216d3b261823625387e9deb03a950c87ec15e0b2ea18b1dc2e27ab7e001`,
+  decodes and verifies all selected fields; raw `selected-producer-stages.txt` SHA
+  `a4fafe323f3b7cf924f2d74a512c186f8d7dd9619447dba6341ac14c27fd0b81`.
+
+The smallest next discriminating native intermediate is the exact unnormalized
+gradient vector for one confirmed influential position, keyed to the same staged
+extraction/CSG context and position bits (start with indexed vertex 2666). If it
+differs, native spacing/epsilon, lo/hi coordinates and the six scalar returns are
+needed to distinguish sample-coordinate/evaluation differences from finite-
+difference arithmetic. A native length alone cannot explain these records.
+These intermediates are absent from the existing native cache. No safe production
+repair is established; no arithmetic change, flag change, new native build or
+unchanged full-suite rerun was made. Original cache validation, goldens,
+three-part/DSL and negative predicates remain intact. Full Linux acceptance
+remains false until actual GNU generation passes.
