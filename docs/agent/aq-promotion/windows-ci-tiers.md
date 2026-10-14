@@ -2,7 +2,17 @@
 
 Task `keen-current-19` requires the complete PR build/test path to finish in less
 than 60 seconds on warm Linux and native Windows runners. The implementation and
-local measurements below do **not** yet establish full Windows acceptance.
+local measurements below do **not** establish full Windows acceptance.
+
+Completion requirement changed by global-supervisor message
+`msg-cd61d32c8a4145639a78966a94924d2d`: Jack requires passing Linux build/tests
+for current delivery and explicitly waives waiting for Windows results. The
+current scoped Linux foundation job plus mandatory qualifiers passed at clean
+head `e11b6e73b695cc6fd30d38b255d895961fe9dc54` in 4.076 s (lint 1.222 s,
+two jobs). This authorizes task completion under the updated requirement; it does
+not certify the original full Linux/native one-minute target. Native qualification
+and its resource wait are no longer delivery blockers. All failure evidence and
+remaining native performance work below are preserved for later qualification.
 The prior implementation/evidence is preserved in
 [windows-ci-history.md](windows-ci-history.md).
 
@@ -131,6 +141,7 @@ foundation job, not Linux parity with every Windows engine/Vulkan test.
 | same Linux inputs, warm portable foundations | 4.728 s | all three suites passed; MemoryLib recompilation included |
 | clean commit `92936ed0`, warm portable foundations, two jobs | 4.468 s | all three suites passed; build/test commands and script hash retained |
 | clean commit `764ad8e9`, warm portable foundations plus mandatory Linux lint, two jobs | 7.976 s | all three suites and seven qualification phases passed; lint 2.045 s |
+| clean head `e11b6e73`, current Linux completion qualification, two jobs | 4.076 s | all three suites and seven qualifier phases passed; lint 1.222 s |
 | preserved checkpoint2e67 forced-clean/cached Windows fast run | 480.605 s total | historical failed run: 158/159, hydrology failure; 892/892 cache hits |
 | epoch59 native current PR inventory | not measured | canonical build interrupted for supervisor resource order after 1298/1305 actions; CTest never started |
 
@@ -188,6 +199,7 @@ Retained local evidence: [Linux cold](evidence/ci-performance-20261014/linux-col
 [Linux warm](evidence/ci-performance-20261014/linux-warm.json),
 [clean-commit Linux warm](evidence/ci-performance-20261014/linux-92936ed0-warm.json),
 [clean-commit Linux with mandatory lint](evidence/ci-performance-20261014/linux-764ad8e9/run-summary.json),
+[current Linux completion qualification](evidence/ci-performance-20261014/linux-e11b6e73/run-summary.json),
 [exact-name manifest classification](evidence/ci-performance-20261014/ci-manifest-lint.json),
 [missing-negative-probe rejection](evidence/ci-performance-20261014/ci-manifest-failure.json),
 [interrupted native source manifest](evidence/ci-performance-20261014/native-cold-source.json),
