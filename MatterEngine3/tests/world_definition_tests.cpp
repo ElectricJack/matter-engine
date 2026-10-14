@@ -105,6 +105,25 @@ struct Fixture {
     }
 };
 
+void test_lexical_project_cache_identity() {
+#ifdef _WIN32
+    const fs::path project("C:/matter-cache-identity/project");
+#else
+    const fs::path project("/matter-cache-identity/project");
+#endif
+    ScopedCacheRootEnv env((project.parent_path() / "external").string().c_str());
+    auto cache = [](const fs::path& path) {
+        return viewer::project_bake_cache_root(path, "Demo", true);
+    };
+    CHECK(cache(project / "unused" / "..") == cache(project),
+          "RAM project aliases share cache identity");
+    CHECK(cache(project / "") == cache(project),
+          "RAM project trailing separator shares cache identity");
+    const auto root = project.root_path();
+    CHECK(cache(root / "unused" / "..") == cache(root),
+          "cache identity normalization preserves the filesystem root");
+}
+
 #ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_project_layout_derives_runtime_paths() {
     Fixture fixture;
@@ -3919,6 +3938,7 @@ void test_world_loader_rejects_invalid_gi_bake() {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     ScopedCacheRootEnv clean_cache_environment(nullptr);
+    test_lexical_project_cache_identity();
 #ifdef MATTER_WORLD_SOURCE_QUALIFICATION
     if (argc == 2 && std::string(argv[1]) == "--surface-contact") {
         test_surface_receiver_authoring();

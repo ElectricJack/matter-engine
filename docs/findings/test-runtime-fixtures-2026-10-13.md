@@ -553,4 +553,41 @@ order/replay/publication checks and all1000 measured phases with zero
 C++/Flecs/Box3D allocations. No production or regression coverage is removed.
 Trace: /tmp/steady-harbor-epoch9-river-abort.log. Candidate source/compile/link
 commands and result: /tmp/steady-harbor-epoch9-river-fix/.
-The corrected CMake target and remaining full graph still require completion.
+The corrected actual CMake target subsequently builds and passes its mandatory
+qualification; log: /tmp/steady-harbor-epoch9-river-cmake-build.log.
+
+The keep-going DEFAULT continuation completed with three failures: the unchanged
+CastleStone normal golden, the now-corrected river sentinel precondition, and
+the world qualifier's lexical project-cache alias predicate. The actual Demo
+viewer and the other independent qualifications passed, including both real
+compute-closure sub-builds. Continuation log SHA256:
+0157f6233ac162343743012cd1d33ba4edfe40a9ad9846af13e4ac2b07bb797f.
+This remains a failed DEFAULT build, not whole-suite acceptance.
+
+The world failure is a production cache-identity normalization defect. GNU
+weakly_canonical(existing/project/unused/..) returns existing/project/ with an
+empty filename; hashing that spelling differs from existing/project. The cache
+helper strips the trailing empty filename after canonicalization, preserving
+roots and symlink traversal. Source project paths retain their original spelling.
+The original filesystem alias predicate remains; RAM runtime guards additionally
+cover the alias, explicit trailing separator, and filesystem root. Private
+actual-helper checks pass with both lexical-only and filesystem normalization:
+/tmp/steady-harbor-epoch9-cache-alias/helper-receipt.json and helper.log.
+The actual world CMake target passes its mandatory full qualification, including
+all72 shipped worlds and the original alias predicate, and builds the runtime
+executable. Log: /tmp/steady-harbor-epoch9-world-cmake-build.log, SHA256
+af183e6c37075c33d89e2057c44e800c6282ee75b6644657c0ee445360442029.
+
+Private CastleStone diagnosis captures the actual model and options entering
+the production texture baker. The captured input SHA256 is
+2c4395dc2787704943a2c9a13c57af954dba269411858a2f8dcede21924a205c.
+An owned replay calls the real production baker and hash implementation. GNU
+baseline, -ffp-contract=off, -fno-tree-vectorize and -O0 variants produce identical
+bytes for every map and the same failed normal digest. Private instrumentation
+records actual triangle, barycentric, shading-normal, face/basis, projected,
+unorm and unclamped scaled-plus-half values as hexadecimal floats. Instrumented
+maps remain byte-identical to baseline. Trace receipt SHA256:
+e98c2d06c483518783f647c398688ca6bb94149a25e2906fc7df679b653dc0bb.
+Artifacts: /tmp/steady-harbor-epoch9-normal-stage/. No production normal arithmetic,
+goldens or tolerances changed. The GNU controls do not establish a cross-compiler
+cause; actual native reference inputs/stages remain necessary.
