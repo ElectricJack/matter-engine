@@ -717,6 +717,19 @@ CLOUDLAYER_TARGET = build/cloud_layer_tests
 CLOUDLAYER_CPP    = cloud_layer_tests.cpp
 CLOUDLAYER_HEADERS = check.h ../include/matter/cloud_layers.h                      ../include/matter/world_definition.h
 
+# Source wiring/layout is qualified before either shared environment suite can
+# run. Keep the complete input list shared with the CMake registrations.
+ENVIRONMENT_PYTHON ?= python3
+ENVIRONMENT_QUALIFIER = ../../libs/MatterGraphics/tools/qualify_environment.py
+ENVIRONMENT_INPUT_MANIFEST = ../../libs/MatterGraphics/tools/environment_qualification.inputs
+ENVIRONMENT_SOURCES := $(addprefix ../../,$(shell cat $(ENVIRONMENT_INPUT_MANIFEST)))
+ENVIRONMENT_QUALIFICATION = $(OBJDIR)/environment-qualified.stamp
+
+$(ENVIRONMENT_QUALIFICATION): $(ENVIRONMENT_QUALIFIER) $(ENVIRONMENT_INPUT_MANIFEST) $(ENVIRONMENT_SOURCES) | build
+	$(ENVIRONMENT_PYTHON) $(ENVIRONMENT_QUALIFIER) ../..
+	@mkdir -p $(dir $@)
+	@touch $@
+
 PROPS_TARGET = build/props_tests
 PROPS_CPP    = props_tests.cpp ../src/props/props.cpp ../src/util/json_doc.cpp
 PROPS_HEADERS = check.h ../include/matter/props.h ../include/matter/json_doc.h
@@ -2900,7 +2913,7 @@ run-sun-angles: $(SUNANGLES_TARGET)
 	./$(SUNANGLES_TARGET)
 
 # Cloud layers. Same empty link closure as sun-angles.
-$(CLOUDLAYER_TARGET): $(CLOUDLAYER_OBJS)
+$(CLOUDLAYER_TARGET): $(CLOUDLAYER_OBJS) | $(ENVIRONMENT_QUALIFICATION)
 	$(CC) $(CLOUDLAYER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
 run-cloud-layers: $(CLOUDLAYER_TARGET)
@@ -3554,7 +3567,7 @@ clean-atmosphere:
 VOLUMETRICQUALITY_TARGET = build/volumetric_quality_tests
 VOLUMETRICQUALITY_CPP = volumetric_quality_tests.cpp
 
-$(VOLUMETRICQUALITY_TARGET): $(VOLUMETRICQUALITY_CPP) ../include/matter/volumetric_quality.h ../include/matter/cloud_shadow_settings.h ../include/matter/math_types.h check.h | build
+$(VOLUMETRICQUALITY_TARGET): $(VOLUMETRICQUALITY_CPP) ../include/matter/volumetric_quality.h ../include/matter/cloud_shadow_settings.h ../include/matter/math_types.h check.h | build $(ENVIRONMENT_QUALIFICATION)
 	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 -I../include -o $@ $(VOLUMETRICQUALITY_CPP)
 
 run-volumetric-quality: $(VOLUMETRICQUALITY_TARGET)

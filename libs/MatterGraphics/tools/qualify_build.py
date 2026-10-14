@@ -1,9 +1,21 @@
-"""Audit the actual standalone CMake target graph; no extraction scaffold counts."""
+"""Build-time audit of the actual standalone graph and shader dependency closure.
+
+This reads build metadata deliberately and therefore belongs to the build,
+after all compiled targets, rather than the disk-free runtime CTest tier.
+"""
 import json
 from pathlib import Path
 import sys
 import shlex
 import subprocess
+from functools import lru_cache
+
+
+@lru_cache(maxsize=None)
+def resolved(path):
+    # Compiler dependencies repeat the same headers across many translation
+    # units. Resolve each path once, preserving the symlink-aware boundary.
+    return path.resolve()
 
 
 def audit(build):
@@ -12,7 +24,7 @@ def audit(build):
     assert indices, "Missing CMake File API reply"
     index = json.loads(indices[-1].read_text())
     model = json.loads((reply / index["reply"]["codemodel-v2"]["jsonFile"]).read_text())
-    root = Path(model["paths"]["source"]).resolve()
+    root = resolved(Path(model["paths"]["source"]))
     repository = root.parent.parent
     allowed = [root, repository / "libs/MatterContracts", repository / "libs/MathLib/include", build]
     cache = (build / "CMakeCache.txt").read_text()
@@ -21,8 +33,8 @@ def audit(build):
     vulkan = settings.get("MATTER_GRAPHICS_VULKAN") == "ON"
     native_libraries = set()
     if vulkan:
-        allowed.append(Path(settings["Vulkan_INCLUDE_DIR"]).resolve())
-        loader = Path(settings["Vulkan_LIBRARY"]).resolve()
+        allowed.append(resolved(Path(settings["Vulkan_INCLUDE_DIR"])))
+        loader = resolved(Path(settings["Vulkan_LIBRARY"]))
         assert loader.is_file() and loader.name.lower().startswith(("vulkan-1.lib", "libvulkan.so")), loader
         native_libraries.add(loader)
     legacy_files = {repository / "MatterEngine3/src/render/matrix_math.cpp",
@@ -80,11 +92,14 @@ def audit(build):
         expected.add("matter_graphics_cloud_shadow_reference_tests")
         expected.update("matter_graphics_" + suite + "_tests" for suite in (
             "atmosphere", "cloud_layer", "cloud_shadow", "volumetric_quality"))
+    allowed = [resolved(base) for base in allowed]
     for config in model["configurations"]:
         all_targets = {t["name"]: json.loads((reply / t["jsonFile"]).read_text()) for t in config["targets"]}
         utilities = {name for name, t in all_targets.items() if t["type"] == "UTILITY"}
         # include(CTest) registers dashboard commands, not linked libraries.
-        assert all(name.startswith(("Nightly", "Continuous", "Experimental")) for name in utilities), utilities
+        assert all(name in {"matter_graphics_qualification", "matter_graphics_environment_qualification"} or
+                   name.startswith(("Nightly", "Continuous", "Experimental"))
+                   for name in utilities), utilities
         targets = {name: t for name, t in all_targets.items() if name not in utilities}
         assert set(targets) == expected, f"Unexpected transitive targets: {set(targets) ^ expected}"
         assert targets["matter_graphics"]["type"] == "STATIC_LIBRARY", "Facade must compile runtime code"
@@ -95,19 +110,19 @@ def audit(build):
         archives = set()
         for t in targets.values():
             if t["type"] == "STATIC_LIBRARY":
-                archives.update((build / a["path"]).resolve() for a in t.get("artifacts", []))
+                archives.update(resolved(build / a["path"]) for a in t.get("artifacts", []))
         for target in targets.values():
             for artifact in target.get("artifacts", []):
                 assert (build / artifact["path"]).is_file(), f"Target was not built: {target['name']}"
             paths = [Path(s["path"]) for s in target.get("sources", [])]
             for path in paths:
                 # File API relative sources are relative to the source root.
-                path = (path if path.is_absolute() else root / path).resolve()
-                assert path in legacy_files or any(path.is_relative_to(base.resolve()) for base in allowed), f"Forbidden source: {path}"
+                path = resolved(path if path.is_absolute() else root / path)
+                assert path in legacy_files or any(path.is_relative_to(base) for base in allowed), f"Forbidden source: {path}"
             for group in target.get("compileGroups", []):
                 for include in group.get("includes", []):
-                    path = Path(include["path"]).resolve()
-                    assert path in legacy_includes or any(path.is_relative_to(base.resolve()) for base in allowed), f"Forbidden include directory: {path}"
+                    path = resolved(Path(include["path"]))
+                    assert path in legacy_includes or any(path.is_relative_to(base) for base in allowed), f"Forbidden include directory: {path}"
             # Inspect actual linker fragments too: direct library paths need
             # not appear as CMake target dependencies.
             system_libraries = {"kernel32.lib", "user32.lib", "gdi32.lib", "winspool.lib",
@@ -117,7 +132,7 @@ def audit(build):
                 if fragment["role"] != "libraries":
                     continue
                 for library in shlex.split(fragment["fragment"].replace("\\", "/")):
-                    assert library.lower() in system_libraries or (build / library).resolve() in archives | native_libraries, f"Forbidden link input: {library}"
+                    assert library.lower() in system_libraries or resolved(build / library) in archives | native_libraries, f"Forbidden link input: {library}"
     # Ninja's compiler-discovered dependencies catch forbidden transitive
     # headers hidden behind the two broad legacy include search directories.
     ninja = next(line.split("=", 1)[1] for line in cache.splitlines() if line.startswith("CMAKE_MAKE_PROGRAM:"))
@@ -128,9 +143,9 @@ def audit(build):
         if not line.startswith("    "):
             continue
         path = Path(line.strip())
-        path = (path if path.is_absolute() else build / path).resolve()
+        path = resolved(path if path.is_absolute() else build / path)
         if path.is_relative_to(repository):
-            assert path in legacy_files or any(path.is_relative_to(base.resolve()) for base in allowed), f"Forbidden compiler dependency: {path}"
+            assert path in legacy_files or any(path.is_relative_to(base) for base in allowed), f"Forbidden compiler dependency: {path}"
             checked.add(path)
     # MSVC /showIncludes omits the primary .cpp; the codemodel above audits it.
     required_headers = {p for p in legacy_files if p.suffix == ".h"}
@@ -140,7 +155,7 @@ def audit(build):
         for shader in ("composite.vert", "composite.frag", "display_transform.frag") + environment_shaders + raster_shaders:
             raw = (build / (shader + ".spv.d")).read_text()
             # compile_shader.py escapes paths; split only the target delimiter.
-            shader_deps.update(Path(p).resolve() for p in shlex.split(raw.split(": ", 1)[1]))
+            shader_deps.update(resolved(Path(p)) for p in shlex.split(raw.split(": ", 1)[1]))
         assert shader_deps == allowed_shaders, f"Unexpected shader dependency closure: {shader_deps ^ allowed_shaders}"
     print("PASS GFX-INDEPENDENT-GRAPH: scene/facade/contracts/shared pure math" +
           (" plus isolated Vulkan adapter/loader and exact production shader closure" if vulkan else "") +
