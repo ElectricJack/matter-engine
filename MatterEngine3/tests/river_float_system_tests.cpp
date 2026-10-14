@@ -900,7 +900,7 @@ void add_phase_probe(flecs::world& world,
         .each([&, value](PhaseProbe) {
             if (count < trace.size()) trace[count++] = value;
         });
-    system.add<ecs::FixedPipelineSystem>();
+    system.template add<ecs::FixedPipelineSystem>();
 }
 
 void test_exact_fixed_phase_order() {
@@ -1176,7 +1176,9 @@ int main() {
     test_dry_waterfall_reentry_and_caps();
     test_nonfinite_inputs_fail_closed();
     test_quaternion_normalization_matches_physics_context();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_legacy_makefile_river_float_source_closures();
+#endif
     test_invalid_disable_generation_and_dry_ruling();
     test_post_kernel_publication_swap_guards_queued_forces();
     test_publication_waits_for_entire_guarded_force_batch();

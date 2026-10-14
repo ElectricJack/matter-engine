@@ -4,6 +4,7 @@
 // Embedded-shader lookup with disk override. Internal kernel header (moves to
 // src/ in the Stage 5 file moves).
 #include <string>
+#include <functional>
 
 namespace matter {
 
@@ -24,6 +25,13 @@ namespace matter {
 //   * Every hit copies the whole source text into `out`. Call it at pipeline
 //     build time, not per frame.
 bool shader_text(const char* logical_path, std::string& out, std::string& err);
+
+// Supply only the external-source read operation; lookup order and embedded
+// fallback stay in shader_text. A successful empty read still shadows the
+// embedded entry. Useful for hosts and tests that hold source overrides in RAM.
+using ShaderSourceReader = std::function<bool(const std::string&, std::string&)>;
+bool shader_text(const char* logical_path, std::string& out, std::string& err,
+                 const ShaderSourceReader& read_source);
 
 // EngineDesc::shader_dir plumbs through here; nullptr clears the override.
 // PROCESS-WIDE and unsynchronized: the override directory is a single file

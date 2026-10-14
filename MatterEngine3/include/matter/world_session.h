@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../libs/MatterGraphics/include/matter/graphics/dlss_mode.h"
+#include "fixture_io.h"
 
 // MatterEngine3/include/matter/world_session.h
 //
@@ -138,6 +139,7 @@ struct WorldDesc {
     const char* engine_shared_lib_dir = nullptr;
 
     bool enable_live_edit = false;  // watch schemas/shared-lib dirs, cone-rebake on save (Linux inotify; no-op elsewhere)
+    std::shared_ptr<const WorldFixtureIO> fixture_io;
 };
 
 // Which renderer to run for a frame (RenderOptions::path). GpuDriven is the
@@ -1030,6 +1032,13 @@ public:
     // on error a BakeError event is emitted and render() no-ops until a later
     // request_bake()/reload() succeeds (the old world is torn down before rebaking).
     void reload();
+
+    // Queue a Reload owning the next source generation. The nonnull
+    // snapshot replaces sources on the bake worker after the existing
+    // cancellation/quiescence barrier. Cache storage and configured
+    // paths stay unchanged; old providers retain their prior snapshot.
+    // A null snapshot throws std::invalid_argument without queuing work.
+    void reload_fixture_sources(std::shared_ptr<const SourceSnapshot> sources);
 
     // Phase C Task 9: world-kind sessions: the sea level from the world definition.
     // Returns true and sets `out` for world-kind sessions; returns false for

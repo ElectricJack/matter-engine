@@ -100,8 +100,6 @@ if(BUILD_TESTING)
     endforeach()
     add_executable(matter_graphics_tests tests/graphics_tests.cpp)
     target_link_libraries(matter_graphics_tests PRIVATE matter_graphics)
-    target_compile_definitions(matter_graphics_tests PRIVATE
-        MATTER_GRAPHICS_IMPORTED_ASSET="${CMAKE_CURRENT_SOURCE_DIR}/../MatterContracts/examples/repeated-assembly.asset.json")
     add_test(NAME matter_graphics_lifetime COMMAND matter_graphics_tests)
     add_executable(matter_graphics_scene_tests tests/scene_tests.cpp)
     target_link_libraries(matter_graphics_scene_tests PRIVATE matter_graphics)
@@ -109,6 +107,8 @@ if(BUILD_TESTING)
     add_executable(matter_graphics_composition_tests tests/composition_tests.cpp)
     target_link_libraries(matter_graphics_composition_tests PRIVATE matter_graphics)
     add_test(NAME matter_graphics_composition COMMAND matter_graphics_composition_tests)
+    set_tests_properties(matter_graphics_lifetime matter_graphics_scene matter_graphics_composition
+        PROPERTIES LABELS "cpu;graphics" TIMEOUT 10)
     if(MATTER_GRAPHICS_VULKAN)
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_resources.cpp" "#include <matter/graphics/vulkan_resources.h>\n")
         add_library(matter_graphics_header_vulkan_resources OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_resources.cpp")
@@ -123,12 +123,10 @@ if(BUILD_TESTING)
         target_link_libraries(matter_graphics_vulkan_tests PRIVATE matter_graphics_vulkan)
         add_executable(matter_graphics_raster_tests tests/raster_tests.cpp)
         target_link_libraries(matter_graphics_raster_tests PRIVATE matter_graphics_vulkan)
-        target_compile_definitions(matter_graphics_raster_tests PRIVATE
-            MATTER_GRAPHICS_IMPORTED_ASSET="${CMAKE_CURRENT_SOURCE_DIR}/../MatterContracts/examples/repeated-assembly.asset.json")
         add_test(NAME matter_graphics_raster COMMAND matter_graphics_raster_tests)
-        set_tests_properties(matter_graphics_raster PROPERTIES TIMEOUT 180)
+        set_tests_properties(matter_graphics_raster PROPERTIES LABELS "gpu;vulkan;graphics" TIMEOUT 180)
         add_test(NAME matter_graphics_vulkan COMMAND matter_graphics_vulkan_tests)
-        set_tests_properties(matter_graphics_vulkan PROPERTIES TIMEOUT 60)
+        set_tests_properties(matter_graphics_vulkan PROPERTIES LABELS "gpu;vulkan;graphics" TIMEOUT 60)
     endif()
     if(MSVC)
         foreach(header backend graphics scene_backend composition)
@@ -143,7 +141,21 @@ if(BUILD_TESTING)
         endif()
     endif()
     if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-        add_test(NAME matter_graphics_independence COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/independence.py ${CMAKE_BINARY_DIR})
+        # This qualification reads the real compiled graph, Ninja dependencies
+        # and shader depfiles. Keep it as a mandatory build gate, so runtime
+        # tests need no source tree, assets, metadata or shared evidence files.
+        get_property(_graphics_built_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+        set(_graphics_qualification_dependencies)
+        foreach(target IN LISTS _graphics_built_targets)
+            get_target_property(type ${target} TYPE)
+            if(NOT type STREQUAL "UTILITY")
+                list(APPEND _graphics_qualification_dependencies ${target})
+            endif()
+        endforeach()
+        add_custom_target(matter_graphics_qualification ALL
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/qualify_build.py"
+                "${CMAKE_BINARY_DIR}"
+            DEPENDS ${_graphics_qualification_dependencies}
+            VERBATIM)
     endif()
 endif()

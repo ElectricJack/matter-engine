@@ -132,6 +132,11 @@ public:
     virtual ReadHandle open(const std::string& path) const = 0;
     virtual bool publish(const std::string& path, const Bytes& bytes) = 0;
     virtual bool erase(const std::string& path) = 0;
+    // Optional atomic publication from a staged key. Concurrent callers
+    // share the storage transaction: 0 succeeds, 183 means destination
+    // exists without replacement. Failure preserves both generations.
+    // The default reports unsupported (Windows error 50).
+    virtual std::uint32_t move(const std::string&, const std::string&, bool) { return 50u; }
     bool exists(const std::string& path) const { return bool(open(path)); }
 };
 
