@@ -30,6 +30,10 @@ placements. It applies the facade's inverse-transpose normal contract and packs
 geometry per placement; this adapter makes no batching/performance claim.
 Textured appearances fail explicitly. Native skin/water/VT/sparse extensions
 remain in the existing host, which delegates to the same extracted mesh pass.
+The adapter specializes the shared G-buffer shader for this admitted material
+domain, allowing software Vulkan compilers to remove unused texture/POM paths.
+Uniform material evaluation and every G-buffer attachment remain active; the
+native host defaults to the full shader without this specialization.
 See the [native boundary and provenance](src/native/README.md).
 
 The [standalone native sample](examples/README.md) connects imported and

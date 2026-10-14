@@ -827,7 +827,7 @@ std::string ScriptHost::merge_params_canonical(const std::string& source,
     // reference imported values). Fail-closed on a fold error.
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) {
@@ -920,7 +920,7 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     // error by returning an empty list.
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return out;
@@ -1100,7 +1100,7 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
 
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return out;
@@ -1147,7 +1147,7 @@ bool ScriptHost::eval_no_impostor(const std::string& source) {
 
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return false;
@@ -1399,7 +1399,7 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
 
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return out;
@@ -1547,7 +1547,7 @@ uint64_t ScriptHost::resolve_request_hash(const std::string& source,
         module_resolver::FoldResult folded;
         const char* bytes = source.data();
         size_t byte_count = source.size();
-        if (!shared_lib_roots_.empty()) {
+        if (module_sources_ || !shared_lib_roots_.empty()) {
             std::string error;
             if (!fold_sources_cached(source, folded, error)) return 0;
             bytes = folded.folded.data(); byte_count = folded.folded.size();
@@ -1583,7 +1583,7 @@ uint64_t ScriptHost::resolve_hash(const std::string& source,
     module_resolver::FoldResult fr;
     const char* src_bytes = source.data();
     size_t      src_len   = source.size();
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr))
             return 0;   // fail-closed
@@ -2623,7 +2623,7 @@ BakeResult ScriptHost::execute_source(const std::string& source,
     // previously created. The fold result, merged string, and resolved_hash are all
     // byte-identical to the previous double-RT path.
     module_resolver::FoldResult fold;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         std::string ferr;
         if (!fold_sources_cached(source, fold, ferr)) {
             // Fail-closed: a missing/illegal shared module aborts the bake with
@@ -2851,7 +2851,10 @@ BakeResult ScriptHost::execute_source(const std::string& source,
                             : std::filesystem::path(opts.parts_dir) / part_asset::cache_path_resolved(child_hashes[ci]);
                         std::optional<part_asset::PartAnimationLink> link;
                         std::error_code artifact_error;
-                        if (std::filesystem::exists(child_path, artifact_error)) {
+                        const bool child_exists = part_bundle::ScopedStorage::current()
+                            ? part_bundle::exists(child_path.string())
+                            : std::filesystem::exists(child_path, artifact_error);
+                        if (child_exists) {
                             if (!part_asset::load_animation_link(child_path.string(), child_hashes[ci], link))
                                 invalid_child_animation_artifacts.insert(child_hashes[ci]);
                             else child_animation_status[child_hashes[ci]] = link.has_value();
@@ -3767,7 +3770,7 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     module_resolver::FoldResult fold;
     ModuleStore fold_store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         std::string ferr;
         if (!fold_sources_cached(source, fold, ferr)) {
             r.message = "module resolution failed: " + ferr;
@@ -4303,7 +4306,7 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
 
         const char* src_bytes = source.data();
         size_t      src_len   = source.size();
-        if (!shared_lib_roots_.empty()) {
+        if (module_sources_ || !shared_lib_roots_.empty()) {
             std::string ferr;
             if (!fold_sources_cached(source, fold, ferr)) {
                 r.error.ok = false;
@@ -4745,7 +4748,7 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
                                      module_resolver::FoldResult& out,
                                      std::string& err) {
     // If no shared-lib root, skip the cache and just return an empty fold result.
-    if (shared_lib_roots_.empty()) {
+    if (!module_sources_ && shared_lib_roots_.empty()) {
         out = module_resolver::FoldResult{};
         return true;
     }
@@ -4765,9 +4768,23 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
 
     // Cache miss: fold the sources.
     module_resolver::FoldResult fresh;
-    if (!module_resolver::fold_sources(source, shared_lib_roots_, fresh, err)) {
-        return false;
+    bool folded = false;
+    if (module_sources_) {
+        folded = module_resolver::fold_sources_with_loader(source,
+            [&](const std::string& spec, module_resolver::ResolvedModule& module, std::string& error) {
+                for (const auto& candidate : *module_sources_) {
+                    std::string canonical = candidate.specifier;
+                    if (canonical.size() >= 3 && canonical.compare(canonical.size()-3, 3, ".js") == 0)
+                        canonical.resize(canonical.size()-3);
+                    if (canonical == spec) { module = candidate; return true; }
+                }
+                error = "module not found in source snapshot: " + spec;
+                return false;
+            }, fresh, err);
+    } else {
+        folded = module_resolver::fold_sources(source, shared_lib_roots_, fresh, err);
     }
+    if (!folded) return false;
 
     // Insert into cache (under lock).
     {
