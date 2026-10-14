@@ -771,11 +771,11 @@ int main() {
     }
 
     // --- the cavity is CLOSED ------------------------------------------------
-    // A vertical ray through a watertight solid crosses its boundary an even
-    // number of times. Cast rays down through a 3D noise cave field and count
-    // sign changes in the density: an odd count would mean a surface the mesher
-    // must emit and the field says nothing about. This checks the FIELD is sane
-    // (the mesher's own watertightness is the seam tests below).
+    // Check the endpoints of downward rays through the 3D noise cave field.
+    // Crossing parity depends only on these endpoint signs: every interior
+    // sign change toggles the same boolean. Air above and rock below imply an
+    // odd crossing count. This checks the FIELD is sane (the mesher's own
+    // watertightness is the seam tests below).
     // The FLOOR (r14) is not decoration. Without it the tunnel field keeps
     // opening voids all the way past the bottom of the authored range, so a
     // downward ray can end in air and "is the cavity closed" has no answer --
@@ -805,26 +805,20 @@ int main() {
         size_t down = count_tris(m, [](float, float ny, float){ return ny < -0.5f; });
         CHECK(down > 0, "the noise cave has roofs");
 
-        int odd = 0, sampled = 0;
+        // Keep the original 40x40 ray lattice and exact endpoints. The old
+        // quarter-unit scan stopped at -127.75, not -128. Its only assertion
+        // was crossing parity; evaluating 1,278 interior points per ray added
+        // no information to that oracle. Assert each endpoint explicitly so
+        // reversed air/rock signs cannot accidentally satisfy parity either.
         for (int i = 0; i < 40; ++i)
             for (int k = 0; k < 40; ++k) {
                 const float x = i * 1.6f, z = k * 1.6f;
-                int crossings = 0;
-                float prev = f.density_at(x, 192.0f, z);
-                for (float y = 192.0f - 0.25f; y > -128.0f; y -= 0.25f) {
-                    const float d = f.density_at(x, y, z);
-                    if ((d > 0) != (prev > 0)) ++crossings;
-                    prev = d;
-                }
-                ++sampled;
-                if (crossings & 1) ++odd;   // ends inside solid: fine, it is the floor
+                CHECK(f.density_at(x, 192.0f, z) <= 0,
+                      "every downward ray starts in air above the surface");
+                CHECK(f.density_at(x, -127.75f, z) > 0,
+                      "every downward ray ends in solid: the cavities are closed, not "
+                      "open to the bottom of the world");
             }
-        // Every ray starts in air (above the surface) and ends in rock (below
-        // the cave field's reach at -128), so an ODD crossing count is the
-        // correct answer and an even one would mean a ray that ended in air.
-        CHECK(odd == sampled,
-              "every downward ray ends in solid: the cavities are closed, not "
-              "open to the bottom of the world");
     }
 
     // --- equal-rung tiles are watertight through a cave wall ----------------

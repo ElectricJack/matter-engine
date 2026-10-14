@@ -454,6 +454,11 @@ if(BUILD_TESTING)
         MatterEngine3/tests/field_probe.cpp)
     matter_add_engine_cpu_test(script_host_tests
         MatterEngine3/tests/script_host_tests.cpp)
+    set(MATTER_SCRIPT_ROOT "${CMAKE_SOURCE_DIR}")
+    set(MATTER_SCRIPT_HEADER "${CMAKE_CURRENT_BINARY_DIR}/script_test_modules.h")
+    include("${CMAKE_SOURCE_DIR}/MatterEngine3/tests/EmbedScriptModules.cmake")
+    target_compile_definitions(script_host_tests PRIVATE
+        MATTER_SCRIPT_TEST_MODULES_HEADER="${MATTER_SCRIPT_HEADER}")
     matter_add_engine_cpu_test(tileset_bake_tests
         MatterEngine3/tests/tileset_bake_tests.cpp)
     matter_add_engine_cpu_test(tileset_physics_tests

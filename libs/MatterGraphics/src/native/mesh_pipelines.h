@@ -12,6 +12,9 @@ using RasterShaderLoader = std::function<bool(VkDevice, const char*, VkShaderMod
 using RasterPipelineCreator = std::function<VkResult(const VkGraphicsPipelineCreateInfo&, VkPipeline*)>;
 // The owner destroys output handles after their last submitted use, including
 // partially created outputs on failure. Shader modules retire inside this call.
+// uniform_pbr_only requires chartless, non-impostor, non-water meshes with no
+// texture or surface-detail material flags. Native hosts use the full default.
 bool create_mesh_raster_pipelines(VkDevice, VkPipelineLayout, bool wireframe_available,
-    const RasterShaderLoader&, const RasterPipelineCreator&, MeshRasterPipelines&, std::string&);
+    const RasterShaderLoader&, const RasterPipelineCreator&, MeshRasterPipelines&, std::string&,
+    bool uniform_pbr_only = false);
 } // namespace viewer
