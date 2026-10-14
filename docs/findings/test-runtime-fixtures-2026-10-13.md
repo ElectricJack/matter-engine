@@ -1376,3 +1376,115 @@ stage accumulation and CSG folding. No additional native execution or arithmetic
 candidate was attempted. Original predicates and tolerances remain intact.
 Windows CI remains waived; this diagnostic is not a native CI acceptance claim.
 Full Linux acceptance remains false until original real GNU generation passes.
+
+
+## Paired scalar-producer capture and one local log candidate (2026-10-14)
+
+Supervisor message `msg-98b2b303620a4a31b74c2ae20d3cc8c4` authorized a
+bounded paired capture at the three actual upper-Y sample coordinates and the
+matching control. The held task remains `steady-harbor-62`, epoch 9. Production
+arithmetic remains at the prior implementation; the published change here is
+findings only.
+
+The private experiment is retained at
+`C:\aq-private\steady-harbor-62-e9-scalar-pair` (WSL
+`/mnt/c/aq-private/steady-harbor-62-e9-scalar-pair`). Its complete receipt is
+`paired-scalar-experiment-receipt.json`, SHA-256 `b045b17b90d19c991b9cb7848cedc40662774fa8cd6cf5c6f2893519fcdfd97c`, binding
+1164 artifacts, 118 actual native headers, original test/main objects,
+link inputs, private sources, commands, numeric packets and generated exports.
+The prior receipt remains unchanged at
+`7779943a878afb0db36a5d4920e8ce899181c7dbdc19f19362b05ba01c4afe4d`.
+
+One ownership check found no matching native build/test/runner worker processes.
+The retained native `61c97f600d4b7edef886da16968bcd83fd7af432` checkout,
+archives and configuration remained read-only. The observational pair rebuilt
+only the surface and fat-primitive TUs, then linked explicit private objects
+against the prior native inputs/original flags and the actual GNU archive.
+There was one additional native cold generation and one corresponding GNU cold
+generation, with no repeated baseline. Setup/build/paired capture completed in
+355.460 seconds, below the 900-second bound.
+The separately authorized tiny replay and one conditional private candidate
+also completed before the same deadline. No CI/archive/full-suite rebuild ran.
+
+The capture serializes named integer/float bit patterns, without padded structs
+or pointers: all 16 inverse-transform elements, centers/bounds/tints, extents,
+radii/endpoints, stage/kind/order; sample coordinates and relevant blend/radius/
+count context; actual local transforms, executed box/sphere helper inputs/results;
+ordered stage values, minima and blend widths; actual exp arguments/results,
+partial sums, log inputs/results, final product/subtraction and CSG operands/op/
+results. Signed zero and nonfinite bits are retained. Each platform recorded ten
+live evaluations: 706 and 2666 once, 2907 and control 2908 four times. Repeated
+contexts are identical. Box expression operands have unspecified evaluation
+order; helper-event ordering differs across compilers, but their semantic input/
+result tuples, transformed coordinates and all actual primitive outputs match.
+
+All live numeric primitive/context inputs match. Every ordered stage input,
+actual exp argument/result and partial sum matches through the stage-1 log
+input. The first causal numeric inequality is the actual `logf` return:
+
+| Target | Shared log input bits | GNU log result | Native log result |
+| --- | --- | --- | --- |
+| 2666 | 3f8337de | 3ccb6b8f | 3ccb6b8e |
+| 2907 | 3f82f27f | 3cba7c38 | 3cba7c37 |
+| 706 | 3f846998 | 3d0ad1eb | 3d0ad1ec |
+
+Each difference is one ULP. It propagates through the actual final stage product/
+subtraction and ordered CSG fold to the previously captured scalar returns.
+Control 2908 matches throughout. The analysis is `paired-analysis.json`,
+SHA-256 `dc11be701b57d3095387eb8584acaf6b34fac19fd349236c561673bd0b902c5f`.
+Native/GNU numeric traces have SHA-256
+`fb15a2bd8d9673764d9e561e7c332f957f1c519106b532ddd9275dabc83649ee` /
+`529956e976fd51b03a688b245e08e4cbb99d22d2fe1a0fd1fd77d074b1d0aa32`.
+
+The observational native bundle remains exactly
+`2c918c47025a24d7a93512377b121cc4e5286d4693f7a08547b077fac3d89c05`;
+every export file for all three native parts matches the retained baseline,
+and all original part/DSL golden predicates pass. The observational GNU bundle
+remains exactly
+`f95e38597ef1bc0563cf1e38f69b5ac09785acd094a1e9367769006ff2410552`;
+its original qualifier retains precisely the known CastleStone failure,
+normal FNV `a9b38f2de4de4fe2` rather than `281757a9a9886a07`.
+The other two parts and DSL predicates pass. Neither capture caused bundle drift.
+
+A tiny replay reconstructs the named live numeric primitive inputs and calls
+each platform's actual captured `primitive_sdf` object for every primitive.
+It reproduces all captured primitive returns. Dynamic function-pointer calls
+also reproduce each platform's captured stage-1 `logf` results. No copied scalar
+evaluator was used. An independent 90-digit logarithm control places each exact
+input's mathematical result strictly inside the native result's binary32
+rounding interval; the receipt records midpoint margins. This supports a local
+precision change without asserting universally correctly rounded libm behavior.
+
+The ONE causal private candidate is retained as `candidate/minimal.patch`:
+
+```diff
+-    return fmin - k * logf(sum);
++    return fmin - k * (float)log((double)sum);
+```
+
+It changes only `smin_set`'s logarithm evaluation precision, explicitly rounding
+back to float before the existing multiplication/subtraction. The float sum,
+exp order, primitive functions, CSG operations, normal producer, global flags,
+fixtures, golden values and tolerances remain unchanged. Candidate validation
+uses the reused original GNU filesystem-qualified test main and actual archive,
+with the private candidate surface object selected before the archive.
+
+One conditional candidate cold generation passes all three original export
+goldens and the original DSL checks. Independently decoded normal PNG FNVs are
+CastleStone `281757a9a9886a07`, CastlePavingSlab `2cb79b540db2b1f6` and
+AlpineFlower `244925b928edba4c`. The original `staged_normals_tests`, linked to the
+candidate, passes with zero failures, including transformed primitives,
+ordered subtraction/intersection, smooth/mixed blends, trailing carve/clip,
+zero-gradient/nonfinite fallbacks, extraction determinism and legacy parity.
+The candidate Stone bundle is
+`88af764cd0abb16532eb135125d813fd88caa829ed6ea36db60e289fcfee8e54`,
+which differs from the native bundle despite the restored original goldens.
+
+The 706 producer-to-final REP0/FLAT/model normal transition remains unlocalized;
+tracing it would require an extra TU outside this paired capture. The global
+44-corner gap was not swept. Passing the candidate goldens does not attribute
+those intermediate differences. No production arithmetic edit or commit was
+made. Actual Linux acceptance remains false until production integration and
+its required original DEFAULT/CPU gates succeed; Windows/CI remains waived.
+This concrete minimal patch and its validated scope are submitted to the
+supervisor before any production promotion.
