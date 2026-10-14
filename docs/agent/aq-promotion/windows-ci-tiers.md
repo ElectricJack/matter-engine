@@ -152,6 +152,31 @@ Reproduce with `python3 tools/ci-linux.py` and
 `tools/ci-windows.ps1 -Tier full -CiRoot <unique-local-root>`. Preserve artifacts
 before a warm rerun. Use `-Package` only for explicit promotion measurement.
 
+The supplied graphics-head CI run [38514005777](https://github.com/ElectricJack/matter-engine/actions/runs/38514005777)
+failed at source `2fb388d7739fc38437cfdbc1e14230409c8914ad`: 188 of 189 tests
+passed, with `shader_source_tests` aborting on
+`water_forward_uses_world_normal(water_forward, water_raster)` (native exit
+`0xc0000409`, CTest exit 8, CI exit 1). It recorded CTest wall time 1901.03 s.
+The [verified raw JUnit and diagnostic inventory](evidence/ci-performance-20261014/graphics-38514005777/diagnostic-summary.json)
+retain every executed name and the slowest 20. The largest diagnostics are
+`vulkan_smoke_tests` 949.457 s, `windows_package_tests` 418.478 s,
+`world_definition_tests` 310.125 s and `viewer_logic_tests` 243.245 s.
+These timings overlapped local native builds, so they establish neither a clean
+floor nor a controlled before/after result. No independent build-phase timing
+was supplied. Source SHA and artifact hashes are preserved; the 189 executed
+names belong to that graphics source, not the current branch's registrations.
+
+Migrating `shader_source_tests` to mandatory lint does not waive this failure:
+its exact executable and working directory remain selected, its abort fails lint
+and the native outcome, and the existing positive oracle and negative mutations
+are unchanged by this branch. `steady-harbor-62` owns its source/fixture fix. After
+that qualification and a free host, measure the complete exact-source PR path,
+then target the largest individual and serialized GPU durations with smaller
+synthetic fixtures and retained regression assertions. Package duration is
+already removed from the PR path; the four heavy CPU fixtures above remain
+required and await their peer-owned conversion. Do not discard them to report
+an orchestration-only success.
+
 Native resource coordination: supervisor message `msg-dd168540d72e48b2a8ee54d63361101f`
 identified active hosted graphics CI and ordered local qualification after clear99
 and core62. The local build was interrupted; its cache/build evidence is retained.
