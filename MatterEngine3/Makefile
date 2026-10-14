@@ -313,6 +313,8 @@ GLSLC ?= glslc
 # shaders_gen/embedded_shaders.h) instead of keeping its own copy, so there
 # is only ever one list to update when a shader is added.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/smoke_triangle.vert.spv \
+         build/shaders_vk/smoke_triangle.frag.spv \
          build/shaders_vk/vt_material_domain_probe.comp.spv \
          build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
          build/shaders_vk/gpu_mesh_scan_add.comp.spv \

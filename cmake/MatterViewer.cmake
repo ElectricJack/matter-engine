@@ -392,68 +392,23 @@ if(BUILD_TESTING)
     add_dependencies(vulkan_smoke_tests
         matter_embedded_spirv
         matter_engine_viewer_objects)
-    add_test(NAME vulkan_smoke_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vulkan_smoke_tests PROPERTIES
-        LABELS vulkan
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
-    add_test(NAME geometry_pages_gpu_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(geometry_pages_gpu_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=geometry-pages"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    include("${CMAKE_SOURCE_DIR}/cmake/MatterVulkanSmokeTests.cmake")
+    matter_add_vulkan_smoke_test(vulkan_smoke_tests default)
+    matter_add_vulkan_smoke_test(vulkan_smoke_full_tests full)
+    matter_add_vulkan_smoke_test(geometry_pages_gpu_tests geometry-pages)
     add_custom_target(geometry_default_off_checks DEPENDS
         matter_editor geometry_runtime_tests partstore_tests
         geometry_hierarchy_tests geometry_cut_tests vulkan_smoke_tests)
 
-    add_test(NAME vt_feedback_visibility_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vt_feedback_visibility_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-feedback"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(vt_feedback_visibility_tests vt-feedback)
 
-    add_test(NAME vt_input_snapshot_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vt_input_snapshot_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-input-snapshot"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(vt_input_snapshot_tests vt-input-snapshot)
 
-    add_test(NAME vt_direct_source_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vt_direct_source_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-direct-source"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(vt_direct_source_tests vt-direct-source)
 
-    add_test(NAME vt_surface_material_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vt_surface_material_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-surfaces"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(vt_surface_material_tests vt-surfaces)
 
-    add_test(NAME sparse_voxel_gpu_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(sparse_voxel_gpu_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=sparse-voxel"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(sparse_voxel_gpu_tests sparse-voxel)
 
     add_test(NAME static_surface_vt_tests COMMAND static_surface_vt_tests)
     set_tests_properties(static_surface_vt_tests PROPERTIES LABELS vulkan
@@ -470,13 +425,8 @@ if(BUILD_TESTING)
     # (MatterEditor/tools/smoke_vulkan_faults.ps1) does not run.
     foreach(mode geometry-pages vt-queue vt-normal-frame vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas water-field-nort)
         string(REPLACE "-" "_" mode_name "${mode}")
-        add_test(NAME smoke_${mode_name} COMMAND vulkan_smoke_tests)
-        set_tests_properties(smoke_${mode_name} PROPERTIES LABELS vulkan
-            ENVIRONMENT "MATTER_VK_SMOKE_MODE=${mode}"
-            PASS_REGULAR_EXPRESSION "ALL PASS" FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+        matter_add_vulkan_smoke_test(smoke_${mode_name} "${mode}")
     endforeach()
-    set_tests_properties(smoke_vt_normal_frame PROPERTIES TIMEOUT 120)
 
     add_test(NAME vulkan_scene_oracle_tests
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
