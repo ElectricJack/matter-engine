@@ -171,3 +171,50 @@ experiment is blocked before engine compilation, so native failure provenance
 remains unverified. The concrete failure is reported once to the supervisor
 with a request for supported pause/release. This is not a static-only pass;
 the original native failures remain failures.
+
+## One authorized short-path attempt
+
+Supervisor message `msg-f8ee60b5f905490c860e418aae1581fe` authorized one
+placement-only diagnostic using fresh `D:\mv8e8\b` and `D:\mv8e8\m` directories.
+The same immutable tar archives were reused, with their SHA-256 hashes checked
+before extraction. The baseline's 10,419 files and one symlink verified against
+its Git tree before building; the exporter also verifies the archive's Git
+executable modes and records the physical extracted modes. The native baseline
+source-root length fell from 117 to 10 characters. Both previous artifact trees,
+archives and inventories remain preserved. See the
+[short export receipt](../agent/evidence/2026-10-14-vt-provenance/short-native-attempt/export-receipt.json)
+and [full baseline inventory](../agent/evidence/2026-10-14-vt-provenance/short-native-attempt/58289c187ef2565c7d0532fe28a8cfb903023e44-inventory.json.gz).
+
+The unchanged canonical wrapper used the same native toolchain, target,
+RelWithDebInfo configuration, six workers and 30-minute bound. Native compiler
+and linker probes **passed**, and CMake generated the engine graph. The first
+attempt's `LNK1104` did not recur in this layout, which supports the path-length
+hypothesis without establishing the original error's cause. After the last
+logged build step **128/429**, the native wrapper instead exited
+**-1073741510 (`0xC000013A`)**, with stderr **`User interrupt`**, after 72.349 seconds.
+The WSL-facing driver returned 58 and AQ pytest recorded **one failed test**.
+The timeout did not fire. The logs identify no compiler diagnostic causing this
+stop, and the source of the interruption is unknown. This is an interrupted
+build, not a successful build or an established historical source defect.
+While the build was active, a separate native PowerShell syntax-only parser
+check of a proposed diagnostic runner completed with exit zero; that runner
+was never executed and was discarded after this stop. The build receipts do
+not identify the interrupt sender, so interaction between overlapping WSL/native
+PowerShell invocations cannot be excluded. No retry was used to test that
+hypothesis.
+
+The [build receipt](../agent/evidence/2026-10-14-vt-provenance/short-native-attempt/baseline-build/build-receipt.json),
+[stdout](../agent/evidence/2026-10-14-vt-provenance/short-native-attempt/baseline-build/build.stdout.txt),
+[stderr](../agent/evidence/2026-10-14-vt-provenance/short-native-attempt/baseline-build/build.stderr.txt)
+and full CMake configure log are retained. The subsequent
+[native process capture](../agent/evidence/2026-10-14-vt-provenance/short-native-attempt/native-processes-after.json)
+showed no remaining native build or renderer process. The owned move export was
+stopped and its partial inventory preserved; no move build or smoke mode was
+run. That incomplete tree contains 5,642 matching files, 4,800 missing files,
+and one empty, mismatching file left by the interrupted extraction; it is
+preserved without repair and was never build input. A subsequent check of
+all 10,419 recorded baseline prebuild physical modes confirms their normalized
+Git modes also match. The [stopped-attempt receipt](../agent/evidence/2026-10-14-vt-provenance/short-native-attempt/stopped-attempt-receipt.json)
+records those gaps. No further build/layout retry or historical graph change
+was made. The paired native runtime comparison remains blocked, and the
+original seven VT and twelve VT-RT failures remain open.

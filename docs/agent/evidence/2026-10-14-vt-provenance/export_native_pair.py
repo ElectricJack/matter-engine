@@ -1,16 +1,17 @@
 """Export immutable historical test artifacts into a NEW authorized D: directory.
 
 Usage: python3 export_native_pair.py <fresh-artifact-root>
+Add --reuse-archives <old-artifact-root> for the authorized short b/m layout.
 No git refs, AQ workspace registrations or source files in the checkout change.
 """
 import gzip
+import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
 import stat
 import subprocess
-import sys
 import tarfile
 import time
 
@@ -25,7 +26,11 @@ def digest_file(path):
 
 
 def main():
-    target = Path(sys.argv[1])
+    parser = argparse.ArgumentParser()
+    parser.add_argument('target', type=Path)
+    parser.add_argument('--reuse-archives', type=Path)
+    args = parser.parse_args()
+    target = args.target
     target.mkdir(parents=True, exist_ok=False)
     receipt = {'task': 'nimble-rapids-30', 'claim_epoch': 8,
                'owner_session': '7a96c3ba-eca7-490e-a511-e142fff96347',
@@ -33,13 +38,21 @@ def main():
                'checkout_head': subprocess.check_output(
                    ['git', 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(),
                'created_at': time.time(), 'artifact_root': str(target), 'sources': []}
+    if args.reuse_archives:
+        receipt['execution_authorization'] = 'msg-f8ee60b5f905490c860e418aae1581fe'
+        receipt['placement_only_diagnostic'] = True
     manifest = target / 'export-receipt.json'
     manifest.write_text(json.dumps(receipt, indent=2) + '\n')
-    for ref in REFS:
-        archive = target / (ref + '.tar')
-        with archive.open('xb') as handle:
-            subprocess.run(['git', 'archive', '--format=tar', ref], cwd=REPO,
-                           stdout=handle, check=True)
+    hashes = ('e5245b259a6840223a0f1c107fc54cc8b24db94968c5a018ed49637ec965f7d7',
+              '8533667cdee243f18cfad4d5d180d9cd7b3fe6110a72ea885b0928233a8bd744')
+    for index, ref in enumerate(REFS):
+        archive = (args.reuse_archives or target) / (ref + '.tar')
+        if args.reuse_archives:
+            assert digest_file(archive) == hashes[index], str(archive)
+        else:
+            with archive.open('xb') as handle:
+                subprocess.run(['git', 'archive', '--format=tar', ref], cwd=REPO,
+                               stdout=handle, check=True)
         expected = {}
         raw = subprocess.check_output(['git', 'ls-tree', '-r', '-z', ref], cwd=REPO)
         for entry in raw.split(b'\0'):
@@ -49,7 +62,7 @@ def main():
             mode, kind, oid = meta.decode().split()
             assert kind == 'blob', (name, kind)
             expected[os.fsdecode(name)] = {'git_mode': mode, 'git_blob': oid}
-        root = target / ref
+        root = target / (('b', 'm')[index] if args.reuse_archives else ref)
         root.mkdir(exist_ok=False)
         archived = {}
         with tarfile.open(archive) as handle:
@@ -97,6 +110,14 @@ def main():
                   'tracked_files': len(inventory),
                   'symlinks': sum(row['symlink_target'] is not None for row in inventory),
                   'archive_modes_and_extracted_blobs_match_git_tree': True}
+        if args.reuse_archives:
+            old_root = args.reuse_archives / ref
+            native = lambda path: subprocess.check_output(
+                ['wslpath', '-w', str(path)], text=True).strip()
+            source['previous_source_root'] = native(old_root)
+            source['native_source_root'] = native(root)
+            source['previous_source_root_length'] = len(native(old_root))
+            source['native_source_root_length'] = len(native(root))
         receipt['sources'].append(source)
         manifest.write_text(json.dumps(receipt, indent=2) + '\n')
         print(json.dumps(source), flush=True)

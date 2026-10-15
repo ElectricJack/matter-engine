@@ -37,7 +37,7 @@ def test_historical_native_build(ref):
     evidence = ARTIFACTS / (ref + '-build')
     assert not evidence.exists(), 'Preserve the previous attempt; no unchanged retry'
     command = [PS, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', win(runner),
-               '-SourceRoot', win(ARTIFACTS / ref), '-EvidenceDirectory', win(evidence)]
+               '-SourceRoot', win(Path(source['source_root'])), '-EvidenceDirectory', win(evidence)]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=1900)
     (ARTIFACTS / (ref + '-build-driver.txt')).write_text(result.stdout)
