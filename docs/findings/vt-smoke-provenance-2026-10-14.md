@@ -110,7 +110,64 @@ historical renderer-unit-test assertion expects `LocalLightGpuMeta` to be 32
 bytes while the unchanged public header asserts 48. It remains unfixed and is
 not used as a claim that the smoke binary itself cannot compile.
 
+## Authorized native historical attempt
+
+Supervisor message `msg-55fa5898a0d54a0e86e8e3be10694467` authorized fresh,
+task-owned historical source artifacts on the mounted Windows filesystem at
+`D:\matter-agent-artifacts\matter-engine-cpp\nimble-rapids-30\epoch8-230ea608\`,
+with each source directory named by its full commit OID. This permits a bounded
+test-only comparison and supersedes the earlier UNC execution gap. No mapping,
+`subst`, source adoption into the branch or canonical wrapper change was used.
+
+The [export receipt](../agent/evidence/2026-10-14-vt-provenance/native-attempt/export-receipt.json)
+records the source/tree OIDs, archive SHA256 and compressed extracted-file
+inventory. The baseline's 10,419 tracked files, including one symlink, passed
+blob-content and archive Git-mode comparison against `git ls-tree` before its
+build started. The inventory records extracted modes and symlink targets as well.
+The [export driver](../agent/evidence/2026-10-14-vt-provenance/export_native_pair.py)
+uses only immutable objects from the held repository and refuses an existing
+artifact root.
+
+From the baseline's actual native `D:` source-root working directory, the
+unchanged `tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests`
+ran with its resolved MSVC/SDK/Python/glslc toolchain, six build workers and a
+30-minute process-tree timeout. It **failed with exit 1 after 6.22 seconds** in
+CMake's basic C compiler check, before engine compilation:
+
+```text
+The object file directory ... has 241 characters.
+The maximum full path to an object file is 250 characters ...
+LINK : fatal error LNK1104: cannot open file
+'CMakeFiles\cmTC_fbc28.dir/intermediate.manifest'
+```
+
+The path-length warning is consistent with the manifest failure, but the exact
+environmental cause has not been independently isolated. Full
+[stdout](../agent/evidence/2026-10-14-vt-provenance/native-attempt/baseline-build/build.stdout.txt),
+[stderr](../agent/evidence/2026-10-14-vt-provenance/native-attempt/baseline-build/build.stderr.txt),
+[receipt](../agent/evidence/2026-10-14-vt-provenance/native-attempt/baseline-build/build-receipt.json)
+and CMake configure diagnostics are preserved beside the export receipt.
+
+The comparison stopped at that failure, as instructed. The move snapshot's
+concurrent export was terminated and preserved as an incomplete artifact; its
+partial inventory and [stopped-export receipt](../agent/evidence/2026-10-14-vt-provenance/native-attempt/stopped-export-receipt.json)
+record 4,824 complete files, 5,619 absent files and no mismatched present files.
+No second
+native build or smoke run was attempted, and the historical source/graph was
+not repaired or retried. No smoke executable or generated engine shaders exist
+to hash. The
+[paired result](../agent/evidence/2026-10-14-vt-provenance/native-attempt/native-pair-result.json)
+explicitly records all four planned runtime runs as unexecuted.
+
+The [current native host capture](../agent/evidence/2026-10-14-vt-provenance/native-attempt/native-host-before.txt)
+reports an RTX 4090 with NVIDIA 610.88 and no editor/CTest/Vulkan smoke process
+at capture time. The resolved toolchain receipt is retained. The optional
+SDK `vulkaninfo.exe` inventory command was unavailable; this is separately
+recorded, not replaced with the earlier RTX/Vulkan observations.
+
 No renderer forwarding repair is supported by the comparison so far. No production
-algorithm, smoke assertion, tolerance or skip changed. Native baseline execution
-and the disposition of the pre-existing fixture timing gap remain open for the
-supervisor; the original native failures remain failures.
+algorithm, smoke assertion, tolerance or skip changed. The native baseline
+experiment is blocked before engine compilation, so native failure provenance
+remains unverified. The concrete failure is reported once to the supervisor
+with a request for supported pause/release. This is not a static-only pass;
+the original native failures remain failures.
