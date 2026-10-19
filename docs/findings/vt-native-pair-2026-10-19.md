@@ -1,4 +1,68 @@
-# Historical VT native comparison: repeated build interruption
+# Historical VT native comparison: failures predate the graphics move
+
+Task `nimble-rapids-30`, claim epoch 16. **The VT and VT-RT smoke failures are
+pre-existing and not caused by the graphics producer move.** Pre-move dev
+`58289c187` and move commit `90a19c669` fail the same assertions, line for
+line, on the same host, toolchain and GPU, with zero validation errors on both:
+
+| Commit | `vt` | `vt-rt` |
+|---|---|---|
+| `58289c187` (pre-move) | exit 1, **7 failures**, 0 validation errors | exit 1, **12 failures**, 0 validation errors |
+| `90a19c669` (move) | exit 1, **7 failures**, 0 validation errors | exit 1, **12 failures**, 0 validation errors |
+
+The `FAIL:` / `validation errors` / `FAILURE(S)` lines are byte-identical
+between the commits for both modes. The only stdout differences are one
+frame-cost line (`vt`) and one GPU-zone timing line (`vt-rt`). Because the move
+did not introduce them, there is no forwarding/adapter regression to fix. The
+failures belong to the deferred VT work, not to this task. The baseline `vt`
+stats line shows the symptom: `pool=1/256 pinned=1 fills_total=0 queue=1
+requests_last=0`, meaning the pinned tail request is queued but no fill
+executes and the feedback pass emits no requests.
+
+## How the build interruption was avoided
+
+Epochs 14 and 15 lost the native build to `0xC000013A` (`STATUS_CONTROL_C_EXIT`;
+stderr `User interrupt` in 4abb). Epoch 16 used the **same unchanged**
+[`run_native_build.ps1`](../agent/evidence/2026-10-19-vt-native-pair/run_native_build.ps1)
+and [`run_native_smoke.ps1`](../agent/evidence/2026-10-19-vt-native-pair/run_native_smoke.ps1).
+The only difference was launching PowerShell from WSL detached from the
+caller's session and terminal: `setsid nohup powershell.exe ... < /dev/null`
+([driver](../agent/evidence/2026-10-19-vt-native-pair/epoch16/smoke.sh)). Both
+builds and all four smokes then ran to completion. This fits the earlier
+interrupts being a console Ctrl+C forwarded from the invoking WSL process group
+rather than anything in the build. It is a workaround, not a proven root cause.
+
+## Epoch-16 evidence
+
+All under [`epoch16/`](../agent/evidence/2026-10-19-vt-native-pair/epoch16/):
+
+- **Sources.** Baseline `D:\mv15-78a4\b` (the epoch-15 export) and a fresh
+  move tree `D:\mv15-78a4\m16`, extracted from the epoch-15 move archive. Its
+  SHA256 `8533667c...` equals a fresh `git archive 90a19c669`. After the builds,
+  `verify_tree.py` re-hashed every tracked path against `git ls-tree`:
+  10,419/10,419 (baseline) and 10,443/10,443 (move) match, including the one
+  symlink ([receipt](../agent/evidence/2026-10-19-vt-native-pair/epoch16/tree-verification.txt)).
+- **Builds.** Both run `tools/build-windows.ps1 -Config RelWithDebInfo -Target
+  vulkan_smoke_tests` with an identical toolchain (MSVC 14.44.35207, SDK
+  10.0.26100.0, Vulkan SDK 1.4.357.0). Baseline exit 0 in 356 s, move exit 0 in
+  423 s. Receipts, toolchain and gzipped stdout are preserved.
+- **Smokes.** RTX 4090, driver 610.88, Vulkan API 1.4.341. Executable SHA256:
+  baseline `3759695f...`, move `e1d9bf8b...`. Receipts, stdout and stderr are
+  preserved per run. stderr contains only the host's broken Epic overlay layer
+  manifests.
+
+## Unix `LocalLightGpuMeta` 32-vs-48 assertion
+
+This is also pre-existing and unrelated to the move. `vk_scene_renderer.h`
+asserts `sizeof(LocalLightGpuMeta) == 48` (three 16-byte lanes since
+`e9da6034` added the primary-tile fields). The Make-only
+`MatterEngine3/tests/vk_scene_renderer_tests.cpp:78` still asserted `== 32`, so
+that suite could not compile on any of the three commits checked. The test now
+asserts 48, matching the header. A GCC `-fsyntax-only` check against the real
+header accepts 48 and rejects 32. The full suite was not compiled, because
+this Linux host has no `glslc` for `shaders_gen/embedded_spirv.h`.
+
+## Epoch-15 record (superseded)
 
 Task `nimble-rapids-30`, claim epoch 15. The authorized native comparison is
 **blocked before compilation**. No new VT or VT-RT runtime result exists, and

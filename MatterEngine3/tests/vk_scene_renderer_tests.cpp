@@ -75,8 +75,8 @@ static void test_atmosphere_transaction_public_abi() {
 
 static void test_local_light_renderer_public_abi() {
     printf("\n[test_local_light_renderer_public_abi]\n");
-    static_assert(sizeof(viewer::LocalLightGpuMeta) == 32,
-                  "local-light metadata is two std430 lanes");
+    static_assert(sizeof(viewer::LocalLightGpuMeta) == 48,
+                  "local-light metadata is three std430 lanes");
     CHECK(offsetof(viewer::LocalLightGpuMeta, cell_size) == 16,
           "local-light floating index config begins at byte 16");
     viewer::LocalDirectLightingContract contract{};
