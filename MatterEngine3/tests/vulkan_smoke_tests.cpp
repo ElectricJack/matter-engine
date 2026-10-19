@@ -68,6 +68,14 @@ namespace {
 
 #include "vulkan_smoke_cpu_cases.inc"
 
+int set_smoke_environment(const char* name, const char* value) {
+#ifdef _WIN32
+    return _putenv_s(name, value);
+#else
+    return value[0] ? setenv(name, value, 1) : unsetenv(name);
+#endif
+}
+
 constexpr std::uint32_t kWaterForwardArtifactMaterial = 4u;
 constexpr std::uint32_t kWaterForwardAuthoredMaterial = 19u;
 
@@ -1727,10 +1735,10 @@ void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
     vulkan.test_clear_presentation_events();
     CHECK(vulkan.begin_frame(record_failure, error),
           error.empty() ? "begin record-failure presentation frame" : error.c_str());
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "record");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "record");
     CHECK(!vulkan.end_frame(record_failure, error),
           "record failure aborts presentation before the common plugin handoff");
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "");
     CHECK(!has_common_present(),
           "record failure has no common-present handoff");
 
@@ -1738,10 +1746,10 @@ void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
     vulkan.test_clear_presentation_events();
     CHECK(vulkan.begin_frame(submit_failure, error),
           error.empty() ? "begin submit-failure presentation frame" : error.c_str());
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "submit");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "submit");
     CHECK(!vulkan.end_frame(submit_failure, error),
           "submit failure aborts presentation before the common plugin handoff");
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "");
     CHECK(!has_common_present(),
           "submit failure has no common-present handoff");
 
@@ -1781,8 +1789,14 @@ void run_vulkan_only_handle_diagnostic(matter::VulkanDevice& vulkan) {
         // matter::win32_process_handle_count() no longer exists in the engine;
         // query the Win32 process handle count directly (windows.h reaches
         // this TU via VK_USE_PLATFORM_WIN32_KHR -> vulkan_win32.h).
+#ifdef _WIN32
         DWORD handle_count = 0;
         GetProcessHandleCount(GetCurrentProcess(), &handle_count);
+#else
+        const auto handle_count = std::distance(
+            std::filesystem::directory_iterator("/proc/self/fd"),
+            std::filesystem::directory_iterator{});
+#endif
         std::printf("HANDLE_DIAG %-38s count=%u result=0 sync=n/a\n", label,
                     static_cast<unsigned>(handle_count));
     };
@@ -3690,8 +3704,8 @@ void run_vt_path(matter::VulkanDevice& vulkan) {
     // Keep the physical pool to a single array layer; the production default
     // (8192 pages, ~0.9 GB) is pointless for a 2-chart fixture.
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -4416,8 +4430,8 @@ void run_vt_demand_cache_path(matter::VulkanDevice& vulkan) {
 void run_vt_feedback_visibility_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160, height = 160, atlas_edge = 512;
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -4599,8 +4613,8 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -5109,11 +5123,11 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
 // probe reads unoccluded tier-1 content — today's behaviour, unchanged.
 void test_vt_variant_context_storage_lifetime(matter::VulkanDevice& vulkan) {
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
-    _putenv_s("MATTER_VT_MAX_VARIANTS", "16");
-    _putenv_s("MATTER_VT_INDIRECTION_MB", "1");
-    _putenv_s("MATTER_VT_MESH_BUDGET_MB", "4");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_MAX_VARIANTS", "16");
+    set_smoke_environment("MATTER_VT_INDIRECTION_MB", "1");
+    set_smoke_environment("MATTER_VT_MESH_BUDGET_MB", "4");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -5225,9 +5239,9 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
-    _putenv_s("MATTER_VT_ENRICH_PER_FRAME", "2");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_ENRICH_PER_FRAME", "2");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -5782,8 +5796,8 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
     constexpr uint32_t width = 320;
     constexpr uint32_t height = 200;
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -7652,7 +7666,7 @@ static void rt_scenario_secondary_local_ris(
     if (!exhaustive) return;
     const auto set_mode = [](const char* value) {
 #ifdef _WIN32
-        _putenv_s("MATTER_RT_SECONDARY_LIGHT_SAMPLING", value ? value : "");
+        set_smoke_environment("MATTER_RT_SECONDARY_LIGHT_SAMPLING", value ? value : "");
 #else
         if (value) setenv("MATTER_RT_SECONDARY_LIGHT_SAMPLING", value, 1);
         else unsetenv("MATTER_RT_SECONDARY_LIGHT_SAMPLING");
@@ -10280,11 +10294,11 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
               flush_failure_error.find("EnvironmentBlock flush failure") !=
                   std::string::npos,
           "failed acquired-slot EnvironmentBlock flush keeps the previous published ping transactionally");
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "record");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "record");
     std::string abort_error;
     CHECK(!vulkan.end_frame(flush_failure_frame, abort_error),
           "abort the intentionally incomplete flush-failure frame");
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "");
     renderer.finish_ray_tracing_frame(flush_failure_frame.serial, false);
     vulkan.wait_idle();
     error.clear();
@@ -12694,7 +12708,7 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
 
     // Legacy walk (spec constant off): the same card silhouettes refraction
     // and its red albedo dominates the transmitted color.
-    _putenv_s("MATTER_RT_WALK_ALPHA_TEST", "0");
+    set_smoke_environment("MATTER_RT_WALK_ALPHA_TEST", "0");
     {
         viewer::VkSceneRenderer legacy(vulkan);
         CHECK(legacy.init(error),
@@ -12733,7 +12747,7 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
                   2.0f * legacy_center.raw_transmission.y,
               "rt-transmission: legacy walk silhouettes the red card (control)");
     }
-    _putenv_s("MATTER_RT_WALK_ALPHA_TEST", "");
+    set_smoke_environment("MATTER_RT_WALK_ALPHA_TEST", "");
 }
 
 void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
@@ -13507,11 +13521,11 @@ void run_raster_submission_fault(matter::VulkanDevice& vulkan) {
     CHECK(renderer.raster_attachments().hdr.image != VK_NULL_HANDLE,
           "completed raster submission exposes attachments");
 
-    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE",
+    set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE",
               "raster-submission");
     const bool rendered =
         renderer.render_gbuffer_and_composite(width, height, error);
-    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE", "");
+    set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE", "");
     CHECK(!rendered &&
               error.find("poisoned after partial GPU mutation") !=
                   std::string::npos &&
@@ -13931,7 +13945,7 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
             had_value[i] = true;
         }
 #ifdef _WIN32
-        _putenv_s(names[i], "0");
+        set_smoke_environment(names[i], "0");
 #else
         setenv(names[i], "0", 1);
 #endif
@@ -13941,7 +13955,7 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
     const bool initialized = renderer.init(error);
     for (size_t i = 0; i < 3; ++i) {
 #ifdef _WIN32
-        _putenv_s(names[i], had_value[i] ? previous[i].c_str() : "");
+        set_smoke_environment(names[i], had_value[i] ? previous[i].c_str() : "");
 #else
         if (had_value[i]) setenv(names[i], previous[i].c_str(), 1);
         else unsetenv(names[i]);
@@ -15729,7 +15743,7 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
 
 bool run_retention_fault(matter::VulkanDevice& vulkan,
                          const std::string& phase, std::string& error) {
-    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", phase.c_str());
+    set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", phase.c_str());
     bool result = false;
     if (phase == "staging-upload") {
         matter::VkBufferResource buffer;
@@ -15791,16 +15805,16 @@ bool run_retention_fault(matter::VulkanDevice& vulkan,
             relocated.reserve(relocated.capacity() + 1);
             CHECK(&relocated.front() != original_address,
                   "bound buffer owner relocates after descriptor write");
-            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
+            set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
                       "staging-upload");
             CHECK(matter::dispatch_compute(vulkan, pipeline, 1, 1, 1, error),
                   "fault injection ignores a nonmatching submit phase");
-            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
+            set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
                       phase.c_str());
             result = matter::dispatch_compute(vulkan, pipeline, 1, 1, 1, error);
         }
     }
-    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "");
+    set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "");
     return result;
 }
 
@@ -15880,10 +15894,10 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
           "no validation errors before outlive device teardown");
     if (force_unproven_cleanup) {
         matter::detail::DeviceLifetimeAccess::reset_test_destroy_call_count();
-        _putenv_s("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "1");
+        set_smoke_environment("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "1");
     }
     vulkan.reset();
-    _putenv_s("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "");
+    set_smoke_environment("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "");
     moved_buffer.reset();
     image_owner.reset();
     CHECK(observed_image.expired(), "detached image ownership releases after device teardown");
@@ -16259,32 +16273,52 @@ static void run_gi_firefly_path(matter::VulkanDevice& vulkan) {
 }
 
 #include "sparse_voxel_vk_tests.h"
+#include "vulkan_quick_smoke.h"
+
+void configure_quick_smoke_resources() {
+    // Apply before device/driver initialization, including direct launches.
+    // Explicit integration modes retain their original resource policies.
+    set_smoke_environment("LP_NUM_THREADS", "1");
+    set_smoke_environment("MESA_GLTHREAD", "false");
+    set_smoke_environment("MATTER_VK_STATIC_RESERVE_CLUSTER_MB", "1");
+    set_smoke_environment("MATTER_VK_STATIC_RESERVE_VERTEX_MB", "1");
+    set_smoke_environment("MATTER_VK_STATIC_RESERVE_INDEX_MB", "1");
+    set_smoke_environment("MATTER_VK_CPU_RESERVE_VERTEX_MB", "0");
+    set_smoke_environment("MATTER_VK_CPU_RESERVE_INDEX_MB", "0");
+    set_smoke_environment("MATTER_IMPOSTOR_CELL_PX", "16");
+}
 
 int main() {
+    const auto smoke_start = std::chrono::steady_clock::now();
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     if (startup_smoke_mode && std::string(startup_smoke_mode) == "cpu") {
         run_vulkan_cpu_contract_tests();
         return check_summary();
     }
-    test_atmosphere_timing_contract();
-    test_water_forward_perf_evidence_contract();
-    test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
-    test_screenshot_completion_marker_is_nonempty();
-    const bool animation_skin_only = startup_smoke_mode &&
-        (std::string(startup_smoke_mode) == "animation-skin" ||
-         std::string(startup_smoke_mode) == "animation-skin-faults");
-    if (!animation_skin_only) {
-        test_vulkan_lighting_override_contract();
-        test_viewer_lighting_controls();
-        run_vulkan_gi_math_tests();
-        run_raster_mesh_material_contract_tests();
-        run_rt_lod_payload_contract_tests();
-        run_ray_tracing_capability_contract_tests();
-        run_vulkan_instance_cache_tests();
-        run_vulkan_temporal_tests();
-        run_vulkan_gi_temporal_sequence_tests();
-        run_streamline_bridge_fallback_tests();
-        run_dlss_bridge_contract_tests();
+    const bool quick = !startup_smoke_mode || !startup_smoke_mode[0] ||
+                       std::string(startup_smoke_mode) == "default";
+    if (quick) configure_quick_smoke_resources();
+    if (!quick) {
+        test_atmosphere_timing_contract();
+        test_water_forward_perf_evidence_contract();
+        test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
+        test_screenshot_completion_marker_is_nonempty();
+        const bool animation_skin_only = startup_smoke_mode &&
+            (std::string(startup_smoke_mode) == "animation-skin" ||
+             std::string(startup_smoke_mode) == "animation-skin-faults");
+        if (!animation_skin_only) {
+            test_vulkan_lighting_override_contract();
+            test_viewer_lighting_controls();
+            run_vulkan_gi_math_tests();
+            run_raster_mesh_material_contract_tests();
+            run_rt_lod_payload_contract_tests();
+            run_ray_tracing_capability_contract_tests();
+            run_vulkan_instance_cache_tests();
+            run_vulkan_temporal_tests();
+            run_vulkan_gi_temporal_sequence_tests();
+            run_streamline_bridge_fallback_tests();
+            run_dlss_bridge_contract_tests();
+        }
     }
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.
@@ -16299,10 +16333,11 @@ int main() {
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_VISIBLE, quick ? GLFW_FALSE : GLFW_TRUE);
     GLFWwindow* window =
-        glfwCreateWindow(320, 200, "vk-smoke", nullptr, nullptr);
-    CHECK(window != nullptr, "create visible GLFW window");
+        glfwCreateWindow(quick ? 256 : 320, quick ? 256 : 200,
+                         "vk-smoke", nullptr, nullptr);
+    CHECK(window != nullptr, "create GLFW smoke window");
 
     const char* requested_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     if (requested_smoke_mode &&
@@ -16312,7 +16347,7 @@ int main() {
          // "no enricher" path is to bring the device up without it.
          std::string(requested_smoke_mode) == "vt-enrich-nort" ||
          std::string(requested_smoke_mode) == "water-field-nort")) {
-        _putenv_s("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE", "1");
+        set_smoke_environment("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE", "1");
     }
 
     std::string error;
@@ -16321,14 +16356,32 @@ int main() {
     CHECK(vulkan != nullptr, error.empty() ? "create Vulkan device" : error.c_str());
 
     if (vulkan) {
+        if (quick) {
+            quick_smoke::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            const auto memory = matter::process_memory_stats();
+            const double seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - smoke_start).count();
+            std::printf("quick smoke budget: peak_rss_bytes=%llu elapsed_seconds=%.3f\n",
+                        static_cast<unsigned long long>(memory.peak_working_set_bytes),
+                        seconds);
+            CHECK(memory.peak_working_set_bytes > 0 &&
+                      memory.peak_working_set_bytes < 256ull * 1024ull * 1024ull,
+                  "quick smoke peak resident memory is below 256 MiB");
+            CHECK(seconds < 10.0, "quick smoke completes in under 10 seconds");
+            return check_summary();
+        }
         {
             viewer::VkSceneRenderer device_bridge_renderer(*vulkan);
             CHECK(device_bridge_renderer.test_uses_device_streamline_bridge(),
                   "scene renderer uses the Vulkan device-owned Streamline bridge");
         }
         run_streamline_presentation_funnel_tests(*vulkan);
-        if (!requested_smoke_mode ||
-            std::string(requested_smoke_mode) == "default")
+        if (std::string(requested_smoke_mode) == "full")
             run_display_transform_tests(*vulkan);
         CHECK(!vulkan->dlss_available(),
               "Vulkan device reports DLSS unavailable without Streamline");
