@@ -147,6 +147,9 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [Historical VT native comparison](findings/vt-native-pair-2026-10-19.md)
+  preserves the repeated native baseline build interruption, exact source
+  provenance and passing Linux checks; all four paired smokes remain unexecuted.
 - [Static-default integration candidate validation](findings/static-default-candidate-validation-2026-09-30.md)
   records the merged main/VG candidate, restored population, native checks,
   and serial captures, with loaded-coverage and visual-parity limits.
