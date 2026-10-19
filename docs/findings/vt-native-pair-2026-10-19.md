@@ -3,53 +3,72 @@
 Task `nimble-rapids-30`, claim epoch 16. **The VT and VT-RT smoke failures are
 pre-existing and not caused by the graphics producer move.** Pre-move dev
 `58289c187` and move commit `90a19c669` fail the same assertions, line for
-line, on the same host, toolchain and GPU, with zero validation errors on both:
+line, on the same host, toolchain and GPU, with zero validation errors on both.
+The authoritative run (epoch 17 below) built both trees through the corrected
+bounded runner from `azure-lantern-65`; it reproduces the earlier epoch-16
+result exactly:
 
 | Commit | `vt` | `vt-rt` |
 |---|---|---|
 | `58289c187` (pre-move) | exit 1, **7 failures**, 0 validation errors | exit 1, **12 failures**, 0 validation errors |
 | `90a19c669` (move) | exit 1, **7 failures**, 0 validation errors | exit 1, **12 failures**, 0 validation errors |
 
-The `FAIL:` / `validation errors` / `FAILURE(S)` lines are byte-identical
-between the commits for both modes. The only stdout differences are one
-frame-cost line (`vt`) and one GPU-zone timing line (`vt-rt`). Because the move
-did not introduce them, there is no forwarding/adapter regression to fix. The
-failures belong to the deferred VT work, not to this task. The baseline `vt`
-stats line shows the symptom: `pool=1/256 pinned=1 fills_total=0 queue=1
-requests_last=0`, meaning the pinned tail request is queued but no fill
-executes and the feedback pass emits no requests.
+The `FAIL:` lines are byte-identical between the two commits for both modes,
+and identical to the epoch-16 runs. Because the move did not introduce them,
+there is no forwarding/adapter regression to fix. The failures belong to the
+deferred VT work, not to this task. The baseline `vt` stats line shows the
+symptom: `pool=1/256 pinned=1 fills_total=0 queue=1 requests_last=0`, meaning
+the pinned tail request is queued but no fill executes and the feedback pass
+emits no requests.
 
-## How the build interruption was avoided
+## Epoch-17 run with the bounded runner (authoritative)
+
+Branch merges `aq/epic/fix-repeated-native-wrapper-interruption-before-cmake-for`
+(`aa493370`, see [native wrapper interruption](native-wrapper-interruption-2026-10-19.md)).
+Evidence is under [`epoch17/`](../agent/evidence/2026-10-19-vt-native-pair/epoch17/):
+
+- **Sources.** Fresh `git archive` of each commit into a new `D:\nr17\{b,m}`.
+  Archive SHA256s `e5245b25...` (baseline) and `8533667c...` (move) equal the
+  epoch-15 exports and the azure-lantern-65 baseline
+  ([hashes](../agent/evidence/2026-10-19-vt-native-pair/epoch17/archive-sha256.txt)).
+  `verify_tree.py` re-hashed every tracked path: 10,419/10,419 and
+  10,443/10,443 match ([receipt](../agent/evidence/2026-10-19-vt-native-pair/epoch17/tree-verification.txt)).
+  No earlier tree, build directory or binary was reused.
+- **Builds.** `tools/run-windows-build-bounded.ps1` (blob `ff3f023f`, copied
+  unchanged to `D:\nr17\runner`) ran each tree's own unchanged
+  `tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests`
+  with `CreateNoWindow`, a 1800 s bound and 6 workers
+  ([driver](../agent/evidence/2026-10-19-vt-native-pair/epoch17/builds.sh)).
+  Baseline exit 0 in 352 s, move exit 0 in 348 s, empty stderr. Toolchain from
+  `-PreflightOnly` through the same runner: VS 2022 Community, MSVC 14.44.35207,
+  SDK 10.0.26100.0, Vulkan SDK 1.4.357.0 ([preflight](../agent/evidence/2026-10-19-vt-native-pair/epoch17/e17-preflight/)).
+- **Smokes.** [`run_native_smoke_windowless.ps1`](../agent/evidence/2026-10-19-vt-native-pair/epoch17/run_native_smoke_windowless.ps1)
+  keeps the epoch-15/16 smoke receipt, `MATTER_VK_SMOKE_MODE`, `VK_LAYER_PATH`
+  and 240 s bound, but launches the executable like the bounded runner
+  (`CreateNoWindow`, stdin closed) instead of `Start-Process`. RTX 4090, driver
+  610.88. Executable SHA256: baseline `fb7aa461...`, move `5685bae7...` (MSVC
+  output embeds build paths, so these differ from epoch 16's binaries).
+
+## Epoch-16 run (corroborating)
 
 Epochs 14 and 15 lost the native build to `0xC000013A` (`STATUS_CONTROL_C_EXIT`;
 stderr `User interrupt` in 4abb). Epoch 16 used the **same unchanged**
 [`run_native_build.ps1`](../agent/evidence/2026-10-19-vt-native-pair/run_native_build.ps1)
-and [`run_native_smoke.ps1`](../agent/evidence/2026-10-19-vt-native-pair/run_native_smoke.ps1).
-The only difference was launching PowerShell from WSL detached from the
-caller's session and terminal: `setsid nohup powershell.exe ... < /dev/null`
+and [`run_native_smoke.ps1`](../agent/evidence/2026-10-19-vt-native-pair/run_native_smoke.ps1),
+launched from WSL with `setsid nohup powershell.exe ... < /dev/null`
 ([driver](../agent/evidence/2026-10-19-vt-native-pair/epoch16/smoke.sh)). Both
-builds and all four smokes then ran to completion. This fits the earlier
-interrupts being a console Ctrl+C forwarded from the invoking WSL process group
-rather than anything in the build. It is a workaround, not a proven root cause.
-
-## Epoch-16 evidence
-
-All under [`epoch16/`](../agent/evidence/2026-10-19-vt-native-pair/epoch16/):
+builds and all four smokes completed. This was a workaround; azure-lantern-65
+later identified the cause as the visible console `Start-Process` creates, and
+fixed it. Evidence is under [`epoch16/`](../agent/evidence/2026-10-19-vt-native-pair/epoch16/):
 
 - **Sources.** Baseline `D:\mv15-78a4\b` (the epoch-15 export) and a fresh
-  move tree `D:\mv15-78a4\m16`, extracted from the epoch-15 move archive. Its
-  SHA256 `8533667c...` equals a fresh `git archive 90a19c669`. After the builds,
-  `verify_tree.py` re-hashed every tracked path against `git ls-tree`:
-  10,419/10,419 (baseline) and 10,443/10,443 (move) match, including the one
-  symlink ([receipt](../agent/evidence/2026-10-19-vt-native-pair/epoch16/tree-verification.txt)).
-- **Builds.** Both run `tools/build-windows.ps1 -Config RelWithDebInfo -Target
-  vulkan_smoke_tests` with an identical toolchain (MSVC 14.44.35207, SDK
-  10.0.26100.0, Vulkan SDK 1.4.357.0). Baseline exit 0 in 356 s, move exit 0 in
-  423 s. Receipts, toolchain and gzipped stdout are preserved.
-- **Smokes.** RTX 4090, driver 610.88, Vulkan API 1.4.341. Executable SHA256:
-  baseline `3759695f...`, move `e1d9bf8b...`. Receipts, stdout and stderr are
-  preserved per run. stderr contains only the host's broken Epic overlay layer
-  manifests.
+  move tree `D:\mv15-78a4\m16` from the epoch-15 move archive (SHA256
+  `8533667c...`). `verify_tree.py` matched 10,419/10,419 and 10,443/10,443
+  tracked paths ([receipt](../agent/evidence/2026-10-19-vt-native-pair/epoch16/tree-verification.txt)).
+- **Builds.** Same command and toolchain as epoch 17. Baseline exit 0 in 356 s,
+  move exit 0 in 423 s.
+- **Smokes.** Executable SHA256: baseline `3759695f...`, move `e1d9bf8b...`.
+  stderr contains only the host's broken Epic overlay layer manifests.
 
 ## Unix `LocalLightGpuMeta` 32-vs-48 assertion
 
