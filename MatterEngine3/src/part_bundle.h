@@ -7,6 +7,7 @@
 #include "version_vector.h"
 #include "part_asset_v2.h"   // fnv1a64, replace_file_atomic
 #include "matter/log.h"
+#include "matter/fixture_io.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -107,6 +108,28 @@
 // incidental.
 
 namespace part_bundle {
+
+// Bind only the existing bundle byte boundary for this operation. Each worker
+// constructs its own scope from an explicitly captured/owned configuration;
+// a newly started thread always begins in production filesystem mode. This is
+// not source/file interception and never bypasses a bundle codec or merge lock.
+class ScopedStorage {
+    inline static thread_local std::shared_ptr<matter::CacheByteStorage> active_;
+    std::shared_ptr<matter::CacheByteStorage> previous_;
+public:
+    explicit ScopedStorage(std::shared_ptr<matter::CacheByteStorage> storage)
+        : previous_(std::move(active_)) { active_ = std::move(storage); }
+    ~ScopedStorage() { active_ = std::move(previous_); }
+    ScopedStorage(const ScopedStorage&) = delete;
+    ScopedStorage& operator=(const ScopedStorage&) = delete;
+    static const std::shared_ptr<matter::CacheByteStorage>& current() { return active_; }
+};
+
+inline bool exists(const std::string& path) {
+    if (const auto& storage = ScopedStorage::current()) return storage->exists(path);
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) && !ec;
+}
 
 // Optional thread-local native profiling seam. Null is the production default:
 // no clock reads, allocation, logging, or bake_trace link dependency. The callback
@@ -288,7 +311,41 @@ inline void ensure_parent_dir(const std::string& path) {
 #endif
 }
 
+// One immutable read generation, including all bounded prefix seeks. The
+// filesystem path retains the original FILE read/seek behavior.
+class PrefixReader {
+    FILE* file_ = nullptr;
+    matter::CacheByteStorage::ReadHandle bytes_;
+    uint64_t position_ = 0;
+public:
+    explicit PrefixReader(const std::string& path) {
+        if (const auto& storage = ScopedStorage::current()) bytes_ = storage->open(path);
+        else file_ = std::fopen(path.c_str(), "rb");
+    }
+    ~PrefixReader() { if (file_) std::fclose(file_); }
+    bool valid() const { return file_ || bytes_; }
+    bool seek(uint64_t offset) {
+        if (file_) return std::fseek(file_, static_cast<long>(offset), SEEK_SET) == 0;
+        position_ = offset;
+        return bool(bytes_);
+    }
+    size_t read(void* out, size_t length) {
+        if (file_) return std::fread(out, 1, length, file_);
+        if (!bytes_ || position_ > bytes_->size()) return 0;
+        const size_t count = std::min(length, bytes_->size() - static_cast<size_t>(position_));
+        if (count) std::memcpy(out, bytes_->data() + position_, count);
+        position_ += count;
+        return count;
+    }
+};
+
 inline bool read_whole_file(const std::string& path, std::vector<uint8_t>& out) {
+    if (const auto& storage = ScopedStorage::current()) {
+        const auto bytes = storage->open(path);
+        if (!bytes) return false;
+        out = *bytes;
+        return true;
+    }
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
     std::fseek(f, 0, SEEK_END);
@@ -384,6 +441,8 @@ inline std::vector<uint8_t> serialize(uint64_t resolved_hash,
 }
 
 inline bool write_atomic(const std::string& path, const std::vector<uint8_t>& bytes) {
+    if (const auto& storage = ScopedStorage::current())
+        return storage->publish(path, bytes);
     WriteTimer timer(path.c_str());
     ensure_parent_dir(path);
     const std::string tmp = path + ".tmp";
@@ -453,6 +512,7 @@ class ScopedReadSnapshot {
     inline static thread_local ScopedReadSnapshot* active_ = nullptr;
     ScopedReadSnapshot* previous_ = nullptr;
     std::string path_;
+    std::shared_ptr<matter::CacheByteStorage> storage_ = nullptr;
     uint64_t resolved_hash_ = 0;
     bool valid_ = false;
     bool active_scope_ = false;
@@ -461,7 +521,7 @@ public:
     size_t file_bytes = 0;
     mutable size_t reused_reads = 0;
     ScopedReadSnapshot(const std::string& path, uint64_t expected_hash)
-        : path_(path) {
+        : path_(path), storage_(ScopedStorage::current()) {
         std::vector<uint8_t> bytes;
         valid_ = read_whole_file(path, bytes) && parse(bytes, expected_hash, sections_);
         file_bytes = bytes.size();
@@ -483,10 +543,13 @@ public:
         if (*link == this) *link = previous_;
         active_scope_ = false;
         std::vector<Section>().swap(sections_);
+        storage_.reset();
     }
     static const ScopedReadSnapshot* for_path(const std::string& path) {
         for (auto* scope = active_; scope; scope = scope->previous_)
-            if (scope->path_ == path) { ++scope->reused_reads; return scope; }
+            if (scope->path_ == path && scope->storage_.get() == ScopedStorage::current().get()) {
+                ++scope->reused_reads; return scope;
+            }
         return nullptr;
     }
     bool valid_for(uint64_t expected_hash) const {
@@ -625,11 +688,10 @@ inline bool read_section_prefix(const std::string& bundle_path,
         }
         return false;
     }
-    FILE* f = std::fopen(bundle_path.c_str(), "rb");
-    if (!f) return false;
+    detail::PrefixReader input(bundle_path);
+    if (!input.valid()) return false;
     std::vector<uint8_t> head(kHeaderBytes);
-    if (std::fread(head.data(), 1, head.size(), f) != head.size()) {
-        std::fclose(f);
+    if (input.read(head.data(), head.size()) != head.size()) {
         return false;
     }
     size_t at = 0;
@@ -641,16 +703,14 @@ inline bool read_section_prefix(const std::string& bundle_path,
         get(head, at, dir_hash) && magic == kMagic &&
         fmt == kBundleFormatVersion && digest == matter_version::digest() &&
         rhash == resolved_hash && count <= 64;
-    if (!head_ok) { std::fclose(f); return false; }
+    if (!head_ok) { return false; }
 
     const size_t dir_bytes = static_cast<size_t>(count) * kEntryBytes;
     std::vector<uint8_t> dir(dir_bytes);
-    if (dir_bytes && std::fread(dir.data(), 1, dir_bytes, f) != dir_bytes) {
-        std::fclose(f);
+    if (dir_bytes && input.read(dir.data(), dir_bytes) != dir_bytes) {
         return false;
     }
     if (part_asset::fnv1a64(dir.data(), dir_bytes) != dir_hash) {
-        std::fclose(f);
         return false;
     }
     at = 0;
@@ -662,7 +722,6 @@ inline bool read_section_prefix(const std::string& bundle_path,
         uint64_t off = 0, len = 0, content = 0;
         if (!get(dir, at, entry_tag) || !get(dir, at, flags) || !get(dir, at, off) ||
             !get(dir, at, len) || !get(dir, at, content)) {
-            std::fclose(f);
             return false;
         }
         // The same strictly-ascending rule parse() enforces, for the same
@@ -671,23 +730,20 @@ inline bool read_section_prefix(const std::string& bundle_path,
         // rejected the whole bundle, so the cheap path and the real path could
         // disagree about a malformed directory.
         if (i > 0 && entry_tag <= previous_tag) {
-            std::fclose(f);
             return false;
         }
         previous_tag = entry_tag;
         if (entry_tag == tag) { offset = off; length = len; found = true; }
     }
-    if (!found || offset < kHeaderBytes + dir_bytes) { std::fclose(f); return false; }
+    if (!found || offset < kHeaderBytes + dir_bytes) { return false; }
     full_length_out = length;
     const size_t want = static_cast<size_t>(
         length < static_cast<uint64_t>(max_bytes) ? length : max_bytes);
-    if (std::fseek(f, static_cast<long>(offset), SEEK_SET) != 0) {
-        std::fclose(f);
+    if (!input.seek(offset)) {
         return false;
     }
     out.resize(want);
-    const size_t got = want ? std::fread(out.data(), 1, want, f) : 0;
-    std::fclose(f);
+    const size_t got = want ? input.read(out.data(), want) : 0;
     out.resize(got);
     return got == want;
 }
@@ -705,6 +761,8 @@ inline bool remove_section(const std::string& bundle_path, uint64_t resolved_has
                    sections.end());
     if (sections.size() == before) return true;
     if (sections.empty()) {
+        if (const auto& storage = ScopedStorage::current())
+            return storage->erase(bundle_path);
         std::remove(bundle_path.c_str());
         return true;
     }

@@ -821,15 +821,21 @@ void test_input_validation() {
 } // namespace
 
 int main() {
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const std::string root = make_sandbox("sandbox/obj_export", {});
+#endif
 
     test_number_formatting();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_round_trip(root);
+#endif
     test_texture_content();
     test_uv_to_texel_agreement();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_determinism(root);
     test_artifact_export(root);
     test_texture_format_reservation(root);
+#endif
     test_input_validation();
 
     if (g_failures == 0) printf("All obj export tests passed\n");

@@ -290,7 +290,7 @@ Supported native Windows toolchain, resolved by the repository toolchain module:
 .\libs\ProceduralGeometry\build-windows.ps1 -Config RelWithDebInfo -Test
 ```
 
-Nine CTests (eight with modifiers OFF) cover functional fixtures, native CSG comparison, a direct recipe,
+Fourteen CTests (twelve with modifiers OFF) cover functional fixtures, native CSG comparison, a direct recipe,
 query/modifier processing, allocation failures and dependency independence. Topology, prototype identity and material bindings are
 exact. Position/normal/UV checks use this fixture suite's preselected absolute plus relative
 tolerance, `1e-6 + 1e-6 * abs(expected)`; coordinates and absolute position
@@ -300,6 +300,71 @@ the same predeclared absolute/relative tolerance; normal components use `2e-3`
 absolute plus `1e-6` relative. Nondegenerate oriented triangle sequences on the
 matched lattice must agree exactly in count and within those coordinate
 tolerances; welded vertex indices are intentionally replaced by triangle soup.
+
+### Seeded properties and opt-in fuzzing
+
+The five `matter_geometry_properties_*` CTests have a five-second timeout each.
+They generate small owned recipes and meshes entirely in memory, using fixed
+xorshift seeds; no corpus, engine cache, script host or disk asset is needed.
+Assertions use explicit runtime checks even in Release builds. Run just these
+checks with `ctest --test-dir /tmp/matter-primitive-geometry -L property --output-on-failure -j 1`.
+
+Groups 0..4 cover primitives and mirrored placements; profiles, concavity,
+holes and extrusions; ordered hard/smooth CSG and CPU marching cubes; batched
+ray/closest queries; and simplify/smooth plus the canonical error-based LOD
+decimator. Oracles check contract validation, bounds, analytic cap areas and
+box query distances, deterministic output, retained attributes and identities,
+atomic errors, and bit-identical locked terrain borders. Closed fixtures weld
+positions within 2e-5 metres to accommodate trig seams, then require opposing
+edge pairs, a connected degree-two vertex link, and positive signed volume.
+Fixtures have edges well above that tolerance. This is a topology check on
+these generated fixtures, not a claim that arbitrary marching-cubes ambiguity
+or arbitrary LOD error is resolved. The QEM error threshold is not a measured
+surface-distance guarantee.
+
+Failures print the exact group and seed; replay one case with:
+
+```sh
+/tmp/matter-primitive-geometry/matter_geometry_property_tests 0 0x51a7c0de
+```
+
+The properties found an inward side fan when `cappedCone`'s second endpoint
+is the apex. Its winding now matches the outward base cap; both apex branches
+and closed manifold orientation are covered by the primitive schedule.
+
+For longer deterministic campaigns, configure with
+`-DMATTER_GEOMETRY_FUZZING=ON`. This builds `matter_geometry_fuzz` but never
+adds it to CTest. Arguments are iteration count, starting uint32 seed, and an
+optional fixed group (otherwise it cycles through all available groups):
+
+```sh
+/tmp/matter-primitive-geometry/matter_geometry_fuzz 10000 0x51a7c0de
+```
+
+Clang's libFuzzer is separately enabled by `MATTER_GEOMETRY_LIBFUZZER`, which
+requires `MATTER_GEOMETRY_FUZZING`. Both are OFF by default. It instruments
+the geometry algorithms, contract validators and harness with ASan/UBSan;
+undefined-behaviour reports stop the process. The first input byte selects a
+group and the remaining bytes hash to its seed. Lengths/extents are bounded,
+so fuzz bytes cannot request unbounded allocations or grids. LibFuzzer retains
+the failing input on an invariant violation as well as on a sanitizer crash.
+
+```sh
+cmake -S libs/ProceduralGeometry -B /tmp/matter-geometry-fuzz -G Ninja \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DMATTER_GEOMETRY_FUZZING=ON -DMATTER_GEOMETRY_LIBFUZZER=ON
+cmake --build /tmp/matter-geometry-fuzz -j 2
+ctest --test-dir /tmp/matter-geometry-fuzz -L property --output-on-failure -j 1
+/tmp/matter-geometry-fuzz/matter_geometry_libfuzzer \
+  -seed=17 -max_len=32 -timeout=5 -max_total_time=300
+```
+
+`MATTER_GEOMETRY_MODIFIERS=OFF` omits group 4 from both the fast schedule and
+fuzz dispatch. The standalone harness also works with GNU/MSVC without
+libFuzzer. For GNU sanitizer campaigns, supply `-fsanitize=address,undefined
+-fno-sanitize-recover=undefined -fno-omit-frame-pointer` through the CMake
+C/C++ flags and `-fsanitize=address,undefined` through the executable linker flags.
 
 | Fixture | Recorded expectation |
 | --- | --- |

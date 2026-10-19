@@ -90,6 +90,18 @@ pass for native output.
 
 ## Demo
 
+The `matter_web_demo` CMake target writes a standalone static HTTP directory at
+`<build>/demo-bundle/`. It contains the compiled runtime/viewer, real WASM,
+vendored three.js and its license, authoring SDK, contract utilities and the
+contract example used by the fixture picker. No source checkout, editor caches,
+world data, CDN or package install is needed to run it. Copy the entire directory
+and serve it with any static HTTP server (module workers cannot run from `file:`):
+
+```sh
+python3 -m http.server 8080 --directory /tmp/matter-web-viewer/demo-bundle
+# Open http://localhost:8080/ (also works under a hosting subdirectory).
+```
+
 `demo/index.html` loads the compiled runtime and viewer from the repository
 layout. Serve them with the test runner, which maps the compiled outputs and
 the WASM module:
@@ -155,10 +167,57 @@ cmake --build /tmp/matter-web-viewer --parallel 1
 ctest --test-dir /tmp/matter-web-viewer --output-on-failure --parallel 1
 ```
 
+Build the real module first with the pinned binding toolchain:
+
+```sh
+python3 bindings/geometry-c/wasm/build-smoke.py --emsdk /home/jkern/emsdk \
+  --build-dir /tmp/matter-web-wasm
+```
+
+Alternatively configure this viewer CMake root with the pinned Emscripten
+toolchain, set `EM_CONFIG`/SDK Node on PATH as described in the runtime README,
+and omit `MATTER_WEB_WASM_MODULE`. That builds the geometry WASM and the demo
+bundle together. With `BUILD_TESTING=OFF`, the viewer library can still be built
+without WASM; producing the demo requires either Emscripten or an existing real
+module.
+
 The CMake root compiles the viewer and, for the demo and tests only, the
 runtime into its binary directory. It registers the type checks and the
 browser run, and edits no central manifest. `MATTER_WEB_TEST_BROWSER`
 defaults to `/opt/google/chrome/chrome`.
+
+`matter_web_demo_smoke` loads the bundle's root entry point in headless Chromium,
+generates the default prop in a WASM worker and checks that the canvas contains
+triangles and non-background pixels. CTest enforces a ten-second total timeout;
+the runner also rejects a successful smoke taking ten seconds or more. Run only
+this fast check after building:
+
+```sh
+ctest --test-dir /tmp/matter-web-viewer -R '^matter_web_demo_smoke$' --output-on-failure
+```
+
+`matter_web_demo_bundle` runs all demo fixtures, parameter/seed controls,
+fallback/error handling, repeated GPU allocation checks and disposal against
+that same bundle, and saves canvas screenshots plus a full demo UI screenshot.
+Both checks serve only the bundle beneath `/demo/`, reject HTTP/page errors and
+requests outside that prefix, and require an actual WASM download. The AQ entry
+point for the fast check is:
+
+```sh
+MATTER_WEB_BUNDLE_DIR=/tmp/matter-web-viewer/demo-bundle \
+MATTER_WEB_TEST_PYTHON=/path/to/python-with-playwright \
+  aq test integrations/web-procedural/viewer/tests/test_demo_bundle.py -q
+```
+
+The [2026-10-13 bundle evidence](evidence/2026-10-13-demo-bundle.json) records
+all eight fixtures and controls with no page/HTTP errors or external requests.
+The [smoke evidence](evidence/2026-10-13-demo-smoke.json) records a generated
+44-triangle prop with 17.5% canvas coverage; its CTest process took 3.77 seconds.
+The [screenshots](evidence/2026-10-13-demo-screenshots/) include all fixtures and
+the full demo UI. [WASM build](evidence/2026-10-13-wasm.json) and
+[adapter browser](evidence/2026-10-13-browser.json) evidence retain the clean
+pinned build and existing fixture checks. These are Chromium/SwiftShader
+measurements, not native GPU or other-browser performance claims.
 
 `tests/browser_tests.py` serves the repository from a local HTTP server and runs
 real Chromium. WebGL uses ANGLE SwiftShader, so pixels do not depend on the

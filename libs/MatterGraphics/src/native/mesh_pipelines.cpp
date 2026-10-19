@@ -12,7 +12,7 @@ bool fail_vk(const char* operation, VkResult result, std::string& error) {
 }
 bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool wireframe_available,
     const RasterShaderLoader& create_shader_module, const RasterPipelineCreator& create_pipeline,
-    MeshRasterPipelines& output, std::string& error) {
+    MeshRasterPipelines& output, std::string& error, bool uniform_pbr_only) {
     VkShaderModule raster_vertex = VK_NULL_HANDLE;
     VkShaderModule skinned_raster_vertex = VK_NULL_HANDLE;
     VkShaderModule raster_fragment = VK_NULL_HANDLE;
@@ -49,14 +49,20 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
         VkBool32 connected = VK_TRUE;
         VkBool32 work = VK_FALSE;
         int32_t profile_mode = 0;
+        VkBool32 uniform_pbr = VK_FALSE;
     } specialization_data;
     const VkSpecializationMapEntry specialization_entries[] = {
         {0, offsetof(GbufferSpecialization, connected), sizeof(VkBool32)},
         {1, offsetof(GbufferSpecialization, work), sizeof(VkBool32)},
-        {2, offsetof(GbufferSpecialization, profile_mode), sizeof(int32_t)}};
+        {2, offsetof(GbufferSpecialization, profile_mode), sizeof(int32_t)},
+        {3, offsetof(GbufferSpecialization, uniform_pbr), sizeof(VkBool32)}};
     const VkSpecializationInfo specialization{
-        3, specialization_entries, sizeof(specialization_data), &specialization_data};
-    bool use_specialization = false;
+        4, specialization_entries, sizeof(specialization_data), &specialization_data};
+    // The graphics adapter admits only uniform opaque PBR materials and no
+    // charts, impostors or water fields. Specialize those absent input domains
+    // out of the same shader; native scene owners retain the full default.
+    specialization_data.uniform_pbr = uniform_pbr_only ? VK_TRUE : VK_FALSE;
+    bool use_specialization = uniform_pbr_only;
     if (pom_path && std::strcmp(pom_path, "chart_only") == 0) {
         specialization_data.connected = VK_FALSE;
         use_specialization = true;

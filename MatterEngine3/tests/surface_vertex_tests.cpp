@@ -1,9 +1,10 @@
 #include "triangle_emit.hpp"
 #include "script_host.h"
 #include "render/part_store.h"
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
 #include <cassert>
 #include <cmath>
-#include <filesystem>
 #include <cstdio>
 
 static bool near(float a, float b) { return std::abs(a-b)<1e-5f; }
@@ -40,10 +41,12 @@ int main() {
     buffer.vertex(make_float3(0,0,0)); buffer.vertex(make_float3(1,0,0)); buffer.vertex(make_float3(0,1,0)); buffer.endShape();
     assert(near(buffer.tri_extra().back().uv0.x,0) && near(buffer.tri_extra().back().N1.x,0));
 
-    const auto directory=std::filesystem::temp_directory_path()/"matter-surface-vertex-tests";
-    std::filesystem::create_directories(directory/"parts");
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
+    const std::string directory = "runtime/surface-vertex";
     script_host::ScriptHost host; script_host::BakeOptions options;
-    options.parts_dir=directory.string(); options.retain_geometry=true;
+    host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
+    options.parts_dir=directory; options.retain_geometry=true;
     const std::string source=R"(class SurfaceVertexProbe extends Part {
       build() { this.fill(7); this.beginShape(0);
         this.surfaceVertex(0,0,0,0,0,1,0,0);

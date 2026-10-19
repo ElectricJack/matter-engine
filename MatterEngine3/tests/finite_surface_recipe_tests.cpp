@@ -1,4 +1,8 @@
 #include "check.h"
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
+#include "source_snapshot_modules.h"
+#include "embedded_world_modules.h"
 #include "finite_surface_faces.h"
 #include "terrain_field.h"
 #include "render/part_store.h"
@@ -6,15 +10,15 @@
 #include "blas_manager.hpp"
 #include <chrono>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <set>
 
 namespace fs = std::filesystem;
 namespace {
+const auto sources = std::make_shared<const matter::SourceSnapshot>(embedded_world_test_sources());
 std::string read(const fs::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    std::string source;
+    sources->read(path.generic_string(), source);
+    return source;
 }
 std::string recipe(const std::string& change = "", const std::string& body = "return d;") {
     return "class Finite extends Part { static params={size:.1,tone:.3};"
@@ -27,16 +31,12 @@ std::string recipe(const std::string& change = "", const std::string& body = "re
         "height:0,heightRange:[0,0]})};" + change + body + "}}";
 }
 void run() {
-    const auto repo = fs::current_path();
-    const auto temp = fs::temp_directory_path() / ("matter-finite-source-" +
-        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    fs::create_directories(temp);
-    struct Cleanup {
-        fs::path original, temporary;
-        ~Cleanup() { fs::current_path(original); std::error_code e; fs::remove_all(temporary, e); }
-    } cleanup{repo, temp};
-    fs::current_path(temp);
+    const fs::path repo;
+    const fs::path temp = "runtime/finite-source";
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
     script_host::ScriptHost host;
+    host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
     {
         const auto source=[](const std::string& edit="") {
             return "class Direct extends Part {static params={tone:.3};"
@@ -131,10 +131,12 @@ void run() {
           error.code == "solid-source-cancelled", "active recipe cancellation");
     options = {}; options.control.generation_is_current = [](uint64_t) { return false; };
     CHECK(!host.evaluate_finite_surface(recipe(), "{}", result, error, options), "stale recipe rejected");
-    CHECK(gpu_calls == 0 && fs::is_empty(temp), "all evaluations are artifact-free and do not mesh");
+    CHECK(gpu_calls == 0 && storage->publication_count() == 0, "all evaluations are artifact-free and do not mesh");
 
     host.set_shared_lib_roots({(repo/"projects/world_demo/shared-lib").string(),
                                (repo/"MatterEngine3/shared-lib").string()});
+    host.set_module_sources(matter::source_snapshot_modules(*sources,
+        {"projects/world_demo/shared-lib", "MatterEngine3/shared-lib"}));
     const auto clay = read(repo/"projects/world_demo/objects/texturing/bricks/ClayBrickSurface.js");
     CHECK(!clay.empty(), "actual JS receiver source available; run from repository root");
     std::set<uint64_t> fields, materials;
@@ -267,7 +269,7 @@ void run() {
     terrain_field::SurfaceProgram parsed; std::string parse_error;
     CHECK(terrain_field::SurfaceProgram::parse(world.surface_program, parsed, parse_error), parse_error.c_str());
     CHECK(parsed.hash() == original_clay.appearance_hash, "Part/World share identical surface tape semantics");
-    CHECK(gpu_calls==0 && fs::is_empty(temp), "real imported recipes stay artifact-free");
+    CHECK(gpu_calls==0 && storage->publication_count() == 0, "real imported recipes stay artifact-free");
     script_host::BakeOptions bake_options;
     bake_options.output_mode = script_host::BakeOptions::OutputMode::RuntimeLeafMemory;
     bake_options.parts_dir = (temp / "must-not-exist").string();
@@ -279,7 +281,7 @@ void run() {
             if (entry) triangles += entry->triangles.size();
     CHECK(triangles == 12 && baked.resolved_hash == original_clay.geometry.resolved_hash,
           "actual native receiver build emits 12 triangles under the same recipe identity");
-    CHECK(gpu_calls==0 && fs::is_empty(temp), "receiver needs neither detailed source meshing nor artifacts");
+    CHECK(gpu_calls==0 && storage->publication_count() == 0, "receiver needs neither detailed source meshing nor artifacts");
     for(const auto& params:{"{\"bond\":\"stack\",\"columns\":2,\"courses\":3}",
         "{\"columns\":4,\"courses\":5}","{\"widthM\":0.5,\"heightM\":0.6}"}) {
         const auto built=host.bake_source(wall,params,bake_options);

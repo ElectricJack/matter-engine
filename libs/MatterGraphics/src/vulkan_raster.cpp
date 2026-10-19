@@ -128,7 +128,7 @@ struct State {
         message = "Missing production raster shader"; return false;
       }, [this](const VkGraphicsPipelineCreateInfo &info, VkPipeline *out) {
         return vkCreateGraphicsPipelines(binding.device, VK_NULL_HANDLE, 1, &info, nullptr, out);
-      }, pipelines, error);
+      }, pipelines, error, true);
     if (!ok) throw Failure{{{{data::Severity::error, E::backend_failure, error, {}, {}, {}}}}};
     VkSamplerCreateInfo si{}; si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

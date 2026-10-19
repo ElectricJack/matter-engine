@@ -1,0 +1,197 @@
+# CPU runtime fixture migration checkpoint
+
+Task: steady-harbor-62. This is an incomplete validation checkpoint, not a full
+suite acceptance report. The root CMake project remains Windows/MSVC-only.
+
+Generated sources use owned `SourceSnapshot` inputs. Generated cache artifacts
+use explicit `CacheByteStorage` publication and immutable read handles. The
+production codecs, checksums, version vectors, hash validation, bundle section
+merge locks, and default filesystem behavior remain in place. Worker callbacks
+retain the fixture IO and bind the cache on the executing thread. No global VFS
+or new persistence policy is introduced.
+
+## Coverage changes to disclose in the PR
+
+| Runtime change | Retained guard or qualification | Reduced coverage |
+| --- | --- | --- |
+| Asset root lookup uses injected directory metadata | Same precedence cases | OS directory probes are no longer runtime |
+| Shader override lookup uses injected source bytes | Same environment/explicit/embedded precedence; real source predicates and negative controls run in `matter_shader_source_qualification` | Runtime no longer scans production shader text |
+| World definition generated fixtures use RAM | Grammar, values, diagnostics, import semantics use actual loader; shipped-world/layout/source checks in `matter_world_source_qualification` | Shipped geometry and OS layout are build qualification |
+| Part bundle fixtures use RAM | Actual codecs, checksums, schema/version/hash rejection, corrupt bytes, merged sections, failed publication, immutable generations | OS write/rename transport replaced by injected outcomes; actual replace/static publication and Windows sharing retry in `matter_part_io_qualification` |
+| PartStore generated bundles use RAM | Existing policy, staged load, LOD, culling, allocation and verified checksum guards | Prepared geometry pages and animation sibling publication run in `matter_partstore_source_qualification` |
+| Flatten fixtures use RAM and child pipes | Two real cold processes with distinct triangle padding poison compare every generated bundle byte | Repeated impostor samples use supported 16px instead of 32px; explicit 16/32 scaling/identity/stale guards remain |
+| Async generated fixtures use RAM | Existing event, cancellation, supersession, retention and publication guards | Linux disk live-edit and shipped animation/fluid cases run in `qualify_async_sources` |
+| Async request timing uses an actual worker barrier | Checks caller thread, return independence, terminal/pump behavior | The former 50ms performance threshold is removed |
+| Viewer runtime uses a tiny generated tree hierarchy | Cold/warm cache, flat root, retained children, hash chain and fetch progress checks; actual Demo checks in `matter_viewer_source_qualification` | Large particle-flow/import/material demo geometry is build qualification |
+| Resolve cache, world tracer and chart atlas use RAM | Same serialized source/key/corruption, allocation/duplicate decode/ray lifetime, chart byte-equivalence checks | OS artifact transport no longer runtime |
+| Flat reference scan uses RAM bundles | Full-loader parity, sentinel registry, corrupt grammar/trailers/hash and caller preservation remain | OS artifact transport no longer runtime |
+| Authored provider restore uses owned source snapshots | Actual cold JS load, key invalidation, throwing-source bypass, material/props restoration and corruption fallback remain | Mutable files become explicit source generations; final valid fallback uses a provider owning the next snapshot |
+| Water boundary and animation sidecar suites | Numeric packing, digest, metadata, bounded requested-frame decode and corrupt-byte guards remain; exact immutable-save predicates in mandatory filesystem qualification | OS immutable publication runs during builds |
+| Hydrology artifact and network suites | CPU fallback, manifest ordering, dependency/path confinement, identity/digest, serialized corruption and transactional output guards remain | Atomic cache hits/replacement, animation package/native identity, allocation-handle closure, namespace confinement and source predicates run in mandatory filesystem qualification |
+| Surface vertex and tileset bake use owned RAM sources/cache | Original attributes, errors, collider, settle, trace, pose-hash and missing-child guards remain | OS source/artifact existence and chdir no longer runtime |
+| Shared modules use build-embedded exact fixture bytes and owned generations | Parsing, transitive/ordered folds, hashing, bytecode isolation, RNG and scatter assertions remain | Mutable-FS edit/clear-only invalidation becomes setter-generation invalidation; prior-generation isolation added |
+| Finite/solid receivers and brick detail use exact build-embedded import closure | Original eight-seed recipes, face bounds, geometry/material identity, weathering, triangle counts and cache-recovery guards remain | Artifact-free checks observe RAM publication rather than an OS directory census |
+| Eval-world shipped scenes and river Make source closure move to filesystem qualification | Original shipped predicates and2401-sample mountain grid retained during builds; generated field/material/habitat guards remain runtime | Shipped scene/grid/source predicates no longer runtime |
+| Brick atlas GTEX roundtrip moves to filesystem qualification | Original writer/reader byte-equality check retained during builds; all numeric atlas guards remain runtime | OS GTEX transport no longer runtime |
+| Encoded VT persistence/async storage moves to filesystem qualification | Original storage, eviction, alias, admission, cancellation and shutdown guards retained during builds; complete numeric codecs/layout/version/size/corruption plus owned lease/replacement guards remain runtime | Bank eviction, persistent atomic publication and async store behavior no longer runtime |
+| Physical adapter session checks move to filesystem qualification | Original WorldSession fluid predicates retain the actual compile definition; frame/backend/emitter/collision/product validators remain runtime | Generated filesystem session and package behavior run during builds |
+| Complete asset export package moves to filesystem qualification | Original 21-file receipt, nonoverwrite and serialization remain during builds; actual validator and transactional failure admission remain runtime | Runtime no longer serializes a valid package to disk |
+| Sparse-voxel diagnostic fixture roundtrip moves to filesystem qualification | Original writer/reader support-plane checks retained during builds; generated RAM voxel, area and moment guards remain runtime | Diagnostic OS fixture transport is build qualification |
+| Projected face cache uses explicit RAM storage | Same version, recipe identity, size/checksum, six corruption cases, cancellation/currentness and one-repair guards; injected failed publication retains prior generation | OS staging-file census runs in filesystem qualification |
+| Conifer, singleton and material surface providers use RAM sources/cache | Original production hierarchy, LOD/impostor, policy repair, source provenance, warm preparation, cancellation, binding and publication guards remain | Directory absence becomes absence of RAM publications |
+| Geometry hierarchy uses actual page codecs with owned RAM page leases | Full cut and exhaustive availability coverage, dense/reference equivalence, numeric compilers and corrupt page guards remain | Persistent writer lifecycle, root-bank admission, prepared identities, residency and page-cache pressure run in filesystem qualification |
+| OBJ transport and shipped golden export move to filesystem qualification | Original roundtrips, deterministic exports, golden bake/text/digest/DSL comparison remain during builds; runtime formatting, texture/UV, admission plus bounded embedded OBJ/MTL/digest consistency remain | Runtime no longer compares a fresh export against the shipped golden |
+| BLAS device cache persistence moves to filesystem qualification | Original committed-write, reopened identity, batch association and damaged pack checks remain during builds; real worker admission, cancellation, disabled completion and byte-size rejection remain runtime | Runtime no longer verifies persistent successful reads/writes |
+| Water animation playback uses serialized RAM fixture bytes | Original complete-file/high-water accounting, frame clock/capacity/span validation count, decode oracle and transactional typed fallback remain; original FS fixtures qualified | OS artifact transport is build qualification |
+| Sector bake uses exact build-embedded WorldSector/imports and RAM bundles | Original requires, hash/field invalidation, nested terrain/scatter, habitat and profiling checks remain | Source reads and bundle-size observation use owned bytes |
+| Script-host cases use private RAM byte stores and exact embedded particleflow/strands/rng modules | All original 65 cases plus owned-source generation isolation remain; actual bundle corruption/reload checks use the production codecs | Runtime no longer tests OS bundle transport; the separate frozen separation/source-hash/oracle-tamper audit is outside the RAM runtime graph |
+| `PFstamp_paths_positive` fixture shrinks | Stamp geometry, expiration and cache reuse remain | Particles16→4, maxAge60→8, ticks80→12 reduce dense overlap and long-history coverage |
+| `PFstamp_paths_outside_session` fixture shrinks | Outside-session failure and stamp behavior remain | Particles16→4, maxAge60→8, ticks80→12 reduce dense overlap and long-history coverage |
+| `PFdeterminism_double_bake` fixture shrinks | Two independent bakes still compare their actual serialized bundles | Particles32→4, maxAge60→8, ticks120→12 reduce dense overlap and long-history coverage |
+| Terrain collision artifacts use the owner's explicit storage adapter | Original codec, identity, cancellation, transactional publication, retry, winner and parallel/nested isolation predicates remain | Runtime injects transport outcomes; OS persistence and Windows sharing/native move behavior are no longer runtime fixtures |
+| Terrain ravine mesh fixture crops the outer field | Resolution0.5, the authored ravine and retained material/mesh predicates remain | Outside scan extent64m→8m reduces large peripheral scan coverage |
+| Demand bake and terrain verbs use owned source snapshots and private caches | All nine demand groups, hierarchy, roots-only/lazy/full policies, actual section validation and session behavior remain | OS directory creation, source writes and cache cleanup become owned generations |
+| Sector-streamer uniform part-count comparison uses the actual desired map | Same full authored reach/pitch,78201-sector count, independent grid census and nested ratio; historical complete uniform publication drain runs in mandatory filesystem qualification | Runtime no longer drains every uniform request merely to count it; cap8, hole/upgrade/dwell/publication/interleaving guards are unchanged |
+| Editor viewport capture uses explicit byte publication | Exact capture header, extents, plane bytes, existing-path and failed publication guards | OS fopen/rename outcomes replaced by injected publication |
+| Screenshot completion marker uses RAM publication | Exact captured-newline bytes and failed publication | Runtime OS fopen/fwrite/fclose/remove guard is dropped |
+| Editor registration census and Windows wrapper contract become ALL build qualification | Original registry/device/PE/source/contract predicates | Runtime no longer starts native editor for census; startup allowance increased from30s to120s |
+| Vulkan smoke CPU mode returns before GLFW/device startup | Existing CPU lighting/GI/raster/payload/capability/cache/temporal/Streamline/DLSS checks | Previous default GPU/window smoke retained as separate `vulkan_smoke_gpu_tests`; source predicates moved to shader qualification |
+
+## Evidence so far
+
+- Published source/cache foundation: `91b98edce80e4af4fbb40136311c86e6174c49e3`.
+- Published actual consumer scopes: `2dd2844099c6d00a61a3cc59cacea457779245fb`.
+- Explicit partial Linux CTest graph:11/11 passed with `ctest -j4`,0.09s.
+  JUnit:`/tmp/steady-harbor-core-linux.xml`.
+- Production part-asset-v2 runtime:all guards passed,0.04s.
+  Log:`/tmp/steady-harbor-part-codec-runtime.log`.
+- Its actual OS qualification built and passed through the existing Make closure.
+  Log:`/tmp/steady-harbor-part-codec-build.log`.
+- Actual Raylib Linux prerequisite built in `third_party/raylib/build/linux`.
+
+Exact terrain61f46fbc276e1c7282506ead981c74bf9eb203f5 AssetStore include and
+exact importer93cf3359ad345d20aee0136fe19e0cc942068700 four-file payloads are integrated.
+The common owned source-tier adapter supplies the selected module bytes to actual
+provider and tileset hosts. The updated actual fixture IO executable compiled
+and passed all guards, including transitive/canonical folding and prior source
+generation isolation. These exact importer files, the adapter and fixture guards
+are recorded in local checkpoint `5144cc753`. Later test migrations are undergoing
+real GNU syntax checks. The first pass found an ADL collision in the shared-module
+test helper, a dependent-template keyword missing from the river phase probe and
+a missing explicit `<cstring>` include in the physical adapter tests. The final
+provider checks also found an incorrect `ResolvedModule` namespace in three
+fixture files. These issues were corrected without changing their predicates;
+the sequential follow-up batch included every corrected file and all13 variants
+passed (`/tmp/steady-harbor-followup-fixture-syntax.log`).
+Logs are `/tmp/steady-harbor-new-fixture-syntax.log`. Syntax checks do not
+establish linkage or runtime success.
+
+The registrar discovers the common engine CPU tests and10 canonical editor CPU
+closures. It preserves the full literal source list, including viewer controller
+translation units. Core tests link their actual translation units to the real
+canonical Make headless archive; there are no passing stubs. Missing archive or
+link prerequisites fail the build. Five peer-owned graphs remain separate, and
+Linux Vulkan smoke linkage is still unsupported in this common graph.
+
+The Ozz and Raylib Linux prerequisites built successfully. The first canonical
+Make archive attempt failed at the missing Linux glslc prerequisite; its failure
+log is `/tmp/steady-harbor-linux-core-archive.log`. An isolated Linux glslc is now
+available in `/tmp/steady-harbor-glslc-linux`; package hashes are recorded there.
+The new real archive build uses that compiler at-j1, with log
+`/tmp/steady-harbor-linux-core-archive-glslc.log`. The archive progressed through real shaders and several engine translation units,
+then failed at the POSIX `struct stat final{}` declaration in hydrology network
+loading. The local was renamed `final_status` without changing metadata checks;
+the incremental real archive resume log is
+`/tmp/steady-harbor-linux-core-archive-resume.log`. No archive or full-suite pass is
+claimed yet. Full common CMake configuration succeeded.
+
+The authorized single canonical native full build has not been used. Its
+sequencing prerequisite is satisfied: the supervisor verified scripting final
+`9b689a8c03609948e454a890d52ec900a8a00328` default configure/build exit0,
+941.48s, parallel1, with18 manifest entries and four executable hashes.
+Full log SHA256 is
+`22e2b2452d4dda0e437c02cb1327b1201b2be6e8e7fa8655780214d227fe6b86`.
+The peer's83-test scripting slices passed on Linux in15.56s and Windows in17.17s;
+the full66-case Linux script host trace contains no fixture reads. These are
+peer-scoped receipts, not this worker's full-suite acceptance.
+
+Integrated owner payloads are terrain081292a61f129556e98bcb4d5f868cb5df50c85f
+(ten owned files and selective Make closure) and scripting final9b (three test/
+embed files, four importer files already checkpointed byte-exact). The incoming
+script payload and four evidence hashes were independently verified before
+integration. Common native/Linux generated-header rules retain real source
+dependencies; no generated module is checked in as a second source of truth.
+
+The original sector-streamer two-TU Linux binary passed all guards in254.62s.
+Test blob:e033f9afaa0bb7f720bd6fa35a796c17f37d6648;
+production blob:c733cb5515ea068f8812d44d1ddc2a959a252e91.
+A `/tmp` candidate with a read-only desired census and unchanged scheduling
+guards passed in41.41s. This is provisional candidate evidence: its actual
+workspace integration is complete; full-suite acceptance remains pending. The candidate's complete historical
+qualification branch also passed all guards in275.44s; no publication guard was
+discarded to obtain the shorter runtime.
+Logs:/tmp/steady-harbor-sector-streamer-{before,census}-runtime.log.
+
+The portable Vulkan candidate shares15 existing native CPU contract functions
+and four helpers through one include:65178 bytes moved verbatim, with recorded
+per-function original line and SHA256 identity. The native Vulkan production
+closure remains exactly80 unique source files. The Linux candidate links actual
+renderer/device/cache/temporal/GI/lighting/Streamline/raster/indexed-geometry/
+matrix/editor implementations plus actual Flecs and ProfileLib, with dead code
+removal for the unused GPU entry points. All guards passed in0.06s. Its file
+syscall trace contains only executable/dynamic-loader reads and no sources,
+assets, cache, evidence or build artifacts. This candidate has not yet been
+validated by the one fresh native build; its shared test include and actual
+production closure are now integrated into the workspace.
+Evidence:/tmp/steady-harbor-vulkan-cpu-candidate/.
+
+The canonical archive's original Flecs C17 recipe independently failed GNU
+compilation becauseCLOCK_MONOTONIC/nanosleep require POSIX feature declarations.
+A Linux-only `-D_POSIX_C_SOURCE=200809L` build-policy fix is integrated, and the
+same actual Flecs source compiled and linked successfully in the portable
+Vulkan candidate. It changes no Windows flags or production algorithm; the
+archive build was harvested with exit1 at that exact Flecs admission failure
+before source/Make changes. Failure-log SHA256 is
+`3c2d4ace30ff3602612159f5a81d39ddf7e603f92e206f6e7921c03c6142fde7`.
+
+The original inactive geometry runtime CPU guards are registered on Linux
+against the actual runtime, residency, asset-store and memory-bank code.
+The native `--gpu` lifecycle and Windows thread census are unchanged. The
+portable CPU build rejects GPU arguments with exit2 rather than silently
+accepting an unavailable mode. Its candidate passed in0.03s with only executable/
+loader file reads. Evidence:/tmp/steady-harbor-geometry-cpu-candidate/.
+
+The integrated common Linux graph configures135 actual CPU tests, including
+geometry, Vulkan, cloud-layer and volumetric-quality suites. Both environment
+suites invoke the owner's exact shared source qualifier. The collision-session
+test remains a peer-owned pending fixture until the worker-generation API is
+checkpointed and its owner delivers the updated test; this is not a complete
+linked-suite receipt.
+
+The integrated worker reload/collision route passed actual GNU `matter_engine.cpp`
+syntax checking and the actual fixture-IO codec/atomic-publication executable.
+Logs:/tmp/steady-harbor-integrated-{worker-syntax,fixture-io-build,fixture-io-runtime}.log.
+Its synchronized
+IO generation is atomically published by the existing worker after cancellation/
+quiescence; provider copies and callbacks retain strong generations. The original
+configured IO remains immutable. Collision transport delegates atomic no-replace/
+replacement moves to the explicit cache; failed moves preserve both generations
+and old immutable read leases survive successful replacement. These checks do
+not establish a complete linked session runtime or native success.
+
+Before acceptance: integrate the remaining owner terrain fixture payload, finish runtime
+fixture census and reductions, run the full real Linux CTest graph and native CPU
+suite under one minute, run the one authorized full native build from the active
+workspace, record before/after slowest20, publish commits and open the PR.
+
+## Reconnect context blocker
+
+After a transient daemon restart, claim recovery confirmed the same held task
+and epoch. The required prime call returned `context.required_over_budget`,
+without a retry delay or refusal count. The supervisor was notified once.
+The edits and held claim were preserved with one durable wait. The supervisor's
+short current dependency brief supplied the missing exact payloads and instructed
+continued CPU work; that wait was cancelled once. There has been no repeated
+prime retry, blocker report or native full attempt. GNU syntax evidence covers
+six earlier fixture/qualification translation units plus resolve cache, tracer
+and chart atlas. The later migrations still need compilation and runtime checks.

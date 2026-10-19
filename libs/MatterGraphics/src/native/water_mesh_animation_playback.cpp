@@ -1,4 +1,5 @@
 #include "water_mesh_animation_playback.h"
+#include "matter/fixture_io.h"
 
 #include <algorithm>
 #include <cmath>
@@ -196,7 +197,7 @@ bool activate_water_mesh_animation_playback(
     std::uint32_t vulkan_frame_slots,
     std::uint64_t cpu_budget_bytes,
     WaterMeshAnimationPlayback& playback,
-    WaterAnimationFallback& fallback) {
+    WaterAnimationFallback& fallback, matter::CacheByteStorage* storage) {
     fallback = {};
     if (manifest.section_animations.empty() &&
         manifest.handoff_animations.empty())
@@ -231,9 +232,10 @@ bool activate_water_mesh_animation_playback(
                           fallback);
         const auto path = cache_root / reference.relative_path;
         std::error_code filesystem_error;
-        const std::uintmax_t bytes =
+        const auto owned_bytes = storage ? storage->open(path.generic_string()) : matter::CacheByteStorage::ReadHandle{};
+        const std::uintmax_t bytes = storage ? (owned_bytes ? owned_bytes->size() : 0u) :
             std::filesystem::file_size(path, filesystem_error);
-        if (filesystem_error)
+        if ((storage && !owned_bytes) || filesystem_error)
             return reject(WaterAnimationFallbackReason::MissingArtifact,
                           "water animation artifact is missing",
                           fallback);
@@ -249,8 +251,9 @@ bool activate_water_mesh_animation_playback(
         auto mutable_artifact =
             std::make_shared<hydrology::WaterMeshAnimationArtifact>();
         gpu_meshing::Error error{};
-        if (!hydrology::load_water_mesh_animation_artifact(
-                path, *mutable_artifact, error))
+        if (!(storage ? hydrology::deserialize_water_mesh_animation_artifact(
+                *owned_bytes, *mutable_artifact, error) : hydrology::load_water_mesh_animation_artifact(
+                path, *mutable_artifact, error)))
             return reject(WaterAnimationFallbackReason::CorruptArtifact,
                           error.message.empty()
                               ? "water animation artifact is corrupt"
