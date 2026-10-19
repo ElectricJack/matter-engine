@@ -49,7 +49,8 @@ bool run_tileset_phase_from_objects(const std::string& objects_dir,
                                     const std::string& root_module,
                                     const std::string& parts_cache_dir,
                                     SettledTorus& out, std::string& err,
-                                    const std::string& shared_lib_root = "");
+                                    const std::string& shared_lib_root = "",
+                                    std::shared_ptr<const matter::WorldFixtureIO> fixture_io = {});
 // out_sorted_child_hashes (optional): on success, receives the root's resolved
 // child hashes sorted ascending — the exact list this function already folds
 // into the settle cache key. Callers that build the .gtex cache key need it
@@ -64,7 +65,8 @@ bool run_tileset_phase_from_objects(
     const std::string& parts_cache_dir,
     SettledTorus& out, std::string& err,
     const std::vector<std::string>& shared_lib_roots,
-    std::vector<uint64_t>* out_sorted_child_hashes = nullptr);
+    std::vector<uint64_t>* out_sorted_child_hashes = nullptr,
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io = {});
 
 // Scene-layout entry point: object_roots is the search path (scene tier first,
 // project tier second), resolved first-match-wins exactly as FileModuleResolver
@@ -79,6 +81,7 @@ bool run_tileset_phase_from_object_roots(
     const std::string& parts_cache_dir,
     SettledTorus& out, std::string& err,
     const std::vector<std::string>& shared_lib_roots,
-    std::vector<uint64_t>* out_sorted_child_hashes = nullptr);
+    std::vector<uint64_t>* out_sorted_child_hashes = nullptr,
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io = {});
 
 } // namespace tileset

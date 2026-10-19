@@ -2,10 +2,7 @@
 #include "../examples/image_capture.h"
 #include <algorithm>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
 #include <functional>
-#include <iomanip>
 namespace {
 constexpr double pi = 3.14159265358979323846;
 using D3 = std::array<double, 3>;
@@ -120,7 +117,6 @@ void matched(mg::VulkanComposition &backend,const std::string &name,const mg::Co
     }
     check(out.linear_hdr[i][3]==1&&out.display_srgb[i][3]==1,"COMP alpha");
   }
-  ppm(name+"-actual",out.width,out.height,out.display_srgb); ppm(name+"-reference",out.width,out.height,expected);
   std::cout<<"MATCH "<<name<<" pixels="<<out.linear_hdr.size()<<" hdr_max="<<max_hdr<<" display_max="<<max_display<<'\n';
 }
 void exercise_composition(const std::shared_ptr<NativeDevice> &native) {
