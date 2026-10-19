@@ -511,6 +511,9 @@ int main() {
         // reaches as far as the bands do -- otherwise this compares two
         // different worlds rather than two ways of tiling one.
         SectorStreamer uni(u);
+        const size_t nested_n = live.size();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
+        // Retain the historical complete publication census during builds.
         for (int i = 0; i < 20000; ++i) {
             uni.update(3.2f, 0.0f, 3.2f);
             SectorRequest q; bool any = false;
@@ -518,8 +521,26 @@ int main() {
             uni.take_evictions();
             if (!any && i > 2) break;
         }
-        const size_t nested_n = live.size();
         const size_t uniform_n = uni.resident_count();
+        CHECK(uni.desired_count() == uniform_n, "settled desired and resident census agree");
+#else
+        // Full authored reach and pitch are unchanged. Avoid draining the
+        // quadratic request selector merely to count this geometry fixture.
+        uni.update(3.2f, 0.0f, 3.2f);
+        const size_t uniform_n = uni.desired_count();
+        CHECK(uni.resident_count() == 0 && uni.inflight_count() == 0,
+              "desired census includes unissued, nonresident sectors");
+        const double pitch = u.sector_size, radius = u.rings.back().radius;
+        const int extent = int(std::ceil(radius / pitch)) + 2;
+        size_t expected = 0;
+        for (int z = -extent; z <= extent; ++z)
+            for (int x = -extent; x <= extent; ++x)
+                if (std::hypot((x + 0.5) * pitch - 3.2,
+                               (z + 0.5) * pitch - 3.2) <= radius) ++expected;
+        CHECK(uniform_n == expected, "uniform desired census matches independent full-disc grid");
+        uni.clear();
+        CHECK(uni.desired_count() == 0, "clear removes desired census");
+#endif
         printf("  nested: %zu tiles vs uniform %zu sectors (%.1fx fewer)\n",
                nested_n, uniform_n,
                nested_n ? double(uniform_n) / double(nested_n) : 0.0);

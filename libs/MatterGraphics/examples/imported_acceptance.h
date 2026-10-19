@@ -1,10 +1,18 @@
+#ifdef MATTER_GRAPHICS_ACCEPTANCE_ONLY
+#include "../tests/imported_asset_fixture.h"
+#endif
 // Minimal imported-asset caller: contracts -> facade -> SceneFrame -> mesh pass.
 void exercise_raster(const std::shared_ptr<NativeDevice> &native) {
   std::cout << "GFX-IMPORTED raster upload\n";
+  mc::AssetDocument asset;
+#ifdef MATTER_GRAPHICS_ACCEPTANCE_ONLY
+  valid(imported_asset_fixture(asset), "GFX-IMPORTED raster decode");
+#else
   std::ifstream file(MATTER_GRAPHICS_IMPORTED_ASSET);
   check(bool(file), "GFX-IMPORTED raster fixture exists");
   const std::string json{std::istreambuf_iterator<char>(file), {}};
-  mc::AssetDocument asset; valid(mc::decode_asset(json, asset), "GFX-IMPORTED raster decode");
+  valid(mc::decode_asset(json, asset), "GFX-IMPORTED raster decode");
+#endif
   auto device = std::make_shared<mg::VulkanResourceDevice>(native->binding(native));
   auto scene = new mg::SceneBackend(device);
   mg::Graphics graphics{std::unique_ptr<mg::Backend>(scene)};

@@ -148,7 +148,7 @@ Independent GNU/Linux:
 cmake -S libs/MatterGraphics -B /tmp/matter-graphics-facade -G Ninja \
   -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build /tmp/matter-graphics-facade --parallel 2
-ctest --test-dir /tmp/matter-graphics-facade --output-on-failure -j 1
+ctest --test-dir /tmp/matter-graphics-facade --output-on-failure -L cpu -j 2
 ```
 
 For the native Vulkan tests, configure with `-DMATTER_GRAPHICS_VULKAN=ON` and an
@@ -160,7 +160,8 @@ cmake -S libs/MatterGraphics -B /tmp/matter-graphics-vulkan -G Ninja \
   -DVulkan_INCLUDE_DIR="$PWD/third_party/Vulkan-Headers/include" \
   -DVulkan_LIBRARY=/usr/lib/x86_64-linux-gnu/libvulkan.so.1
 cmake --build /tmp/matter-graphics-vulkan --parallel 2
-ctest --test-dir /tmp/matter-graphics-vulkan --output-on-failure -j 1
+ctest --test-dir /tmp/matter-graphics-vulkan --output-on-failure -L cpu -j 2
+ctest --test-dir /tmp/matter-graphics-vulkan --output-on-failure -L gpu -j 2
 ```
 
 The raster fixture requires Vulkan 1.3 and the features above. The existing
@@ -171,6 +172,16 @@ requirement. Both fail if no suitable graphics device is available. Validation i
 Vulkan target requires glslc and Python 3.9+ to compile/embed production shaders.
 With testing enabled, CMake 3.27+ and Python 3.9+ are required for the
 standard-library File API audit (no Python package dependency).
+The default standalone build runs dependency/shader qualification after compiled
+targets, and qualifies environment source contracts before the affected test
+executables compile. These gates still inspect the real production sources and
+build evidence; they are excluded from runtime CTest timing. Runtime fixtures
+generate their assets and JSON in memory, retain full numerical/pixel/fence
+checks, and write no shared image evidence. CPU tests need no source-tree working
+directory. The two shared cloud-layer/volumetric-quality suites use the same
+qualifier and complete input manifest in graphics CMake, native core CMake and
+direct Make targets (`run-cloud-layers`, `run-volumetric-quality`). Their runtime
+binaries never scan sources; no compile define can disable qualification.
 Public headers compile individually. The audit inspects actual compiled targets,
 dependencies, sources, linker fragments and compiler-discovered headers with
 procedural/terrain/host targets absent. Only three exact legacy math source/header
@@ -254,7 +265,7 @@ demand; repeated assembly children report one observation per coordinator ID.
 
 | Fixture IDs | Assertions |
 | --- | --- |
-| `GFX-SUBMIT/PENDING/READY/IMPORTED` | Hand-built textured asset and checked-in `fixture.repeated-assembly` JSON, explicit completion with shared mesh/assembly prototypes |
+| `GFX-SUBMIT/PENDING/READY/IMPORTED` | Hand-built textured asset and generated `fixture.repeated-assembly` JSON, explicit completion with shared mesh/assembly prototypes |
 | `GFX-SHARING/CHANGE/AFFINE/SCENE` | Shared instance deletion, placement/replacement, mirrored nonuniform transform, stale revisions, validation/backend rollback |
 | `GFX-OWNER/INPUTS/RELEASE/RETIRE` | Immutable assets/bytes outlive device/upload owners; caller/scene/device retirement separated |
 | `GFX-ENVELOPE/HANDLE/VALIDATE/CAPS/PAYLOAD` | Every envelope field, foreign/stale/type-confused handles, invalid geometry, exact capabilities and missing/corrupt bytes |

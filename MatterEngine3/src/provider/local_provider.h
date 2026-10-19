@@ -125,6 +125,8 @@ struct FluidDeviceIdentity {
 // for_project() absolutizes it eagerly because downstream writers compose
 // output paths straight from it (see the comment in for_project's body).
 struct LocalProviderConfig {
+    // Owned optional source/cache fixtures, explicitly retained by workers.
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io;
     std::string project_dir;
     // The PROJECT-WIDE object tier: objects shared by every scene. Changing a
     // file here can affect any scene in the project, and that is exactly what
@@ -151,7 +153,8 @@ struct LocalProviderConfig {
     static LocalProviderConfig for_project(
         const std::string& project_dir,
         const std::string& world_name,
-        const std::string& engine_shared_lib_dir);
+        const std::string& engine_shared_lib_dir,
+        std::shared_ptr<const matter::WorldFixtureIO> fixture_io = {});
 
     // The object search path, most-specific first. Callers resolving a module
     // name must walk this in order and take the FIRST hit; callers that need
@@ -159,8 +162,12 @@ struct LocalProviderConfig {
     // every entry. Deliberately shaped like shared_lib_roots() below, which
     // has stacked project-over-engine the same way since it was written.
     std::vector<std::string> object_roots() const {
+        if (fixture_io && fixture_io->sources)
+            return fixture_io->sources->object_roots({scene_objects_dir, objects_dir});
         return matter::project_layout::object_roots({scene_objects_dir, objects_dir});
     }
+    bool read_source(const std::string& path, std::string& out) const;
+
     // The project tier alone. For callers that mean "where this project keeps
     // its shared objects" rather than "where do I find module X" -- resolving
     // a module through this and not object_roots() silently ignores the
@@ -173,6 +180,13 @@ struct LocalProviderConfig {
     // needs a module's path on disk must come through here rather than
     // concatenating against a single root.
     std::string resolve_object_path(const std::string& module) const {
+        if (fixture_io && fixture_io->sources) {
+            for (const auto& root : object_roots()) {
+                const auto path = (std::filesystem::path(root) / (module + ".js")).generic_string();
+                if (fixture_io->sources->exists(path)) return path;
+            }
+            return {};
+        }
         return matter::project_layout::object_source(
             {scene_objects_dir, objects_dir}, module).string();
     }
@@ -319,12 +333,14 @@ LocalProviderConfig make_engine_local_provider_config(
     const std::string& project_dir,
     const std::string& world_name,
     const std::string& engine_shared_lib_dir,
-    FluidBakeBackendFactory backend_factory = {});
+    FluidBakeBackendFactory backend_factory = {},
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io = {});
 
 // External cache identity is independent of cwd after project resolution. Relative
 // overrides are project-relative; normalization does not change source paths.
 inline std::string project_bake_cache_root(const std::filesystem::path& project,
-                                           const std::string& world) {
+                                           const std::string& world,
+                                           bool lexical_only = false) {
     namespace fs = std::filesystem;
     const char* value = std::getenv("MATTER_CACHE_ROOT");
     if (!value || std::string(value).find_first_not_of(" \t\r\n") == std::string::npos)
@@ -332,8 +348,9 @@ inline std::string project_bake_cache_root(const std::filesystem::path& project,
     if (world.empty() || world == "." || world == ".." ||
         world.find_first_of("/\\:") != std::string::npos)
         throw std::invalid_argument("external bake cache requires one safe world-name component");
-    auto normalized_absolute = [](fs::path path) {
+    auto normalized_absolute = [lexical_only](fs::path path) {
         path = fs::absolute(path);
+        if (lexical_only) return path.lexically_normal();
         std::error_code error;
         fs::path canonical = fs::weakly_canonical(path, error);
         return error ? path.lexically_normal() : canonical;
@@ -358,9 +375,12 @@ inline std::string project_bake_cache_root(const std::filesystem::path& project,
 inline LocalProviderConfig LocalProviderConfig::for_project(
     const std::string& project_dir_value,
     const std::string& world_name_value,
-    const std::string& engine_shared_lib_dir_value) {
+    const std::string& engine_shared_lib_dir_value,
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io_value) {
     namespace fs = std::filesystem;
     LocalProviderConfig cfg;
+    cfg.fixture_io = std::move(fixture_io_value);
+    const auto sources = cfg.fixture_io ? cfg.fixture_io->sources : nullptr;
     // Phase 1 cache-leak fix: absolutize project_dir_value up front. cache_root
     // below (and every other field this function derives from `project`) is
     // composed as `project / <suffix>`; if project_dir_value were left
@@ -373,7 +393,8 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     // purely lexical (prepends current_path() when relative) so it is safe to
     // call before prepare_paths() creates any of these directories.
     std::error_code ec;
-    fs::path project = fs::absolute(fs::path(project_dir_value), ec);
+    fs::path project = sources ? fs::path(project_dir_value).lexically_normal()
+                              : fs::absolute(fs::path(project_dir_value), ec);
     if (ec) project = fs::path(project_dir_value);  // fall back to the given value
     cfg.project_dir = project.string();
     cfg.objects_dir = (project / "objects").string();
@@ -386,24 +407,28 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     // project object tier alone. The scene script existing is what selects the
     // layout -- not the scenes/ directory existing -- so a project part-way
     // through migration resolves each scene by where its script actually is.
-    const fs::path scene_script = matter::project_layout::scene_script(project, world_name_value);
+    const fs::path scene_script = sources
+        ? fs::path(sources->scene_script(project.generic_string(), world_name_value))
+        : matter::project_layout::scene_script(project, world_name_value);
     if (!scene_script.empty()) {
         const fs::path scene_dir = scene_script.parent_path();
         cfg.scene_dir = scene_dir.string();
         cfg.world_path = scene_script.string();
         const fs::path scene_objects = scene_dir / "objects";
         ec.clear();
-        if (fs::is_directory(scene_objects, ec))
+        if (sources ? sources->is_directory(scene_objects.generic_string())
+                    : fs::is_directory(scene_objects, ec))
             cfg.scene_objects_dir = scene_objects.string();
     } else {
         cfg.world_path = (project / "worlds" / (world_name_value + ".js")).string();
     }
     const fs::path project_shared = project / "shared-lib";
     ec.clear();
-    if (fs::is_directory(project_shared, ec))
+    if (sources ? sources->is_directory(project_shared.generic_string())
+                : fs::is_directory(project_shared, ec))
         cfg.project_shared_lib_dir = project_shared.string();
     cfg.engine_shared_lib_dir = engine_shared_lib_dir_value;
-    cfg.cache_root = project_bake_cache_root(project, world_name_value);
+    cfg.cache_root = project_bake_cache_root(project, world_name_value, bool(sources));
     return cfg;
 }
 
