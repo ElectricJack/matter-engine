@@ -3457,6 +3457,23 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             destroy_candidate_pools();
             return false;
         }
+        // The RT counter is otherwise first written by emit_ray_instances,
+        // which a slot that never traces never reaches. Zero the WHOLE
+        // allocation (ensure_buffer may round it up) and flush it so the
+        // device-visible bytes are defined even on noncoherent memory. The
+        // fresh slot carries no sample, so the reporter would not read it
+        // anyway; this keeps the test-only direct readbacks defined too.
+        if (!matter::map_buffer(frame.rt_error_counter, error)) {
+            destroy_candidate_pools();
+            return false;
+        }
+        std::memset(frame.rt_error_counter.mapped, 0,
+                    static_cast<size_t>(frame.rt_error_counter.size));
+        if (!matter::flush_buffer(frame.rt_error_counter, 0,
+                                  frame.rt_error_counter.size, error)) {
+            destroy_candidate_pools();
+            return false;
+        }
         if (!upload_local_lights(frame, error)) {
             destroy_candidate_pools();
             return false;
@@ -14192,6 +14209,10 @@ void VkSceneRenderer::reset() {
         frame.rt_tlas_instances.clear();
         frame.rt_tlas_valid = false;
         frame.rt_tlas_pending_serial = 0;
+        // Retire, without consuming, any counter sample traced against the
+        // world being discarded. The renderer-lifetime totals are kept.
+        frame.rt_counter_candidate_serial = 0;
+        frame.rt_counter_sample_serial = 0;
     }
     for (FrameResources& frame : frames_) {
         frame.stats_valid = false;

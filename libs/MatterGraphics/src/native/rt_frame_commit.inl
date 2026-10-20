@@ -5,7 +5,8 @@
 //
 // On success it promotes: the GI candidate history to presented (and clears
 // whichever reset flags that candidate consumed), each candidate BLAS to the
-// live one, and the slot's staged TLAS to reusable. On failure it drops the
+// live one, the slot's staged TLAS to reusable, and the slot's RT counter
+// candidate to a sample the next retirement may consume. On failure it drops the
 // candidates and leaves the slot to rebuild. Nothing here bumps the geometry
 // epoch: the build that produced a candidate already did, and bumping again
 // would retire the TLAS built alongside it, which is still perfectly valid.
@@ -96,6 +97,12 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
     // failure the frame was never submitted, so the structure's contents are
     // unknown and the slot must rebuild.
     for (FrameResources& slot : frames_) {
+        // A counter written by this frame's dispatch becomes a sample only if
+        // the frame was submitted; an unsubmitted frame's bytes say nothing.
+        if (slot.rt_counter_candidate_serial == frame_serial) {
+            if (succeeded) slot.rt_counter_sample_serial = frame_serial;
+            slot.rt_counter_candidate_serial = 0;
+        }
         if (slot.local_direct_candidate_serial == frame_serial) {
             if (succeeded) {
                 local_direct_owner_ = slot.local_direct_owner;

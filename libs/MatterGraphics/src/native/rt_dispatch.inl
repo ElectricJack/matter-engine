@@ -129,12 +129,25 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         return publish_local_direct_owner(
             frames_[frame.frame_slot], LocalDirectOwner::Raster, 0, error);
     }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // The counter was already zeroed and seeded above; a failed record must
+    // still leave it without a candidate.
+    if (test_fail_next_rt_dispatch_record_) {
+        test_fail_next_rt_dispatch_record_ = false;
+        error = "injected RT dispatch record failure";
+        return false;
+    }
+#endif
     {
         PROFILE_SCOPE("rt.dispatch");
         if (!record_ray_trace_dispatch(frame, matrices, trace_extent,
                                        cmd_trace, error))
             return false;
     }
+    // Only a recorded production dispatch makes the counter a candidate
+    // sample; finish_ray_tracing_frame promotes it if this serial submits.
+    if (frame.serial != 0)
+        frames_[frame.frame_slot].rt_counter_candidate_serial = frame.serial;
     return true;
 }
 
@@ -698,14 +711,21 @@ bool VkSceneRenderer::build_ray_geometry(
     return true;
 }
 
-// The RT hit shader counts every part record it rejects, but the only reader
-// was a test-only readback compiled out of shipping builds -- so in a real
-// session a rejection was invisible. A rejection is exactly the signal that
-// says whether the stale-rt_parts-tail clear below is doing anything. Called
-// once per frame from prepare_frame, where this slot's fence has already been
-// waited on, so the value belongs to the slot's PREVIOUS submission (the
-// counter is zeroed per frame in emit_ray_instances). Logged on change only:
-// a steady count would otherwise spam every frame.
+// The RT hit shader counts every surface lookup it rejects (a traced
+// rt_parts record that is stale or unwritten), but the only other reader is a
+// test-only readback compiled out of shipping builds. A rejection is exactly
+// the signal that says whether the stale-rt_parts-tail clear below works.
+//
+// Called once per frame from record_cull_and_render, after begin_frame has
+// waited on this slot's fence, so a sample here is RETIRED: its submission has completed. The
+// counter bytes are consumed only when they carry a sample -- written by a
+// dispatch recorded in a frame that was actually submitted (see
+// rt_counter_candidate_serial) -- and exactly once: the sample is cleared
+// before it is read, so neither a duplicate call nor a later frame of a slot
+// that stopped tracing re-reads the same bytes. Whether RT is enabled NOW is
+// irrelevant: the last sample submitted before RT turned off is still
+// consumed. Every consumed sample is accumulated, equal consecutive counts
+// included; only the warning is suppressed while the count is unchanged.
 void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
     if (frame_slot >= frames_.size()) return;
     FrameResources& selected = frames_[frame_slot];
@@ -755,25 +775,32 @@ void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
                 word64(53), w[55]);
         }
     }
-    if (selected.rt_error_counter.buffer == VK_NULL_HANDLE) return;
+    const uint64_t sample_serial = selected.rt_counter_sample_serial;
+    selected.rt_counter_sample_serial = 0;
+    if (sample_serial == 0 ||
+        selected.rt_error_counter.buffer == VK_NULL_HANDLE) return;
     std::string error;
     if (!matter::map_buffer(selected.rt_error_counter, error) ||
         !matter::invalidate_buffer(selected.rt_error_counter, 0,
-                                   sizeof(GpuRtCounters), error))
+                                   sizeof(GpuRtCounters), error)) {
+        MATTER_LOGW("vk", "RT counter readback failed: %s\n", error.c_str());
         return;
+    }
     const auto* gpu =
         static_cast<const GpuRtCounters*>(selected.rt_error_counter.mapped);
-    const uint32_t invalid = gpu->invalid_part_records;
-    if (invalid == rt_invalid_part_records_last_) return;
-    rt_invalid_part_records_last_ = invalid;
-    if (invalid == 0) return;
-    rt_invalid_part_records_total_ += invalid;
+    const uint32_t rejected = gpu->invalid_part_records;
+    ++rt_rejected_surface_lookup_samples_;
+    rt_rejected_surface_lookups_total_ += rejected;
+    const bool changed = rejected != rt_rejected_surface_lookups_last_logged_;
+    rt_rejected_surface_lookups_last_logged_ = rejected;
+    if (rejected == 0 || !changed) return;
     MATTER_LOGW("vk",
-                 "RT rejected %u part record(s) last frame (%llu total) -- "
-                 "a rejected record is a stale or unwritten rt_parts slot\n",
-                 invalid,
+                 "RT rejected %u surface lookup(s) in the last retired RT "
+                 "sample (%llu total) -- a rejected lookup traced a stale or "
+                 "unwritten rt_parts record\n",
+                 rejected,
                  static_cast<unsigned long long>(
-                     rt_invalid_part_records_total_));
+                     rt_rejected_surface_lookups_total_));
     std::fflush(stderr);
 }
 
@@ -904,8 +931,15 @@ bool VkSceneRenderer::emit_ray_instances(
     if (!part_records.empty())
         std::memcpy(selected.rt_parts.mapped, part_records.data(),
                     part_records.size() * sizeof(GpuRtPartRecord));
+    // Overwriting the counter retires whatever sample it held; a dispatch
+    // recorded below becomes the new candidate.
+    selected.rt_counter_sample_serial = 0;
+    selected.rt_counter_candidate_serial = 0;
     std::memset(selected.rt_error_counter.mapped, 0, sizeof(GpuRtCounters));
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_rt_counter_seed_ != 0)
+        static_cast<GpuRtCounters*>(selected.rt_error_counter.mapped)
+            ->invalid_part_records = test_rt_counter_seed_;
     if (!matter::map_buffer(selected.rt_test_output, error)) return false;
     auto* test_words =
         static_cast<uint32_t*>(selected.rt_test_output.mapped);

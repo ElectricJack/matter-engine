@@ -252,6 +252,21 @@ bool VkSceneRenderer::readback_rt_trace_counters(
     return true;
 }
 
+bool VkSceneRenderer::test_poison_rt_counters(uint32_t value,
+                                              std::string& error) {
+    error.clear();
+    for (FrameResources& slot : frames_) {
+        if (slot.rt_error_counter.buffer == VK_NULL_HANDLE) continue;
+        if (!matter::map_buffer(slot.rt_error_counter, error)) return false;
+        auto* words = static_cast<uint32_t*>(slot.rt_error_counter.mapped);
+        for (size_t i = 0; i < sizeof(GpuRtCounters) / sizeof(uint32_t); ++i)
+            words[i] = value;
+        if (!matter::flush_buffer(slot.rt_error_counter, 0,
+                                  sizeof(GpuRtCounters), error)) return false;
+    }
+    return true;
+}
+
 bool VkSceneRenderer::test_readback_reflection_sample_counts(
     uint32_t& base_samples, uint32_t& coat_samples, std::string& error) {
     base_samples = 0;

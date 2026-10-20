@@ -1989,15 +1989,19 @@ public:
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
                                        std::string& error);
     VkRasterAttachments raster_attachments() const;
-    // Logs when the RT hit shader rejects a part record. A rejection means a
-    // stale or unwritten rt_parts slot was traced, which is the signal that
-    // confirms (or refutes) the stale-tail clear in emit_ray_instances. The
-    // shader has always counted these, but the only reader was a test-only
-    // readback compiled out of shipping builds, so in a real session the
-    // count was invisible. Deliberately NOT inside the test guard.
+    // Consumes the slot's retired RT counter sample, if it has one, and logs
+    // rejected RT surface lookups (a stale or unwritten rt_parts slot was
+    // traced -- the signal that confirms or refutes the stale-tail clear in
+    // emit_ray_instances). Deliberately NOT inside the test guard: in a real
+    // session this is the only reader of the counter.
     void report_rt_trace_counters(uint32_t frame_slot);
-    uint32_t rt_invalid_part_records_last_ = 0;
-    uint64_t rt_invalid_part_records_total_ = 0;
+    // Renderer-lifetime accounting: survives reset() and frame-resource
+    // replacement, which only retire pending samples. The total accumulates
+    // EVERY consumed sample; the last-logged value only suppresses repeated
+    // identical warnings and never affects the total.
+    uint64_t rt_rejected_surface_lookups_total_ = 0;
+    uint64_t rt_rejected_surface_lookup_samples_ = 0;
+    uint32_t rt_rejected_surface_lookups_last_logged_ = 0;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     struct EnvironmentSamplingGpuFixture {
         std::array<matter::Float3, 192 * 108> lut{};
@@ -2024,6 +2028,36 @@ public:
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
     }
+    // RT counter provenance probes for the production reporter. The seed is
+    // written into invalid_part_records where emit_ray_instances zeroes the
+    // counter, so a real recorded dispatch retires a known count. Poison
+    // overwrites every slot's counter bytes host-side and creates NO sample:
+    // bytes nobody traced must never be read, logged or accumulated.
+    void test_seed_rt_counter(uint32_t rejected) {
+        test_rt_counter_seed_ = rejected;
+    }
+    void test_fail_next_rt_dispatch_record() {
+        test_fail_next_rt_dispatch_record_ = true;
+    }
+    bool test_poison_rt_counters(uint32_t value, std::string& error);
+    void test_report_rt_trace_counters(uint32_t frame_slot) {
+        report_rt_trace_counters(frame_slot);
+    }
+    uint64_t test_rt_rejected_surface_lookups_total() const {
+        return rt_rejected_surface_lookups_total_;
+    }
+    uint64_t test_rt_counter_samples_consumed() const {
+        return rt_rejected_surface_lookup_samples_;
+    }
+    uint64_t test_rt_counter_candidate_serial(uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].rt_counter_candidate_serial : 0;
+    }
+    uint64_t test_rt_counter_sample_serial(uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].rt_counter_sample_serial : 0;
+    }
+    size_t test_frame_slot_count() const { return frames_.size(); }
     void test_skip_volumetrics(bool skip) { test_skip_volumetrics_ = skip; }
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
@@ -2849,6 +2883,14 @@ private:
         matter::VkAccelerationStructureResource rt_tlas;
         matter::VkBufferResource rt_parts;
         matter::VkBufferResource rt_error_counter;
+        // rt_error_counter provenance. A buffer handle or the RT-enabled flag
+        // says nothing about whether the bytes describe a submitted trace:
+        // candidate = serial whose recorded dispatch wrote the counter,
+        // promoted to sample only when that serial was submitted; sample =
+        // submitted, not yet consumed. report_rt_trace_counters reads only a
+        // sample, once, after the slot fence retired it.
+        uint64_t rt_counter_candidate_serial = 0;
+        uint64_t rt_counter_sample_serial = 0;
         matter::VkBufferResource rt_test_output;
         bool rt_adaptive_diagnostics_pending = false;
         matter::VkBufferResource gi_atrous_markers;
@@ -3326,6 +3368,8 @@ private:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
     bool test_force_rt_unavailable_ = false;
+    uint32_t test_rt_counter_seed_ = 0;
+    bool test_fail_next_rt_dispatch_record_ = false;
     bool test_force_primary_light_fallback_ = false;
     bool test_skip_volumetrics_ = false;
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
