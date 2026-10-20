@@ -1340,6 +1340,13 @@ inline void run(matter::VulkanDevice& vk) {
     }
     sparse_voxel::Asset asset;
     if (!builder.finish(asset,error)) { CHECK(false,error.c_str()); return; }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (const char* mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        mode && std::string(mode) == "sparse-admission") {
+        admission_rollback(vk,renderer,asset);
+        return;
+    }
+#endif
     SparseVoxelBatch batch{&asset,{{mat4_identity(),3,123,0.8f},
         {mat4_translation({20,0,0}),3,124,0.8f},{mat4_translation({0,0,10}),3,125,0.8f}}};
     if (!renderer.set_sparse_voxels({batch},error)) { CHECK(false,error.c_str()); return; }
