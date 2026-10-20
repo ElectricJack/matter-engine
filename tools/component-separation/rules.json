@@ -132,7 +132,11 @@
         {"path": "libs/ProfileLib/include", "reason": "PRIVATE include root for profile.h in the moved mesh_raster.cpp; matter_graphics_vulkan compiles it with MATTER_PROFILE_ENABLED=0, so no profiler symbol is referenced"}
       ],
       "legacy_headers": [
-        {"paths": ["MatterEngine3/src/render/matrix_math.h", "MatterEngine3/include/matter/math_types.h"], "reason": "declarations of the in-place matrix_math.cpp and the engine's POD math types it uses"}
+        {"paths": ["MatterEngine3/src/render/matrix_math.h", "MatterEngine3/include/matter/math_types.h"], "reason": "declarations of the in-place matrix_math.cpp and the engine's POD math types it uses"},
+        {"paths": ["MatterEngine3/src/render/frame_matrices.h", "MatterEngine3/src/render/gpu_matrix_pack.h", "MatterEngine3/include/matter/camera.h"], "reason": "vulkan variant: header-only POD camera and inline frame/GPU matrix packing the moved vk_volumetrics.cpp and vk_temporal.h read; the environment archive leaves no camera or matrix symbol undefined"},
+        {"path": "MatterEngine3/include/matter/vulkan_device.h", "reason": "vulkan variant: host-owned VulkanDevice declaration (creation, teardown and queue leasing stay in vk_context.cpp); graphics defines only its accessors and lifetime registry, in src/native/vk_device_internal.cpp, so the environment archive leaves no VulkanDevice symbol undefined"},
+        {"paths": ["MatterEngine3/include/matter/log.h", "MatterEngine3/include/matter/compiler.h"], "reason": "vulkan variant: header-only engine logging facility (with the compiler.h it includes) that the moved environment, BLAS-cache and pipeline-stats sources log through; it references only libc stdio"},
+        {"path": "libs/ProfileLib/include/profile.h", "reason": "vulkan variant: profiler macros in the moved mesh_raster.cpp, compiled with MATTER_PROFILE_ENABLED=0, so matter_graphics_vulkan references no profiler symbol"}
       ],
       "unbuilt_sources": [
         {"path": "libs/MatterGraphics/tests", "reason": "graphics fixtures build only under BUILD_TESTING, in the component's own focused test run"}
@@ -165,7 +169,8 @@
                              "include/matter/graphics/vulkan_raster.h"],
           "sources": ["src/vulkan_resources.cpp", "src/vulkan_composition.cpp", "src/vulkan_raster.cpp",
                       "src/native/mesh_raster.cpp", "src/native/mesh_pipelines.cpp", "src/native/vk_atmosphere.cpp",
-                      "src/native/vk_cloud_shadows.cpp", "src/native/vk_volumetrics.cpp", "examples/graphics_sample.cpp"],
+                      "src/native/vk_cloud_shadows.cpp", "src/native/vk_volumetrics.cpp", "src/native/vk_resources.cpp",
+                      "src/native/vk_device_internal.cpp", "examples/graphics_sample.cpp"],
           "requires_capability": "vulkan-sdk",
           "unavailable_patterns": ["Could NOT find Vulkan(?: \\(missing: [^)]*\\))?"],
           "allowed_external_headers": ["(^|/)vulkan/", "(^|/)vk_video/"],
@@ -186,11 +191,10 @@
       "public_include_dirs": ["libs/TerrainGeneration/include"],
       "allowed_components": ["contracts", "geometry"],
       "legacy_include_dirs": [
-        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the river overlay, bake mode and log headers the moved field and mesher still read; not propagated to consumers"}
+        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the bake mode and log headers the moved field and mesher still read; not propagated to consumers"}
       ],
       "legacy_headers": [
-        {"paths": ["MatterEngine3/src/terrain_river_overlay.h", "MatterEngine3/src/hydrology/river_geometry.h", "MatterEngine3/src/bake_mode.h", "MatterEngine3/include/matter/log.h", "MatterEngine3/include/matter/compiler.h"], "reason": "engine river-overlay inputs, bake-mode switch and logging facility (with the compiler.h it includes) the moved field and mesher still include"},
-        {"paths": ["MatterEngine3/include/matter/bounds.h", "MatterEngine3/include/matter/math_types.h", "MatterEngine3/include/matter/river_network.h", "MatterEngine3/include/matter/hydrology.h"], "reason": "engine POD types (bounds, math, river network, hydrology) named by terrain_field.h"}
+        {"paths": ["MatterEngine3/src/bake_mode.h", "MatterEngine3/include/matter/log.h", "MatterEngine3/include/matter/compiler.h"], "reason": "engine bake-mode switch and logging facility (with the compiler.h it includes) the moved field and mesher still include"}
       ],
       "unbuilt_sources": [
         {"path": "libs/TerrainGeneration/tests", "reason": "terrain fixtures build only under MATTER_TERRAIN_BUILD_TESTS, in the component's own focused test run"}
@@ -284,11 +288,10 @@
       "public_include_dirs": ["libs/AssetPipeline/include", "libs/AssetPipeline/animation/include", "libs/AssetPipeline/physics/include"],
       "allowed_components": ["contracts", "geometry"],
       "legacy_sources": [
-        {"paths": ["MatterEngine3/src/mesh_error.cpp", "libs/SpatialQueryLib/src/bvh.cpp"], "reason": "engine mesh-error metric and SpatialQueryLib BVH sources of truth for matter_asset_lod_kernels, compiled in place rather than copied"},
-        {"path": "libs/TerrainGeneration/src/terrain_field.cpp", "reason": "BOUNDARY DEBT, not an allowed dependency: matter_asset_surface_runtime compiles terrain's surface-program evaluator a second time (surface_tape.cpp runs terrain_field::SurfaceRuntime) instead of linking matter_terrain, because the frozen ownership manifest fixes asset_pipeline to contracts+geometry; retiring the duplicate compile is owned by clear-crest-48.9.7"}
+        {"paths": ["MatterEngine3/src/mesh_error.cpp", "libs/SpatialQueryLib/src/bvh.cpp"], "reason": "engine mesh-error metric and SpatialQueryLib BVH sources of truth for matter_asset_lod_kernels, compiled in place rather than copied"}
       ],
       "legacy_include_dirs": [
-        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place mesh_error.cpp/terrain_field.cpp and the engine POD headers they read; not propagated to consumers"},
+        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place mesh_error.cpp and the engine headers it reads; not propagated to consumers"},
         {"paths": ["libs/SpatialQueryLib/include", "libs/MatterSurfaceLib/include", "libs/MatterSurfaceLib/src"], "reason": "PRIVATE include roots for the in-place BVH source and the MatterSurfaceLib simplify/transform headers lod.cpp calls through geometry"},
         {"path": "third_party/raylib/src/external", "reason": "PRIVATE include root for the vendored stb_image/stb_image_write single-header codecs the glTF importer decodes textures with"},
         {"path": "third_party/raylib/src", "reason": "PRIVATE include root for raylib's POD Mesh type named by mesh_simplifier.hpp; the symbols check proves no raylib function is referenced"}
@@ -298,9 +301,7 @@
         {"paths": ["libs/SpatialQueryLib/include/precomp.h", "libs/SpatialQueryLib/include/tri.h", "libs/SpatialQueryLib/include/bvh.h"], "reason": "SpatialQueryLib's BVH and Tri/float3 interchange types"},
         {"paths": ["libs/MatterSurfaceLib/include/mesh_indexed.hpp", "libs/MatterSurfaceLib/include/mesh_simplifier.hpp", "libs/MatterSurfaceLib/include/mesh_transform.hpp"], "reason": "declarations of the MatterSurfaceLib simplify/transform stages geometry compiles in place (MATTER_GEOMETRY_MODIFIERS)"},
         {"path": "third_party/raylib/src/raylib.h", "reason": "POD Mesh type named by mesh_simplifier.hpp; the symbols check proves no raylib function is referenced"},
-        {"paths": ["third_party/raylib/src/external/stb_image.h", "third_party/raylib/src/external/stb_image_write.h"], "reason": "vendored single-header image codecs; images.cpp is their one implementation unit"},
-        {"paths": ["libs/TerrainGeneration/src/terrain_field.h", "MatterEngine3/src/terrain_field.h"], "reason": "BOUNDARY DEBT (see the terrain_field.cpp legacy_sources entry): terrain's surface-program declarations and their engine forwarding header, owned by clear-crest-48.9.7"},
-        {"paths": ["MatterEngine3/include/matter/bounds.h", "MatterEngine3/include/matter/math_types.h", "MatterEngine3/include/matter/river_network.h", "MatterEngine3/include/matter/hydrology.h", "MatterEngine3/src/terrain_river_overlay.h", "MatterEngine3/src/hydrology/river_geometry.h"], "reason": "engine POD and river-overlay declarations terrain_field.h names (part of the terrain_field boundary debt)"}
+        {"paths": ["third_party/raylib/src/external/stb_image.h", "third_party/raylib/src/external/stb_image_write.h"], "reason": "vendored single-header image codecs; images.cpp is their one implementation unit"}
       ],
       "configure_inputs": [
         {"path": "libs/MatterSurfaceLib/src/surface.c", "reason": "geometry's configure-time smin_set/VertexInterpolation extraction, reached through the geometry subdirectory"}
@@ -326,7 +327,7 @@
           "name": "default",
           "description": "the default module set: archive, prepared, storage, glTF, legacy adapter, surface + CPU surface tape, LOD generation",
           "targets": ["matter_asset_storage", "matter_asset_gltf", "matter_asset_legacy", "matter_asset_surface",
-                      "matter_asset_surface_runtime", "matter_asset_surface_native", "matter_asset_lod_kernels"],
+                      "matter_asset_surface_native", "matter_asset_lod_kernels"],
           "sources": ["src/storage.cpp", "src/gltf.cpp", "src/images.cpp", "src/legacy.cpp", "src/surface.cpp",
                       "src/surface_tape.cpp", "src/lod.cpp"]
         },

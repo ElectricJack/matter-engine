@@ -30,20 +30,21 @@ as its oracle. The command and its NOT RUN rules are documented in
 job in `.github/workflows/tests.yml` runs it without an Emscripten or Vulkan
 SDK, so the WASM gate and the `graphics/vulkan` probe are NOT RUN there.
 
-Two checker results stay red at `.9.5`; neither is waived:
+Two checker results were red at `.9.5` until their moves landed; neither was
+waived:
 
-- `repository/-/compiled-twice`: `libs/TerrainGeneration/src/terrain_field.cpp`
-  is compiled by both `asset_pipeline` (`matter_asset_surface_runtime`) and
-  `terrain`. The frozen ownership manifest gives `asset_pipeline` no edge to
-  terrain, so the repair is a move, owned by task `.9.11`.
+- `repository/-/compiled-twice`: `terrain_field.cpp` was compiled by both
+  `asset_pipeline` (`matter_asset_surface_runtime`) and `terrain`. Task `.9.11`
+  moved the field kernel into geometry's `matter_geometry_field`, which both
+  link, so the asset pipeline no longer lists the terrain source or headers.
 - `graphics/vulkan/build`, seen only where the Vulkan SDK is available (lavapipe
-  with `--host-cache`): `matter_graphics_environment` (`vk_atmosphere.cpp`,
-  `vk_cloud_shadows.cpp`, `vk_volumetrics.cpp`) references `create_buffer`,
-  `submit_immediate`, `VkBufferResource` and `VkImageResource`, which only the
-  host's `MatterEngine3/src/render/vk_resources.cpp` defines. The component's
-  own suites link, because they pull only CPU objects; the whole-archive probe
-  does not. `.9.5` made that target's include roots PRIVATE, so the probe no
-  longer inherits `src/native` or `MatterEngine3/include`.
+  with `--host-cache`): `matter_graphics_environment` referenced resource
+  helpers that only the host defined. Task `.9.12` moved `vk_resources.cpp` and
+  the device-lifetime registry into `libs/MatterGraphics/src/native`, so the
+  whole-archive probe links without the engine. The engine headers the moved
+  sources still read are audited one by one in `rules.json`, with the symbol
+  evidence for each. Graphics' own sources include their sibling headers, not
+  the engine's compatibility forwarders.
 
 The source-manifest unit tests pass. At the baseline's pinned commit, the
 repository manifest gate failed because tracked `libs/MemoryLib/src/mem_bank.c`

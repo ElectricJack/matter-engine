@@ -36,7 +36,7 @@
 //   * The two cascade levels are always ordered {near, far}; index 0 is near.
 
 #include "matter/math_types.h"
-#include "matter/volumetric_quality.h"
+#include "volumetric_quality.h"
 
 #include <array>
 #include <cmath>
