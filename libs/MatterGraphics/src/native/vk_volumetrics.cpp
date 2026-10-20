@@ -71,7 +71,7 @@
 #include "fog_settings.h"
 #include "environment_spirv.h"
 #include "gpu_volume_emitter.h"
-#include "../../../../MatterEngine3/src/render/vk_resources.h"
+#include "vk_resources.h"
 
 namespace viewer {
 
