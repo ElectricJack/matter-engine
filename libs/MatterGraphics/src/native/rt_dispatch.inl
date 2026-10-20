@@ -791,6 +791,14 @@ void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
     const uint32_t rejected = gpu->invalid_part_records;
     ++rt_rejected_surface_lookup_samples_;
     rt_rejected_surface_lookups_total_ += rejected;
+    if (pipeline_profile_enabled()) {
+        MATTER_LOGI("rt-counter", "consumer=report_rt_trace_counters slot=%u "
+                    "serial=%llu rejected=%u samples=%llu total=%llu",
+                    frame_slot, static_cast<unsigned long long>(sample_serial),
+                    rejected,
+                    static_cast<unsigned long long>(rt_rejected_surface_lookup_samples_),
+                    static_cast<unsigned long long>(rt_rejected_surface_lookups_total_));
+    }
     const bool changed = rejected != rt_rejected_surface_lookups_last_logged_;
     rt_rejected_surface_lookups_last_logged_ = rejected;
     if (rejected == 0 || !changed) return;

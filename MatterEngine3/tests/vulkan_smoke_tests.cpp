@@ -8845,6 +8845,7 @@ static void run_rt_rejected_surface_lookup_counters(
         Outcome out{};
         matter::VulkanFrame frame{};
         error.clear();
+        std::printf("RT counter frame: acquire fault=%u\n", static_cast<unsigned>(fault));
         if (!vulkan.begin_frame(frame, error)) {
             out.error = error;
             return out;
@@ -8855,13 +8856,24 @@ static void run_rt_rejected_surface_lookup_counters(
         }
         out.slot = frame.frame_slot;
         out.serial = frame.serial;
+        std::printf("RT counter frame: begin slot=%u serial=%llu retired_sample=%llu fault=%u\n",
+                    out.slot, static_cast<unsigned long long>(out.serial),
+                    static_cast<unsigned long long>(
+                        renderer.test_rt_counter_sample_serial(out.slot)),
+                    static_cast<unsigned>(fault));
         if (fault == Fault::Dispatch) renderer.test_fail_next_rt_dispatch_record();
-        const bool recorded =
-            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
-                                   error) &&
-            renderer.record_cull_and_render(frame, matrices, camera.position,
-                                            1.0f, error) &&
+        const bool prepared = renderer.prepare_frame(
+            frame, matrices, camera.position, 1.0f, error);
+        std::printf("RT counter frame: prepared serial=%llu ok=%d\n",
+                    static_cast<unsigned long long>(out.serial), prepared);
+        const bool rendered = prepared && renderer.record_cull_and_render(
+            frame, matrices, camera.position, 1.0f, error);
+        std::printf("RT counter frame: rendered serial=%llu ok=%d\n",
+                    static_cast<unsigned long long>(out.serial), rendered);
+        const bool recorded = rendered &&
             renderer.record_composite_to_swapchain(frame, error);
+        std::printf("RT counter frame: recorded serial=%llu ok=%d\n",
+                    static_cast<unsigned long long>(out.serial), recorded);
         out.error = error;
         out.candidate =
             renderer.test_rt_counter_candidate_serial(frame.frame_slot) ==
@@ -8886,6 +8898,15 @@ static void run_rt_rejected_surface_lookup_counters(
             out.ok = submitted;
             if (!submitted) out.error = error;
         }
+        std::printf("RT counter frame: end slot=%u serial=%llu recorded=%d submitted=%d "
+                    "candidate=%d sample=%llu consumed=%llu total=%llu warnings=%u\n",
+                    out.slot, static_cast<unsigned long long>(out.serial),
+                    recorded, submitted, out.candidate,
+                    static_cast<unsigned long long>(
+                        renderer.test_rt_counter_sample_serial(out.slot)),
+                    static_cast<unsigned long long>(renderer.test_rt_counter_samples_consumed()),
+                    static_cast<unsigned long long>(renderer.test_rt_rejected_surface_lookups_total()),
+                    logs.lines);
         return out;
     };
     // Visits every slot at least twice, so any pending sample retires.

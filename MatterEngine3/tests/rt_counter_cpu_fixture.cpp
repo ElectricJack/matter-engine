@@ -12,6 +12,7 @@
 constexpr int VK_NULL_HANDLE = 0;
 static unsigned warnings = 0, maps = 0, invalidations = 0;
 static bool map_ok = true, invalidate_ok = true;
+bool pipeline_profile_enabled() { return false; }
 template <class... Args> void log_info(Args...) {}
 #define MATTER_LOGI(...) log_info(__VA_ARGS__)
 #define MATTER_LOGW(...) (++warnings)

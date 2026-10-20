@@ -12,6 +12,7 @@ so peak RSS and wall time are recorded next to the full output.
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 
 import pytest
@@ -27,19 +28,32 @@ def run_mode(mode):
     LOGS.mkdir(parents=True, exist_ok=True)
     log = LOGS / f'{mode}.log'
     with log.open('x') as out:
-        done = subprocess.run(['/usr/bin/time', '-v', str(EXE)], env=env, cwd=EXE.parent,
-                              stdout=out, stderr=subprocess.STDOUT, timeout=1500)
+        # Contain the timed executable as well as /usr/bin/time. Killing only
+        # the direct child on timeout leaves the Vulkan process running.
+        with subprocess.Popen(['/usr/bin/time', '-v', 'stdbuf', '-oL', '-eL', str(EXE)],
+                              env=env, cwd=EXE.parent, stdout=out,
+                              stderr=subprocess.STDOUT, start_new_session=True) as child:
+            try:
+                child.wait(timeout=1500)
+            finally:
+                if child.poll() is None:
+                    os.killpg(child.pid, signal.SIGTERM)
+                    try:
+                        child.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        child.wait()
     text = log.read_text(errors='replace')
     rss = re.search(r'Maximum resident set size \(kbytes\): (\d+)', text)
     wall = re.search(r'Elapsed \(wall clock\) time.*: (\S+)', text)
     banner = [l for l in text.splitlines() if l.startswith('Vulkan RT available=')]
     fails = [l for l in text.splitlines() if 'FAIL' in l]
     validation = re.findall(r'validation errors: (\d+)', text)
-    print(f'\n[{mode}] exit={done.returncode} rss_kb={rss and rss.group(1)} '
+    print(f'\n[{mode}] exit={child.returncode} rss_kb={rss and rss.group(1)} '
           f'wall={wall and wall.group(1)} validation={validation} banner={banner}')
     for line in fails[:40]:
         print(f'[{mode}] {line}')
-    return done.returncode, text, validation
+    return child.returncode, text, validation
 
 
 @pytest.mark.parametrize('mode', ['rt-counters', 'rt'])
