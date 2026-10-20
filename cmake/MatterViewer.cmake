@@ -24,11 +24,11 @@ matter_read_manifest(
     PLATFORM windows
 )
 list(FILTER matter_engine_viewer_sources
-    INCLUDE REGEX "^(MatterEngine3/src|libs/MatterGraphics/src)/.*\\.cpp$")
+    INCLUDE REGEX "^(MatterEngine3/src|libs/MatterGraphics/src|libs/TerrainGeneration/src)/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 35)
+if(NOT matter_engine_viewer_source_count EQUAL 41)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 35 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 41 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -51,9 +51,9 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 227)
+    set(matter_expected_viewer_product_count 233)
 else()
-    set(matter_expected_viewer_product_count 226)
+    set(matter_expected_viewer_product_count 232)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
@@ -99,6 +99,8 @@ target_include_directories(matter_engine_viewer_objects BEFORE PRIVATE
     "${matter_vulkan_include}"
     "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
     "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include"
+    "${CMAKE_SOURCE_DIR}/MatterEngine3/src/component_adapters/terrain_coordinator/include"
+    "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/include"
 )
 target_compile_definitions(matter_engine_viewer_objects PRIVATE
     PLATFORM_DESKTOP

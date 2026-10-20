@@ -71,6 +71,8 @@ struct PortableScene::Impl {
     std::set<uint64_t> refused;                // Logged once, legacy-only.
     std::set<std::string> refused_placements;  // Instance owners, likewise.
     std::map<std::string, s::SceneInstance> placed;
+    std::map<std::string, s::SceneInstance> external; // place(), by instance id.
+    bool external_changed = false;
     std::vector<viewer::VkSceneInstance> admitted;
     uint64_t revision = 0;
     uint64_t products_seen = 0;                // retained_generation() last published.
@@ -180,6 +182,7 @@ struct PortableScene::Impl {
                 next[id] = {{id}, child.prototype, handle, mm::multiply(object_to_world, part_space)};
             }
         }
+        for (const auto& [id, instance] : external) next[id] = instance;
         s::SceneUpdate update{revision + 1, {}, {}};
         for (const auto& [id, instance] : next) {
             const auto was = placed.find(id);
@@ -228,7 +231,8 @@ bool PortableScene::update(const std::vector<viewer::VkSceneInstance>& instances
     const uint64_t products = authoring_adapter::retained_generation();
     const bool late = products != impl_->products_seen;
     impl_->products_seen = products;
-    if ((instances_changed || pending || late) && !impl_->publish(err)) return false;
+    if ((instances_changed || pending || late || impl_->external_changed) && !impl_->publish(err)) return false;
+    impl_->external_changed = false;
     s::CameraState camera;
     std::copy(std::begin(view.world_to_view.m), std::end(view.world_to_view.m), camera.view.m);
     std::copy(std::begin(view.view_to_clip.m), std::end(view.view_to_clip.m), camera.projection.m);
@@ -242,10 +246,22 @@ bool PortableScene::update(const std::vector<viewer::VkSceneInstance>& instances
         err = "portable scene view: " + join(set_camera.ok() ? set_lights.diagnostics() : set_camera.diagnostics());
         return false;
     }
-    if (impl_->capture_prefix.empty() || impl_->captured || impl_->placed.empty() || pending) return true;
+    // Nothing to capture before the first published update; after it, a scene
+    // emptied by a producer's eviction is captured like any other change.
+    if (impl_->capture_prefix.empty() || impl_->captured || impl_->revision == 0 || pending) return true;
     if (++impl_->stable_frames < impl_->capture_after) return true;
     impl_->captured = true;
     return impl_->capture(view, err);
+}
+
+s::GraphicsService* PortableScene::service(std::string& err) {
+    return impl_->lease(err) ? impl_->graphics.get() : nullptr;
+}
+
+void PortableScene::place(const std::vector<s::SceneInstance>& upsert, const std::vector<d::SemanticId>& remove) {
+    for (const auto& id : remove) impl_->external_changed |= impl_->external.erase(id.value) > 0;
+    for (const auto& instance : upsert) impl_->external[instance.id.value] = instance;
+    impl_->external_changed |= !upsert.empty();
 }
 
 // Rasterizes this frame's SceneFrame offscreen and records what was drawn.

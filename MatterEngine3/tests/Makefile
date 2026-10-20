@@ -341,6 +341,7 @@ TERRAIN_COLLISION_PHYSICS_C = $(PHYSICS_C)
 LIVE_TERRAIN_TARGET = build/live_terrain_tests
 LIVE_TERRAIN_COMPONENT_CPP = live_terrain_tests.cpp \
     ../src/component_adapters/terrain_coordinator/engine/live_terrain.cpp \
+    ../src/component_adapters/terrain_coordinator/engine/live_terrain_session.cpp \
     ../src/component_adapters/terrain_coordinator/src/coordinator.cpp \
     ../src/component_adapters/terrain_coordinator/src/cache.cpp \
     ../../libs/TerrainGeneration/src/field.cpp ../../libs/TerrainGeneration/src/meshing.cpp \
