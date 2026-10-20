@@ -594,6 +594,70 @@
       "expect": {"exit": 1, "codes": ["source.unbuilt", "symbol.tool-unavailable"],
                  "failing": ["contracts/default/unbuilt-sources", "contracts/default/symbols"], "details": ["no component archive was found to inspect"],
                  "passing": ["contracts/default/component-off"], "notes": {"contracts/default/component-off": "targets: fx_contracts"}}
+    },
+    {
+      "name": "probe-monolith-source-listed",
+      "description": "A component source only the monolith compiles passes when a cmake/manifests/*.sources entry, or a forwarding entrypoint it lists, proves it.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [
+        {"op": "write", "path": "libs/FxGeometry/src/fx_orphan.cpp", "text": ["int fxgeo_orphan() { return 0; }"]},
+        {"op": "write", "path": "legacy/fx_orphan_forward.cpp", "text": ["#include \"../libs/FxGeometry/src/fx_orphan.cpp\""]},
+        {"op": "write", "path": "cmake/manifests/fx-engine.sources", "text": ["legacy/fx_orphan_forward.cpp|all"]},
+        {"op": "json", "path": "component-rules.json", "at": ["components", "geometry"],
+         "set": {"monolith_sources": [{"path": "libs/FxGeometry/src/fx_orphan.cpp", "reason": "only the monolith calls it"}]}}
+      ],
+      "expect": {"exit": 0, "codes": [], "failing": [], "passing": ["geometry/default/unbuilt-sources"],
+                 "notes": {"geometry/default/unbuilt-sources": "audited monolith source: libs/FxGeometry/src/fx_orphan.cpp"}}
+    },
+    {
+      "name": "probe-monolith-source-stale",
+      "description": "A monolith_sources entry no manifest lists is a stale manifest: the monolith no longer builds it, so the audit must not hide the dead source.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "geometry"],
+      "edits": [
+        {"op": "write", "path": "libs/FxGeometry/src/fx_orphan.cpp", "text": ["int fxgeo_orphan() { return 0; }"]},
+        {"op": "write", "path": "cmake/manifests/fx-engine.sources", "text": ["legacy/fx_other.cpp|all"]},
+        {"op": "json", "path": "component-rules.json", "at": ["components", "geometry"],
+         "set": {"monolith_sources": [{"path": "libs/FxGeometry/src/fx_orphan.cpp", "reason": "only the monolith calls it"}]}}
+      ],
+      "expect": {"exit": 1, "codes": ["source.monolith-unlisted"], "failing": ["geometry/default/unbuilt-sources"],
+                 "details": ["libs/FxGeometry/src/fx_orphan.cpp", "the manifest is stale"]}
+    },
+    {
+      "name": "host-cache-overrides-rules-key",
+      "description": "--host-cache may locate host tools but never override a cache key the rules own; that would change which configuration is being checked.",
+      "toolchain": true,
+      "args": ["--checks", "configure", "--component", "graphics", "--host-cache", "FX_GRAPHICS_SDK=ON"],
+      "expect": {"exit": 2, "stderr": "--host-cache FX_GRAPHICS_SDK would override a probe cache key the rules set", "no_report": true}
+    },
+    {
+      "name": "js-import-allowed-component",
+      "description": "A relative import into a component listed in allowed_components is permitted and recorded in the notes.",
+      "args": ["--checks", "static", "--component", "web"],
+      "edits": [
+        {"op": "write", "path": "integrations/fx-web/src/main.mjs", "text": ["import { authorBox } from \"../../../packages/fx-authoring/src/index.mjs\";", "export const box = authorBox(1);"]},
+        {"op": "json", "path": "component-rules.json", "at": ["components", "web"],
+         "set": {"status": "implemented", "description": "Browser integration over the authoring package.", "allowed_components": ["authoring"],
+                 "js": {"include": ["*.mjs"], "exclude": [], "forbidden_specifiers": ["^node:"], "allowed_bare_specifiers": []}},
+         "remove": ["reason"]}
+      ],
+      "expect": {"exit": 0, "codes": [], "failing": [], "passing": ["web/-/js-imports", "web/-/ownership"],
+                 "notes": {"web/-/js-imports": "imports allowed component authoring: packages/fx-authoring/src/index.mjs"}}
+    },
+    {
+      "name": "js-import-disallowed-component",
+      "description": "A relative import into a component missing from allowed_components escapes the package.",
+      "args": ["--checks", "static", "--component", "web"],
+      "edits": [
+        {"op": "write", "path": "integrations/fx-web/src/main.mjs", "text": ["import { authorBox } from \"../../../packages/fx-authoring/src/index.mjs\";", "export const box = authorBox(1);"]},
+        {"op": "json", "path": "component-rules.json", "at": ["components", "web"],
+         "set": {"status": "implemented", "description": "Browser integration without the authoring package.", "allowed_components": [],
+                 "js": {"include": ["*.mjs"], "exclude": [], "forbidden_specifiers": ["^node:"], "allowed_bare_specifiers": []}},
+         "remove": ["reason"]}
+      ],
+      "expect": {"exit": 1, "codes": ["js-import.escapes-package"], "failing": ["web/-/js-imports"],
+                 "details": ["component authoring is not in allowed_components"]}
     }
   ]
 }
