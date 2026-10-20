@@ -41,6 +41,12 @@ EXCLUDED_SOURCES = frozenset({
     "MatterEngine3/src/script/portable_host/tests/host_tests.cpp",
     "MatterEngine3/src/script/portable_host/tests/parser_oom_tests.c",
     "MatterEngine3/src/script/portable_host/tests/properties.cpp",
+    # The terrain coordinator keeps its own CMakeLists (added as a subdirectory);
+    # live_terrain.cpp is compiled by the live_terrain_tests target only.
+    "MatterEngine3/src/component_adapters/terrain_coordinator/src/cache.cpp",
+    "MatterEngine3/src/component_adapters/terrain_coordinator/src/coordinator.cpp",
+    "MatterEngine3/src/component_adapters/terrain_coordinator/tests/coordinator_tests.cpp",
+    "MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain.cpp",
 })
 
 

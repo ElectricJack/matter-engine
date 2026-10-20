@@ -463,8 +463,10 @@ void test_worker_build_app_install_ready_gate_and_identity() {
                 definition.cell_size_m == 0.5f && definition.rung == 2 &&
                 definition.regions.size() == 1u &&
                 definition.sectors.size() == 2u &&
-                cache_root ==
-                    (fixture.root / ".cache" / "TerrainSession").string(),
+                // The provider lexically normalizes a fixture project root,
+                // which on Windows rewrites every separator to a backslash.
+                cache_root == (fixture.root / ".cache" / "TerrainSession")
+                                  .lexically_normal().string(),
                 std::memory_order_release);
             candidate = candidate_for(definition);
             return true;

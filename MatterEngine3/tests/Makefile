@@ -318,6 +318,14 @@ CHARACTER_C = $(FLECS_C)
 PHYSICS_TARGET = build/physics-tests
 PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
+# Runtime installs the character module and river floating samples the river
+# runtime binding, so the Physics link closure carries both on Linux. The
+# RIVER_RUNTIME_CPP sources get their object rules from that suite's eval.
+PHYSICS_CPP += ../src/ecs/character_systems.cpp ../src/hydrology/river_runtime.cpp \
+    ../src/hydrology/water_mesh_continuity.cpp ../src/hydrology/water_mesh_animation.cpp \
+    ../src/hydrology/water_boundary_animation_source.cpp ../src/hydrology/water_mesh_animation_artifact.cpp \
+    $(filter-out hydrology_handoff_products_tests.cpp,$(HYDROLOGY_HANDOFF_PRODUCTS_CPP))
+PHYSICS_MSL_C = $(HYDROLOGY_HANDOFF_PRODUCTS_C)
 
 # Terrain collision Box3D lifetime/behavior suite. Rollback-only source
 # closure; acceptance executes the MSVC/CMake target, never this recipe.
@@ -325,6 +333,27 @@ TERRAIN_COLLISION_PHYSICS_TARGET = build/terrain_collision_physics_tests
 TERRAIN_COLLISION_PHYSICS_CPP = terrain_collision_physics_tests.cpp \
     $(filter-out physics_tests.cpp,$(PHYSICS_CPP))
 TERRAIN_COLLISION_PHYSICS_C = $(PHYSICS_C)
+
+# Live terrain end to end: the engine's LiveTerrain driver over the terrain
+# coordinator, the portable CPU terrain service, Box3D terrain collision and
+# the MatterGraphics scene backend. Rollback-only closure on Windows; the
+# MSVC/CMake target is authoritative there.
+LIVE_TERRAIN_TARGET = build/live_terrain_tests
+LIVE_TERRAIN_COMPONENT_CPP = live_terrain_tests.cpp \
+    ../src/component_adapters/terrain_coordinator/engine/live_terrain.cpp \
+    ../src/component_adapters/terrain_coordinator/src/coordinator.cpp \
+    ../src/component_adapters/terrain_coordinator/src/cache.cpp \
+    ../../libs/TerrainGeneration/src/field.cpp ../../libs/TerrainGeneration/src/meshing.cpp \
+    ../../libs/MatterGraphics/src/graphics.cpp ../../libs/MatterGraphics/src/scene_backend.cpp
+LIVE_TERRAIN_CPP = $(LIVE_TERRAIN_COMPONENT_CPP) \
+    ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
+    ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp \
+    ../../libs/MatterGraphics/src/matrix_math.cpp \
+    $(filter-out physics_tests.cpp,$(PHYSICS_CPP))
+LIVE_TERRAIN_C = $(PHYSICS_C)
+LIVE_TERRAIN_INCLUDES = -I../src/component_adapters/terrain_coordinator/include \
+    -I../../libs/TerrainGeneration/include -I../../libs/TerrainGeneration/tests \
+    -I../../libs/MatterGraphics/include
 
 # River floating is registered here only for rollback source-census parity.
 # Acceptance executes the MSVC/CMake target, never this legacy Make target.
@@ -513,7 +542,7 @@ ifeq ($(UNAME_S),Linux)
 FLAVOR_flecsc_FLAGS   += -D_POSIX_C_SOURCE=200809L
 endif
 FLAVOR_physicsc_CC    := gcc
-FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
+FLAVOR_physicsc_FLAGS := $(FLAVOR_flecsc_FLAGS)
 
 # C++ flavor list (compiled with $(CC) = g++). Order matters only for pattern-rule
 # generation; the alt-compile-cmd rules are all distinct.
@@ -1776,8 +1805,7 @@ def_CPP_SRCS := $(sort \
     $(CHARACTER_CPP) \
     $(ANIMATION_STORE_CPP) \
     $(ANIMATION_BUDGET_CPP) \
-    $(PHYSICS_CPP) \
-    $(TERRAIN_COLLISION_PHYSICS_CPP) \
+    $(filter-out $(RIVER_RUNTIME_CPP),$(PHYSICS_CPP) $(TERRAIN_COLLISION_PHYSICS_CPP) $(LIVE_TERRAIN_CPP)) \
     $(RIVER_FLOAT_SYSTEM_TEST_CPP) \
     $(ANIMATION_SYSTEMS_CPP) \
     $(ANIMATION_SIMULATION_CPP) \
@@ -1980,8 +2008,11 @@ EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
 
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
 CHARACTER_OBJS = $(call obj_list,def,$(CHARACTER_CPP)) $(call obj_list,flecsc,$(CHARACTER_C)) $(EVENT_IMPL_DEF_OBJS)
-PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
-TERRAIN_COLLISION_PHYSICS_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_PHYSICS_CPP)) $(call obj_list,physicsc,$(TERRAIN_COLLISION_PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
+PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+TERRAIN_COLLISION_PHYSICS_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_PHYSICS_CPP)) $(call obj_list,physicsc,$(TERRAIN_COLLISION_PHYSICS_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+LIVE_TERRAIN_OBJS = $(call obj_list,def,$(LIVE_TERRAIN_CPP)) $(call obj_list,physicsc,$(LIVE_TERRAIN_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+# Only the component TUs see the component include roots.
+$(call obj_list,def,$(LIVE_TERRAIN_COMPONENT_CPP)): FLAVOR_def_FLAGS += $(LIVE_TERRAIN_INCLUDES)
 RIVER_FLOAT_SYSTEM_OBJS = $(call obj_list,def,$(RIVER_FLOAT_SYSTEM_TEST_CPP)) $(call obj_list,physicsc,$(RIVER_FLOAT_SYSTEM_C)) $(EVENT_IMPL_DEF_OBJS)
 # The animation suites below reach physics_context.cpp through the same ECS
 # runtime closure (ANIMATION_ECS_RUNTIME_REQUIRED / ANIMATION_STORE_CPP), so
@@ -2305,6 +2336,16 @@ run-terrain-collision-physics: $(TERRAIN_COLLISION_PHYSICS_TARGET)
 	./$(TERRAIN_COLLISION_PHYSICS_TARGET)
 
 .PHONY: run-terrain-collision-physics
+
+$(LIVE_TERRAIN_TARGET): $(LIVE_TERRAIN_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(AUTHORING_ADAPTER_LIBS)
+	$(CC) $(LIVE_TERRAIN_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) \
+	    $(AUTHORING_ADAPTER_BUILD)/contracts/libmatter_contracts.a $(FLECS_PLATFORM_LIBS)
+
+# Seam assertions need the contour seam policy the coordinator requests.
+run-live-terrain: $(LIVE_TERRAIN_TARGET)
+	MATTER_CONTOUR_SEAMS=1 ./$(LIVE_TERRAIN_TARGET)
+
+.PHONY: run-live-terrain
 
 $(RIVER_FLOAT_SYSTEM_TARGET): $(RIVER_FLOAT_SYSTEM_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(RIVER_FLOAT_SYSTEM_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
