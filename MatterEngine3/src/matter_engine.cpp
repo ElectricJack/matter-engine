@@ -118,6 +118,8 @@
 
 #include "version_vector.h"   // M4: digest, for the resolve census line
 #include "async_bake.h"
+#include "scene_admission_test.h"
+#include "render/world_scene_publication.h"
 #include "bake_trace.h"        // Bake Lab: per-session stage-span collector
 #include "bake_trace_names.h"
 #include "ecs/ecs_runtime.h"
@@ -147,7 +149,6 @@
 #include "render/water_mesh_animation_playback.h"
 #include "render/vk_instance_cache.h"
 #include "render/scene_admission.h"
-#include "render/world_scene_publication.h"
 #include "render/vk_scene_publication.h"
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
@@ -1020,16 +1021,63 @@ struct WorldSession::Impl : WorldRenderPublication {
     // Written atomically by the bake worker; never swapped during replay.
     std::shared_ptr<const AuthoredFluidRenderBinding> failed_fluid_debug_binding;
     std::atomic<float> water_animation_time_seconds{0.0f};
+#endif
     viewer::WorldScenePublication<WorldRenderPublication> vk_world_publication;
     bool vk_world_preparing = false;
     bool vk_replaying_accepted = false;
     bool vk_candidate_hidden = false;
     bool vk_world_pending = false;
+    bool scene_has_accepted = false;
     std::shared_ptr<matter_async::CancelToken> vk_world_token;
     // Worker publishes readiness only after the first streamed fill is whole.
     // Until then candidate frames service residency, but display the old world.
     std::atomic<bool> vk_world_fill_ready{true};
+    // Same worker/app acknowledgement pattern as queued GPU publications.
+    // The worker retains its BakeRunScope until the app accepts or rejects the
+    // complete scene; cancellation still belongs to the command's token.
+    struct SceneCompletion {
+        std::atomic<int> result{0}; // pending / accepted / rejected
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::string error;
+        ecs_runtime::WorldStateCommand ready{ecs_runtime::WorldStateCommandKind::Ready};
+    };
+    std::shared_ptr<SceneCompletion> scene_completion; // app thread only
+    detail::SceneAdmissionTest* admission_test = detail::scene_admission_test;
+    bool uses_scene_admission() const {
+#ifdef MATTER_VULKAN_VIEWER
+        if (engine->render_device) return true;
 #endif
+        return admission_test != nullptr;
+    }
+    void reject_scene_candidate(const std::string& error) {
+        if (!scene_completion || scene_completion->result.load() != 0) return;
+        scene_completion->error = error;
+        vk_world_publication.cancel_pending();
+        scene_completion->result.store(-1, std::memory_order_release);
+        scene_completion->changed.notify_one();
+    }
+    bool finish_scene_candidate(std::string& error) {
+        if (!scene_completion || !vk_world_pending) return true;
+        if (scene_completion->result.load(std::memory_order_acquire) < 0) {
+            error = scene_completion->error;
+            return false;
+        }
+        if (vk_world_token && vk_world_token->is_cancelled()) return true;
+        if (!vk_world_fill_ready.load(std::memory_order_acquire)) return true;
+        if (!vk_world_publication.finish(error)) {
+            reject_scene_candidate(error);
+            return false;
+        }
+        reset_runtime_animation();
+        ecs_runtime.enqueue_world_state(std::move(scene_completion->ready));
+        ecs_runtime.flush_world_state_commands();
+        vk_world_pending = false;
+        scene_has_accepted = true;
+        scene_completion->result.store(1, std::memory_order_release);
+        scene_completion->changed.notify_one();
+        return true;
+    }
     struct AuthoredFluidPublication
         : matter::detail::RiverRuntimePublicationIdentity {
         std::shared_ptr<const matter::RiverRuntimeBinding> runtime;
@@ -1364,6 +1412,7 @@ struct WorldSession::Impl : WorldRenderPublication {
     // torn down and rebuilt. Cheap insurance: LocalProvider::poll_deltas
     // currently always returns false, but the flag also fences future providers.
     std::atomic<bool> bake_active{false};
+    bool scene_admission_stopped = false; // worker lane; rejected requests do not retry
 
     // Editor LOD Settings (streaming overrides + active resolved profile).
     // Overrides are written on the app thread and consumed by the worker's
@@ -3353,7 +3402,6 @@ void WorldSession::Impl::worker_loop() {
                 // BakeAll/Reload: reset refine controller (will be rebuilt post-publish).
                 if (cmd.kind == matter_async::CommandKind::BakeAll ||
                     cmd.kind == matter_async::CommandKind::Reload) {
-#ifdef MATTER_VULKAN_VIEWER
                     // Detach the accepted draw/store/temporal owner BEFORE the
                     // existing coordinator drains its old ledger. Those tagged
                     // evictions now retire only the abandoned candidate lane;
@@ -3362,19 +3410,24 @@ void WorldSession::Impl::worker_loop() {
                     retain_job.name = "bake.retain-before-eviction";
                     retain_job.token = cmd.token;
                     retain_job.fn = [this](std::string&) {
-                        if (!engine->render_device) return true;
+                        if (!uses_scene_admission()) return true;
                         WorldRenderPublication empty;
                         empty.store = std::make_unique<viewer::PartStore>(
                             cfg.cache_root, cfg.fixture_io ? cfg.fixture_io->cache : nullptr);
-                        empty.vk_scene = std::make_unique<viewer::VkSceneRenderer>(
-                            *engine->render_device);
+#ifdef MATTER_VULKAN_VIEWER
+                        if (engine->render_device)
+                            empty.vk_scene = std::make_unique<viewer::VkSceneRenderer>(
+                                *engine->render_device);
                         empty.vk_water_diagnostic_settings = vk_water_diagnostic_settings;
                         empty.gpu_mesher_acceptance_part = gpu_mesher_acceptance_part;
                         empty.gpu_mesher_acceptance_instance = gpu_mesher_acceptance_instance;
                         empty.vk_geometry_pages_enabled = vk_geometry_pages_enabled;
+#endif
+                        scene_completion.reset();
+                        if (admission_test) admission_test->finalized = false;
                         vk_world_publication.cancel_pending();
                         vk_world_publication.stage(*this, std::move(empty),
-                            vk_scene_accepted && !vk_world_pending);
+                            scene_has_accepted && !vk_world_pending);
                         vk_world_pending = true;
                         vk_world_preparing = true;
                         vk_world_fill_ready.store(false, std::memory_order_release);
@@ -3389,7 +3442,6 @@ void WorldSession::Impl::worker_loop() {
                         emit_bake(std::move(event));
                         continue;
                     }
-#endif
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
@@ -3404,6 +3456,7 @@ void WorldSession::Impl::worker_loop() {
                     world_river_geometry = {};
                     world_initial_load_done = false;
                 }
+                scene_admission_stopped = false;
                 bake_active.store(true, std::memory_order_release);
                 // One bake run: bump the generation every emit below is stamped
                 // with, and guarantee a terminal event (bake.finished or
@@ -3465,6 +3518,8 @@ void WorldSession::Impl::worker_loop() {
                 bake_active.store(false, std::memory_order_release);
                 continue;
             }
+
+            if (scene_admission_stopped) continue;
 
             // Timed out with no command — take ONE refine/stream step.
             streaming::detail::run_idle_worker_step_noexcept(
@@ -4748,8 +4803,7 @@ void WorldSession::Impl::publish_pipeline(
                         "unknown terrain collision publication failure");
                 }
             };
-#ifdef MATTER_VULKAN_VIEWER
-            if (engine->render_device) {
+            if (uses_scene_admission()) {
                 // The indirection may outlive the worker's run_blocking call.
                 // Release geometry on execution, cancellation or supersession,
                 // and preserve the existing lifetime observer in every case.
@@ -4774,7 +4828,6 @@ void WorldSession::Impl::publish_pipeline(
                     return true;
                 };
             }
-#endif
             collision_ok = gpu_jobs.run_blocking(
                 std::move(collision_job), collision_error);
         } catch (const std::bad_alloc&) {
@@ -4868,19 +4921,19 @@ void WorldSession::Impl::publish_pipeline(
 #endif
         candidate.store->set_bake_observer(cfg.bake_observer);
         candidate.state.reset(viewer::WorldManifest{});
-#ifdef MATTER_VULKAN_VIEWER
         // Allocation happened above; stage only transfers owners. On repeated
         // rejected reloads keep the original accepted world, not the rejected
         // candidate. Never reset the retained renderer/catalog/temporal state.
-        vk_world_publication.stage(*this, std::move(candidate),
-            vk_scene_accepted && !vk_world_pending);
-        vk_world_pending = true;
-        vk_world_token = token;
-        vk_world_preparing = true;
-#else
-        static_cast<WorldRenderPublication&>(*this) = std::move(candidate);
-#endif
-        reset_runtime_animation();
+        if (uses_scene_admission()) {
+            vk_world_publication.stage(*this, std::move(candidate),
+                scene_has_accepted && !vk_world_pending);
+            vk_world_pending = true;
+            vk_world_token = token;
+            vk_world_preparing = true;
+        } else {
+            static_cast<WorldRenderPublication&>(*this) = std::move(candidate);
+            reset_runtime_animation();
+        }
 
         // Pre-warm the child-variant catalog into the freshly-swapped store, on
         // the GL thread that owns it. install_world (which ran before this reset
@@ -5292,17 +5345,14 @@ void WorldSession::Impl::publish_pipeline(
             finalize_error = "unknown authored finalize fault";
             return false;
         }
-#ifdef MATTER_VULKAN_VIEWER
-        if (p.count_errors_seed + bake_fail_count + cap_state->load_fail_count != 0) {
+        if (uses_scene_admission() &&
+            p.count_errors_seed + bake_fail_count + cap_state->load_fail_count != 0) {
             finalize_error = "world candidate has failed parts; accepted scene retained";
             return false;
         }
-#endif
         lods = store->part_lod_table();
-#ifdef MATTER_VULKAN_VIEWER
-        vk_world_preparing = false;
+        // Admission is armed only after worker-side profile setup below.
         vk_world_fill_ready.store(!p.prewarm_child_catalog, std::memory_order_release);
-#endif
 
         stats.instances_total = (uint32_t)manifest.instances.size();
         stats.parts_baked     = (uint32_t)provider->baked_count();
@@ -5336,16 +5386,24 @@ void WorldSession::Impl::publish_pipeline(
         return;
     }
 
-    {
-        ecs_runtime::WorldStateCommand cmd;
-        cmd.kind = ecs_runtime::WorldStateCommandKind::Ready;
-        cmd.entities = provider->authored_entities();
-        auto prov = provider;
-        cmd.part_resolver = [prov](const std::string& name, uint64_t& out) {
-            return prov->resolve_module_hash(name, out);
-        };
-        ecs_runtime.enqueue_world_state(std::move(cmd));
+    auto completion = std::make_shared<SceneCompletion>();
+    completion->ready.entities = provider->authored_entities();
+    completion->ready.replace_entities = true;
+    auto prov = provider;
+    completion->ready.part_resolver = [prov](const std::string& name, uint64_t& out) {
+        return prov->resolve_module_hash(name, out);
+    };
+    // Validate authored recipes before visual/physics admission. The existing
+    // Runtime bootstrap remains the only publisher of authored ECS entities.
+    std::vector<EntityRecipe> validated;
+    scene::RecipeError recipe_error;
+    if (!scene::validate_batch(completion->ready.entities, validated, recipe_error,
+                               completion->ready.part_resolver)) {
+        emit_error(BakeErrorCode::Internal, "entities", recipe_error.message);
+        return;
     }
+    if (!uses_scene_admission())
+        ecs_runtime.enqueue_world_state(std::move(completion->ready));
 
     // Merge load-phase (publish-job) failures and bake-phase failures into count_errors.
     // run_blocking(finalize_job) above guarantees all publish jobs completed
@@ -5354,45 +5412,15 @@ void WorldSession::Impl::publish_pipeline(
     // bake_fail_count was accumulated on the worker thread (sequenced before finalize).
     int count_errors = p.count_errors_seed + bake_fail_count + cap_state->load_fail_count;
 
-    // 8) BakeFinished.
-    {
+    if (!uses_scene_admission()) {
         events::BakeFinished ev;
         ev.errors = count_errors;
         emit_bake(std::move(ev));
     }
 
-    // 9) Deferred tileset phase (Task 15): runs after BakeFinished so silhouette
-    //    is never blocked by the ~350s box3d settle wall.
-    //    BakePartDone{phase="tileset"} events may follow BakeFinished — documented
-    //    in events.h.
-    //    NON-FATAL here: the silhouette already published; a tileset failure must
-    //    not kill a session whose geometry is already rendering. (Fatal on the
-    //    connect() sync path — LocalProvider::connect — where callers need the full world.)
-    if (p.provider_ref) {
-        auto tileset_on_part = [this, &pfx](int done, int total, const char* module) {
-            events::BakePartDone ev;
-            ev.phase  = "tileset";
-            ev.module = module ? module : "";
-            ev.done   = done;
-            ev.total  = total;
-            emit_bake(std::move(ev));
-        };
-        std::string terr;
-        if (!p.provider_ref->run_tileset_deferred(tileset_on_part, is_cancelled, terr)) {
-            if (!is_cancelled()) {
-                // Non-fatal: emit BakeError but the world is already rendering.
-                events::BakeError ev;
-                ev.code    = classify_error(terr);
-                ev.phase   = "tileset";
-                ev.message = terr;
-                emit_bake(std::move(ev));
-            }
-        }
-    }
-
-    // 10) Phase C Task 6: build RefineController from graph snapshot + world instances.
+    // Build RefineController from graph snapshot + world instances.
     //     Only for BakeAll/Reload (provider_ref set); cone rebakes don't update the
-    //     terrain tile set.  Runs after the tileset tail so the world is fully settled.
+    //     terrain tile set. Prepared before admission; refinement runs afterwards.
     //     Reset then rebuild so supersession starts fresh.
     if (p.provider_ref && !is_cancelled()) {
         refine_provider = p.provider_ref;   // extend provider lifetime into refine phase
@@ -5467,12 +5495,100 @@ void WorldSession::Impl::publish_pipeline(
         // Env override for tests: "r0:rung0,r1:rung1,..." e.g. "192:1,640:0"
         refine_provider = p.provider_ref;  // extend provider lifetime
         // Procedural install only staged the profile. Publish it after the
-        // authored app/GPU finalize, Ready transition, and fatal tail work all
-        // succeeded, so partial authored state can never allocate sector work.
+        // authored app/GPU finalize and profile preparation succeeded. Initial
+        // fill must run before Ready; it populates the isolated candidate store.
         streaming_profile_activation.publish(
             ecs_runtime.streaming_coordinator());
         MATTER_LOGI("stream", "Runtime coordinator profile ready for world-kind session\n");
     }
+    if (uses_scene_admission()) {
+        matter_async::GpuJob arm;
+        arm.name = pfx + ".admission";
+        arm.token = token;
+        arm.fn = [this, completion](std::string&) {
+            scene_completion = completion;
+            vk_world_preparing = false;
+            if (admission_test) admission_test->finalized = true;
+            return true;
+        };
+        std::string error;
+        if (!gpu_jobs.run_blocking(std::move(arm), error)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "admission", error);
+            return;
+        }
+        // Keep the existing worker-owned terminal scope and generation alive.
+        // Streaming continues on its sole worker while the app services GPU
+        // jobs/frames. No new command can steal this generation; supersession
+        // cancels its existing token and the scope emits its one abort.
+        while (completion->result.load(std::memory_order_acquire) == 0 && !is_cancelled()) {
+            if (p.prewarm_child_catalog && !world_initial_load_done)
+                execute_sector_stream_step();
+            std::unique_lock<std::mutex> lock(completion->mutex);
+            completion->changed.wait_for(lock, std::chrono::milliseconds(50), [&] {
+                return completion->result.load(std::memory_order_acquire) != 0 || is_cancelled();
+            });
+        }
+        const int result = completion->result.load(std::memory_order_acquire);
+        if (result != 1) {
+            scene_admission_stopped = true;
+            quiesce_bake_pool();
+            // No stale callbacks survive a rejected/cancelled command. This
+            // cleanup uses the same app queue and intentionally has no token.
+            matter_async::GpuJob discard;
+            discard.name = pfx + ".discard-admission";
+            discard.fn = [this, completion](std::string&) {
+                if (scene_completion == completion) {
+                    vk_world_publication.cancel_pending();
+                    vk_world_preparing = true;
+                }
+                return true;
+            };
+            std::string ignored;
+            gpu_jobs.run_blocking(std::move(discard), ignored);
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "admission", result < 0 ? completion->error : "cancelled");
+            return;
+        }
+    }
+
+    // Only this worker publishes terminal success for the admitted generation.
+    if (uses_scene_admission()) {
+        events::BakeFinished ev;
+        ev.errors = count_errors;
+        emit_bake(std::move(ev));
+    }
+
+    // 9) Deferred tileset phase (Task 15): runs after BakeFinished so silhouette
+    //    is never blocked by the ~350s box3d settle wall.
+    //    BakePartDone{phase="tileset"} events may follow BakeFinished — documented
+    //    in events.h.
+    //    NON-FATAL here: the silhouette already published; a tileset failure must
+    //    not kill a session whose geometry is already rendering. (Fatal on the
+    //    connect() sync path — LocalProvider::connect — where callers need the full world.)
+    if (p.provider_ref) {
+        auto tileset_on_part = [this, &pfx](int done, int total, const char* module) {
+            events::BakePartDone ev;
+            ev.phase  = "tileset";
+            ev.module = module ? module : "";
+            ev.done   = done;
+            ev.total  = total;
+            emit_bake(std::move(ev));
+        };
+        std::string terr;
+        if (!p.provider_ref->run_tileset_deferred(tileset_on_part, is_cancelled, terr)) {
+            if (!is_cancelled()) {
+                // Non-fatal: emit BakeError but the world is already rendering.
+                events::BakeError ev;
+                ev.code    = classify_error(terr);
+                ev.phase   = "tileset";
+                ev.message = terr;
+                emit_bake(std::move(ev));
+            }
+        }
+    }
+
+
 }
 
 // ---------------------------------------------------------------------------
@@ -10845,8 +10961,9 @@ void WorldSession::Impl::execute_sector_stream_step() {
         return;
     }
 
-    // After the first cycle with no remaining holes, emit BakeFinished from the
-    // copied coordinator snapshot only.
+    // After the first cycle with no remaining holes, mark first-fill ready
+    // from the copied coordinator snapshot. An active empty desired set is
+    // complete; unissued/held/cooling-down requests are still missing work.
     const streaming::detail::Snapshot snapshot = coordinator.snapshot();
     // `inflight == 0` alone is NOT "the disc is full", and reading it that way
     // fires BakeFinished mid-fill. An executor decrements bake_pool_active only
@@ -10859,14 +10976,13 @@ void WorldSession::Impl::execute_sector_stream_step() {
     // Requiring an idle pool closes that window: no executor in flight means no
     // publish is in the post-but-unacknowledged gap either.
     if (!world_initial_load_done &&
-        snapshot.status.resident_sectors > 0 &&
+        snapshot.status.state == streaming::SectorStreamingState::Active &&
+        snapshot.pending_sectors == 0 &&
         snapshot.status.inflight_sectors == 0 &&
         bake_pool_outstanding() == 0 &&
         requests_exhausted) {
         world_initial_load_done = true;
-#ifdef MATTER_VULKAN_VIEWER
         vk_world_fill_ready.store(true, std::memory_order_release);
-#endif
         const double fill_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - stream_fill_start).count();
         // ALWAYS announce that the disc is full — one line, once per world
@@ -10905,9 +11021,11 @@ void WorldSession::Impl::execute_sector_stream_step() {
             const std::string sp = dsl::script_profile::report();
             if (!sp.empty()) fputs(sp.c_str(), stderr);
         }
-        events::BakeFinished ev;
-        ev.errors = 0;
-        emit_bake(std::move(ev));
+        if (!uses_scene_admission()) {
+            events::BakeFinished ev;
+            ev.errors = 0;
+            emit_bake(std::move(ev));
+        }
     }
 }
 
@@ -12386,8 +12504,10 @@ void WorldSession::tick(const TickDesc& desc) {
 #endif
     impl_->stats.ecs_fixed_steps += result.fixed_steps;
     impl_->stats.ecs_dropped_steps += result.dropped_steps;
-    impl_->reconcile_runtime_animation();
-    impl_->reconcile_runtime_animation_skinning();
+    if (!impl_->vk_world_pending) {
+        impl_->reconcile_runtime_animation();
+        impl_->reconcile_runtime_animation_skinning();
+    }
     impl_->poll_runtime_sources();
     impl_->publish_streaming_snapshot();
     // E5b (S I.14): flush the SceneChangeTracker at END of the app-thread ECS
@@ -13183,7 +13303,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     };
     const auto finish_world_candidate = [&]() {
         if (replaying) return true;
-        if (!impl_->vk_world_fill_ready.load(std::memory_order_acquire)) {
+        if (impl_->vk_world_pending && (!impl_->scene_completion ||
+            !impl_->vk_world_fill_ready.load(std::memory_order_acquire))) {
             // Candidate recording above services VT residency needed by the
             // streaming visibility barrier. Composite the accepted world last;
             // partial fill must neither replace terrain nor discard that owner.
@@ -13191,7 +13312,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->vk_candidate_hidden = true;
             return ok;
         }
-        if (!impl_->vk_world_publication.finish(err)) {
+        if (!impl_->finish_scene_candidate(err)) {
             // Supersession can arrive at the deferred publication hook too.
             // It leaves accepted physics intact and is not a device failure.
             if (impl_->vk_world_token && impl_->vk_world_token->is_cancelled()) {
@@ -13202,9 +13323,14 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             }
             return false;
         }
-        impl_->vk_world_pending = false;
         return true;
     };
+    if (!replaying && impl_->scene_completion &&
+        impl_->scene_completion->result.load(std::memory_order_acquire) < 0) {
+        if (!render_retained()) return false;
+        err = impl_->scene_completion->error;
+        return false; // retained frames never qualify the rejected request
+    }
     if (!replaying && (impl_->vk_world_preparing ||
         (impl_->vk_world_pending && impl_->vk_world_token &&
          impl_->vk_world_token->is_cancelled())))
@@ -13746,6 +13872,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         // First-load rejection has no accepted geometry. Keep a defined shell.
         if (!render_retained()) return false;
         impl_->stats.instances_drawn = 0;
+        impl_->reject_scene_candidate(rejected_request);
         err=rejected_request;return false;
     }
     // Rejected updates render the accepted ordinary/shared snapshot with the
@@ -14208,9 +14335,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 impl_->pick_token_to_part_hash.emplace(viewer::vulkan_history_token(inst.instance_id),inst.part_hash);
         }
     }
-    // Dynamic entity bridge: reconcile ECS entities with renderer slots.
+    // Dynamic entity bridge: pending worlds must not rebind the accepted ECS
+    // through candidate assets. Authored ECS is replaced at admission; its
+    // dynamic raster bindings are reconciled on the following frame.
     // Drop Bind changes whose part can't be loaded yet (next frame retries).
-    if (!replaying && rejected_request.empty()) {
+    if (!replaying && !impl_->vk_world_pending && rejected_request.empty()) {
         // I.11: hub-backed adapter — bridge per-entity errors are republished
         // as immediate error.part_instance{,_clear} on the session hub.
         PROFILE_SCOPE("build.dynamic");
@@ -15304,6 +15433,17 @@ void WorldSession::pump_gpu_jobs(float ms_budget) {
         }
     }
     impl_->publish_streaming_snapshot();
+    if (impl_->admission_test && impl_->scene_completion &&
+        impl_->scene_completion->result.load(std::memory_order_acquire) == 0 &&
+        !impl_->vk_world_preparing && impl_->vk_world_pending &&
+        (!impl_->vk_world_token || !impl_->vk_world_token->is_cancelled())) {
+        auto& test = *impl_->admission_test;
+        test.fill_ready = impl_->vk_world_fill_ready.load(std::memory_order_acquire);
+        std::string error;
+        const int visual = test.visual ? test.visual(error) : 0;
+        if (visual < 0) impl_->reject_scene_candidate(error);
+        else if (visual > 0 && test.fill_ready) impl_->finish_scene_candidate(error);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -6808,12 +6808,12 @@ int main() {
         // carries matter::streaming::SectorStreaming — that component is what
         // makes the coordinator claim an owner and build a SectorStreamer.
         // Nothing else in the viewer creates one since the sector panel was
-        // retired, so auto-create + attach the anchor as soon as the session is
-        // Ready. Runs every frame on purpose: it is idempotent against live ECS
-        // state, so a reload or world switch (which resets bake_ready and
+        // retired, so attach during loading: initial fill is a prerequisite
+        // of scene admission, not a consequence of BakeFinished. Runs every
+        // frame: it is idempotent against live ECS state, so a reload or world switch (which resets bake_ready and
         // installs a fresh Flecs world) transparently re-creates the anchor. A
         // no-op for closed-world sessions.
-        if (bake_ready) ui.ensure_streaming_anchor(*session);
+        ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera,
                                    !stats.freeze_stream_anchor);
         viewer::CharacterWalkInput walk_input{};
@@ -6892,9 +6892,10 @@ int main() {
             // world switch's own bake, the deferred tileset phase that follows
             // a BakeFinished) is dropped rather than attributed to whichever
             // job happens to be newest.
-            if (event.type == matter::EventType::BakeStarted)
+            if (event.type == matter::EventType::BakeStarted) {
+                bake_ready = false;
                 regen_jobs.on_bake_started(viewer::jobs::Clock::now());
-            else if (event.type == matter::EventType::BakePartDone)
+            } else if (event.type == matter::EventType::BakePartDone)
                 regen_jobs.on_part_done(event.module, event.phase, event.done,
                                         event.total);
             else if (event.type == matter::EventType::BakeError)

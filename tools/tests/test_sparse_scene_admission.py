@@ -274,3 +274,32 @@ def test_native_session_collision_admission():
     )
     print(result.stdout)
     print(result.stderr)
+
+
+def test_first_fill_counts_cooling_down_work(tmp_path):
+    output = compile_run(tmp_path, r'''#include "sector_streamer.h"
+#include <cassert>
+#include <iostream>
+int main() {
+    matter_stream::Config config;
+    config.sector_size=16; config.rings={{1,0}};
+    config.fail_cooldown_updates=10;
+    matter_stream::SectorStreamer stream(config);
+    stream.update(0,0,0);
+    assert(stream.desired_count()==0 && stream.pending_count()==0);
+    stream.update(8,0,8);
+    assert(stream.desired_count()==1 && stream.pending_count()==1);
+    matter_stream::SectorRequest request;
+    assert(stream.next_request(request));
+    assert(stream.pending_count()==1);
+    stream.on_failed(request.tx,request.ty,request.tz,request.rung);
+    assert(!stream.next_request(request));
+    assert(stream.inflight_count()==0 && stream.pending_count()==1);
+    for(int i=0;i<10;++i) stream.update(8,0,8);
+    assert(stream.next_request(request));
+    assert(stream.on_published(request.tx,request.ty,request.tz,request.rung));
+    assert(stream.pending_count()==0 && stream.resident_count()==1);
+    std::cout << "empty fill and non-dispatchable pending work accounted\n";
+}
+''', sources=("MatterEngine3/src/sector_streamer.cpp",))
+    assert "pending work accounted" in output
