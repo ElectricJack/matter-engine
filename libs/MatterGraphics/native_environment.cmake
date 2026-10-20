@@ -22,9 +22,11 @@ add_library(matter_graphics_environment STATIC src/native/vk_atmosphere.cpp
     src/native/vk_cloud_shadows.cpp src/native/vk_volumetrics.cpp "${_environment_header}")
 target_compile_features(matter_graphics_environment PUBLIC cxx_std_17)
 target_compile_definitions(matter_graphics_environment PRIVATE MATTER_GRAPHICS_NATIVE_ENVIRONMENT)
-target_include_directories(matter_graphics_environment PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/native" "${_graphics_repo}/MatterEngine3/include")
-target_include_directories(matter_graphics_environment PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+# The producer headers live in src/native beside the moved sources, so the
+# include roots stay PRIVATE: a consumer of the component never inherits them.
+set(_environment_includes "${CMAKE_CURRENT_SOURCE_DIR}/src/native" "${_graphics_repo}/MatterEngine3/include")
+target_include_directories(matter_graphics_environment PRIVATE ${_environment_includes}
+    "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(matter_graphics_environment PUBLIC Vulkan::Vulkan)
 if(MSVC)
     target_compile_options(matter_graphics_environment PRIVATE /W4 /permissive- /utf-8)
@@ -36,6 +38,7 @@ if(BUILD_TESTING)
     foreach(suite atmosphere cloud_layer cloud_shadow volumetric_quality)
         add_executable(matter_graphics_${suite}_tests
             "${_graphics_repo}/MatterEngine3/tests/${suite}_tests.cpp")
+        target_include_directories(matter_graphics_${suite}_tests PRIVATE ${_environment_includes})
         target_link_libraries(matter_graphics_${suite}_tests PRIVATE matter_graphics_environment)
         if(suite STREQUAL "cloud_layer" OR suite STREQUAL "volumetric_quality")
             matter_qualify_environment_test(matter_graphics_${suite}_tests "${Python3_EXECUTABLE}")
@@ -46,6 +49,7 @@ if(BUILD_TESTING)
     endforeach()
     add_executable(matter_graphics_cloud_shadow_reference_tests
         tests/cloud_shadow_reference_tests.cpp)
+    target_include_directories(matter_graphics_cloud_shadow_reference_tests PRIVATE ${_environment_includes})
     target_link_libraries(matter_graphics_cloud_shadow_reference_tests PRIVATE matter_graphics_environment)
     add_test(NAME matter_graphics_cloud_shadow_reference COMMAND matter_graphics_cloud_shadow_reference_tests)
     set_tests_properties(matter_graphics_cloud_shadow_reference PROPERTIES LABELS "cpu;graphics" TIMEOUT 10)
