@@ -1,9 +1,11 @@
 # Sparse scene admission recovery: implementation and remaining acceptance
 
 Task: eager-nexus-71. Base: 9d846e66961cf275be4fb29182281961018f93e5.
-Latest source checkpoint: `c8c4b834e49f4bcde5835ac9b9a7931b3334cc0f` (epoch 4).
-**Five focused native checks pass; Linux editor compile/link passes.
-GPU/UI/performance acceptance is NOT RUN.**
+Latest source checkpoint: `419513acca4b16d5d98e6ce9d5633a7bd41deab5` (epoch 4).
+Product code remains `c8c4b834`; `419513ac` adds only the focused smoke mode.
+**Five focused native checks, Linux editor compile/link, quick Vulkan smoke
+and real Vulkan admission rollback/retry pass. The final epoch 4 follow-up
+records graphics execution and remaining UI/performance limits.**
 The epoch 4 section at the end records current behavior and evidence; preceding
 sections preserve the earlier failed checkpoints and their then-current gaps.
 
@@ -491,10 +493,13 @@ timeout --signal=TERM --kill-after=10s 90s g++ -std=c++17 -fsyntax-only \
   MatterEngine3/tests/vulkan_smoke_tests.cpp
 ```
 
-GPU primary/shadow preparation rollback, actual mixed-scene rendered identity,
-interactive first-load UI recovery, screenshot/performance rejection artifacts,
-validation layers and rendered performance are **NOT RUN**: this worker has no
-authorized display/DRI/graphics runner. The native session fixture deliberately
+At the first epoch 4 close attempt, GPU primary/shadow preparation rollback,
+actual mixed-scene rendered identity, interactive first-load UI recovery,
+screenshot/performance rejection artifacts, validation layers and rendered
+performance were **NOT RUN** under the prior no-display disposition.
+The close was rejected because new supervisor feedback had arrived: the
+existing X11 display `:0` was available and authorized for supported AQ checks.
+The following graphics follow-up supersedes that environment limitation. The native session fixture deliberately
 injects only the visual decision and does not substitute for those results.
 Windows verification remains waived by the task's owner. No RT-counter probe,
 runner provisioning or daemon lifecycle operation was performed.
@@ -519,3 +524,144 @@ configuration. All final source is at `c8c4b834`.
 The epoch 3 Ready/terminal-ordering blocker is resolved by the real session
 fixture and worker/app acknowledgement. The remaining unexecuted graphics
 checks above retain their capability labels; none is represented as a pass.
+
+
+### Epoch 4 graphics follow-up after supervisor feedback
+
+The attempted close at checkpoint `e076d134` was refused because messages
+`msg-63100670472b4392a88ace4871c18bed` and
+`msg-8303ade6df9c4ae39499ae1d831a3075` had arrived. They made the existing
+`DISPLAY=:0` route available for ordinary AQ admission. Earlier statements that
+no display was authorized are historical and no longer apply.
+
+The AQ-wrapped `xdpyinfo` check passed (X.Org 24.1.6). The current-source Linux
+editor and independently built fault-enabled smoke executable both created
+Vulkan devices on **llvmpipe, Mesa 25.2.8, LLVM 20.1.2, Vulkan API 1.4.318**.
+The editor reported RT available/enabled; this is software RT, not a hardware
+RT or performance acceptance result. No display, driver or runner was installed.
+
+The standalone smoke build uses the Make smoke source list, the current local
+Linux engine archive for newer dependencies, and native GLFW/flecs/bc7enc
+objects already built in this slot. The Vulkan context, resources, scene
+renderer and sparse uploader were compiled afresh with
+`MATTER_VK_TEST_FAULT_INJECTION`. The legacy Make list needed two newer mesher
+test translation units; their Windows-only `_putenv_s` calls use the preserved
+Linux setenv/unsetenv shim. No test result is stubbed. Initial missing include,
+link dependency and platform-call build failures are not passing evidence.
+The exact compile recipe and AQ wrapper are preserved in the evidence folder.
+
+The quick Vulkan test **passed**: three 256x256 frames, triangle/background
+readback, validation errors 0, elapsed 0.589s, peak RSS 141328384 bytes. This
+validates device creation, presentation and basic readback only.
+
+A focused `MATTER_VK_SMOKE_MODE=sparse-admission` mode calls the same
+`admission_rollback` fixture used by the full sparse suite, with its real baked
+volume and renderer. It avoids unrelated sparse population and LOD acceptance
+work. The normal full sparse mode and renderer setup are unchanged.
+
+The first FloorDemo screenshot attempt timed out at 120s while still active,
+after baking and beginning renderer resource initialization. It produced no
+accepted capture and is not a pass. A 360s line-buffered follow-up and the
+240s focused admission attempt are recorded below.
+
+
+The 360s editor follow-up also timed out without a screenshot or bake-ready
+receipt. Its last output reached RT pipeline setup after successful FloorDemo
+bake and renderer resource initialization. The focused admission attempt at
+240s timed out too; its AQ run contains one quick-smoke pass and one timeout,
+not a rollback pass. Preserved timeout logs are named explicitly. Neither
+failure proves a scene-admission deadlock; neither is accepted evidence that
+scene publication succeeds on this graphics route.
+
+The final focused run uses a 900s bound, line-buffered output and the existing
+`MATTER_PIPELINE_PROFILE=1` instrumentation to identify slow driver calls.
+
+An experimental isolation attempt used the existing renderer RT-disable test
+switch to omit full-scene lighting. That switch is suitable for the skin
+compute fixture but did not leave valid descriptor state for ordinary scene
+rendering: validation reported a null descriptor-set layout and the process
+failed before admission assertions. **That shortcut was removed.** Its logs
+are preserved as `epoch4-invalid-isolation*.log`; it is neither a product-path
+rollback failure nor a passing test. The final attempt uses the full renderer.
+
+Final graphics source is `419513acca4b16d5d98e6ce9d5633a7bd41deab5`;
+product source remains `c8c4b834e49f4bcde5835ac9b9a7931b3334cc0f`.
+The current-source smoke executable SHA256 is
+`baa95cf284d52fc24f75ec64a8f93b279227f2a95145aed942f05a3a56bce8a7`.
+The Linux editor SHA256 is
+`053f4b2ec563abde1c46cb556ca7d0bc87d3a850edff2742385ddaead321406c`.
+
+
+**Full-renderer Vulkan admission result: PASS.** The focused fixture emitted
+`SPARSE_ADMISSION_GPU mixed_ordinary_lod_primary_shadow_rollback_and_retry=pass`,
+`validation errors: 0` and `ALL PASS`, and the AQ wrapper passed. This run
+kept the real RT pipeline enabled; its driver creation completed successfully
+in 66128 ms. It exercises actual GPU preparation, readback and resource lifetime
+through capacity rejection, primary/shadow faults, forest and placement
+rollback, mixed ordinary geometry/LOD identity retention, new ordinary part
+rollback and later valid forest publication. The earlier invalid-isolation
+attempt is not the source or binary used for this result.
+
+The successful run provides software Vulkan/RT evidence, not hardware RT,
+StreamMountain scale or device performance acceptance. Existing loader
+performance warnings about unused shader outputs remain visible in the log;
+there were zero validation errors. Based on the now-measured pipeline cost,
+a final editor first-load capture uses a 600s bound and pipeline tracing.
+
+
+Graphics commands (all runtime work admitted through AQ; no direct runtime
+bypass):
+
+```sh
+aq test --aq-timeout 75 -n0 /tmp/eager-nexus-71-epoch4/test_graphics.py -k display -q -s
+aq test --aq-timeout 75 -n0 /tmp/eager-nexus-71-epoch4/test_graphics.py -k gpu -q -s
+aq test --aq-timeout 75 -n0 /tmp/eager-nexus-71-epoch4/test_graphics.py -k sparse_admission -q -s
+aq test --aq-timeout 75 -n0 /tmp/eager-nexus-71-epoch4/test_graphics.py -k editor -q -s
+aq test --aq-timeout 75 -n0 /tmp/eager-nexus-71-epoch4/test_graphics.py -k editor_raster -q -s
+```
+
+The `gpu` command was the earlier 240s attempt (quick pass, admission timeout).
+The final `sparse_admission` command passed in **223.11s** with the full renderer.
+The earlier `editor` commands predate addition of the separate raster test.
+The RT-enabled editor's last measured attempt used its default 1280x720 window,
+three settling frames and a 600s bound. A separate task-relevant software-raster
+capture sets the existing `MATTER_DISABLE_VK_RT=1`, 320x240 window and
+`MATTER_HIDE_UI=1`, also with three settling frames and a 600s bound. It tests
+first-load readiness and successful capture, not interactive capacity rejection
+or full RT lighting. Its result is recorded below.
+
+
+The default-size, RT-enabled editor capture **timed out at 600s**, with no
+bake-ready receipt or PNG. Pipeline tracing shows successful RT pipeline
+creation in 51684 ms; the log then reports actual RT dispatches. The process
+remained CPU-active during the first frame. This is not a passing UI/capture
+result and does not establish acceptable software-RT performance. The log also
+contains an implausibly large RT rejected-record diagnostic; this change does
+not own or claim to fix the sibling RT-counter work. No fatal editor diagnostic
+or admission-capacity error was logged in that attempt. The separate raster
+run avoids conflating this result with first-load admission under software
+raster settings.
+
+
+**Software-raster editor outcome: admission observed; capture timed out.**
+The product emitted `[bake] bake finished (0 errors)`, selected FloorDemo, and
+reported `effective=false dispatches=0` for RT. It then entered deferred
+ForestFloor/VT work. The 600s bound expired without a PNG. Thus the successful
+initial admission/terminal event is observed on the actual product, but this
+run is **not** a passing screenshot test. No interactive capacity-rejection UI,
+rejected-request screenshot/performance artifact, hardware RT, StreamMountain
+scale or device-performance acceptance is claimed. Windows remains waived.
+
+The original capture wrapper expected `viewer: bake ready`; source inspection
+shows that line is FIFO-only. The preserved corrected wrapper checks the actual
+non-FIFO `bake finished (0 errors)` log instead. Both capture attempts timed out
+before reaching that assertion, so this harness correction changes neither
+recorded failure. The original wrapper is also preserved for provenance.
+
+Final acceptance evidence is the five focused native checks (including the
+actual WorldSession worker/app/streaming/ECS/collision sequence), the complete
+Linux editor build, and the full-renderer Vulkan admission fixture with zero
+validation errors. The latter proves rendered mixed-scene rollback and retry;
+the native fixture proves first-load rejection and corrected/superseding
+success with exactly one terminal per nonzero generation. The editor capture
+limitations above remain explicit rather than being counted as passes.
