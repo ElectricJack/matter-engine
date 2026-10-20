@@ -58,7 +58,10 @@ matter_read_manifest(
     PLATFORM windows
 )
 set(matter_engine_core_sources ${matter_engine_core_manifest})
-list(FILTER matter_engine_core_sources INCLUDE REGEX "^MatterEngine3/src/.*\\.cpp$")
+# The triangle emitter, polygon triangulator and matrix math are owned by
+# ProceduralGeometry/MatterGraphics and compiled from where they live.
+list(FILTER matter_engine_core_sources INCLUDE REGEX
+    "^(MatterEngine3/src|libs/ProceduralGeometry/src|libs/MatterGraphics/src)/.*\\.cpp$")
 if(WIN32)
     # The inotify implementation is Linux-only. Its source retains the existing
     # Linux guards and remains in the canonical manifest/Make build.

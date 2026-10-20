@@ -182,7 +182,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/streamline_bridge.cpp
         MatterEngine3/src/render/raster_mesh.cpp
         MatterEngine3/src/render/frame_matrices.cpp
-        MatterEngine3/src/render/matrix_math.cpp
+        libs/MatterGraphics/src/matrix_math.cpp
         MatterEngine3/src/render/indexed_part_geometry.cpp
     )
     set(matter_vulkan_smoke_sources

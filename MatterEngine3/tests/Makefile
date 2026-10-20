@@ -112,7 +112,7 @@ LOCAL_LIGHT_INDEX_CPP = local_light_index_tests.cpp ../src/world_lights.cpp
 LOCAL_LIGHT_INDEX_HEADERS = check.h ../src/world_lights.h
 
 MATRIX_TARGET = build/matrix_tests
-MATRIX_CPP = matrix_tests.cpp ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp
+MATRIX_CPP = matrix_tests.cpp ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp
 MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera.h \
                  ../src/render/matrix_math.h ../src/render/frame_matrices.h \
                  ../src/render/gpu_matrix_pack.h
@@ -550,7 +550,7 @@ GRAPH_SOURCES = part_graph_tests.cpp ../src/part_graph.cpp ../src/part_asset_v2.
 GRAPH_C   = $(MSL)/material_registry.c
 
 TRIVAR_TARGET = build/triangle_variation_tests
-TRIVAR_CPP = triangle_variation_tests.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/part_asset_v2.cpp \
+TRIVAR_CPP = triangle_variation_tests.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp ../src/part_asset_v2.cpp \
              $(COMMON_MSL_BLAS_SRC)
 TRIVAR_C   = $(MSL)/material_registry.c
 
@@ -572,7 +572,7 @@ CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
                  ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
-                 ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                 ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../../libs/MatterGraphics/src/matrix_math.cpp \
                  ../src/lod_select.cpp ../src/sector_grid.cpp \
                  ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
                  ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
@@ -665,7 +665,7 @@ ISO_TARGET = build/iso_primitive_tests
 # animation clip is open, so every target that compiles it needs dsl_animation.cpp
 # and its closure (same set DSLDET_CPP below carries) plus the Ozz archives.
 ISO_CPP = iso_primitive_tests.cpp field_probe.cpp \
-          ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+          ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
           ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp \
           ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp \
           ../src/animation/animation_validate.cpp \
@@ -682,7 +682,7 @@ DSLDET_TARGET = build/dsl_determinism_tests
 # dsl_state.cpp routes translate/rotate to clip_translate/clip_rotate while an
 # animation clip is open, so the determinism harness now links dsl_animation.cpp.
 DSLDET_CPP = dsl_determinism_tests.cpp field_probe.cpp \
-             ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+             ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
              ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp \
              ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp \
              ../src/animation/animation_validate.cpp \
@@ -696,7 +696,7 @@ DEV_TARGET = build/dev_live_edit_tests
 DEV_SOURCES = dev_live_edit_tests.cpp ../src/live_edit.cpp ../src/inotify_watcher.cpp
 
 POLYTRI_TARGET = build/polygon_triangulate_tests
-POLYTRI_CPP = polygon_triangulate_tests.cpp ../src/polygon_triangulate.cpp
+POLYTRI_CPP = polygon_triangulate_tests.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp
 
 SHADER_SOURCE_TARGET = build/shader_source_tests
 SHADER_SOURCE_CPP = shader_source_tests.cpp ../src/shader_source.cpp
@@ -1025,7 +1025,7 @@ SCRIPT_SOLID_COMMON_CPP = ../src/render/gpu_meshing/gpu_solid_mesher_common.cpp 
 TERRAINVERB_TARGET = build/terrain_verb_tests
 TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                   $(SCRIPT_SOLID_COMMON_CPP) \
-                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1040,7 +1040,7 @@ TERRAINVERB_C = $(COMMON_MSL_C)
 SECTORBAKE_TARGET = build/sector_bake_tests
 SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                  $(SCRIPT_SOLID_COMMON_CPP) \
-                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1072,7 +1072,7 @@ SCATTERPROF_C = $(COMMON_MSL_C)
 
 PARTSTORE_TARGET = build/partstore_tests
 PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
-                ../src/render/matrix_math.cpp \
+                ../../libs/MatterGraphics/src/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                 ../src/part_asset_v2.cpp \
@@ -1100,7 +1100,7 @@ PARTSTORE_RACE_C   = $(PARTSTORE_C)
 # the graph_integration/example/gallery/treebake/grasslod
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = build/script_host_tests
-SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
              $(SCRIPT_SOLID_COMMON_CPP) \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -1136,7 +1136,7 @@ GRAPH_INT_TARGET = build/part_graph_integration_tests
 # carries the animation-authoring closure this suite now needs. The extra
 # render/LOD sources below are the A8 additions (part_store.h consumers).
 GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
-                ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../../libs/MatterGraphics/src/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -1148,7 +1148,7 @@ EXAMPLE_TARGET = build/example_world
 # ScriptHost::eval_world_definition() calls it too; script/world_definition_loader.cpp
 # supplies it (same missing-source pattern as TILESETMEADOWMANIFEST_CPP above).
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
+              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/script/world_definition_loader.cpp ../src/world_lights.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
@@ -1233,7 +1233,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace
                   ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
                   ../src/tileset_phase.cpp \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
-                  ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                  ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -1434,7 +1434,7 @@ PHYSICS_PLAYGROUND_C      = $(MSL)/material_registry.c
 # Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world (sh flavor).
 EVALWORLD_TARGET = build/eval_world_tests
 EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1458,7 +1458,7 @@ CAVERNPROBE_C = $(COMMON_MSL_C)
 # Phase C Task 1: fold cache in ScriptHost (sh flavor).
 FOLDCACHE_TARGET = build/fold_cache_tests
 FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1474,7 +1474,7 @@ SHLIB_TARGET = build/shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
             ../src/bake_trace.cpp \
             ../src/part_graph.cpp \
-            ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
+            ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
             ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
             $(TERRAIN_SRC) \
@@ -1530,7 +1530,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../../MatterEditor/src/camera_controller.cpp \
               ../../MatterEditor/src/streaming_anchor_controller.cpp \
               ../src/async_bake.cpp \
-              ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
+              ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
@@ -1553,7 +1553,7 @@ RETOPO_INT_TARGET = build/retopo_integration_tests
 RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/bake_trace.cpp \
                  ../src/part_graph.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
-                 ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                 ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
                  ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/part_flatten.cpp ../src/impostor_bake.cpp ../src/part_cluster.cpp \
@@ -1585,7 +1585,7 @@ GPU_RENDER_CPP = \
     ../src/animation/animation_budget.cpp \
     ../src/render/vk_animation_skinning.cpp \
     ../src/bake_trace.cpp \
-    ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
+    ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
     ../src/render/world_state.cpp \
     ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp ../src/provider/resolvers.cpp \
@@ -1620,9 +1620,9 @@ GPU_PIPELINE_CPP = \
     ../src/terrain_collision/terrain_collision_artifact.cpp \
     ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
     ../src/script_rng_binding.cpp \
-    ../src/polygon_triangulate.cpp \
+    ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
     ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
-    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/impostor_bake.cpp ../src/triangle_emit.cpp \
+    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/impostor_bake.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp \
     ../src/part_cluster.cpp \
     ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
     ../src/tileset_torus_bvh.cpp \

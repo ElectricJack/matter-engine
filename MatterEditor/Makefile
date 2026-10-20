@@ -593,7 +593,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_temporal.cpp \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
-        $(ME3_DIR)/src/render/matrix_math.cpp \
+        $(ME3_DIR)/../libs/MatterGraphics/src/matrix_math.cpp \
         $(ME3_DIR)/src/render/lod_trace.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
 	@mkdir -p $(dir $@)
@@ -634,7 +634,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_temporal.cpp \
 	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
 	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
-	    $(ME3_DIR)/src/render/matrix_math.cpp \
+	    $(ME3_DIR)/../libs/MatterGraphics/src/matrix_math.cpp \
 	    $(ME3_DIR)/src/render/lod_trace.cpp \
 	    $(PROFILE_DIR)/src/profile.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ) -o $@ \
