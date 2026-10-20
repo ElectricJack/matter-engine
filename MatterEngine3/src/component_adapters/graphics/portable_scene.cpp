@@ -69,6 +69,7 @@ struct PortableScene::Impl {
     std::unique_ptr<mg::VulkanRaster> raster;
     std::map<uint64_t, Upload> uploads;        // By part hash.
     std::set<uint64_t> refused;                // Logged once, legacy-only.
+    std::set<std::string> refused_placements;  // Instance owners, likewise.
     std::map<std::string, s::SceneInstance> placed;
     std::vector<viewer::VkSceneInstance> admitted;
     uint64_t revision = 0;
@@ -146,6 +147,14 @@ struct PortableScene::Impl {
             char owner[40];
             std::snprintf(owner, sizeof owner, "%016llx/",
                           (unsigned long long)(inst.instance_id ? inst.instance_id : index));
+            // The scene takes affine placements only; any other one stays with
+            // the legacy renderer rather than failing the whole update.
+            if (const auto placement = d::validate_transform(object_to_world); !placement.ok()) {
+                if (refused_placements.insert(owner).second)
+                    MATTER_LOGE("graphics", "portable instance %.16s stays legacy-only: %s", owner,
+                                join(placement.diagnostics).c_str());
+                continue;
+            }
             for (const auto& child : product->document.instances) {
                 mm::Mat4 part_space;
                 if (!authoring_adapter::compose_instance_transform(product->document, child, part_space)) {
@@ -256,6 +265,9 @@ bool PortableScene::Impl::capture(const PortableView& view, std::string& err) {
                  (unsigned long long)revision, w, h);
     for (auto it = refused.begin(); it != refused.end(); ++it)
         std::fprintf(json, "%s\"%016llx\"", it == refused.begin() ? "" : ", ", (unsigned long long)*it);
+    std::fprintf(json, "],\n  \"refused_placements\": [");
+    for (auto it = refused_placements.begin(); it != refused_placements.end(); ++it)
+        std::fprintf(json, "%s\"%s\"", it == refused_placements.begin() ? "" : ", ", it->c_str());
     std::fprintf(json, "],\n  \"assets\": [");
     bool first = true;
     for (const auto& [hash, up] : uploads) {
