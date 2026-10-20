@@ -52,7 +52,7 @@
 // An all-air or all-solid tile is a normal success with an empty mesh.
 
 #include "seam_boundary.h"
-#include "terrain_field.h"
+#include "../../ProceduralGeometry/include/matter/geometry/terrain_field.h"
 #include <cstdint>
 #include <string>
 #include <vector>

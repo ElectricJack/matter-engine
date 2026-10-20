@@ -35,8 +35,7 @@
 #include <cassert>
 #include <atomic>
 #include <chrono>
-#include "terrain_field.h"
-#include "terrain_river_overlay.h"
+#include "../include/matter/geometry/terrain_field.h"
 
 #include <cmath>
 #include <cstring>
