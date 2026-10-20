@@ -18,6 +18,12 @@ libs/MatterGraphics/src/composition.cpp|all
 libs/MatterGraphics/src/vulkan_resources.cpp|all
 libs/MatterGraphics/src/vulkan_raster.cpp|all
 MatterEngine3/src/component_adapters/graphics/portable_scene.cpp|all
+MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain.cpp|all
+MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain_session.cpp|all
+MatterEngine3/src/component_adapters/terrain_coordinator/src/coordinator.cpp|all
+MatterEngine3/src/component_adapters/terrain_coordinator/src/cache.cpp|all
+libs/TerrainGeneration/src/field.cpp|all
+libs/TerrainGeneration/src/meshing.cpp|all
 MatterEngine3/src/render/geometry_world_runtime.cpp|all
 MatterEngine3/src/render/vk_sparse_voxel.cpp|all
 MatterEngine3/src/render/vk_volumetrics.cpp|all

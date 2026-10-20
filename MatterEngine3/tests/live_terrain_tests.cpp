@@ -6,6 +6,7 @@
 // The resource device is a recording test double; no GPU is created.
 #include "check.h"
 #include "component_adapters/terrain_coordinator/engine/live_terrain.h"
+#include "component_adapters/terrain_coordinator/engine/live_terrain_session.h"
 #include "ecs/physics_context.h"
 #include "examples/terrain_example_tiles.h"
 #include "matter/ecs.h"
@@ -18,6 +19,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -401,6 +403,149 @@ void test_live_terrain() {
     CHECK(upserts == 25, "edited tiles are re-placed with new GPU handles");
 }
 
+// The editor adapter (WorldSession::Impl::update_live_terrain drives exactly
+// these calls once per frame): a world's field program and the camera anchor
+// in, the same products out to cache, installed collision and the scene.
+bool session_idle(c::LiveTerrainSession& session) {
+    const auto stats = session.live().coordinator().statistics();
+    return !stats.queued && !stats.running && !stats.uploads;
+}
+
+void settle(c::LiveTerrainSession& session, const std::array<double, 3>& anchor, bool graphics) {
+    for (int round = 0; round < 64; ++round) {
+        CHECK(session.update(anchor, graphics).ok(), "session frame succeeds");
+        if (session_idle(session)) return;
+    }
+    CHECK(false, "live terrain session settles within 64 frames");
+}
+
+std::map<std::string, std::string> product_digests(c::LiveTerrainSession& session) {
+    std::map<std::string, std::string> out;
+    for (const auto& tile : session.live().regions())
+        if (const auto p = session.live().coordinator().collision(tile.id)) {
+            std::string digest;
+            for (const auto& r : p->resources.resources) digest += r.description.content.hex;
+            out[tile.id.value] = digest;
+        }
+    return out;
+}
+
+void test_live_terrain_session() {
+    std::puts("== live terrain session: the editor's adapter lifecycle ==");
+    const auto original = ex::field(), edited = ex::field(1), reverted = ex::field(2);
+    auto device = std::make_shared<TestDevice>();
+    auto* backend = new mg::SceneBackend(device, {});
+    mg::Graphics graphics{std::unique_ptr<mg::Backend>(backend)};
+    c::LiveTerrainSession session(&graphics);
+    PhysicsFixture physics;
+    uint64_t revision = 0;
+    auto place = [&](size_t& upserts, size_t& removes) {
+        std::vector<s::SceneInstance> upsert;
+        std::vector<d::SemanticId> remove;
+        session.live().scene_delta(upsert, remove);
+        upserts = upsert.size();
+        removes = remove.size();
+        CHECK(graphics.update_scene(scene_job, {++revision, upsert, remove}).ok(), "session scene delta accepted");
+    };
+    // The editor's install step: replace only when the live key moved.
+    auto install = [&]() {
+        terrain_collision::TerrainCollisionCandidate candidate;
+        std::string error;
+        if (!session.collision_changed(physics.context->terrain_collision_stats().installation_key, candidate, error))
+            return false;
+        CHECK(physics.context->replace_terrain_collision(candidate, error), error.c_str());
+        return true;
+    };
+
+    // World install + first frames: 5x5 tiles, collision installed once.
+    const std::array<double, 3> anchor{-8, 0, -8};
+    CHECK(!session.has_source() && session.set_source(original.text, "world.1").ok(), "world program installed");
+    settle(session, anchor, true);
+    CHECK(session.live().regions().size() == 25, "session plans the 5x5 rings");
+    CHECK(install() && !install(), "collision installs once, then is current");
+    const auto installed = physics.context->terrain_collision_stats().installation_key;
+    size_t upserts = 0, removes = 0;
+    place(upserts, removes);
+    CHECK(upserts == 25 && removes == 0, "every resident tile placed");
+    same_seam(session.live(), {-2, 0, -1}, {-1, 0, -1}, 0, -16, "session adjacent seam at x=-16");
+    same_seam(session.live(), {-1, 0, 0}, {-1, 0, 1}, 2, 16, "session 2:1 seam at z=16");
+    const auto cold = product_digests(session);
+    const size_t cached = session.cache().size();
+    const uint64_t generated = session.generated();
+    CHECK(cold.size() == 25 && cached >= 25 && generated == 25, "every product generated once and cached");
+
+    // Unchanged program (a re-install of the same world) is not an edit.
+    CHECK(session.set_source(original.text, "world.2").ok(), "same program accepted");
+    CHECK(session_idle(session) && session.live().coordinator().gpu(session.live().regions().front().id),
+          "unchanged program redefines nothing");
+
+    // Graphics toggle off: GPU goes, definitions/cache/collision stay.
+    settle(session, anchor, false);
+    bool kept = true;
+    for (const auto& tile : session.live().regions())
+        kept = kept && !session.live().coordinator().gpu(tile.id) && session.live().coordinator().collision(tile.id);
+    place(upserts, removes);
+    CHECK(kept && upserts == 0 && removes == 25, "graphics eviction leaves the scene, keeps collision leases");
+    CHECK(!install() && physics.context->terrain_collision_stats().installation_key == installed &&
+              session.cache().size() == cached,
+          "installed collision and cache retained without graphics");
+    settle(session, anchor, true);
+    place(upserts, removes);
+    CHECK(upserts == 25 && product_digests(session) == cold && session.cache().size() == cached &&
+              session.generated() == generated,
+          "graphics re-demand re-uploads the same products without generating");
+
+    // Anchor demand: one tile east moves the rings; returning is all cache hits.
+    settle(session, {8, 0, -8}, true);
+    CHECK(!session.live().region({-3, 0, -1}) && session.live().region({2, 0, -1}) &&
+              product(session.live(), {1, 0, -1})->detail_level == 0,
+          "anchor update moves the rings and refines detail");
+    same_seam(session.live(), {0, 0, -1}, {1, 0, -1}, 0, 16, "session refined seam at x=16");
+    CHECK(install(), "moved rings install new collision");
+    place(upserts, removes);
+    CHECK(removes >= 5 && upserts > 0, "scene follows the moved rings");
+    const size_t moved_cache = session.cache().size();
+    const uint64_t moved_generated = session.generated();
+    CHECK(moved_generated > generated, "moved rings generate their new tiles");
+    settle(session, anchor, true);
+    CHECK(product_digests(session) == cold && session.cache().size() == moved_cache &&
+              session.generated() == moved_generated,
+          "returning anchor reuses cached products");
+    CHECK(install() && physics.context->terrain_collision_stats().installation_key == installed,
+          "collision returns to the original installation");
+
+    // Edit with outstanding work, then a late result for the superseded program.
+    CHECK(session.set_source(edited.text, "world.3").ok(), "edit accepted");
+    std::optional<c::GenerationWork> outstanding;
+    CHECK(session.live().coordinator().take(outstanding).ok() && outstanding, "edited job dispatched");
+    CHECK(session.set_source(reverted.text, "world.4").ok(), "second edit while the job runs");
+    CHECK(outstanding && outstanding->control.cancellation->load(), "superseded job cancelled");
+    if (outstanding) {
+        // Even uncancelled, the replaced program's request is refused by the current source.
+        const auto direct = session.service().generate(*outstanding->request, s::JobControl{});
+        CHECK(!direct.ok() && std::any_of(direct.diagnostics().begin(), direct.diagnostics().end(),
+                                          [](const auto& e) { return e.code == E::missing_dependency; }),
+              "the replaced program's work is refused by the current source");
+        const auto late = c::execute(*outstanding, session.service());
+        const auto refused = session.live().coordinator().complete(*outstanding, late);
+        CHECK(std::any_of(refused.diagnostics.begin(), refused.diagnostics.end(),
+                          [](const auto& e) { return e.code == E::stale_result; }),
+              "late result is rejected as stale");
+    }
+    settle(session, anchor, true);
+    bool current = true;
+    for (const auto& tile : session.live().regions()) {
+        const auto p = session.live().coordinator().collision(tile.id);
+        current = current && p && p->job.source_revision == "world.4" &&
+                  p->field_content.hex == d::sha256(reverted.text).hex;
+    }
+    CHECK(current, "every tile publishes the latest program only");
+    CHECK(install() && physics.context->terrain_collision_stats().installation_key != installed,
+          "edited collision replaces the installation");
+    place(upserts, removes);
+    CHECK(upserts == 25, "edited tiles re-placed");
+}
+
 void test_browser_reports_terrain_unsupported() {
     std::puts("== browser: terrain capability unsupported ==");
     const auto capabilities = read_text("../../integrations/web-procedural/viewer/src/capabilities.mts");
@@ -418,6 +563,7 @@ void test_browser_reports_terrain_unsupported() {
 
 int main() {
     test_live_terrain();
+    test_live_terrain_session();
     test_browser_reports_terrain_unsupported();
     return check_summary();
 }

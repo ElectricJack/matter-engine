@@ -817,6 +817,7 @@ if(BUILD_TESTING)
     matter_add_engine_cpu_test(live_terrain_tests
         MatterEngine3/tests/live_terrain_tests.cpp
         MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain.cpp
+        MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain_session.cpp
         libs/TerrainGeneration/src/field.cpp
         libs/TerrainGeneration/src/meshing.cpp
         libs/MatterGraphics/src/graphics.cpp
