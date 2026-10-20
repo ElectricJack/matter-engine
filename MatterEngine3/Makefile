@@ -634,7 +634,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/component_adapters/authoring/engine src/component_adapters/graphics src/terrain_collision src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src ../libs/TerrainGeneration/src
+vpath %.cpp src src/component_adapters/authoring/engine src/component_adapters/graphics src/terrain_collision src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src ../libs/TerrainGeneration/src ../libs/AssetPipeline/physics/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).

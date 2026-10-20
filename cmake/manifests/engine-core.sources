@@ -88,7 +88,7 @@ libs/AssetStoreLib/src/store_os.cpp|all
 MatterEngine3/src/part_cluster.cpp|all
 MatterEngine3/src/tileset_layout.cpp|all
 MatterEngine3/src/tileset_collider.cpp|all
-MatterEngine3/src/tileset_settle.cpp|all
+libs/AssetPipeline/physics/src/tileset_settle.cpp|all
 MatterEngine3/src/tileset_placement.cpp|all
 MatterEngine3/src/tileset_part_collider.cpp|all
 MatterEngine3/src/tileset_bake.cpp|all
