@@ -8893,8 +8893,17 @@ static void run_rt_rejected_surface_lookup_counters(
             out.ok = !submitted && (fault == Fault::Dispatch ? !recorded
                                     : recorded && fault != Fault::None);
         } else {
+            std::printf("RT counter frame: end_frame.enter serial=%llu\n",
+                        static_cast<unsigned long long>(out.serial));
+            std::fflush(stdout);
             submitted = vulkan.end_frame(frame, error);
+            std::printf("RT counter frame: end_frame.exit serial=%llu submitted=%d\n",
+                        static_cast<unsigned long long>(out.serial), submitted);
+            std::fflush(stdout);
             renderer.finish_ray_tracing_frame(frame.serial, submitted);
+            std::printf("RT counter frame: finalized serial=%llu\n",
+                        static_cast<unsigned long long>(out.serial));
+            std::fflush(stdout);
             out.ok = submitted;
             if (!submitted) out.error = error;
         }
