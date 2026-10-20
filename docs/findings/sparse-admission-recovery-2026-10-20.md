@@ -119,15 +119,27 @@ No unsupported substitute qualified this patch. Windows acceptance was
 explicitly waived by the task, independently of the unmet Linux gate.
 
 The supervisor reply identified the existing compiler and forwarded runtime
-gaps to the global runtime owner. The one registered durable reply wait was
+gaps to the global runtime owner. The subsequent authoritative disposition
+(recorded in task comments at 1792522712/1792522715) confirms that no display,
+`/dev/dri`, hardware RT runner or prebuilt editor is available or coming. Native
+UI, hardware RT and device performance stay **NOT RUN**, with real-device
+acceptance deferred to Jack; those unavailable checks do not block worker close.
+This does not waive code completeness or runnable software/headless/focused
+checks. The failed close here is based on uncompiled/unexecuted implementation
+and the remaining world-replacement code gap, not a request for another runner. The one registered durable reply wait was
 cancelled when that reply arrived and independent build work resumed; no second
 wait or runner provisioning was used. Exact characterization, bounded admission
 and native build logs accompany this report in `sparse-admission-2026-10-20/`.
 
 ## Remaining work before a pass
 
+Code checkpoint: `3172dd18da1c18e0f6aa0414a6a443accf4f1db6`, descending
+from preserved checkpoints `c302cc24102c4c33b1e704ed490fcccefe713fad` and
+`77ecadacd15b6ddfb734db952f777993404f3b6c`. No implementation regression or
+production C++ compilation passed at any of these revisions.
+
 Run the CPU regressions, compile the affected production translation units and
-execute the native rollback fixture under validation. Prove session mixed
+execute available headless/software admission fixtures under validation. Prove session mixed
 ordinary/shared rollback, catalog ownership and temporal identities across
 primary/shadow failures, first-load UI usability, subsequent smaller-world
 rendering, and capture/performance rejection with no success artifact. Neither
