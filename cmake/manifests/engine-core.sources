@@ -152,9 +152,9 @@ MatterEngine3/src/async_bake.cpp|all
 MatterEngine3/src/bake_trace.cpp|all
 MatterEngine3/src/resolve_cache.cpp|all
 MatterEngine3/src/authored_world_cache.cpp|all
-MatterEngine3/src/terrain_field.cpp|all
-MatterEngine3/src/terrain_mesher.cpp|all
-MatterEngine3/src/seam_weld.cpp|all
+libs/TerrainGeneration/src/terrain_field.cpp|all
+libs/TerrainGeneration/src/terrain_mesher.cpp|all
+libs/TerrainGeneration/src/seam_weld.cpp|all
 MatterEngine3/src/sector_streamer.cpp|all
 MatterEngine3/src/animation/ozz_adapter.cpp|all
 MatterEngine3/src/animation/ozz_bake.cpp|all

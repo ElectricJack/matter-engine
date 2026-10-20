@@ -66,9 +66,10 @@ matter_read_manifest(
 )
 set(matter_engine_core_sources ${matter_engine_core_manifest})
 # The triangle emitter, polygon triangulator and matrix math are owned by
-# ProceduralGeometry/MatterGraphics and compiled from where they live.
+# ProceduralGeometry/MatterGraphics, and the terrain field, mesher and seam
+# welder by TerrainGeneration; each is compiled from where it lives.
 list(FILTER matter_engine_core_sources INCLUDE REGEX
-    "^(MatterEngine3/src|libs/ProceduralGeometry/src|libs/MatterGraphics/src)/.*\\.cpp$")
+    "^(MatterEngine3/src|libs/ProceduralGeometry/src|libs/MatterGraphics/src|libs/TerrainGeneration/src)/.*\\.cpp$")
 if(WIN32)
     # The inotify implementation is Linux-only. Its source retains the existing
     # Linux guards and remains in the canonical manifest/Make build.

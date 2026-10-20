@@ -34,11 +34,13 @@ if(MATTER_ASSET_SURFACE)
     list(APPEND _asset_targets matter_asset_surface)
 endif()
 if(MATTER_ASSET_SURFACE_NATIVE)
-    # Compile the CPU source authority directly until ordered integration owns
-    # relocation. No monolithic engine/terrain/graphics archive is linked.
+    # Compile the CPU source authority from TerrainGeneration, where it lives.
+    # No monolithic engine/terrain/graphics archive is linked.
     set(_surface_legacy "${CMAKE_CURRENT_LIST_DIR}/../../MatterEngine3/src")
-    add_library(matter_asset_surface_runtime STATIC "${_surface_legacy}/terrain_field.cpp")
-    target_include_directories(matter_asset_surface_runtime PRIVATE "${_surface_legacy}/../include")
+    add_library(matter_asset_surface_runtime STATIC
+        "${CMAKE_CURRENT_LIST_DIR}/../TerrainGeneration/src/terrain_field.cpp")
+    # terrain_field.cpp still reads the engine's river-overlay declaration.
+    target_include_directories(matter_asset_surface_runtime PRIVATE "${_surface_legacy}" "${_surface_legacy}/../include")
     target_compile_features(matter_asset_surface_runtime PRIVATE cxx_std_17)
     if(MSVC)
         target_compile_options(matter_asset_surface_runtime PRIVATE /W4 /permissive- /utf-8)

@@ -271,7 +271,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vt_export.cpp
         MatterEngine3/src/render/vt_export_mesh.cpp
         MatterEngine3/src/render/vt_enrich.cpp
-        MatterEngine3/src/terrain_field.cpp
+        libs/TerrainGeneration/src/terrain_field.cpp
         MatterEngine3/src/world_lights.cpp
         MatterEngine3/tests/vulkan_smoke_tileset_bake_stub.cpp
         MatterEngine3/src/tileset_gtex.cpp
@@ -504,7 +504,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vt_enrich.cpp
         MatterEngine3/src/props/props.cpp
         MatterEngine3/src/util/json_doc.cpp
-        MatterEngine3/src/terrain_field.cpp
+        libs/TerrainGeneration/src/terrain_field.cpp
         MatterEngine3/src/render/vk_context.cpp
         MatterEngine3/src/render/vk_resources.cpp
         MatterEngine3/src/render/streamline_bridge.cpp
