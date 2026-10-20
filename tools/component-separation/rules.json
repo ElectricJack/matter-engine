@@ -203,7 +203,8 @@
         {"path": "third_party/quickjs-ng/quickjs.c", "reason": "portable_host compiles the patched vendored source directly (MATTER_PATCHES.md)"},
         {"paths": ["packages/matter-authoring/index.mjs", "packages/matter-authoring/values.mjs", "packages/matter-authoring/parameters.mjs",
                    "packages/matter-authoring/rng.mjs", "packages/matter-authoring/recipe.mjs", "packages/matter-authoring/legacy.mjs"],
-         "reason": "the host embeds the portable authoring SDK modules byte-for-byte as module source data (no link or include dependency)"}
+         "reason": "the host embeds the portable authoring SDK modules byte-for-byte as module source data (no link or include dependency)"},
+        {"path": "cmake/MatterFuzz.cmake", "reason": "shared opt-in fuzz-driver helper (MATTER_BUILD_FUZZERS defaults OFF); defines a function only"}
       ],
       "unbuilt_sources": [
         {"path": "MatterEngine3/src/script/portable_host/tests", "reason": "host fixtures build only under BUILD_TESTING (they also need node), in the component's own focused test run"}
@@ -286,7 +287,8 @@
         {"path": "libs/MatterSurfaceLib/src/surface.c", "reason": "geometry's configure-time smin_set/VertexInterpolation extraction, reached through the geometry subdirectory"},
         {"paths": ["packages/matter-authoring/index.mjs", "packages/matter-authoring/values.mjs", "packages/matter-authoring/parameters.mjs",
                    "packages/matter-authoring/rng.mjs", "packages/matter-authoring/recipe.mjs", "packages/matter-authoring/legacy.mjs"],
-         "reason": "the authoring SDK modules host_quickjs embeds as module source data, reached through the host subdirectory"}
+         "reason": "the authoring SDK modules host_quickjs embeds as module source data, reached through the host subdirectory"},
+        {"path": "cmake/MatterFuzz.cmake", "reason": "the shared opt-in fuzz-driver helper, reached through the host subdirectory"}
       ],
       "unbuilt_sources": [
         {"path": "MatterEngine3/src/component_adapters/authoring/tests", "reason": "the end-to-end fixtures build only under BUILD_TESTING, in the adapter's own focused test run"}
