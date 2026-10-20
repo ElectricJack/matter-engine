@@ -149,6 +149,7 @@
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "component_adapters/graphics/portable_scene.h"
 #include "render/vertex_cache_order.h"
 #include "render/impostor_mips.h"
 #include "render/geometry_world_runtime.h"
@@ -913,6 +914,9 @@ struct WorldSession::Impl {
     std::unique_ptr<viewer::PartStore>      store;
 #ifdef MATTER_VULKAN_VIEWER
     std::unique_ptr<viewer::VkSceneRenderer> vk_scene;
+    // MatterGraphics consumer of the portable-authored instances admitted
+    // below; presentation stays with vk_scene. Created on the first frame.
+    std::unique_ptr<graphics_adapter::PortableScene> portable_scene;
     // Acceptance-only cached GPU water. This is populated only by the
     // explicit absolute-path environment hook and never invokes the mesher.
     std::shared_ptr<const viewer::VkScenePart> gpu_mesher_acceptance_part;
@@ -11631,6 +11635,7 @@ WorldSession::~WorldSession() {
 
 #ifdef MATTER_VULKAN_VIEWER
     impl_->vk_instance_cache.invalidate();
+    impl_->portable_scene.reset();
     impl_->vk_scene.reset();
 #endif
 
@@ -14274,6 +14279,24 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
             return false;
         }
+    }
+    {
+        PROFILE_SCOPE("build.portable_scene");
+        const bool created = !impl_->portable_scene;
+        if (created)
+            impl_->portable_scene = std::make_unique<graphics_adapter::PortableScene>(
+                *impl_->engine->render_device);
+        graphics_adapter::PortableView view;
+        view.world_to_view = temporal.current_unjittered.world_to_view;
+        view.view_to_clip = temporal.current_unjittered.view_to_clip;
+        view.sun_direction = lighting.sun_direction;
+        view.sun_color = lighting.authored_sun_rgb;
+        view.width = internal_extent.width;
+        view.height = internal_extent.height;
+        std::string portable_err;
+        if (!impl_->portable_scene->update(instances, created || instance_span_rebuilt,
+                                           view, portable_err))
+            MATTER_LOGE("graphics", "%s", portable_err.c_str());
     }
     z_build.stop();
     const auto build_end = std::chrono::steady_clock::now();

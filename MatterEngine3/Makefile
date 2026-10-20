@@ -622,11 +622,19 @@ build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)
 
+# MatterGraphics' VulkanRaster embeds its own subset of the same .spv files,
+# in the component's symbol layout (libs/MatterGraphics/CMakeLists.txt).
+GRAPHICS_RASTER_SPV = $(addprefix build/shaders_vk/,raster.vert.spv raster_skin.vert.spv \
+                      raster_water.vert.spv gbuffer.frag.spv visibility_id.vert.spv \
+                      visibility_id.frag.spv)
+shaders_gen/raster_spirv.h: $(GRAPHICS_RASTER_SPV) ../libs/MatterGraphics/tools/embed_shaders.py
+	python3 ../libs/MatterGraphics/tools/embed_shaders.py $@ $(GRAPHICS_RASTER_SPV)
+
 vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/component_adapters/authoring/engine src/terrain_collision src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src
+vpath %.cpp src src/component_adapters/authoring/engine src/component_adapters/graphics src/terrain_collision src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
@@ -794,6 +802,7 @@ VIEWER_LIB_FLAGS_STAMP = build/.viewer_lib_flags$(VIEWER_TAG)
 VIEWER_GLFW_INCLUDE = $(RAYLIB_PATH)/external/glfw/include
 
 VIEWER_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) $(INCLUDE_PATHS) -I$(VIEWER_GLFW_INCLUDE) \
+                       -I../libs/MatterGraphics/include \
                        $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include")
 
 # Mirrors MatterEditor's CXX_FLAGS_BUILD_WIN_COMMON exactly, minus the include
@@ -857,6 +866,8 @@ $(VIEWER_OBJDIR)/mesh_raster.o: ../libs/MatterGraphics/src/native/mesh_raster.cp
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
 $(VIEWER_OBJDIR)/mesh_pipelines.o: ../libs/MatterGraphics/src/native/mesh_pipelines.cpp | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+$(VIEWER_OBJDIR)/vulkan_raster.o: ../libs/MatterGraphics/src/vulkan_raster.cpp | $(VIEWER_OBJDIR) shaders_gen/raster_spirv.h
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -Ishaders_gen -MMD -MP
 
 # Sources deliberately kept off vpath (see the $(OBJDIR) twins above for why)
 # need explicit rules. bc7enc/rgbcx get a trailing -w for the same reason the

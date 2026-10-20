@@ -14,6 +14,7 @@
 #include <mutex>
 #include <regex>
 #include <set>
+#include <unordered_map>
 #include <variant>
 
 namespace matter::authoring_adapter {
@@ -95,6 +96,17 @@ std::string entry_text(const std::string& source, const std::string& class_name)
 
 float3 to_float3(const d::Vec3& v) { return make_float3(v.x, v.y, v.z); }
 
+// Built products by part hash, shared by every route instance: the hash is
+// content-addressed, so one product serves all of them and is never replaced.
+struct RetainedProducts {
+    std::mutex mutex;
+    std::unordered_map<uint64_t, std::shared_ptr<const s::AssetProduct>> by_hash;
+};
+RetainedProducts& retained_products() {
+    static RetainedProducts products;
+    return products;
+}
+
 class LegacyPartRoute final : public part_graph::PortableBakeRoute {
 public:
     uint64_t resolve(const std::string& source, const std::string& params_json,
@@ -102,7 +114,11 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         s::BuildRequest request;
         std::shared_ptr<const d::RecipeDocument> recipe;
-        return author(source, params_json, request, recipe, merged_params_out);
+        const uint64_t hash = author(source, params_json, request, recipe, merged_params_out);
+        // Retain the product now: a warm part cache never reaches bake().
+        // Failures are bake()'s to report, so resolution is unchanged.
+        if (hash) build_retained(hash, request, false);
+        return hash;
     }
 
     bool bake(const std::string& source, const std::string& params_json,
@@ -117,19 +133,11 @@ public:
                         (unsigned long long)resolved_hash, (unsigned long long)hash);
             return false;
         }
-        const s::JobEnvelope job{"matter.engine.part", "1", ++epoch_};
-        if (!pipeline_.coordinator.activate(job).ok()) {
-            MATTER_LOGE("portable", "bake: coordinator refused activation");
-            return false;
-        }
-        const auto built = pipeline_.coordinator.build(job, request, {});
-        if (!built.ok()) {
-            MATTER_LOGE("portable", "bake: %s", join_diagnostics(built.diagnostics()).c_str());
-            return false;
-        }
+        const auto product = build_retained(hash, request, true);
+        if (!product) return false;
         std::vector<Tri> tris;
         std::vector<TriEx> extra;
-        if (!emit_triangles(built.value()->document, tris, extra)) return false;
+        if (!emit_triangles(product->document, tris, extra)) return false;
 
         BLASManager blas;
         TLASManager tlas(65536);
@@ -147,6 +155,26 @@ public:
     }
 
 private:
+    // Builds an authored request once per hash and retains the product, so the
+    // .part and the graphics adapter consume the same immutable document.
+    std::shared_ptr<const s::AssetProduct> build_retained(uint64_t hash, const s::BuildRequest& request,
+                                                          bool report) {
+        if (auto kept = retained_asset(hash)) return kept;
+        const s::JobEnvelope job{"matter.engine.part", "1", ++epoch_};
+        if (!pipeline_.coordinator.activate(job).ok()) {
+            if (report) MATTER_LOGE("portable", "bake: coordinator refused activation");
+            return nullptr;
+        }
+        const auto built = pipeline_.coordinator.build(job, request, {});
+        if (!built.ok()) {
+            if (report) MATTER_LOGE("portable", "bake: %s", join_diagnostics(built.diagnostics()).c_str());
+            return nullptr;
+        }
+        auto& products = retained_products();
+        std::lock_guard<std::mutex> lock(products.mutex);
+        return products.by_hash.emplace(hash, built.value()).first->second;
+    }
+
     // Freezes the synthesized entry and authors it. The hash namespaces the
     // canonical recipe digest with the pipeline implementation and this route's
     // version, so it can never alias a legacy ScriptHost hash. 0 on failure.
@@ -209,19 +237,8 @@ private:
                             instance.id.value.c_str());
                 return false;
             }
-            mm::Mat4 world = instance.local_transform;
-            const d::Instance* link = &instance;
-            for (size_t depth = 0; link->parent; ++depth) {
-                const d::Instance* parent = nullptr;
-                for (const auto& other : asset.instances)
-                    if (other.id.value == link->parent->value) parent = &other;
-                if (!parent || depth > asset.instances.size()) {
-                    MATTER_LOGE("portable", "bake: broken parent chain at %s", link->id.value.c_str());
-                    return false;
-                }
-                world = mm::multiply(parent->local_transform, world);
-                link = parent;
-            }
+            mm::Mat4 world;
+            if (!compose_instance_transform(asset, instance, world)) return false;
             const d::MeshPrototype* mesh = nullptr;
             for (const auto& candidate : asset.meshes)
                 if (candidate.id.value == instance.prototype.value) mesh = &candidate;
@@ -280,5 +297,30 @@ private:
 
 std::shared_ptr<part_graph::PortableBakeRoute> make_legacy_part_route() {
     return std::make_shared<LegacyPartRoute>();
+}
+
+std::shared_ptr<const s::AssetProduct> retained_asset(uint64_t part_hash) {
+    auto& products = retained_products();
+    std::lock_guard<std::mutex> lock(products.mutex);
+    const auto found = products.by_hash.find(part_hash);
+    return found == products.by_hash.end() ? nullptr : found->second;
+}
+
+bool compose_instance_transform(const d::AssetDocument& asset, const d::Instance& instance,
+                                mm::Mat4& world) {
+    world = instance.local_transform;
+    const d::Instance* link = &instance;
+    for (size_t depth = 0; link->parent; ++depth) {
+        const d::Instance* parent = nullptr;
+        for (const auto& other : asset.instances)
+            if (other.id.value == link->parent->value) parent = &other;
+        if (!parent || depth > asset.instances.size()) {
+            MATTER_LOGE("portable", "bake: broken parent chain at %s", link->id.value.c_str());
+            return false;
+        }
+        world = mm::multiply(parent->local_transform, world);
+        link = parent;
+    }
+    return true;
 }
 } // namespace matter::authoring_adapter

@@ -24,11 +24,11 @@ matter_read_manifest(
     PLATFORM windows
 )
 list(FILTER matter_engine_viewer_sources
-    INCLUDE REGEX "^(MatterEngine3/src|libs/MatterGraphics/src/native)/.*\\.cpp$")
+    INCLUDE REGEX "^(MatterEngine3/src|libs/MatterGraphics/src)/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 29)
+if(NOT matter_engine_viewer_source_count EQUAL 35)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 29 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 35 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -51,9 +51,9 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 221)
+    set(matter_expected_viewer_product_count 227)
 else()
-    set(matter_expected_viewer_product_count 220)
+    set(matter_expected_viewer_product_count 226)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
@@ -63,13 +63,42 @@ if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         "expected=${matter_expected_viewer_product_count}")
 endif()
 
+# MatterGraphics' VulkanRaster embeds its own subset of the production .spv
+# files, in the component's symbol layout (libs/MatterGraphics/CMakeLists.txt).
+set(matter_graphics_raster_spirv)
+foreach(shader IN ITEMS raster.vert raster_skin.vert raster_water.vert gbuffer.frag
+        visibility_id.vert visibility_id.frag)
+    set(spirv "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_vk/${shader}.spv")
+    if(NOT spirv IN_LIST matter_SPIRV_OUTPUTS)
+        message(FATAL_ERROR "MatterGraphics raster shader is not in the Vulkan pipeline: ${spirv}")
+    endif()
+    list(APPEND matter_graphics_raster_spirv "${spirv}")
+endforeach()
+set(matter_graphics_raster_header
+    "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen/raster_spirv.h")
+add_custom_command(
+    OUTPUT "${matter_graphics_raster_header}"
+    COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/tools/embed_shaders.py"
+        "${matter_graphics_raster_header}" ${matter_graphics_raster_spirv}
+    DEPENDS ${matter_graphics_raster_spirv}
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/tools/embed_shaders.py"
+    COMMENT "Embedding MatterGraphics raster SPIR-V"
+    VERBATIM
+)
+add_custom_target(matter_graphics_raster_spirv DEPENDS "${matter_graphics_raster_header}")
+add_dependencies(matter_graphics_raster_spirv matter_vulkan_spirv)
+
 add_library(matter_engine_viewer_objects OBJECT
     ${matter_engine_viewer_product_sources})
+set_source_files_properties(libs/MatterGraphics/src/vulkan_raster.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen")
 matter_engine_include_directories(matter_engine_viewer_objects PRIVATE)
 target_include_directories(matter_engine_viewer_objects BEFORE PRIVATE
     "${CMAKE_BINARY_DIR}/MatterEngine3"
     "${matter_vulkan_include}"
     "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
+    "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include"
 )
 target_compile_definitions(matter_engine_viewer_objects PRIVATE
     PLATFORM_DESKTOP
@@ -116,7 +145,7 @@ if(MATTER_ENABLE_AUTOREMESHER)
         matter_autoremesher)
 endif()
 matter_apply_project_defaults(matter_engine_viewer_objects)
-add_dependencies(matter_engine_viewer_objects matter_embedded_spirv)
+add_dependencies(matter_engine_viewer_objects matter_embedded_spirv matter_graphics_raster_spirv)
 
 if(BUILD_TESTING)
     add_executable(geometry_runtime_tests MatterEngine3/tests/geometry_runtime_tests.cpp)
@@ -140,8 +169,7 @@ if(BUILD_TESTING)
 
     # VulkanDevice -> MatterGraphics binding: lease, teardown and the shared
     # queue mutex (MatterEngine3/src/component_adapters/graphics).
-    add_executable(graphics_binding_tests MatterEngine3/tests/graphics_binding_tests.cpp
-        libs/MatterGraphics/src/vulkan_resources.cpp)
+    add_executable(graphics_binding_tests MatterEngine3/tests/graphics_binding_tests.cpp)
     matter_engine_include_directories(graphics_binding_tests PRIVATE)
     target_include_directories(graphics_binding_tests BEFORE PRIVATE
         "${CMAKE_BINARY_DIR}/MatterEngine3" "${matter_vulkan_include}"
