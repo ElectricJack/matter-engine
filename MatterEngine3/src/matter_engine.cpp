@@ -6170,9 +6170,9 @@ bool WorldSession::Impl::install_world(
         }
         visiting.pop_back();
 
-        uint64_t hash = host.resolve_hash(source, params_json,
-                                          kid_hashes.empty() ? nullptr : kid_hashes.data(),
-                                          kid_hashes.size());
+        // Through the HostBaker so a `static authoring` source takes its route.
+        uint64_t hash = provider->host_baker().resolve_hash_json(source, params_json,
+                                                                 kid_hashes, nullptr);
 
         const auto& receivers=provider->world_settings().surface_receiver_modules;
         if(std::find(receivers.begin(),receivers.end(),module)!=receivers.end()) {

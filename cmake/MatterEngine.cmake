@@ -110,6 +110,7 @@ target_link_libraries(matter_engine_core PUBLIC
     matter_box3d
     matter_ozz_offline
     matter_bc7enc
+    matter_authoring_adapter
 )
 matter_apply_project_defaults(matter_engine_core)
 matter_apply_headless_config(matter_engine_core)
@@ -160,11 +161,27 @@ target_link_libraries(matter_engine_headless PUBLIC
     matter_box3d
     matter_ozz_offline
     matter_bc7enc
+    matter_authoring_adapter
 )
 if(MATTER_ENABLE_PHYSX)
     target_link_libraries(matter_engine_headless PUBLIC matter_physx_adapter)
 endif()
 matter_apply_project_defaults(matter_engine_headless)
+
+# The portable authoring pipeline (contracts, geometry, build, QuickJS host)
+# behind the legacy part route in engine-core.sources. Its components keep their
+# own build files; this graph already compiles the CPU kernels matter_geometry
+# shares, so the adapter takes them from here instead of compiling them twice.
+# The components' tests stay their own gates, and they use the root's static
+# runtime so the archives link into the engine's executables.
+set(matter_authoring_saved_testing ${BUILD_TESTING})
+set(matter_authoring_saved_runtime ${CMAKE_MSVC_RUNTIME_LIBRARY})
+set(BUILD_TESTING OFF)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(MATTER_AUTHORING_HOST_KERNELS ON)
+add_subdirectory(MatterEngine3/src/component_adapters/authoring)
+set(BUILD_TESTING ${matter_authoring_saved_testing})
+set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
 
 # ---------------------------------------------------------------------------
 # `matter` — the headless command (MatterEngine3/tools/matter_cli.cpp).
@@ -564,6 +581,8 @@ if(BUILD_TESTING)
         "MATTER_SCRIPT_TEST_MODULES_HEADER=\"${script_test_module_header}\"")
     matter_add_engine_cpu_test(tileset_bake_tests
         MatterEngine3/tests/tileset_bake_tests.cpp)
+    matter_add_engine_cpu_test(authoring_route_tests
+        MatterEngine3/tests/authoring_route_tests.cpp)
     matter_add_engine_cpu_test(tileset_physics_tests
         MatterEngine3/tests/tileset_physics_tests.cpp)
     matter_add_engine_cpu_test(part_flatten_tests

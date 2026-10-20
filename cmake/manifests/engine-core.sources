@@ -49,6 +49,7 @@ MatterEngine3/src/terrain_river_overlay.cpp|all
 MatterEngine3/src/script_rng_binding.cpp|all
 MatterEngine3/src/part_asset_v2.cpp|all
 MatterEngine3/src/part_graph.cpp|all
+MatterEngine3/src/component_adapters/authoring/engine/legacy_part_route.cpp|all
 MatterEngine3/src/part_graph_snapshot.cpp|all
 MatterEngine3/src/live_edit.cpp|all
 MatterEngine3/src/live_edit_prod.cpp|all

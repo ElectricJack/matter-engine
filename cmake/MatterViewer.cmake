@@ -51,9 +51,9 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 219)
+    set(matter_expected_viewer_product_count 221)
 else()
-    set(matter_expected_viewer_product_count 218)
+    set(matter_expected_viewer_product_count 220)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
@@ -109,6 +109,7 @@ target_link_libraries(matter_engine_viewer_objects PUBLIC
     matter_bc7enc
     matter_glfw
     matter_vulkan_sdk
+    matter_authoring_adapter
 )
 if(MATTER_ENABLE_AUTOREMESHER)
     target_link_libraries(matter_engine_viewer_objects PUBLIC

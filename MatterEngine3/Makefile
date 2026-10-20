@@ -106,6 +106,14 @@ OZZ_OFFLINE_LIB = $(OZZ_BUILD_DIR)/src/animation/offline/libozz_animation_offlin
 OZZ_RUNTIME_LIBS = $(OZZ_ANIMATION_LIB) $(OZZ_BASE_LIB)
 OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
 
+# The portable authoring pipeline behind engine-core's legacy part route
+# (component_adapters/authoring/engine/legacy_part_route.cpp). The components
+# keep their own CMake builds; consumers link the archives that build makes.
+AUTHORING_INCLUDE = -I../libs/MatterContracts/include -I../libs/ProceduralGeometry/include \
+                    -I../libs/ProceduralBuild/include -Isrc/script/portable_host/include \
+                    -Isrc/component_adapters/authoring/include
+include authoring_adapter.mk
+
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
 QJS_DIR       = ../third_party/quickjs-ng
@@ -126,7 +134,8 @@ INCLUDE_PATHS = -I. -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \
                 -I$(OZZ_INCLUDE) \
-                -I../third_party/Vulkan-Headers/include $(EXTRA_INCLUDE)
+                -I../third_party/Vulkan-Headers/include $(EXTRA_INCLUDE) \
+                $(AUTHORING_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
@@ -237,10 +246,10 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # under MatterSurfaceLib, for make's dependency tracking.
 SHADER_FILES := $(patsubst shaders/%,$(MSL_SHADER_DIR)/%,$(SHADER_LOGICAL))
 
-.PHONY: all clean test vulkan-spirv viewer-lib check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
+.PHONY: all clean test vulkan-spirv viewer-lib authoring-adapter check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
 
 # all MUST be the first target so it is the default goal.
-all: $(LIB)
+all: $(LIB) authoring-adapter
 
 $(OBJDIR) build:
 	@mkdir -p $@
@@ -617,7 +626,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/terrain_collision src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src
+vpath %.cpp src src/component_adapters/authoring/engine src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/terrain_collision src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
@@ -898,7 +907,21 @@ $(VIEWER_LIB): $(VIEWER_ALL_OBJ) | check-me3-source-basenames
 	rm -f $@
 	$(VIEWER_AR) rcs $@ $(VIEWER_ALL_OBJ)
 
-viewer-lib: $(VIEWER_LIB)
+viewer-lib: $(VIEWER_LIB) authoring-adapter
+
+# Both archives carry the legacy part route, so whoever links one links these
+# too. MATTER_AUTHORING_HOST_KERNELS=ON, as in the root graph: matter_geometry
+# drops the CPU kernels (triangle_emit, mesh_simplifier, ...) this archive
+# already compiles and resolves them from it at final link. VIEWER_TAG keeps one
+# tree per toolchain; a ccache launcher in the compiler variable is stripped.
+AUTHORING_ADAPTER_BUILD = build/authoring_adapter$(VIEWER_TAG)
+AUTHORING_ADAPTER_LIBS = $(addprefix $(AUTHORING_ADAPTER_BUILD)/,$(AUTHORING_ADAPTER_ARCHIVES))
+authoring-adapter:
+	@test -f $(AUTHORING_ADAPTER_BUILD)/CMakeCache.txt || \
+	  cmake -S src/component_adapters/authoring -B $(AUTHORING_ADAPTER_BUILD) \
+	        -DBUILD_TESTING=OFF -DMATTER_AUTHORING_HOST_KERNELS=ON -DCMAKE_BUILD_TYPE=Release \
+	        -DCMAKE_C_COMPILER=$(lastword $(VIEWER_CC)) -DCMAKE_CXX_COMPILER=$(lastword $(VIEWER_CXX))
+	cmake --build $(AUTHORING_ADAPTER_BUILD) --target matter_authoring_adapter
 
 # `matter` command-line tool (matter bake gi / export obj), rollback/Unix
 # build: links the headless kernel archive plus the vendored physics/animation
@@ -906,9 +929,10 @@ viewer-lib: $(VIEWER_LIB)
 # CLAUDE.md "Worktree setup"). The canonical build is CMake's `matter_cli`.
 CLI_BIN = build/matter
 cli: $(CLI_BIN)
-$(CLI_BIN): tools/matter_cli.cpp cli/matter_cli.cpp $(LIB) $(BOX3D_LIB) | build
+$(CLI_BIN): tools/matter_cli.cpp cli/matter_cli.cpp $(LIB) $(BOX3D_LIB) authoring-adapter | build
 	$(CC) tools/matter_cli.cpp cli/matter_cli.cpp -o $@ $(CFLAGS) \
-	    -DMATTER_ENABLE_GI_CLI $(INCLUDE_PATHS) $(LIB) \
+	    -DMATTER_ENABLE_GI_CLI $(INCLUDE_PATHS) \
+	    -Wl,--start-group $(LIB) $(AUTHORING_ADAPTER_LIBS) -Wl,--end-group \
 	    $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(RAYLIB_PATH)/libraylib.a -lpthread -lm -ldl
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).

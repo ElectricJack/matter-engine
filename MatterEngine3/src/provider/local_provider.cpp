@@ -37,6 +37,7 @@
 #include "script/world_definition_loader.h"
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
+#include "component_adapters/authoring/engine/legacy_part_route.h"
 #include "part_asset_v2.h"     // cache_path_resolved, cache_path_flat, FlatInstanceRef
 #include "part_flatten.h"      // bake-time subtree flattening
 #include "world_lights.h"
@@ -3736,6 +3737,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_,
         cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
+    host_baker_->set_portable_route(matter::authoring_adapter::make_legacy_part_route());
     // W3: thread the optional per-rung bake observer (null in production).
     host_baker_->set_bake_observer(cfg_.bake_observer);
 
@@ -4964,6 +4966,7 @@ bool LocalProvider::restore_from_cache(
         cfg_.fixture_io ? cfg_.fixture_io->sources : nullptr);
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_,
         cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
+    host_baker_->set_portable_route(matter::authoring_adapter::make_legacy_part_route());
     // W3: thread the optional per-rung bake observer (null in production).
     host_baker_->set_bake_observer(cfg_.bake_observer);
 
