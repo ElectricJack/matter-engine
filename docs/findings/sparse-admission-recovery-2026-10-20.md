@@ -51,18 +51,53 @@ aq test tools/tests/test_sparse_scene_admission.py -q
 Admission remained queued for over two minutes: all six slots were held by
 agile-stone-80. Only this worker's unstarted launcher was interrupted. No test
 process ran, no parallelism limit was raised, and no producer was interrupted.
+After supervisor guidance, one bounded retry was submitted:
+
+```
+aq test --aq-timeout 75 tools/tests/test_sparse_scene_admission.py -q
+```
+
+It exited **75**, reporting no slot free after 75 seconds, with the same six
+slots occupied. This was an admission failure; no test process ran. No further
+requests were submitted.
+
 The tests added here are **NOT RUN**, including exact 128 MiB boundary,
 cumulative triangle and overflow regressions.
 
-Native Linux editor/build/UI/session acceptance is **NOT RUN**. This slot has
-no glslc, Xvfb/xvfb-run, /dev/dri, generated embedded SPIR-V header or prebuilt
-editor. A Lavapipe ICD file exists, which does not prove the required Vulkan
-capabilities. Root CMake rejects non-Windows; the documented native product
-entrypoint is `make -C MatterEditor linux` with explicit Vulkan paths. No
-runner/toolchain was provisioned and no unsupported substitute qualified this
-patch. The supervisor was asked for an existing authorized runner/capability
-decision. Windows acceptance was explicitly waived by the task, independently
-of the unmet Linux gate.
+Native Linux runtime/UI/session acceptance is **NOT RUN**; the product build
+was attempted but did not complete. This slot has
+no shader compiler on PATH, Xvfb/xvfb-run, /dev/dri or prebuilt editor. A
+Lavapipe ICD file exists, which does not prove the required Vulkan capabilities.
+The supervisor identified an existing executable compiler at
+`/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc`. Its `libshaderc.so.1` resolved
+by setting `LD_LIBRARY_PATH` to the accompanying existing `usr/lib/x86_64-linux-gnu`
+directory. `glslc --version` reported shaderc 2023.8, spirv-tools 2023.6 and
+glslang 14.0.0. This tool and library were reused read-only; nothing was
+provisioned or copied into source. Root CMake rejects non-Windows; the
+native product entrypoint is `make -C MatterEditor linux` with explicit Vulkan
+paths. The following supported product build was attempted:
+
+```
+timeout --signal=TERM --kill-after=10s 120s env \
+  LD_LIBRARY_PATH=/tmp/sharp-zenith-52-shaderc/root/usr/lib/x86_64-linux-gnu \
+  make -C MatterEditor linux -j1 \
+  GLSLC=/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc \
+  VULKAN_INCLUDE=/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include \
+  VULKAN_LIB_DIR=/usr/lib/x86_64-linux-gnu
+```
+
+It exited **124** at its 120-second bound during real shader generation
+(`rt_lighting.rgen.spv`). The changed production translation units were not
+compiled and no editor executable or actual device/capability banner was
+obtained. This is neither a compiler rejection of the patch nor a build pass.
+No unsupported substitute qualified this patch. Windows acceptance was
+explicitly waived by the task, independently of the unmet Linux gate.
+
+The supervisor reply identified the existing compiler and forwarded runtime
+gaps to the global runtime owner. The one registered durable reply wait was
+cancelled when that reply arrived and independent build work resumed; no second
+wait or runner provisioning was used. Exact characterization, bounded admission
+and native build logs accompany this report in `sparse-admission-2026-10-20/`.
 
 ## Remaining work before a pass
 
