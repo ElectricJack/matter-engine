@@ -136,12 +136,18 @@ struct PortableScene::Impl {
     bool publish(std::string& err) {
         std::map<std::string, s::SceneInstance> next;
         std::set<uint64_t> used;
+        // Residency is settled once per part per pass: an upload that turns
+        // ready mid-pass must not publish only the instances after it, since
+        // nothing re-runs publish() once no upload is pending.
+        std::map<uint64_t, bool> ready;
         for (size_t index = 0; index < admitted.size(); ++index) {
             const auto& inst = admitted[index];
             const auto product = authoring_adapter::retained_asset(inst.part_hash);
             if (!product) continue; // Legacy content.
             used.insert(inst.part_hash);
-            if (!resident(inst.part_hash, product)) continue;
+            auto r = ready.find(inst.part_hash);
+            if (r == ready.end()) r = ready.emplace(inst.part_hash, resident(inst.part_hash, product)).first;
+            if (!r->second) continue;
             const s::GraphicsHandle handle = uploads[inst.part_hash].handle;
             const mm::Mat4 object_to_world = to_mm(inst.object_to_world);
             char owner[40];

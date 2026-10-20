@@ -3,6 +3,7 @@
 #include <matter/authoring_adapter/pipeline.h>
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
+#include "material_registry.h"
 #include "part_asset_v2.h"
 #include "part_base.js.h"
 #include "part_render_policy.h"
@@ -10,6 +11,7 @@
 #include "matter/log.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <regex>
@@ -24,7 +26,7 @@ namespace s = matter::services;
 
 // Versions this conversion (entry synthesis + Tri/TriEx emission). Bump it when
 // either changes what a portable part bakes to.
-constexpr const char* kRouteVersion = "matter.engine.legacy-part-route.v1";
+constexpr const char* kRouteVersion = "matter.engine.legacy-part-route.v2";
 constexpr const char* kMaterialPrefix = "matter.legacy.material.";
 
 std::string join_diagnostics(const std::vector<d::Diagnostic>& diagnostics) {
@@ -38,7 +40,9 @@ std::string join_diagnostics(const std::vector<d::Diagnostic>& diagnostics) {
 // never drift from it: the MAT table verbatim, and every Part method except
 // build() as the set of verbs delegated to the SDK's legacyPart adapter (which
 // rejects the ones outside its portable subset with unsupported_capability).
-struct LegacyVocabulary { std::string mat, verbs; };
+// The palette is the frozen builtin MaterialRegistry albedo/roughness, so a
+// placeholder material carries the factors the legacy bake resolves its id to.
+struct LegacyVocabulary { std::string mat, verbs, palette; };
 const LegacyVocabulary& legacy_vocabulary() {
     static const LegacyVocabulary vocabulary = [] {
         LegacyVocabulary v;
@@ -55,6 +59,13 @@ const LegacyVocabulary& legacy_vocabulary() {
             for (std::sregex_iterator it(body.begin(), body.end(), method), end; it != end; ++it)
                 if ((*it)[1] != "build") v.verbs += (v.verbs.empty() ? "'" : ",'") + (*it)[1].str() + "'";
         }
+        for (int id = 0; id < MaterialRegistryStaticCount(); ++id) {
+            const MaterialDef* m = MaterialRegistryGet(id);
+            char entry[160];
+            std::snprintf(entry, sizeof entry, "%s{baseColor:[%.9g,%.9g,%.9g,1],roughness:%.9g}",
+                          id ? "," : "", m->albedo[0], m->albedo[1], m->albedo[2], m->roughness);
+            v.palette += entry;
+        }
         return v;
     }();
     return vocabulary;
@@ -62,12 +73,14 @@ const LegacyVocabulary& legacy_vocabulary() {
 
 // One module per source: the legacy class body runs verbatim against a Part
 // shim whose verbs forward to sdk.legacyPart; numeric MAT ids become declared
-// placeholder materials the bake maps back to the engine palette.
+// placeholder materials (builtin palette factors; {} for dynamic ids) the bake
+// maps back to the engine palette.
 std::string entry_text(const std::string& source, const std::string& class_name) {
     const auto& vocabulary = legacy_vocabulary();
     return "import * as sdk from 'matter:authoring';\n"
            "const MAT = Object.freeze(" + vocabulary.mat + ");\n"
            "const LEGACY_VERBS = new Set([" + vocabulary.verbs + "]);\n"
+           "const PALETTE = Object.freeze([" + vocabulary.palette + "]);\n"
            "const LEGACY = Symbol('legacy');\n"
            "class Part { constructor() { return new Proxy(this, { get(t, k, r) {\n"
            "  if (typeof k === 'string' && !(k in t) && LEGACY_VERBS.has(k)) return (...a) => t[LEGACY][k](...a);\n"
@@ -85,7 +98,7 @@ std::string entry_text(const std::string& source, const std::string& class_name)
            "  const materialIds = new Proxy({}, { get(_, k) {\n"
            "    if (typeof k !== 'string' || !/^[0-9]+$/.test(k)) return undefined;\n"
            "    const id = '" + kMaterialPrefix + "' + k;\n"
-           "    if (!declared.has(id)) { declared.add(id); b.material(id, {}); }\n"
+           "    if (!declared.has(id)) { declared.add(id); b.material(id, PALETTE[+k] ?? {}); }\n"
            "    return id; } });\n"
            "  const part = new __partClass();\n"
            "  part[LEGACY] = sdk.legacyPart(b, { prefix: 'part', materialIds });\n"
