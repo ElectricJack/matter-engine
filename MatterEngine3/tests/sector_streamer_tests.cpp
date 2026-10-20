@@ -22,6 +22,22 @@ static void service_all(SectorStreamer& s, F cb) {
 }
 static void service_all(SectorStreamer& s) { service_all(s, [](const SectorRequest&){}); }
 
+// Staged refinement can pause for one update between waves. Require eight
+// consecutive updates without requests or evictions before ending a stationary
+// setup; never stop at the first silent update. Keep the original long idle
+// soak in filesystem/build qualification.
+template <typename Pump>
+static void settle_stationary(Pump pump) {
+    int quiet = 0;
+    for (int i = 0; i < 4000; ++i) {
+        quiet = pump() ? 0 : quiet + 1;
+#ifndef MATTER_CODEC_SOURCE_QUALIFICATION
+        if (quiet >= 8) break;
+#endif
+    }
+    CHECK(quiet >= 8, "stationary setup reaches eight consecutive quiet updates");
+}
+
 // Settle: update+service until quiescent; RETURNS all evictions drained on
 // the way (callers assert on them — do not discard silently).
 static std::vector<Eviction> settle(SectorStreamer& s, float x, float z) {
@@ -752,11 +768,16 @@ int main() {
         auto settle_at = [&](float x, float z, int budget) {
             s.update(x, 0.0f, z);
             SectorRequest q;
-            for (int i = 0; i < budget && s.next_request(q); ++i)
+            bool activity = false;
+            for (int i = 0; i < budget && s.next_request(q); ++i) {
+                activity = true;
                 if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     resident[{variant_level(q.rung), (long long)q.tx,
                               (long long)q.tz}] = q.rung;
-            for (const auto& e : s.take_evictions()) {
+            }
+            const auto evictions = s.take_evictions();
+            activity = activity || !evictions.empty();
+            for (const auto& e : evictions) {
                 // Erase ONLY if the evicted variant is the one still recorded.
                 // A 1:1 swap (an edge-mask rebake) publishes the new variant of
                 // the SAME tile and then evicts the old one, so a blind erase
@@ -769,9 +790,10 @@ int main() {
                 if (it != resident.end() && it->second == e.rung)
                     resident.erase(it);
             }
+            return activity;
         };
         // Fill completely at the start position.
-        for (int i = 0; i < 4000; ++i) settle_at(0.0f, 0.0f, 64);
+        settle_stationary([&] { return settle_at(0.0f, 0.0f, 64); });
 
         auto covered = [&](float wx, float wz) {
             for (int L = 0; L <= 5; ++L) {
@@ -843,11 +865,16 @@ int main() {
         auto settle_at = [&](float x, float z, int budget) {
             s.update(x, 0.0f, z);
             SectorRequest q;
-            for (int i = 0; i < budget && s.next_request(q); ++i)
+            bool activity = false;
+            for (int i = 0; i < budget && s.next_request(q); ++i) {
+                activity = true;
                 if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     resident[{variant_level(q.rung), (long long)q.tx,
                               (long long)q.tz}] = q.rung;
-            for (const auto& e : s.take_evictions()) {
+            }
+            const auto evictions = s.take_evictions();
+            activity = activity || !evictions.empty();
+            for (const auto& e : evictions) {
                 const auto key = std::make_tuple(variant_level(e.rung),
                                                  (long long)e.tx,
                                                  (long long)e.tz);
@@ -856,8 +883,9 @@ int main() {
                 else if (it->second != e.rung) ++ev_mismatched;
                 else                           resident.erase(it);
             }
+            return activity;
         };
-        for (int i = 0; i < 4000; ++i) settle_at(0.0f, 0.0f, 64);
+        settle_stationary([&] { return settle_at(0.0f, 0.0f, 64); });
 
         // How MANY resident tiles cover this column, across every level.
         auto coverage = [&](float wx, float wz) {
@@ -963,12 +991,16 @@ int main() {
         SectorStreamer s(nested_cfg());
         // Settle far out, so the tiles around the anchor are coarse and a move
         // inward forces splits.
-        for (int i = 0; i < 4000; ++i) {
+        settle_stationary([&] {
             s.update(300.0f, 0.0f, 0.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
-            s.take_evictions();
-        }
+            bool activity = false;
+            while (s.next_request(q)) {
+                activity = true;
+                s.on_published(q.tx, q.ty, q.tz, q.rung);
+            }
+            return !s.take_evictions().empty() || activity;
+        });
         // Move in and refuse exactly one request forever.
         bool have_victim = false;
         int64_t vtx = 0, vtz = 0; int vrung = 0;
@@ -1011,23 +1043,31 @@ int main() {
     // A transition the camera walks away from must not strand its held tile.
     {
         SectorStreamer s(nested_cfg());
-        for (int i = 0; i < 4000; ++i) {
+        settle_stationary([&] {
             s.update(0.0f, 0.0f, 0.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
-            s.take_evictions();
-        }
+            bool activity = false;
+            while (s.next_request(q)) {
+                activity = true;
+                s.on_published(q.tx, q.ty, q.tz, q.rung);
+            }
+            return !s.take_evictions().empty() || activity;
+        });
         const size_t settled = s.resident_count();
         // Start a wave of splits by moving, then leave entirely without ever
         // servicing them.
         s.update(200.0f, 0.0f, 0.0f);
         s.update(5000.0f, 0.0f, 5000.0f);
-        for (int i = 0; i < 4000; ++i) {
+        settle_stationary([&] {
             s.update(5000.0f, 0.0f, 5000.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
-            s.take_evictions();
-        }
+            bool activity = false;
+            while (s.next_request(q)) {
+                activity = true;
+                s.on_published(q.tx, q.ty, q.tz, q.rung);
+            }
+            return !s.take_evictions().empty() || activity;
+        });
         printf("  nested groups: %zu resident at origin, %zu after leaving\n",
                settled, s.resident_count());
         CHECK(s.resident_count() < settled * 2,

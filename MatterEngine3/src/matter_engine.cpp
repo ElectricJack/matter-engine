@@ -2586,7 +2586,7 @@ struct WorldSession::Impl {
     // WeldMesh (triangle soup in material buckets) -> VkScenePart. Returns
     // false when there is nothing to draw. `surface` (may be null) is the
     // world's surfaces() tape; see the definition for why a weld needs it.
-    static bool build_weld_part(uint64_t part_hash, const seam::WeldMesh& mesh,
+    bool build_weld_part(uint64_t part_hash, const seam::WeldMesh& mesh,
                                 const VtSurfaceClassifier* surface,
                                 float texels_per_meter,
                                 viewer::VkScenePart& out);

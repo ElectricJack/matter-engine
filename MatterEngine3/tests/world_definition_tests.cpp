@@ -10,6 +10,9 @@
 #include "../src/render/vt_surface_tape.h"
 #include "../src/render/part_store.h"
 #include "../src/part_flatten.h"
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+#include "embedded_shared_modules.h"
+#endif
 
 extern "C" {
 #include "material_registry.h"
@@ -104,6 +107,25 @@ struct Fixture {
         return result;
     }
 };
+
+void test_lexical_project_cache_identity() {
+#ifdef _WIN32
+    const fs::path project("C:/matter-cache-identity/project");
+#else
+    const fs::path project("/matter-cache-identity/project");
+#endif
+    ScopedCacheRootEnv env((project.parent_path() / "external").string().c_str());
+    auto cache = [](const fs::path& path) {
+        return viewer::project_bake_cache_root(path, "Demo", true);
+    };
+    CHECK(cache(project / "unused" / "..") == cache(project),
+          "RAM project aliases share cache identity");
+    CHECK(cache(project / "") == cache(project),
+          "RAM project trailing separator shares cache identity");
+    const auto root = project.root_path();
+    CHECK(cache(root / "unused" / "..") == cache(root),
+          "cache identity normalization preserves the filesystem root");
+}
 
 #ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_project_layout_derives_runtime_paths() {
@@ -3411,6 +3433,11 @@ class CanonicalWaterWorld extends World {
 
 void test_world_loader_preserves_completed_dsl_curve_and_profile() {
     Fixture fixture;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    const auto shared_sources = embedded_shared_test_sources();
+    fixture.files.emplace("../shared-lib/river_curve.js",
+                          shared_sources.at("../shared-lib/river_curve.js"));
+#endif
     const fs::path path = fixture.write("AuthoredCurve.js", R"JS(
 import { riverCurve } from 'shared-lib/river_curve';
 class AuthoredCurve extends World {
@@ -3919,6 +3946,7 @@ void test_world_loader_rejects_invalid_gi_bake() {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     ScopedCacheRootEnv clean_cache_environment(nullptr);
+    test_lexical_project_cache_identity();
 #ifdef MATTER_WORLD_SOURCE_QUALIFICATION
     if (argc == 2 && std::string(argv[1]) == "--surface-contact") {
         test_surface_receiver_authoring();
