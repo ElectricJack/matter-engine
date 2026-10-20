@@ -1,7 +1,11 @@
 # Sparse scene admission recovery: implementation and remaining acceptance
 
 Task: eager-nexus-71. Base: 9d846e66961cf275be4fb29182281961018f93e5.
-Status: **failed attempt preserved for follow-up; required acceptance has not passed**.
+Latest source checkpoint: `c8c4b834e49f4bcde5835ac9b9a7931b3334cc0f` (epoch 4).
+**Five focused native checks pass; Linux editor compile/link passes.
+GPU/UI/performance acceptance is NOT RUN.**
+The epoch 4 section at the end records current behavior and evidence; preceding
+sections preserve the earlier failed checkpoints and their then-current gaps.
 
 The production uploader uses 160-byte surface triangles and previously grew
 flattened arrays before its per-append storage-range rejection. The session
@@ -10,7 +14,7 @@ could fail, and the editor treated every render failure as a device fatal.
 The CPU characterization selected the actual source admission expression,
 without running the separate RT-counter probes from the research appendix.
 
-## Changes preserved
+## Epoch 1 changes preserved
 
 - Internal count-only admission planning checks cumulative storage bytes,
   addressing and arithmetic before flattening GPU geometry. It uses the actual
@@ -51,7 +55,7 @@ without running the separate RT-counter probes from the research appendix.
   and a new ordinary registration around rejected publication. These fixtures
   are unexecuted.
 
-## Evidence and capability limits
+## Epoch 1 evidence and capability limits
 
 Executed before implementation:
 
@@ -131,7 +135,7 @@ cancelled when that reply arrived and independent build work resumed; no second
 wait or runner provisioning was used. Exact characterization, bounded admission
 and native build logs accompany this report in `sparse-admission-2026-10-20/`.
 
-## Remaining work before a pass
+## Epoch 1 remaining work before a pass
 
 Code checkpoint: `3172dd18da1c18e0f6aa0414a6a443accf4f1db6`, descending
 from preserved checkpoints `c302cc24102c4c33b1e704ed490fcccefe713fad` and
@@ -388,3 +392,130 @@ safe: the bake-run terminal scope is worker-owned and initial streaming can
 depend on entity/bootstrap progression. That remaining source integration and
 an executable fixture of the actual WorldSession sequence are the blockers;
 the unavailable UI/hardware RT/performance runs are separately **NOT RUN**.
+
+## Epoch 4: worker-owned admission completion
+
+This continuation replaces the epoch 3 early `Ready`/`BakeFinished` sequence.
+The worker keeps its existing bake-run scope and cancellation token while the
+app thread admits the complete candidate. A small internal completion receipt
+returns acceptance or rejection to that worker; only the worker emits the
+terminal event. Streaming first fill continues on the same worker while the
+receipt is pending. The editor creates its ordinary streaming anchor during
+loading, removing the former `BakeFinished -> anchor -> fill -> admission`
+cycle. A rejected run stops its idle refinement/streaming retries until a new
+command arrives.
+
+The app-side acceptance hook applies the deferred Box3D replacement and the
+validated authored `Ready` command before acknowledging success. The internal
+Runtime flush runs between ticks, on the app thread. Empty authored replacements
+explicitly clear the former authored entities. Animation reset is deferred until
+acceptance; pending frames and ticks do not reconcile the old ECS through the
+candidate store. Authored dynamic raster bindings reconcile on the frame after
+acceptance. The editor clears `bake_ready` on every `BakeStarted`, and the
+rejection remains latched across retained frames so automation cannot use the
+old scene to qualify a rejected request.
+
+`test_world_session_admission_sequence` now exercises the **actual native
+WorldSession worker/app pipeline**, streaming coordinator, source snapshots,
+authored ECS bootstrap and Box3D installation. The only visual decision is
+injected through an internal scoped fixture (`scene_admission_test.h`); this is
+not a Vulkan, UI, presentation, screenshot or hardware validation result. The
+existing collision fixture supplies a tiny real Box3D triangle. The new fixture
+covers first fill with success withheld, first-load rejection, a smaller accepted
+successor, replacement rejection retaining exact entity and native collision
+handles, and supersession of a finalized pending bake. It checks each started
+generation has exactly one nonzero terminal generation.
+
+The new native sequence exposed a real initial-fill deadlock: an active profile
+with an empty desired set never satisfied `resident_sectors > 0`. Completion
+now uses a private snapshot of all pending desired sectors, including held and
+cooling-down requests, and requires an active coordinator with no pending work,
+no inflight work and an idle bake pool. The fixture covers both an empty target
+set and an actually published streamed sector while success is withheld. A
+separate actual-SectorStreamer regression proves that a failed request in
+cooldown cannot be mistaken for a completed fill.
+
+Verification so far:
+
+- `aq test --aq-timeout 75 tools/tests/test_sparse_scene_admission.py -q -rP`:
+  **4 passed in 49.70 s** (before the fifth test was added). Native suite printed
+  `ALL PASS`; its first-fill log records zero-sector and one-sector completions.
+- `aq test --aq-timeout 75 tools/tests/test_sparse_scene_admission.py -q -k first_fill -rP`:
+  **1 passed in 2.87 s** for the newly added cooldown/empty-target regression.
+- These are five passing checks total. Logs are preserved in this report's
+  evidence directory under `epoch4-*.log`.
+
+The first compile attempt caught a namespace typo, a stale intermediate build
+was stopped after the test fixture was corrected, and the first native run was
+stopped after reproducing the empty-fill deadlock. These are failed/interrupted
+development attempts, not passing evidence. The final passing native run uses
+the corrected source. The Linux editor build result and remaining capability
+limits are recorded below. Earlier epoch sections are checkpoint history, not
+evidence for the final source revision.
+
+Linux product verification uses the supported Make path (not the Linux-rejecting
+root CMake configuration):
+
+```sh
+timeout --signal=TERM --kill-after=10s 900s env \
+  LD_LIBRARY_PATH=/tmp/sharp-zenith-52-shaderc/root/usr/lib/x86_64-linux-gnu \
+  make -C MatterEditor linux -j1 \
+  GLSLC=/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc \
+  VULKAN_INCLUDE=/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/third_party/Vulkan-Headers/include \
+  VULKAN_LIB_DIR=/tmp/eager-nexus-71-vulkan-link \
+  BOX3D_LIB=/tmp/eager-nexus-71-epoch4/deps/libbox3d.a
+```
+
+This fresh slot reused only native vendored dependency archives (raylib, Ozz,
+Box3D) from the prior worker slot and the already available shader compiler;
+it did not reuse an editor or engine binary as verification of changed source.
+The first product attempt stopped because the fresh slot's Box3D archive path
+was absent. The corrected command above compiled for its 900-second bound,
+then was resumed incrementally with the same command. There was no source
+compile error in that bounded attempt. Final compile/link status follows.
+
+The GPU smoke translation unit, including `sparse_admission_tests.h`, also
+passed this **compile-only** check (exit 0, no compiler diagnostics):
+
+```sh
+timeout --signal=TERM --kill-after=10s 90s g++ -std=c++17 -fsyntax-only \
+  -DMATTER_VK_TEST_FAULT_INJECTION -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY \
+  -I MatterEngine3/include -I MatterEngine3/src -I MatterEngine3 \
+  -I MatterEngine3/src/render -I MatterEngine3/src/provider \
+  -I libs/MatterSurfaceLib/include -I libs/SpatialQueryLib/include \
+  -I libs/MemoryLib/include -I libs/MathLib/include -I libs/ProfileLib/include \
+  -I libs/AssetStoreLib/include -I third_party/Vulkan-Headers/include \
+  -I third_party/raylib/src -I third_party/raylib/src/external/glfw/include \
+  -I third_party/flecs -I third_party/box3d/include \
+  -I third_party/ozz-animation/include \
+  MatterEngine3/tests/vulkan_smoke_tests.cpp
+```
+
+GPU primary/shadow preparation rollback, actual mixed-scene rendered identity,
+interactive first-load UI recovery, screenshot/performance rejection artifacts,
+validation layers and rendered performance are **NOT RUN**: this worker has no
+authorized display/DRI/graphics runner. The native session fixture deliberately
+injects only the visual decision and does not substitute for those results.
+Windows verification remains waived by the task's owner. No RT-counter probe,
+runner provisioning or daemon lifecycle operation was performed.
+
+Final Linux result: **PASS, exit 0**, producing
+`MatterEditor/build/linux/editor` (ELF x86-64, build ID
+`52ef9a07bbdfcb29bcf15afcbadcdf69ce8921ad`). The first successful full link is
+preserved as `epoch4-linux-build-continuation.log`; the final changed-session
+recompile and editor relink is `epoch4-linux-build-final.log`. The final command
+used the same arguments above with a 300-second bound.
+
+Final review also fixed viewport picking: during pending or rejected admission,
+ID readback and identity resolution now select the retained renderer and its
+matching identity map, rather than the hidden candidate. An initial compile of
+that small follow-up caught a reference to session connection state on the
+render-publication owner; it was corrected before the passing final build.
+This GPU-only selection change has compile/link evidence, not interactive-pick
+execution evidence. Native tests exercised the admission implementation committed
+as `d5a9a3c2`; the later Vulkan-only picking changes do not alter that native
+configuration. All final source is at `c8c4b834`.
+
+The epoch 3 Ready/terminal-ordering blocker is resolved by the real session
+fixture and worker/app acknowledgement. The remaining unexecuted graphics
+checks above retain their capability labels; none is represented as a pass.
