@@ -40,10 +40,12 @@ public:
     PortableScene& operator=(const PortableScene&) = delete;
 
     // Mirrors `instances` (re-read only when `instances_changed`) into the
-    // scene and advances camera/lights. Parts without a retained product are
-    // legacy content and are skipped; a product the adapter cannot consume is
-    // refused once, logged, and left to the legacy renderer. False only when
-    // the device cannot be leased or the graphics service rejects a frame.
+    // scene and advances camera/lights; a product retained later republishes
+    // the unchanged list. Parts without a retained product are legacy content
+    // and are skipped; a portable hash whose product could not be built, or a
+    // product the adapter cannot consume, is refused once, logged, and left
+    // to the legacy renderer. False only when the device cannot be leased or
+    // the graphics service rejects a frame.
     bool update(const std::vector<viewer::VkSceneInstance>& instances,
                 bool instances_changed, const PortableView& view,
                 std::string& err);

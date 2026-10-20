@@ -73,6 +73,7 @@ struct PortableScene::Impl {
     std::map<std::string, s::SceneInstance> placed;
     std::vector<viewer::VkSceneInstance> admitted;
     uint64_t revision = 0;
+    uint64_t products_seen = 0;                // retained_generation() last published.
     std::string capture_prefix;
     uint32_t capture_after = 30, stable_frames = 0;
     bool captured = false;
@@ -115,6 +116,8 @@ struct PortableScene::Impl {
                     refuse(hash, "assembly instance " + i.id.value + " needs the child-part adapter");
                     return false;
                 }
+            const std::string material = authoring_adapter::legacy_material_refusal(product->document);
+            if (!material.empty()) { refuse(hash, material); return false; }
             up.product = product;
             auto ticket = graphics->upload(kJob, {s::AssetOwner(product, &product->document),
                                                   product->resources, {}}, {});
@@ -143,7 +146,13 @@ struct PortableScene::Impl {
         for (size_t index = 0; index < admitted.size(); ++index) {
             const auto& inst = admitted[index];
             const auto product = authoring_adapter::retained_asset(inst.part_hash);
-            if (!product) continue; // Legacy content.
+            if (!product) {
+                // A portable hash that resolved but could not be built is refused
+                // with its diagnostic; anything else is legacy content.
+                const std::string why = authoring_adapter::retained_refusal(inst.part_hash);
+                if (!why.empty()) refuse(inst.part_hash, "no product: " + why);
+                continue;
+            }
             used.insert(inst.part_hash);
             auto r = ready.find(inst.part_hash);
             if (r == ready.end()) r = ready.emplace(inst.part_hash, resident(inst.part_hash, product)).first;
@@ -213,7 +222,13 @@ bool PortableScene::update(const std::vector<viewer::VkSceneInstance>& instances
     bool pending = false;
     for (const auto& [hash, up] : impl_->uploads) pending |= !up.ready;
     if (instances_changed) impl_->admitted = instances;
-    if ((instances_changed || pending) && !impl_->publish(err)) return false;
+    // A product retained after the instances were admitted (or refused since)
+    // republishes the unchanged list. Read before publishing, so one landing
+    // mid-pass is seen on the next update.
+    const uint64_t products = authoring_adapter::retained_generation();
+    const bool late = products != impl_->products_seen;
+    impl_->products_seen = products;
+    if ((instances_changed || pending || late) && !impl_->publish(err)) return false;
     s::CameraState camera;
     std::copy(std::begin(view.world_to_view.m), std::end(view.world_to_view.m), camera.view.m);
     std::copy(std::begin(view.view_to_clip.m), std::end(view.view_to_clip.m), camera.projection.m);

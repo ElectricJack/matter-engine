@@ -1084,6 +1084,22 @@ $(LINUX_GRAPHICS_BINDING_TEST): $(ME3_DIR)/tests/graphics_binding_tests.cpp \
 run-test-graphics-binding: $(LINUX_GRAPHICS_BINDING_TEST)
 	./$(LINUX_GRAPHICS_BINDING_TEST)
 
+# PortableScene on a live device: shared instances, dynamic-material refusal,
+# a late product under unchanged instances (baked by a child process, restored
+# here) and removal, read back from the adapter's own VulkanRaster capture.
+LINUX_PORTABLE_SCENE_TEST = $(L_DIR)/portable_scene_tests
+$(LINUX_PORTABLE_SCENE_TEST): $(ME3_DIR)/tests/portable_scene_tests.cpp \
+                              $(GLFW_LINUX_LIB) $(LINUX_VIEWER_LIB)
+	$(LINUX_CXX) -std=c++17 -O2 $< ../libs/MatterGraphics/src/vulkan_resources.cpp -o $@ \
+	    $(CXX_FLAGS_BUILD_LINUX_COMMON) -I$(ME3_DIR)/tests -I../libs/MatterGraphics/include -I../libs/MatterContracts/include \
+	    -Wl,--whole-archive $(LINUX_VIEWER_LIB) -Wl,--no-whole-archive \
+	    $(LINUX_VIEWER_AUTHORING_LIBS) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_LDFLAGS) $(OZZ_OFFLINE_LIBS) \
+	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
+
+.PHONY: run-test-portable-scene
+run-test-portable-scene: $(LINUX_PORTABLE_SCENE_TEST)
+	./$(LINUX_PORTABLE_SCENE_TEST)
+
 # Linux .d files use plain Unix paths, not the D:/-style paths that make the
 # Windows .d include conditional on MSYSTEM above -- safe to include
 # unconditionally. $(L_ALL_OBJ) is only defined by this point in the file (the

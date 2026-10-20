@@ -2416,7 +2416,9 @@ private:
         uint32_t water_generation = 0;
         // Nonzero suppresses cull/raster only. CPU RT selection never reads it.
         uint32_t water_pad0 = 0;
-        uint32_t water_pad1 = 0;
+        // Nonzero when det(object_to_world) < 0. cull.comp routes such draws
+        // to the bucket's mirrored command range, drawn front-face clockwise.
+        uint32_t mirrored = 0;
     };
     // The per-DRAW transform record: cull.comp writes one per emitted draw and
     // raster.vert reads it back by firstInstance. The CPU writes this struct
@@ -3133,6 +3135,8 @@ private:
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool apply_dynamic_command_layout(std::string& error);
+    void rebuild_mirror_command_template(const std::vector<uint32_t>& totals,
+                                         const std::vector<uint32_t>& mirrored);
     bool load_device_limits(std::string& error);
     bool fail_if_poisoned(std::string& error) const;
     bool poison(std::string& error);
@@ -3354,6 +3358,9 @@ private:
     bool ensure_geometry_cull_pipelines(std::string& error);
     VkPipeline skin_pipeline_ = VK_NULL_HANDLE;
     VkPipeline raster_pipeline_ = VK_NULL_HANDLE;
+    // raster_pipeline_ with a clockwise front face. It draws the per-bucket
+    // mirrored command ranges (instances with det(object_to_world) < 0).
+    VkPipeline mirrored_raster_pipeline_ = VK_NULL_HANDLE;
     // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte
     // VkSkinVertex binding with an explicit previous-position attribute.
     VkPipeline skinned_raster_pipeline_ = VK_NULL_HANDLE;
@@ -3852,6 +3859,17 @@ private:
 
     std::vector<uint32_t> part_instance_counts_;
     std::vector<DrawCommand> command_template_;
+    // Mirrored instances (GpuInstance::mirrored) per part, static baseline
+    // like part_instance_counts_; dynamic ones are added per frame.
+    std::vector<uint32_t> part_mirrored_counts_;
+    // Indexed like command_template_: bucket b's mirrored command, whose
+    // transform region is the last mirrored[part] slots of b's region. Empty
+    // when no instance is mirrored. Uploaded after the primary table in the
+    // same `commands` buffer (see cull.comp's vis_params.z) and drawn with
+    // mirrored_raster_pipeline_.
+    std::vector<DrawCommand> mirror_command_template_;
+    // The primary + mirrored tables as one contiguous upload source.
+    std::vector<DrawCommand> command_upload_scratch_;
     std::vector<PartCommandRange> part_command_ranges_;
     std::vector<PartCommandRange> recorded_draw_ranges_;
     std::vector<uint8_t> raster_command_enabled_;
@@ -3921,6 +3939,9 @@ private:
     // height and spread 4x, because that is literally the slab's matrix.
     uint32_t skin_transform_base_ = 0;
     uint32_t uploaded_command_count_ = 0;
+    // The `commands` buffer carries mirror_command_template_ after the
+    // uploaded_command_count_ primary commands.
+    bool uploaded_mirror_commands_ = false;
     uint32_t uploaded_transform_slots_ = 0;
     uint32_t uploaded_cluster_count_ = 0;
     std::vector<RtInstance> uploaded_rt_instances_;

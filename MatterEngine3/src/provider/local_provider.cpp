@@ -5015,6 +5015,18 @@ bool LocalProvider::restore_from_cache(
         return false;
     }
 
+    // The cache restores portable part IDENTITIES but not the immutable
+    // AssetProduct each was authored to, which the graphics adapter publishes.
+    // Anything but the cached hash back refuses the cache, and the cold
+    // resolve re-establishes identity.
+    {
+        BAKE_SPAN("provider.restore-portable");
+        if (!part_graph::reauthor_portable(*host_baker_, ir_.bake_plan, err)) {
+            MATTER_LOGE("resolve", "%s", err.c_str());
+            return false;
+        }
+    }
+
     // Restore graph snapshot.
     graph_snapshot_ = snapshot;
 
