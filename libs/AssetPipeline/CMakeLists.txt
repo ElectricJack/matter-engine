@@ -34,22 +34,13 @@ if(MATTER_ASSET_SURFACE)
     list(APPEND _asset_targets matter_asset_surface)
 endif()
 if(MATTER_ASSET_SURFACE_NATIVE)
-    # Compile the CPU source authority from TerrainGeneration, where it lives.
-    # No monolithic engine/terrain/graphics archive is linked.
-    set(_surface_legacy "${CMAKE_CURRENT_LIST_DIR}/../../MatterEngine3/src")
-    add_library(matter_asset_surface_runtime STATIC
-        "${CMAKE_CURRENT_LIST_DIR}/../TerrainGeneration/src/terrain_field.cpp")
-    # terrain_field.cpp still reads the engine's river-overlay declaration.
-    target_include_directories(matter_asset_surface_runtime PRIVATE "${_surface_legacy}" "${_surface_legacy}/../include")
-    target_compile_features(matter_asset_surface_runtime PRIVATE cxx_std_17)
-    if(MSVC)
-        target_compile_options(matter_asset_surface_runtime PRIVATE /W4 /permissive- /utf-8)
-    else()
-        target_compile_options(matter_asset_surface_runtime PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
+    # The CPU source authority (the field/surface tape kernel) is owned by
+    # ProceduralGeometry and registered alone as matter_geometry_field, which
+    # TerrainGeneration links too, so it is compiled once. Neither the rest of
+    # geometry nor any engine/terrain/graphics archive is configured or linked.
+    include("${CMAKE_CURRENT_LIST_DIR}/../ProceduralGeometry/cmake/FieldKernel.cmake")
     add_library(matter_asset_surface_native STATIC src/surface_tape.cpp)
-    target_include_directories(matter_asset_surface_native PRIVATE "${_surface_legacy}")
-    target_link_libraries(matter_asset_surface_native PUBLIC matter_asset_surface PRIVATE matter_asset_surface_runtime)
+    target_link_libraries(matter_asset_surface_native PUBLIC matter_asset_surface PRIVATE matter_geometry_field)
     target_link_libraries(matter_asset_pipeline INTERFACE matter_asset_surface_native)
     list(APPEND _asset_targets matter_asset_surface_native)
 endif()
@@ -159,10 +150,11 @@ if(BUILD_TESTING)
         add_test(NAME matter_asset_surface COMMAND matter_asset_surface_tests)
         if(MATTER_ASSET_SURFACE_NATIVE)
             target_link_libraries(matter_asset_surface_tests PRIVATE matter_asset_surface_native)
-            add_executable(matter_asset_surface_legacy_tests "${_surface_legacy}/../tests/surface_field_tests.cpp")
+            set(_surface_legacy "${CMAKE_CURRENT_LIST_DIR}/../../MatterEngine3")
+            add_executable(matter_asset_surface_legacy_tests "${_surface_legacy}/tests/surface_field_tests.cpp")
             target_compile_features(matter_asset_surface_legacy_tests PRIVATE cxx_std_17)
-            target_include_directories(matter_asset_surface_legacy_tests PRIVATE "${_surface_legacy}")
-            target_link_libraries(matter_asset_surface_legacy_tests PRIVATE matter_asset_surface_runtime)
+            target_include_directories(matter_asset_surface_legacy_tests PRIVATE "${_surface_legacy}/src")
+            target_link_libraries(matter_asset_surface_legacy_tests PRIVATE matter_geometry_field)
             add_test(NAME matter_asset_surface_legacy COMMAND matter_asset_surface_legacy_tests)
         endif()
     endif()

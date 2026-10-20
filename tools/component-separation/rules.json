@@ -76,7 +76,7 @@
       "directory": "libs/ProceduralGeometry",
       "description": "Procedural geometry kernel: no JavaScript host, no renderer, no terrain.",
       "targets": ["matter_geometry"],
-      "optional_targets": ["matter_geometry_recipe"],
+      "optional_targets": ["matter_geometry_recipe", "matter_geometry_field"],
       "public_include_dirs": ["libs/ProceduralGeometry/include"],
       "allowed_components": ["contracts"],
       "legacy_sources": [

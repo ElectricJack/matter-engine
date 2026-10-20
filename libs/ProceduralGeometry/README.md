@@ -7,6 +7,13 @@ Its only linked library is `matter_contracts`. The public
 [geometry.h](include/matter/geometry/geometry.h) exposes owned neutral recipe,
 asset, material and diagnostic values, without legacy graphics types.
 
+The CPU field/surface tape kernel (`src/terrain_field.cpp`, public header
+`matter/geometry/terrain_field.h`) is a separate dependency-free target,
+`matter_geometry_field`, registered by `cmake/FieldKernel.cmake`.
+TerrainGeneration and AssetPipeline's native surface producer include that
+module alone and link the target, so they configure no surface-math extraction
+or modifier backend, and every graph compiles the kernel once.
+
 ## Native use
 
 `PrimitiveGeometry::evaluate` accepts a direct `RecipeDocument`, resolved inputs,

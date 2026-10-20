@@ -63,7 +63,12 @@
 
 namespace terrain_field {
 
-class HeightOverlay;
+class HeightOverlay {
+public:
+    virtual ~HeightOverlay() = default;
+    virtual float height_at(float x, float z, float base_height) const = 0;
+    virtual std::uint64_t hash() const = 0;
+};
 
 // Legacy classifier / terrain-field operation cap, also the GPU's physical
 // register capacity. Direct sources may contain more operations: the GPU

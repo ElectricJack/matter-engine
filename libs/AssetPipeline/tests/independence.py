@@ -29,7 +29,8 @@ def main():
         ("surface-portable", "AssetPipeline", {"matter_asset_surface"},
          adapters_off + ["-DMATTER_ASSET_LOD=OFF", "-DMATTER_ASSET_SURFACE=ON",
                          "-DMATTER_ASSET_SURFACE_NATIVE=OFF"], kernels),
-        ("surface-native", "AssetPipeline", {"matter_asset_surface_native"},
+        # The native producer links only geometry's lean field-kernel target.
+        ("surface-native", "AssetPipeline", {"matter_asset_surface_native", "matter_geometry_field"},
          adapters_off + ["-DMATTER_ASSET_LOD=OFF", "-DMATTER_ASSET_SURFACE=ON",
                          "-DMATTER_ASSET_SURFACE_NATIVE=ON"], kernels),
     ]
@@ -54,7 +55,9 @@ def main():
         if name not in ("surface-portable", "surface-native"):
             forbidden.add("matter_asset_surface")
         if name != "surface-native":
-            forbidden.update({"matter_asset_surface_native", "matter_asset_surface_runtime"})
+            forbidden.add("matter_asset_surface_native")
+        if name in ("archive-only", "surface-portable"):
+            forbidden.add("matter_geometry_field")
         if module == "AssetPipeline":
             forbidden.update({"matter_terrain", "matter_graphics", "matter_host_quickjs"})
         forbidden |= excluded
@@ -69,7 +72,7 @@ def main():
             allowed = {"matter_contracts", "matter_asset_archive", "matter_asset_prepared",
                        "matter_asset_lod", "matter_asset_surface"}
             if name == "surface-native":
-                allowed.update({"matter_asset_surface_native", "matter_asset_surface_runtime"})
+                allowed.update({"matter_asset_surface_native", "matter_geometry_field"})
             assert names == allowed, (name, names)
             # Inspect the actual compiler dependency closure too: private
             # inclusion of a renderer/host header counts as a dependency.
