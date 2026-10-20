@@ -26,9 +26,12 @@
 //     cleanup().
 //
 // THREADING. Everything here runs on the thread that owns the GLFW window —
-// it calls glfwGetFramebufferSize and drives acquire/present. The only
-// synchronized member is `validation_errors`, which is atomic because the
-// validation callback can be invoked from a driver thread.
+// it calls glfwGetFramebufferSize and drives acquire/present. The synchronized
+// members are the validation counter, which is atomic because the validation
+// callback can be invoked from a driver thread, and `queue_mutex`, which every
+// graphics-queue submit/present and device-wide wait takes so the queue can be
+// shared with the editor's ImGui backend and with MatterGraphics bindings
+// (see DeviceGraphicsBindingAccess).
 //
 // FAILURE MODEL. Nothing throws: every fallible call returns bool and fills a
 // `std::string& error`. A failure that leaves Vulkan state unclear POISONS the
@@ -79,6 +82,7 @@
 #include <cstring>
 #include <ctime>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -435,8 +439,8 @@ bool supports_native_ray_tracing(
 // it is never copied.
 //
 // Call order: initialize() once, then begin_frame()/end_frame() per frame,
-// then cleanup(). All of it on the window-owning thread; the only member
-// touched from elsewhere is the atomic `validation_errors`.
+// then cleanup(). All of it on the window-owning thread; the members touched
+// from elsewhere are the atomic validation counter and `queue_mutex`.
 struct VulkanDevice::Impl {
     explicit Impl(StreamlineBridge input_streamline)
         : streamline(std::move(input_streamline)) {
@@ -494,7 +498,18 @@ struct VulkanDevice::Impl {
     GLFWwindow* window = nullptr;
     StreamlineBridge streamline;
     bool validation_enabled = false;
-    std::atomic<uint32_t> validation_errors{0};
+    // The messenger's user data. Shared so a graphics binding that keeps the
+    // device (and so the messenger) alive past this Impl also keeps it alive.
+    struct ValidationCounter {
+        std::atomic<uint32_t> errors{0};
+    };
+    std::shared_ptr<ValidationCounter> validation_counter =
+        std::make_shared<ValidationCounter>();
+    // Serializes every use of graphics_queue and every vkDeviceWaitIdle.
+    std::shared_ptr<std::mutex> queue_mutex = std::make_shared<std::mutex>();
+    // The owner handed out as VulkanDeviceBinding::lifetime. While any copy
+    // lives, cleanup() preserves the device and its parents.
+    std::weak_ptr<void> graphics_binding_lease;
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -755,12 +770,12 @@ struct VulkanDevice::Impl {
         VkDebugUtilsMessageTypeFlagsEXT message_type,
         const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
         void* user_data) {
-        auto* self = static_cast<Impl*>(user_data);
+        auto* counter = static_cast<ValidationCounter*>(user_data);
         const bool is_validation =
             (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0;
         if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0 &&
             is_validation) {
-            self->validation_errors.fetch_add(1, std::memory_order_relaxed);
+            counter->errors.fetch_add(1, std::memory_order_relaxed);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
             g_test_validation_error_total.fetch_add(1,
                                                     std::memory_order_relaxed);
@@ -877,7 +892,7 @@ struct VulkanDevice::Impl {
         create.ppEnabledExtensionNames = required_extensions.data();
         create.enabledLayerCount = static_cast<uint32_t>(layers.size());
         create.ppEnabledLayerNames = layers.empty() ? nullptr : layers.data();
-        auto debug_info = debug_create_info(this);
+        auto debug_info = debug_create_info(validation_counter.get());
         debug_info.pfnUserCallback = debug_callback;
         if (validation_enabled) create.pNext = &debug_info;
         if (!vk_ok(streamline.create_instance(&create, nullptr, &instance),
@@ -1910,7 +1925,12 @@ struct VulkanDevice::Impl {
             swapchain_recreate_required = true;
             return false;
         }
-        if (!vk_ok(streamline.device_wait_idle(device), "vkDeviceWaitIdle", error)) {
+        VkResult idle = VK_SUCCESS;
+        {
+            std::lock_guard<std::mutex> lock(*queue_mutex);
+            idle = streamline.device_wait_idle(device);
+        }
+        if (!vk_ok(idle, "vkDeviceWaitIdle", error)) {
             return poison_device(error,
                                  "swapchain recreation could not establish idle");
         }
@@ -2507,6 +2527,7 @@ struct VulkanDevice::Impl {
 #endif
         {
             submit_result = time_frame_call(last_frame_timings.submit_ms, [&] {
+                std::lock_guard<std::mutex> lock(*queue_mutex);
                 return vkQueueSubmit2(graphics_queue, 1, &submit, slot.fence);
             });
         }
@@ -2575,6 +2596,7 @@ struct VulkanDevice::Impl {
         }
         const VkResult present_result =
             time_frame_call(last_frame_timings.present_ms, [&] {
+                std::lock_guard<std::mutex> lock(*queue_mutex);
                 return streamline.queue_present(graphics_queue, &present);
             });
         presented = present_result_was_presented(present_result);
@@ -2639,6 +2661,7 @@ struct VulkanDevice::Impl {
             } else
 #endif
             {
+                std::lock_guard<std::mutex> lock(*queue_mutex);
                 idle = streamline.device_wait_idle(device);
             }
             bool device_lost = idle == VK_ERROR_DEVICE_LOST;
@@ -2649,6 +2672,17 @@ struct VulkanDevice::Impl {
                              "logical device, WSI resources, and their parents "
                              "after %s; completion is unproven\n",
                              result_name(idle));
+                if (device_lifetime) device_lifetime->invalidate();
+                return;
+            }
+            // A MatterGraphics binding destroys its buffers against this
+            // device whenever its last holder lets go, which may be after
+            // this owner is gone; same outcome as unproven completion.
+            if (!graphics_binding_lease.expired()) {
+                MATTER_LOGW("vk",
+                             "Vulkan cleanup intentionally preserving the "
+                             "logical device and its parents; a graphics "
+                             "binding still holds them\n");
                 if (device_lifetime) device_lifetime->invalidate();
                 return;
             }
@@ -2951,8 +2985,11 @@ bool VulkanDevice::submit_and_wait_for_phase(VkCommandBuffer command_buffer,
     VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &command_info;
-    const VkResult submitted =
-        vkQueueSubmit2(impl_->graphics_queue, 1, &submit, fence);
+    VkResult submitted = VK_SUCCESS;
+    {
+        std::lock_guard<std::mutex> lock(*impl_->queue_mutex);
+        submitted = vkQueueSubmit2(impl_->graphics_queue, 1, &submit, fence);
+    }
     if (submitted != VK_SUCCESS) {
         // A failed queue submission did not make this command buffer pending,
         // so its owning pool can be released even though the device is poisoned.
@@ -3006,6 +3043,32 @@ uint32_t detail::DeviceLifetimeAccess::test_destroy_call_count() {
 }
 #endif
 
+bool detail::DeviceGraphicsBindingAccess::lease(
+    VulkanDevice& owner, DeviceQueueLease& out, std::string& error) {
+    VulkanDevice::Impl& impl = *owner.impl_;
+    if (!impl.ensure_healthy(error)) return false;
+    // The lease carries the messenger's user data so the counter outlives
+    // this Impl for as long as the preserved device can still report.
+    struct Lease {
+        std::shared_ptr<VulkanDevice::Impl::ValidationCounter> validation_counter;
+    };
+    std::shared_ptr<void> holder = impl.graphics_binding_lease.lock();
+    if (!holder) {
+        holder = std::make_shared<Lease>(Lease{impl.validation_counter});
+        impl.graphics_binding_lease = holder;
+    }
+    out = DeviceQueueLease{};
+    out.physical_device = impl.physical_device;
+    out.device = impl.device;
+    out.queue = impl.graphics_queue;
+    out.queue_family = impl.graphics_queue_family;
+    out.lifetime = std::move(holder);
+    out.queue_mutex = impl.queue_mutex;
+    return true;
+}
+
+std::mutex& VulkanDevice::queue_mutex() const { return *impl_->queue_mutex; }
+
 bool detail::DeviceSubmitAccess::submit_and_wait(
     VulkanDevice& owner, VkCommandBuffer command_buffer, VkFence fence,
     bool& completion_proven, const char* fault_phase, std::string& error) {
@@ -3023,7 +3086,11 @@ void VulkanDevice::wait_idle() {
         MATTER_LOGE("vk", "%s\n", impl_->poison_error.c_str());
         return;
     }
-    const VkResult result = impl_->streamline.device_wait_idle(impl_->device);
+    VkResult result = VK_SUCCESS;
+    {
+        std::lock_guard<std::mutex> lock(*impl_->queue_mutex);
+        result = impl_->streamline.device_wait_idle(impl_->device);
+    }
     if (result != VK_SUCCESS) {
         std::string error;
         vk_ok(result, "vkDeviceWaitIdle", error);
@@ -3090,7 +3157,7 @@ const VulkanRayTracingProperties& VulkanDevice::ray_tracing_properties() const {
     return impl_->ray_tracing_properties;
 }
 uint32_t VulkanDevice::validation_error_count() const {
-    return impl_->validation_errors.load(std::memory_order_relaxed);
+    return impl_->validation_counter->errors.load(std::memory_order_relaxed);
 }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION

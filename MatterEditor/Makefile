@@ -1069,6 +1069,21 @@ linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_DEP) \
 	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(AR_CORE_LDFLAGS) $(OZZ_OFFLINE_LIBS) \
 	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
 
+# VulkanDevice -> MatterGraphics VulkanDeviceBinding lease, teardown and
+# shared queue-mutex cases (component_adapters/graphics). Needs a Vulkan
+# device; without a display GLFW's null platform takes VK_EXT_headless_surface.
+LINUX_GRAPHICS_BINDING_TEST = $(L_DIR)/graphics_binding_tests
+$(LINUX_GRAPHICS_BINDING_TEST): $(ME3_DIR)/tests/graphics_binding_tests.cpp \
+                                $(GLFW_LINUX_LIB) $(LINUX_VIEWER_LIB)
+	$(LINUX_CXX) -std=c++17 -O2 $< ../libs/MatterGraphics/src/vulkan_resources.cpp -o $@ \
+	    $(INCLUDE_PATHS) -I../libs/MatterGraphics/include -I../libs/MatterContracts/include \
+	    $(LINUX_VIEWER_LIB) $(LINUX_VIEWER_AUTHORING_LIBS) $(GLFW_LINUX_LIB) \
+	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
+
+.PHONY: run-test-graphics-binding
+run-test-graphics-binding: $(LINUX_GRAPHICS_BINDING_TEST)
+	./$(LINUX_GRAPHICS_BINDING_TEST)
+
 # Linux .d files use plain Unix paths, not the D:/-style paths that make the
 # Windows .d include conditional on MSYSTEM above -- safe to include
 # unconditionally. $(L_ALL_OBJ) is only defined by this point in the file (the

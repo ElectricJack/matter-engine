@@ -138,6 +138,26 @@ if(BUILD_TESTING)
         ENVIRONMENT "MATTER_GEOMETRY_CPU_MB=1;MATTER_GEOMETRY_ROOT_MB=1"
         PASS_REGULAR_EXPRESSION "ALL PASS" FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*")
 
+    # VulkanDevice -> MatterGraphics binding: lease, teardown and the shared
+    # queue mutex (MatterEngine3/src/component_adapters/graphics).
+    add_executable(graphics_binding_tests MatterEngine3/tests/graphics_binding_tests.cpp
+        libs/MatterGraphics/src/vulkan_resources.cpp)
+    matter_engine_include_directories(graphics_binding_tests PRIVATE)
+    target_include_directories(graphics_binding_tests BEFORE PRIVATE
+        "${CMAKE_BINARY_DIR}/MatterEngine3" "${matter_vulkan_include}"
+        "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include")
+    target_compile_definitions(graphics_binding_tests PRIVATE
+        NOMINMAX MATTER_VULKAN_ONLY MATTER_HAVE_STREAMLINE=${matter_streamline_enabled}
+        "MATTER_VK_TEST_LAYER_PATH=\"${matter_vulkan_runtime}\"")
+    target_link_libraries(graphics_binding_tests PRIVATE
+        matter_engine_viewer_objects matter_contracts gdi32 winmm user32 shell32 ws2_32 dbghelp)
+    matter_apply_project_defaults(graphics_binding_tests)
+    matter_apply_test_assertion_policy(graphics_binding_tests)
+    add_test(NAME graphics_binding_tests COMMAND graphics_binding_tests)
+    set_tests_properties(graphics_binding_tests PROPERTIES LABELS vulkan
+        PASS_REGULAR_EXPRESSION "ALL PASS")
+
     # Manual native visual probe: use the real device/Streamline path and the
     # same bounded source fixtures as the sparse comparison tests.
     add_executable(sparse_forest_preview MatterEngine3/tests/sparse_forest_preview.cpp)
