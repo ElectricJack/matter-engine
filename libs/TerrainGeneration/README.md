@@ -1,12 +1,14 @@
 # Headless terrain fields, meshes and CPU products
 
-`matter_terrain` compiles the existing CPU field/noise interpreter directly from
-`MatterEngine3/src/terrain_field.cpp`. The algorithms, integer noise hashes,
+`matter_terrain` owns the existing CPU field/noise interpreter,
+`src/terrain_field.cpp`, which moved here from `MatterEngine3/src`; the engine
+compiles the same file from this directory. The algorithms, integer noise hashes,
 96-register limit, octave accumulation order and legacy FNV text identity have
 one source of truth. Its production link dependency is `matter_contracts`;
-private legacy includes are neutral field/overlay and hydrology data types.
-The target also compiles the original `terrain_mesher.cpp` surface-nets and
-contour implementation directly. The target links no engine archive, QuickJS,
+private legacy includes are the engine's river-overlay, hydrology, bake-mode
+and logging headers. The target also owns the original `src/terrain_mesher.cpp`
+surface-nets and contour implementation; `src/seam_weld.cpp` lives beside it and
+is compiled by the engine. The old `MatterEngine3/src` headers forward here. The target links no engine archive, QuickJS,
 graphics, windowing or ECS library.
 The original field fixture additionally compiles the CPU river overlay/geometry
 sources; those concrete algorithms are test dependencies only.
@@ -24,8 +26,8 @@ The field API does not mesh or publish resources. The separate
 `matter/terrain/meshing.h` API implements `TerrainService::generate` with the
 same frozen field and the existing CPU mesher, as described below. Neither API
 resolves imports, writes caches, or publishes to a runtime. Ordered integration owns existing host,
-world and central build entrypoints. Relocation of the legacy source also belongs
-to integration, so the module currently builds within the monorepo.
+world and central build entrypoints. The module still reads those engine
+headers privately, so it currently builds within the monorepo.
 
 ## Encoding and capability boundaries
 

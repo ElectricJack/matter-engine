@@ -1,10 +1,8 @@
 include("${GRAPH}")
-cmake_path(APPEND repo_root MatterEngine3 src OUTPUT_VARIABLE native_sources)
 if(NOT terrain_links STREQUAL "matter_contracts" OR NOT terrain_public_links STREQUAL "matter_contracts")
     message(FATAL_ERROR "Terrain acquired a library outside the neutral contracts boundary")
 endif()
-set(expected_sources src/field.cpp src/meshing.cpp
-    "${native_sources}/terrain_field.cpp" "${native_sources}/terrain_mesher.cpp")
+set(expected_sources src/field.cpp src/meshing.cpp src/terrain_field.cpp src/terrain_mesher.cpp)
 if(NOT terrain_sources STREQUAL expected_sources)
     message(FATAL_ERROR "Terrain source set changed: review algorithm ownership and independence")
 endif()

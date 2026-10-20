@@ -44,7 +44,9 @@
     "exclude": ["*/build/*", "*/node_modules/*", "*/shaders_gen/*", "tests/component-separation/*"],
     "window": 8,
     "min_chars": 12,
-    "allow": []
+    "allow": [
+      {"paths": ["libs/TerrainGeneration/src/terrain_mesher.cpp", "MatterEngine3/tests/contour_mesh_tests.cpp"], "reason": "the analytic contour test harness restates the production marching-squares case table to check it; the duplication predates the mesher's move into TerrainGeneration"}
+    ]
   },
   "components": [
     {
@@ -160,14 +162,11 @@
       "targets": ["matter_terrain"],
       "public_include_dirs": ["libs/TerrainGeneration/include"],
       "allowed_components": ["contracts", "geometry"],
-      "legacy_sources": [
-        {"path": "MatterEngine3/src/terrain_field.cpp", "reason": "engine source of truth for the terrain noise field, compiled in place until ordered integration relocates it"}
-      ],
       "legacy_include_dirs": [
-        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place terrain_field.cpp; not propagated to consumers"}
+        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the river overlay, bake mode and log headers the moved field and mesher still read; not propagated to consumers"}
       ],
       "legacy_headers": [
-        {"paths": ["MatterEngine3/src/terrain_field.h", "MatterEngine3/src/terrain_river_overlay.h", "MatterEngine3/src/hydrology/river_geometry.h"], "reason": "declarations of the in-place terrain_field.cpp and its river-overlay inputs"},
+        {"paths": ["MatterEngine3/src/terrain_river_overlay.h", "MatterEngine3/src/hydrology/river_geometry.h", "MatterEngine3/src/bake_mode.h", "MatterEngine3/include/matter/log.h"], "reason": "engine river-overlay inputs, bake-mode switch and logging facility the moved field and mesher still include"},
         {"paths": ["MatterEngine3/include/matter/bounds.h", "MatterEngine3/include/matter/math_types.h", "MatterEngine3/include/matter/river_network.h", "MatterEngine3/include/matter/hydrology.h"], "reason": "engine POD types (bounds, math, river network, hydrology) named by terrain_field.h"}
       ],
       "unbuilt_sources": [

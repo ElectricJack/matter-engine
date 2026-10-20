@@ -585,7 +585,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
         $(ME3_DIR)/src/render/vt_enrich.cpp \
         $(ME3_DIR)/src/render/vt_surface_tape.h \
-        $(ME3_DIR)/src/terrain_field.cpp \
+        ../libs/TerrainGeneration/src/terrain_field.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -625,7 +625,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vt_stub_filler.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
 	    $(ME3_DIR)/src/render/vt_enrich.cpp \
-	    $(ME3_DIR)/src/terrain_field.cpp \
+	    ../libs/TerrainGeneration/src/terrain_field.cpp \
 	    $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -721,7 +721,7 @@ build/windows/vt_compositor_tests.exe: \
         $(ME3_DIR)/src/render/vt_types.h \
         $(ME3_DIR)/src/render/vt_surface_tape.h \
         $(ME3_DIR)/src/render/chart_atlas.h \
-        $(ME3_DIR)/src/terrain_field.cpp \
+        ../libs/TerrainGeneration/src/terrain_field.cpp \
         $(ME3_DIR)/src/terrain_field.h \
         $(ME3_DIR)/src/render/vk_context.cpp \
         $(ME3_DIR)/src/render/vk_resources.cpp \
@@ -736,7 +736,7 @@ build/windows/vt_compositor_tests.exe: \
 	    $(ME3_DIR)/src/render/vt_enrich.cpp \
 	    $(ME3_DIR)/src/props/props.cpp \
 	    $(ME3_DIR)/src/util/json_doc.cpp \
-	    $(ME3_DIR)/src/terrain_field.cpp \
+	    ../libs/TerrainGeneration/src/terrain_field.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \

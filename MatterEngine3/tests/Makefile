@@ -985,19 +985,19 @@ MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
 
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
 TERRAINFIELD_TARGET = build/terrain_field_tests
-TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp \
+TERRAINFIELD_CPP    = terrain_field_tests.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp \
                       ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # Phase C Task 5 — terrain mesher (pure CPU: terrain_field + terrain_mesher, no JS, no GL).
 TERRAINMESH_TARGET = build/terrain_mesher_tests
-TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
                      ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # M0-WP3 — cross-level seam welder (pure geometry: seam_boundary.h + seam_weld,
 # no terrain_field, no raylib, no GL, no JS). The suite builds its FaceRecords
 # from an analytic density function, so it links against nothing else.
 SEAMWELD_TARGET = build/seam_weld_tests
-SEAMWELD_CPP    = seam_weld_tests.cpp ../src/seam_weld.cpp
+SEAMWELD_CPP    = seam_weld_tests.cpp ../../libs/TerrainGeneration/src/seam_weld.cpp
 SEAMWELD_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h
 
 # M0-WP6 — the seam INTEGRATION gate: mesh_sector and seam_weld run together,
@@ -1006,8 +1006,8 @@ SEAMWELD_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h
 # as SEAMWELD above, plus the mesher and the field interpreter it needs to
 # produce real tiles (cf. TERRAINMESH_CPP).
 SEAMINTEGRATION_TARGET = build/seam_integration_tests
-SEAMINTEGRATION_CPP    = seam_integration_tests.cpp ../src/seam_weld.cpp \
-                         ../src/terrain_mesher.cpp ../src/terrain_field.cpp
+SEAMINTEGRATION_CPP    = seam_integration_tests.cpp ../../libs/TerrainGeneration/src/seam_weld.cpp \
+                         ../../libs/TerrainGeneration/src/terrain_mesher.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp
 SEAMINTEGRATION_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h \
                           ../src/terrain_mesher.h ../src/terrain_field.h
 
@@ -1039,8 +1039,8 @@ CONTOURMESH_HEADERS = check.h
 # terrain_mesher_tests pins the WELDER path's bytes bitwise and a process cannot
 # be in both modes.
 CONTOURENGINE_TARGET = build/contour_engine_tests
-CONTOURENGINE_CPP    = contour_engine_tests.cpp ../src/terrain_field.cpp \
-                       ../src/terrain_mesher.cpp
+CONTOURENGINE_CPP    = contour_engine_tests.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp \
+                       ../../libs/TerrainGeneration/src/terrain_mesher.cpp
 CONTOURENGINE_HEADERS = check.h ../src/terrain_mesher.h ../src/bake_mode.h
 
 # CPU helpers required by the ScriptHost/DSL solid and finite-surface APIs.
@@ -1055,7 +1055,7 @@ TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
-                  ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+                  ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
                   ../src/pf_bindings.cpp \
                   ../../libs/ParticleFlowLib/src/pf_math.cpp ../../libs/ParticleFlowLib/src/pf_sim.cpp \
                   ../../libs/ParticleFlowLib/src/pf_fields.cpp ../../libs/ParticleFlowLib/src/pf_path_recorder.cpp \
@@ -1154,7 +1154,7 @@ PF_CPP = ../src/pf_bindings.cpp \
 
 # any target that links dsl_bindings.cpp must also link the terrain sources
 # (dsl_bindings.cpp now registers the terrainVolume verb which calls mesh_sector)
-TERRAIN_SRC = ../src/terrain_field.cpp ../src/terrain_mesher.cpp
+TERRAIN_SRC = ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp
 
 GRAPH_INT_TARGET = build/part_graph_integration_tests
 # SCRIPT_CPP is a superset of the explicit part_graph/bake_trace/script_host/
@@ -1340,7 +1340,7 @@ TERRAIN_COLLISION_ARTIFACT_TARGET = build/terrain_collision_artifact_tests
 TERRAIN_COLLISION_ARTIFACT_CPP = terrain_collision_artifact_tests.cpp \
     ../src/terrain_collision/terrain_collision_artifact.cpp \
     ../src/terrain_collision/terrain_collision_definition.cpp \
-    ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+    ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
     ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 TERRAIN_COLLISION_ARTIFACT_OBJS = \
     $(call obj_list,def,$(TERRAIN_COLLISION_ARTIFACT_CPP))
@@ -1668,7 +1668,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
     $(TERRAIN_SRC) \
-    ../src/seam_weld.cpp \
+    ../../libs/TerrainGeneration/src/seam_weld.cpp \
     $(PF_CPP)
 
 GPU_MSL_CPP = \
@@ -3567,7 +3567,7 @@ clean-physicsevents:
 # links terrain_field.cpp directly.
 # ---------------------------------------------------------------------------
 SURFACEFIELD_TARGET = build/surface_field_tests
-SURFACEFIELD_CPP    = surface_field_tests.cpp ../src/terrain_field.cpp
+SURFACEFIELD_CPP    = surface_field_tests.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp
 SURFACEFIELD_OBJS   = $(call obj_list,def,$(SURFACEFIELD_CPP))
 
 $(eval $(call objrule_cpp,def,surface_field_tests.cpp))

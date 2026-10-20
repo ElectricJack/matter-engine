@@ -14,11 +14,12 @@ endfunction()
 matter_terrain_register_contracts()
 set(terrain_legacy "${CMAKE_CURRENT_LIST_DIR}/../../MatterEngine3")
 cmake_path(NORMAL_PATH terrain_legacy)
-# Compile the source of truth directly until ordered integration relocates it.
-# The overlay dependency is a neutral virtual CPU interface; no concrete
-# hydrology backend is linked into the production field library.
+# The field and mesher live here; the engine compiles the same sources (and the
+# seam welder beside them) from this directory. The overlay dependency is a
+# neutral virtual CPU interface; no concrete hydrology backend is linked into
+# the production field library.
 add_library(matter_terrain STATIC src/field.cpp src/meshing.cpp
-    "${terrain_legacy}/src/terrain_field.cpp" "${terrain_legacy}/src/terrain_mesher.cpp")
+    src/terrain_field.cpp src/terrain_mesher.cpp)
 target_compile_features(matter_terrain PUBLIC cxx_std_17)
 target_link_libraries(matter_terrain PUBLIC matter_contracts)
 target_include_directories(matter_terrain PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include"
