@@ -147,6 +147,7 @@
 #include "render/water_mesh_animation_playback.h"
 #include "render/vk_instance_cache.h"
 #include "render/scene_admission.h"
+#include "render/world_scene_publication.h"
 #include "render/vk_scene_publication.h"
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
@@ -851,66 +852,17 @@ struct EngineContext::Impl {
 // async-bake members that emit into it so it outlives them, and the scene
 // service/tracker after `ecs_runtime` and `hub_` so they destruct first (members
 // destroy in reverse declaration order). Both are documented at their fields.
-struct WorldSession::Impl {
-    EngineContext::Impl* engine = nullptr;   // non-owning
-    AnimationService animation_service;
-    ecs_runtime::Runtime ecs_runtime;
-
-    struct RuntimeAnimationAsset {
-        animation::DecodedAnimationRuntimeAsset decoded;
-        animation::BindingBake binding;
-        const animation::AnimAsset* service_asset = nullptr;
-        render::AnimationRigidAsset rigid;
-        std::vector<viewer::VkSkinInfluence> skin_influences;
-        viewer::VkAnimationBoundsAsset skin_bounds;
-        render::AnimationSkinnedAsset skin;
-    };
-    struct RuntimeAnimationInstance {
-        flecs::entity_t entity = 0;
-        scene::SceneEntityId scene_id{};
-        uint64_t part_hash = 0;
-        uint64_t asset_identity = 0;
-        Animator animator{};
-    };
-    std::map<uint64_t, std::unique_ptr<RuntimeAnimationAsset>>
-        runtime_animation_assets;
-    std::set<uint64_t> rejected_runtime_animation_assets;
-    std::map<flecs::entity_t, RuntimeAnimationInstance>
-        runtime_animation_instances;
-    AnimationRasterRangeResolver animation_raster_range_resolver;
-
-    // Provider config and live provider instance.
-    // Phase C Task 14: shared_ptr so publish job lambdas can capture a strong
-    // reference, ensuring the provider outlives all in-flight publish jobs even
-    // if a superseded bake creates a new provider before the old jobs complete.
-    viewer::LocalProviderConfig cfg;
-    // cfg.fixture_io stays immutable after construction. The worker
-    // publishes source generations atomically for app-thread readers.
-    std::shared_ptr<const WorldFixtureIO> fixture_io_override;
-    std::shared_ptr<const WorldFixtureIO> fixture_inputs() const {
-        auto current = std::atomic_load_explicit(
-            &fixture_io_override, std::memory_order_acquire);
-        return current ? current : cfg.fixture_io;
-    }
-    std::shared_ptr<viewer::LocalProvider> provider;
-
-    // World data.
+// One render publication owns its CPU world, catalog, expansion/temporal
+// identities and renderer together. A replacement cannot destroy the accepted
+// publication while its complete candidate is still being baked or admitted.
+struct WorldRenderPublication {
     viewer::WorldManifest manifest;
     world_lights::EffectiveLocalLightCache effective_local_light_cache;
     viewer::WorldState    state;
-    matter::FogSettings   authored_fog_{};
-    // Publish the authored fog to BOTH consumers in one place: authored_fog_
-    // is what the render thread hands the renderer every frame (unchanged), and
-    // the world_fog_defaults mirror below is what WorldSession::world_fog hands
-    // the editor at the connect seam. The mirror is guarded by the same mutex
-    // as world_volumetrics_defaults because that read happens on the app thread
-    // while this write happens on the worker.
-    void set_authored_fog(const matter::FogSettings& fog);
-    // The sun half of the same publication, called beside every
-    // set_authored_fog. Separate function rather than one that takes the whole
-    // WorldSettings so the fog call sites keep their exact meaning.
-    void set_authored_sun(const matter::WorldSettings& settings);
-
+    lod_select::PartLodTable                lods;
+    float sky_clear[3] = {96 / 255.f, 118 / 255.f, 143 / 255.f};
+    viewer::SectorLodResolver sec{16.0f,
+                                  std::numeric_limits<float>::infinity()};
     // Compositor objects.
     std::unique_ptr<viewer::PartStore>      store;
 #ifdef MATTER_VULKAN_VIEWER
@@ -931,8 +883,6 @@ struct WorldSession::Impl {
         hydrology::HydrologyNetworkArtifact animation_manifest{};
         std::filesystem::path animation_cache_root;
     };
-    std::shared_ptr<const AuthoredFluidRenderBinding>
-        failed_fluid_debug_binding;
     // Render-thread projection of the latest immutable authored publication.
     // The pointer identity gates GPU uploads; the binding is restored on the
     // part every frame so a force-LOD release/re-registration cannot lose it.
@@ -949,7 +899,6 @@ struct WorldSession::Impl {
     std::uint64_t vk_water_animation_compressed_cpu_bytes = 0u;
     std::uint64_t vk_water_animation_peak_activation_cpu_bytes = 0u;
     std::uint64_t vk_water_animation_gpu_bytes_per_slot = 0u;
-    std::atomic<float> water_animation_time_seconds{0.0f};
     viewer::WaterDiagnosticSettings vk_water_diagnostic_settings{};
     viewer::VulkanInstanceCache vk_instance_cache;
     std::vector<viewer::VkSceneInstance> vk_ordinary_instances;
@@ -1000,6 +949,80 @@ struct WorldSession::Impl {
     // than baked cluster data, so — like force_lod — a change needs to force
     // instances_dirty even when the resolved instance set itself is unchanged.
     bool vk_hide_children_applied_ = false;
+    std::unordered_map<uint32_t, uint64_t> pick_token_to_part_hash;
+    ~WorldRenderPublication() {
+        if (vk_scene) vk_geometry_pages.reset(*vk_scene);
+    }
+    WorldRenderPublication() = default;
+    WorldRenderPublication(WorldRenderPublication&&) noexcept = default;
+    WorldRenderPublication& operator=(WorldRenderPublication&&) noexcept = default;
+#endif
+};
+
+struct WorldSession::Impl : WorldRenderPublication {
+    EngineContext::Impl* engine = nullptr;   // non-owning
+    AnimationService animation_service;
+    ecs_runtime::Runtime ecs_runtime;
+
+    struct RuntimeAnimationAsset {
+        animation::DecodedAnimationRuntimeAsset decoded;
+        animation::BindingBake binding;
+        const animation::AnimAsset* service_asset = nullptr;
+        render::AnimationRigidAsset rigid;
+        std::vector<viewer::VkSkinInfluence> skin_influences;
+        viewer::VkAnimationBoundsAsset skin_bounds;
+        render::AnimationSkinnedAsset skin;
+    };
+    struct RuntimeAnimationInstance {
+        flecs::entity_t entity = 0;
+        scene::SceneEntityId scene_id{};
+        uint64_t part_hash = 0;
+        uint64_t asset_identity = 0;
+        Animator animator{};
+    };
+    std::map<uint64_t, std::unique_ptr<RuntimeAnimationAsset>>
+        runtime_animation_assets;
+    std::set<uint64_t> rejected_runtime_animation_assets;
+    std::map<flecs::entity_t, RuntimeAnimationInstance>
+        runtime_animation_instances;
+    AnimationRasterRangeResolver animation_raster_range_resolver;
+
+    // Provider config and live provider instance.
+    // Phase C Task 14: shared_ptr so publish job lambdas can capture a strong
+    // reference, ensuring the provider outlives all in-flight publish jobs even
+    // if a superseded bake creates a new provider before the old jobs complete.
+    viewer::LocalProviderConfig cfg;
+    // cfg.fixture_io stays immutable after construction. The worker
+    // publishes source generations atomically for app-thread readers.
+    std::shared_ptr<const WorldFixtureIO> fixture_io_override;
+    std::shared_ptr<const WorldFixtureIO> fixture_inputs() const {
+        auto current = std::atomic_load_explicit(
+            &fixture_io_override, std::memory_order_acquire);
+        return current ? current : cfg.fixture_io;
+    }
+    std::shared_ptr<viewer::LocalProvider> provider;
+
+    // World data.
+    matter::FogSettings   authored_fog_{};
+    // Publish the authored fog to BOTH consumers in one place: authored_fog_
+    // is what the render thread hands the renderer every frame (unchanged), and
+    // the world_fog_defaults mirror below is what WorldSession::world_fog hands
+    // the editor at the connect seam. The mirror is guarded by the same mutex
+    // as world_volumetrics_defaults because that read happens on the app thread
+    // while this write happens on the worker.
+    void set_authored_fog(const matter::FogSettings& fog);
+    // The sun half of the same publication, called beside every
+    // set_authored_fog. Separate function rather than one that takes the whole
+    // WorldSettings so the fog call sites keep their exact meaning.
+    void set_authored_sun(const matter::WorldSettings& settings);
+
+#ifdef MATTER_VULKAN_VIEWER
+    // Written atomically by the bake worker; never swapped during replay.
+    std::shared_ptr<const AuthoredFluidRenderBinding> failed_fluid_debug_binding;
+    std::atomic<float> water_animation_time_seconds{0.0f};
+    viewer::WorldScenePublication<WorldRenderPublication> vk_world_publication;
+    bool vk_world_preparing = false;
+    bool vk_replaying_accepted = false;
 #endif
     struct AuthoredFluidPublication
         : matter::detail::RiverRuntimePublicationIdentity {
@@ -1030,27 +1053,10 @@ struct WorldSession::Impl {
                 return publication;
         }
     }
-    lod_select::PartLodTable                lods;
-
-    // Sky clear color: derived from tone-mapped sky_color in bake_once().
-    // Three separate floats kept as gamma-mapped floats passed to glClearColor
-    // (same value as main.cpp's `sky_clear` Color struct, but stored as floats
-    // pre-divided by 255 to avoid 8-bit quantization before the GL clear).
-    // Values are: (unsigned char)(gamma * 255.f + 0.5f) / 255.f so the
-    // fractional part rounds to exactly the same 8-bit bucket as
-    // ClearBackground(sky_clear) — pixel-identical output guaranteed.
-    float sky_clear[3] = {96 / 255.f, 118 / 255.f, 143 / 255.f};
 
     // GPU culler (per-session; initialized once per session after first bake).
     bool              culler_ready = false;
 
-    // THE resolver. Radius is overwritten every render() from the world's
-    // outermost terrain band; the constructor value only has to be valid
-    // before the first call, and infinity is the honest "nothing is excluded
-    // yet" rather than a 64 m default that would blank a streamed world for
-    // one frame.
-    viewer::SectorLodResolver sec{16.0f,
-                                  std::numeric_limits<float>::infinity()};
     // The derived activation radius, published as a plain float so render()
     // does not take streaming_lod_mutex every frame to read one number.
     // Infinity until a streamed world resolves its bands.
@@ -1505,9 +1511,6 @@ struct WorldSession::Impl {
     }
 
 #ifdef MATTER_VULKAN_VIEWER
-    // GPU pick: instance_token (32-bit) → part_hash reverse map. Built from
-    // the renderer's expanded instance list after update_instances.
-    std::unordered_map<uint32_t, uint64_t> pick_token_to_part_hash;
     // Overlay lines submitted by the editor for this frame. Interleaved
     // {x,y,z,r,g,b,a} × N, drawn as LINE_LIST with depth testing.
     std::vector<float> overlay_line_data;
@@ -4762,59 +4765,47 @@ void WorldSession::Impl::publish_pipeline(
     }
 
     // 4) GL reset job: recreate raster + composer + PartStore on the GL thread.
-    struct ResetOutput {
-        std::unique_ptr<viewer::PartStore>      new_store;
-    };
-    auto reset_out = std::make_shared<ResetOutput>();
-
     matter_async::GpuJob reset_job;
     reset_job.name  = pfx + ".reset";
     reset_job.token = token;
-    reset_job.fn = [this, reset_out, new_manifest, p, pfx, token](std::string& err) -> bool {
+    reset_job.fn = [this, new_manifest, p, pfx, token](std::string& err) -> bool {
         matter_async::assert_gl_thread((pfx + ".reset").c_str());
-        connected.store(false, std::memory_order_release);
-
-#ifdef MATTER_VULKAN_VIEWER
-        if (vk_scene) { vk_geometry_pages.reset(*vk_scene); vk_scene->reset(); }
-        vk_geometry_instances.clear(); vk_geometry_temporal_revision = UINT64_MAX;
-        vk_ordinary_instances.clear();vk_shared_catalog_owners.clear();vk_shared_has_instances=false;
-        vk_shared_surface_objects.clear();vk_shared_shadow_objects.clear();vk_shared_catalog_dirty=true;
-        vk_instance_cache.invalidate();
-        vk_rejected_instances.invalidate();vk_rejected_owners.clear();vk_admission_error.clear();
-        vk_scene_accepted=false;
-        vk_world_receiver_frames.clear();
-        vk_receiver_state_version=vk_receiver_tape_hash=vk_receiver_expansion=UINT64_MAX;
-        vk_temporal.invalidate();
-#endif
-
-        reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root,
+        WorldRenderPublication candidate;
+        candidate.store = std::make_unique<viewer::PartStore>(cfg.cache_root,
             cfg.fixture_io ? cfg.fixture_io->cache : nullptr);
 #ifdef MATTER_VULKAN_VIEWER
-        reset_out->new_store->set_geometry_pages_enabled(vk_geometry_pages_enabled &&
+        if (engine->render_device) {
+            candidate.vk_scene = std::make_unique<viewer::VkSceneRenderer>(*engine->render_device);
+            candidate.vk_scene->set_water_diagnostic_view(vk_water_diagnostic_settings.view);
+        }
+        candidate.vk_water_diagnostic_settings = vk_water_diagnostic_settings;
+        candidate.gpu_mesher_acceptance_part = gpu_mesher_acceptance_part;
+        candidate.gpu_mesher_acceptance_instance = gpu_mesher_acceptance_instance;
+        candidate.vk_geometry_pages_enabled = vk_geometry_pages_enabled;
+        candidate.store->set_geometry_pages_enabled(vk_geometry_pages_enabled &&
             engine->render_device && (engine->render_device->ray_tracing_available() ||
             (std::getenv("MATTER_GEOMETRY_RASTER_ONLY") &&
              std::string(std::getenv("MATTER_GEOMETRY_RASTER_ONLY")) == "1")));
-        if (const char* module = reset_out->new_store->geometry_pages_enabled()
+        if (const char* module = candidate.store->geometry_pages_enabled()
                 ? std::getenv("MATTER_GEOMETRY_MODULE") : nullptr) {
             std::set<uint64_t> hashes;
             { std::lock_guard<std::mutex> lock(draw_override_mutex);
               for (const auto& entry : draw_catalog_staged) if (entry.second == module) hashes.insert(entry.first); }
-            reset_out->new_store->set_geometry_page_filter(std::move(hashes));
+            candidate.store->set_geometry_page_filter(std::move(hashes));
         }
 #endif
-        // W3: thread the optional per-rung bake observer (null in production;
-        // re-applied at the publish_pipeline call sites too, since PartStore
-        // is replaced wholesale on every GL reset job).
-        reset_out->new_store->set_bake_observer(cfg.bake_observer);
-
-        state.reset(viewer::WorldManifest{});
-        reset_runtime_animation();
+        candidate.store->set_bake_observer(cfg.bake_observer);
+        candidate.state.reset(viewer::WorldManifest{});
 #ifdef MATTER_VULKAN_VIEWER
-        // vk_scene->reset() discarded its dynamic slots. The bridge otherwise
-        // sees unchanged ECS entities and emits no Bind changes after reload.
-        dynamic_bridge.reset();
+        // Allocation happened above; stage only transfers owners. On repeated
+        // rejected reloads keep the original accepted world, not the rejected
+        // candidate. Never reset the retained renderer/catalog/temporal state.
+        vk_world_publication.stage(*this, std::move(candidate), vk_scene_accepted);
+        vk_world_preparing = true;
+#else
+        static_cast<WorldRenderPublication&>(*this) = std::move(candidate);
 #endif
-        store.swap(reset_out->new_store);
+        reset_runtime_animation();
 
         // Pre-warm the child-variant catalog into the freshly-swapped store, on
         // the GL thread that owns it. install_world (which ran before this reset
@@ -5213,7 +5204,7 @@ void WorldSession::Impl::publish_pipeline(
     matter_async::GpuJob finalize_job;
     finalize_job.name  = pfx + ".finalize";
     finalize_job.token = token;
-    finalize_job.fn    = [this, p, pfx](std::string& finalize_error) -> bool {
+    finalize_job.fn    = [this, p, pfx, cap_state, bake_fail_count](std::string& finalize_error) -> bool {
         matter_async::assert_gl_thread((pfx + ".finalize").c_str());
         // Existing test fault seam: -1 denotes the authored finalize barrier.
         // It also provides a deterministic same-app-thread lifecycle latch.
@@ -5226,7 +5217,16 @@ void WorldSession::Impl::publish_pipeline(
             finalize_error = "unknown authored finalize fault";
             return false;
         }
+#ifdef MATTER_VULKAN_VIEWER
+        if (p.count_errors_seed + bake_fail_count + cap_state->load_fail_count != 0) {
+            finalize_error = "world candidate has failed parts; accepted scene retained";
+            return false;
+        }
+#endif
         lods = store->part_lod_table();
+#ifdef MATTER_VULKAN_VIEWER
+        vk_world_preparing = false;
+#endif
 
         stats.instances_total = (uint32_t)manifest.instances.size();
         stats.parts_baked     = (uint32_t)provider->baked_count();
@@ -11643,7 +11643,9 @@ WorldSession::~WorldSession() {
     impl_->hub_.close();
 
 #ifdef MATTER_VULKAN_VIEWER
+    impl_->vk_world_publication.commit();
     impl_->vk_instance_cache.invalidate();
+    if (impl_->vk_scene) impl_->vk_geometry_pages.reset(*impl_->vk_scene);
     impl_->vk_scene.reset();
 #endif
 
@@ -13083,6 +13085,24 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         err = "WorldSession received an invalid VulkanFrame";
         return false;
     }
+    const bool replaying = impl_->vk_replaying_accepted;
+    const auto render_retained = [&]() {
+        if (!impl_->vk_world_publication.retained()) {
+            impl_->stats.instances_drawn = 0;
+            record_vulkan_clear(frame, impl_->sky_clear);
+            return true;
+        }
+        return impl_->vk_world_publication.with_retained(*impl_, [&]() {
+            struct ReplayScope {
+                bool& flag;
+                ~ReplayScope() { flag = false; }
+            } scope{impl_->vk_replaying_accepted};
+            impl_->vk_replaying_accepted = true;
+            return render(cam, frame, opts, err);
+        });
+    };
+    if (!replaying && impl_->vk_world_preparing)
+        return render_retained();
     impl_->vk_scene->collect_water_fields(impl_->vk_skin_completed_serial);
     impl_->vk_scene->collect_water_animation(
         impl_->vk_skin_completed_serial);
@@ -13108,7 +13128,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // animation only after this submission is reported presented. This makes
     // LOD consume prior completed scene state and prevents a failed render
     // attempt from throttling the following frame.
-    {
+    if (!replaying) {
         std::map<uint64_t, animation::AnimationPresentationObservation> observed;
         const auto remember =
             [&observed, &cam](flecs::entity entity, AnimatorInstanceHandle animator,
@@ -13165,12 +13185,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // authored fog is not baked into anything, it is re-handed to the renderer
     // here on each call. An editor override therefore lands on the next frame
     // with no reload, exactly like the volumetrics multipliers beside it.
-    impl_->vk_scene->set_volumetrics_settings(
+    if (!replaying) impl_->vk_scene->set_volumetrics_settings(
         opts.volumetrics,
         opts.use_fog_override ? opts.fog_override : impl_->authored_fog_,
         opts.cloud_shadows);
     impl_->vk_scene->set_tileset_pom_settings(opts.vulkan_tileset_pom);
     impl_->vk_scene->set_vt_near_band_settings(opts.vulkan_vt_near_band);
+    if (!replaying) {
     std::array<MaterialGpuRecord, MATERIAL_MAX_TOTAL> material_records;
     const size_t material_count = static_cast<size_t>(MaterialRegistryPackRtForGPU(
         material_records.data(), MATERIAL_MAX_TOTAL));
@@ -13203,6 +13224,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->vk_material_shading_revision,
             impl_->vk_material_geometry_revision, err))
         return false;
+    }
     const VkExtent2D internal_extent =
         impl_->vk_scene->dlss_internal_extent(frame.extent);
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
@@ -13220,7 +13242,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     if (!viewer::build_frame_matrices(cam, internal_extent.width,
                                       internal_extent.height, unjittered, err))
         return false;
-    {
+    if (!replaying) {
         matter_stream::StreamingView view; view.valid=true;
         std::memcpy(view.planes, unjittered.frustum_planes, sizeof(view.planes));
         auto& coordinator=impl_->ecs_runtime.streaming_coordinator();
@@ -13253,7 +13275,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 opts.vulkan_ray_tracing.debug_view;
             impl_->stats.vk_rt_fallback_reason = std::move(reason);
         };
-    if (!impl_->connected || !impl_->store) {
+    if ((!impl_->connected && !replaying) || !impl_->store) {
         reset_vk_rt_observation(
             false, !impl_->connected ? "world session disconnected"
                                      : "world part store unavailable");
@@ -13317,9 +13339,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // forces a rebuild. Debug LOD thresholds are staged without releasing
     // already-registered geometry. Defaults (-1 /
     // false) leave production render output byte-identical to pre-W4.
-    const bool force_lod_changed = (opts.force_lod != impl_->vk_force_lod_applied_);
+    const bool force_lod_changed = !replaying && (opts.force_lod != impl_->vk_force_lod_applied_);
     const bool hide_children_changed =
-        (opts.hide_child_instances != impl_->vk_hide_children_applied_);
+        !replaying && (opts.hide_child_instances != impl_->vk_hide_children_applied_);
 
     // Per-module draw overrides (matter/draw_overrides.h). Sampled ONCE per
     // frame, before anything decides whether the instance set is stale:
@@ -13333,20 +13355,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // Both are no-ops in the default state: sync_draw_overrides returns false
     // without touching the resolver when nothing changed, and the resolver's
     // any_hidden() fast path makes draw_hidden a single bool test.
-    const bool draw_hidden_changed = impl_->sync_draw_overrides();
+    const bool draw_hidden_changed = !replaying && impl_->sync_draw_overrides();
     // Unconditional: the renderer's own equality check is a size compare in
     // the default (empty) state, and pushing every frame is what re-arms the
     // lane after a renderer reset without the session having to observe one.
-    impl_->vk_scene->set_part_draw_overrides(
+    if (!replaying) impl_->vk_scene->set_part_draw_overrides(
         impl_->draw_overrides_resolver.gpu_entries());
     const matter::DrawOverrideResolver& draw_overrides =
         impl_->draw_overrides_resolver;
 
     const auto requested_owners=impl_->store->shared_surface_catalog();
-    const bool instances_dirty = force_lod_changed || hide_children_changed ||
+    const bool instances_dirty = !replaying && (force_lod_changed || hide_children_changed ||
                                  draw_hidden_changed || !impl_->vk_admission_error.empty() ||
                                  requested_owners!=impl_->vk_shared_catalog_owners ||
-                                 !impl_->vk_instance_cache.matches(resolved);
+                                 !impl_->vk_instance_cache.matches(resolved));
     std::string rejected_request;
     if (instances_dirty) {
       do {
@@ -13615,7 +13637,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     if(!rejected_request.empty() && !impl_->vk_scene_accepted) {
         // First-load rejection has no accepted geometry. Keep a defined shell.
-        impl_->stats.instances_drawn=0;record_vulkan_clear(frame,impl_->sky_clear);
+        if (!render_retained()) return false;
+        impl_->stats.instances_drawn = 0;
         err=rejected_request;return false;
     }
     // Rejected updates render the accepted ordinary/shared snapshot with the
@@ -13636,7 +13659,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     const auto authored_fluid_publication =
         impl_->load_authored_fluid_publication();
-    const auto authored_fluid_binding = !rejected_request.empty()
+    const auto authored_fluid_binding = replaying || !rejected_request.empty()
         ? impl_->vk_authored_fluid_render_binding
         : (authored_fluid_publication ? authored_fluid_publication->render : nullptr);
     std::uint32_t authored_water_proxy_instance_index = UINT32_MAX;
@@ -13832,7 +13855,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     const auto failed_fluid_debug_binding = std::atomic_load_explicit(
         &impl_->failed_fluid_debug_binding, std::memory_order_acquire);
-    if (failed_fluid_debug_binding && failed_fluid_debug_binding->part) {
+    if (!replaying && failed_fluid_debug_binding && failed_fluid_debug_binding->part) {
         if (impl_->vk_scene->ensure_part(
                 *failed_fluid_debug_binding->part, err) < 0)
             return false;
@@ -13889,7 +13912,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     false);
         }
     }
-    if (impl_->vk_geometry_pages_enabled && impl_->store->geometry_pages_enabled()) {
+    if (replaying && impl_->vk_geometry_pages_enabled && impl_->store->geometry_pages_enabled()) {
+        instance_view = &impl_->vk_geometry_instances;
+    } else if (impl_->vk_geometry_pages_enabled && impl_->store->geometry_pages_enabled()) {
         PROFILE_SCOPE("geometry.update");
         if (!impl_->vk_geometry_pages.update(*impl_->store, *impl_->vk_scene,
                 *impl_->engine->render_device, frame, cam, budget, *instance_view,
@@ -13992,6 +14017,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         (void)begin_temporal({});
         record_vulkan_clear(frame, impl_->sky_clear);
         if(!rejected_request.empty()) {err=rejected_request;return false;}
+        if (!replaying) impl_->vk_world_publication.commit();
         return true;
     }
 
@@ -14078,7 +14104,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     // Dynamic entity bridge: reconcile ECS entities with renderer slots.
     // Drop Bind changes whose part can't be loaded yet (next frame retries).
-    {
+    if (!replaying && rejected_request.empty()) {
         // I.11: hub-backed adapter — bridge per-entity errors are republished
         // as immediate error.part_instance{,_clear} on the session hub.
         PROFILE_SCOPE("build.dynamic");
@@ -14223,6 +14249,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             animation_skin_queue_pending_seal = true;
         }
     }
+    if (!replaying) {
     viewer::VkSceneLighting lighting{};
     const auto controls =
         viewer::sanitize_vulkan_lighting_overrides(opts.vulkan_lighting);
@@ -14341,6 +14368,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
+    }
     {
         // The atmosphere transaction consumes the current live lighting, so
         // publish those inputs before selecting this completed frame slot.
@@ -14638,6 +14666,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->stats.instances_drawn=0;
         err=rejected_request;return false;
     }
+    if (!replaying) impl_->vk_world_publication.commit();
     return true;
 }
 
@@ -14647,6 +14676,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
 // submission — a discarded frame must not be reprojected against.
 // A serial that does not match the frame render() opened is ignored silently.
 void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
+    if (impl_ && !impl_->vk_replaying_accepted &&
+        impl_->vk_world_publication.retained() &&
+        impl_->vk_world_publication.retained()->vk_temporal_serial == frame_serial &&
+        impl_->vk_world_publication.retained()->vk_temporal_token != 0) {
+        impl_->vk_world_publication.with_retained(*impl_, [&]() {
+            struct ReplayScope {
+                bool& flag;
+                ~ReplayScope() { flag = false; }
+            } scope{impl_->vk_replaying_accepted};
+            impl_->vk_replaying_accepted = true;
+            finish_vulkan_frame(frame_serial, presented);
+        });
+        return;
+    }
     if (!impl_ || frame_serial != impl_->vk_temporal_serial ||
         impl_->vk_temporal_token == 0) {
         return;
@@ -14659,12 +14702,12 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
     }
     impl_->dynamic_bridge.finish_frame(frame_serial);
     if (presented) {
-        (void)impl_->ecs_runtime.animation_systems().commit_completed_visibility(
-            frame_serial);
+        if (!impl_->vk_replaying_accepted)
+            (void)impl_->ecs_runtime.animation_systems().commit_completed_visibility(frame_serial);
         (void)impl_->vk_temporal.commit_presented(impl_->vk_temporal_token);
     } else {
-        impl_->ecs_runtime.animation_systems().discard_completed_visibility(
-            frame_serial);
+        if (!impl_->vk_replaying_accepted)
+            impl_->ecs_runtime.animation_systems().discard_completed_visibility(frame_serial);
         (void)impl_->vk_temporal.discard_failed_attempt(
             impl_->vk_temporal_token);
     }

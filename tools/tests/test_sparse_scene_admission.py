@@ -5,7 +5,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def compile_run(tmp_path, text):
+def compile_run(tmp_path, text, sources=()):
     source = tmp_path / "admission.cpp"
     source.write_text(text)
     binary = tmp_path / "admission"
@@ -16,7 +16,11 @@ def compile_run(tmp_path, text):
                "-I" + str(ROOT / "third_party/Vulkan-Headers/include"),
                "-I" + str(ROOT / "libs/MathLib/include"),
                "-I" + str(ROOT / "libs/SpatialQueryLib/include"),
-               str(source), "-o", str(binary)]
+               "-I" + str(ROOT / "MatterEngine3/src/provider"),
+               "-I" + str(ROOT / "libs/ProfileLib/include"),
+               "-DMATTER_PROFILE_ENABLED=0",
+               str(source), *[str(ROOT / path) for path in sources],
+               "-o", str(binary)]
     subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
     return subprocess.run([str(binary)], check=True, capture_output=True,
                           text=True, timeout=10).stdout
@@ -129,3 +133,93 @@ int main() {
 }
 '''
     assert "production batch walker" in compile_run(tmp_path, text)
+
+
+def test_full_world_publication_ownership(tmp_path):
+    # Exercise the ownership transaction used by WorldSession with real world,
+    # expansion-cache and temporal implementations. GPU recording is separate.
+    output = compile_run(tmp_path, r'''#include "render/world_scene_publication.h"
+#include "render/scene_admission.h"
+#include "render/vk_instance_cache.h"
+#include "render/vk_temporal.h"
+#include "provider/world_source.h"
+#include "provider/sector_resolver.h"
+#include <cassert>
+#include <iostream>
+#include <stdexcept>
+using namespace viewer;
+struct Publication {
+    WorldState world;
+    VulkanInstanceCache cache;
+    TemporalState temporal;
+    std::shared_ptr<int> catalog;
+};
+Publication make_world(unsigned id) {
+    Publication result;
+    WorldManifest manifest;
+    WorldManifestEntry entry{}; entry.instance_id=id;entry.part_hash=id;
+    manifest.instances.push_back(entry);result.world.reset(manifest);
+    ResolvedInstance resolved{};resolved.part_hash=id;resolved.stable_id=id;
+    VkSceneInstance draw{};draw.part_hash=id;
+    result.cache.store({resolved},{draw});
+    result.catalog=std::make_shared<int>(id);
+    return result;
+}
+std::vector<TemporalInstance> instances(unsigned id) {
+    TemporalInstance value{};value.instance_id=id;
+    value.object_to_world.m[0]=value.object_to_world.m[5]=
+        value.object_to_world.m[10]=value.object_to_world.m[15]=1;
+    return {value};
+}
+int main() {
+    constexpr uint64_t limit=128ull*1024*1024;
+    Publication current=make_world(7);
+    WorldScenePublication<Publication> publication;
+    const FrameMatrices camera{};
+    auto token=current.temporal.begin(camera,{64,64},{64,64},instances(7),false,{}).attempt_token;
+    assert(current.temporal.commit_presented(token));
+    std::weak_ptr<int> accepted=current.catalog;
+    publication.stage(current,make_world(8),true);
+    admission::Plan rejected(limit);
+    assert(!rejected.add(admission::Buffer::triangles,838861,160,8));
+    assert(!accepted.expired() && current.world.find(8));
+    // Replay/completion temporarily select the SAME accepted catalog and caches.
+    publication.with_retained(current,[&] {
+        assert(current.world.find(7) && !current.world.find(8));
+        assert(*current.catalog==7 && current.cache.instances().front().part_hash==7);
+        const auto& frame=current.temporal.begin(camera,{64,64},{64,64},instances(7),false,{});
+        assert(!frame.reset && frame.instances.front().history_valid);
+        assert(current.temporal.commit_presented(frame.attempt_token));
+    });
+    assert(current.world.find(8));
+    try { publication.with_retained(current,[] { throw std::runtime_error("recording"); }); }
+    catch (const std::runtime_error&) {}
+    assert(current.world.find(8));
+    std::weak_ptr<int> rejected_catalog=current.catalog;
+    publication.stage(current,make_world(9),false);
+    assert(rejected_catalog.expired() && !accepted.expired());
+    assert(publication.retained()->world.find(7));
+    // Smaller complete request gets fresh temporal history, then replaces old.
+    publication.stage(current,make_world(10),false);
+    admission::Plan smaller(limit);
+    assert(smaller.add(admission::Buffer::triangles,1,160,10));
+    const auto& fresh=current.temporal.begin(camera,{64,64},{64,64},instances(10),false,{});
+    assert(fresh.reset && !fresh.instances.front().history_valid);
+    assert(current.temporal.commit_presented(fresh.attempt_token));
+    publication.commit();
+    assert(accepted.expired() && !publication.retained());
+    assert(current.world.find(10) && current.cache.instances().front().part_hash==10);
+    // First rejected load has no accepted owner: caller keeps its clear shell.
+    Publication empty;
+    WorldScenePublication<Publication> first;
+    first.stage(empty,make_world(11),false);
+    assert(!first.retained());
+    std::cout << "world/catalog/cache/temporal rollback and smaller replacement passed\n";
+}
+''', sources=(
+        "MatterEngine3/src/render/world_state.cpp",
+        "MatterEngine3/src/render/vk_instance_cache.cpp",
+        "MatterEngine3/src/render/vk_temporal.cpp",
+        "MatterEngine3/src/render/matrix_math.cpp",
+    ))
+    assert "smaller replacement passed" in output
