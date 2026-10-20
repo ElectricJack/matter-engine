@@ -54,15 +54,11 @@ for k, s in stats.items():
     nb, db = 100 * s['normal_bad'] / px, 100 * s['depth_bad'] / px
     ab = 100 * s['albedo_bad'] / px; aok = ab <= MAXPCT
     ok = s['px'] == dr['pixels'] and nb <= MAXPCT and db <= MAXPCT and aok
-    # Legacy rasterizes with a fixed frontFace (vk_scene_renderer.cpp:2769) and no
-    # per-instance winding parity, so a det<0 placement draws its back faces:
-    # coverage must still match, depth/normal parity is not expected.
-    if dr['mirrored'] and not ok and s['px'] == dr['pixels'] and aok:
-        print(f"  legacy-known: mirrored {dr['instance']} legacy farther than portable at {s['legacy_farther']}/{s['px']} px (back faces)")
-        ok = 'LEGACY-INSIDE-OUT'
+    if dr['mirrored'] and not ok:
+        print(f"  mirrored {dr['instance']}: legacy farther than portable at {s['legacy_farther']}/{s['px']} px")
     fail |= not ok
     print(f"{dr['instance']} mirrored={dr['mirrored']} px={s['px']} (json {dr['pixels']}) "
-          f"normal>tol {s['normal_bad']} ({nb:.2f}%, max {s['normal_max']}) depth>tol {s['depth_bad']} ({db:.2f}%, max {s['depth_max']}) albedo>tol {s['albedo_bad']} ({ab:.2f}%, max {s['albedo_max']}) {ok if isinstance(ok, str) else ('PASS' if ok else 'FAIL')}")
+          f"normal>tol {s['normal_bad']} ({nb:.2f}%, max {s['normal_max']}) depth>tol {s['depth_bad']} ({db:.2f}%, max {s['depth_max']}) albedo>tol {s['albedo_bad']} ({ab:.2f}%, max {s['albedo_max']}) {'PASS' if ok else 'FAIL'}")
 print('RESULT', 'FAIL' if fail else 'PASS', f'(channel-tol {TOL}, max-diff-pct {MAXPCT})')
 if len(sys.argv) > 2:
     seen = set()
