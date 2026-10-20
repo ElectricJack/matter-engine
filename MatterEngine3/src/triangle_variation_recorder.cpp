@@ -1,8 +1,8 @@
-// Legacy include/build boundary. The triangle emitter implementation is owned
-// by ProceduralGeometry; VariationRecorder::instance stays here because it
-// folds into the part_asset_v2 cache identity.
+// The triangle emitter implementation is owned by ProceduralGeometry and is
+// compiled from libs/ProceduralGeometry/src/triangle_emit.cpp;
+// VariationRecorder::instance stays here because it folds into the
+// part_asset_v2 cache identity.
 #include "triangle_emit.hpp"
-#include "../../libs/ProceduralGeometry/src/triangle_emit.cpp"
 
 namespace tri_emit {
 
