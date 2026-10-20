@@ -15543,7 +15543,8 @@ bool WorldSession::pick_at_pixel(float cursor_x, float cursor_y,
     auto* displayed = static_cast<WorldRenderPublication*>(impl_.get());
     if (impl_->vk_world_pending)
         displayed = impl_->vk_world_publication.retained();
-    if (!displayed || !displayed->connected || !displayed->vk_scene) return false;
+    if (!displayed || !displayed->vk_scene) return false;
+    if (!impl_->vk_world_pending && !impl_->connected) return false;
     if (fb_width <= 0 || fb_height <= 0) return false;
 
     const uint32_t rw = displayed->vk_scene->raster_width();
