@@ -1261,7 +1261,7 @@ LIVEPROD_C   = $(COMMON_MSL_C)
 
 TILESETBAKE_TARGET = build/tileset_bake_tests
 TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp $(SCRIPT_SOLID_COMMON_CPP) \
-                  ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
+                  ../src/tileset_bake.cpp ../../libs/AssetPipeline/physics/src/tileset_settle.cpp \
                   ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
                   ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
@@ -1569,7 +1569,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
-              ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
+              ../../libs/AssetPipeline/physics/src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_collider.cpp \
               ../src/tileset_part_collider.cpp ../src/tileset_torus_bvh.cpp \
               ../src/world_tracer.cpp \
@@ -1664,7 +1664,7 @@ GPU_PIPELINE_CPP = \
     ../src/world_tracer.cpp \
     ../src/shader_source.cpp \
     ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
-    ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
+    ../src/tileset_bake.cpp ../../libs/AssetPipeline/physics/src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
     $(TERRAIN_SRC) \
@@ -2864,9 +2864,9 @@ run-live: $(DEV_TARGET)
 	./$(DEV_TARGET)
 
 # Box3d physics smoke test.
-build/tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp ../src/bake_trace.cpp $(BOX3D_LIB) | build
+build/tileset_physics_tests: tileset_physics_tests.cpp ../../libs/AssetPipeline/physics/src/tileset_settle.cpp ../src/tileset_collider.cpp ../src/bake_trace.cpp $(BOX3D_LIB) | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src -I$(BOX3D_DIR)/include \
-	    -o $@ tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp ../src/bake_trace.cpp \
+	    -o $@ tileset_physics_tests.cpp ../../libs/AssetPipeline/physics/src/tileset_settle.cpp ../src/tileset_collider.cpp ../src/bake_trace.cpp \
 	    $(BOX3D_LIB) -lm
 
 $(BOX3D_LIB):

@@ -58,6 +58,10 @@ def main():
         if module == "AssetPipeline":
             forbidden.update({"matter_terrain", "matter_graphics", "matter_host_quickjs"})
         forbidden |= excluded
+        # Optional animation, physics and compute modules never ride in a basic configuration.
+        forbidden |= {"matter_animation_asset", "matter_animation_native", "matter_collision",
+                      "matter_physics_generation", "matter_settle_native",
+                      "matter_collision_terrain_adapter", "matter_geometry_compute"}
         if module != "AssetPipeline":
             forbidden |= {"matter_asset_archive", "matter_asset_prepared", "matter_asset_lod"}
         assert not names.intersection(forbidden), (name, names)
