@@ -15537,11 +15537,17 @@ bool WorldSession::pick_at_pixel(float cursor_x, float cursor_y,
                                  int fb_width, int fb_height,
                                  PickIdentity& out) {
     out = {};
-    if (!impl_->connected || !impl_->vk_scene) return false;
+    // The viewport shows the retained owner throughout admission/rejection.
+    // Its ID attachment and resolver must be selected together; candidate
+    // residency frames cannot supply identities for that displayed image.
+    auto* displayed = static_cast<WorldRenderPublication*>(impl_.get());
+    if (impl_->vk_world_pending)
+        displayed = impl_->vk_world_publication.retained();
+    if (!displayed || !displayed->connected || !displayed->vk_scene) return false;
     if (fb_width <= 0 || fb_height <= 0) return false;
 
-    const uint32_t rw = impl_->vk_scene->raster_width();
-    const uint32_t rh = impl_->vk_scene->raster_height();
+    const uint32_t rw = displayed->vk_scene->raster_width();
+    const uint32_t rh = displayed->vk_scene->raster_height();
     if (rw == 0 || rh == 0) return false;
 
     const uint32_t rx = std::min(
@@ -15551,20 +15557,20 @@ bool WorldSession::pick_at_pixel(float cursor_x, float cursor_y,
 
     uint32_t token = UINT32_MAX;
     std::string err;
-    if (!impl_->vk_scene->readback_pick_identity(rx, ry, token, err))
+    if (!displayed->vk_scene->readback_pick_identity(rx, ry, token, err))
         return false;
     if (token == UINT32_MAX || token == 0)
         return false;
 
-    auto scene_pick = impl_->dynamic_bridge.resolve_pick(token);
+    auto scene_pick = displayed->dynamic_bridge.resolve_pick(token);
     if (scene_pick.kind == matter::scene::ScenePickKind::DynamicEntity) {
         out.kind = PickKind::DynamicEntity;
         out.entity_id = scene_pick.scene_entity_id.value;
         return true;
     }
 
-    auto it = impl_->pick_token_to_part_hash.find(token);
-    if (it == impl_->pick_token_to_part_hash.end())
+    auto it = displayed->pick_token_to_part_hash.find(token);
+    if (it == displayed->pick_token_to_part_hash.end())
         return false;
     out.kind = PickKind::StaticInstance;
     out.part_hash = it->second;
