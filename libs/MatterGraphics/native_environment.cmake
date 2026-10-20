@@ -1,5 +1,8 @@
-# Production producer relocation. The host supplies VulkanDevice/vk_resources;
-# this archive does not acquire a window, world, scene or generator.
+# Production producer relocation. The canonical Vulkan resource helpers and
+# the device-lifetime registry/accessors they need (vk_resources.cpp,
+# vk_device_internal.cpp) are owned here; the host supplies the VulkanDevice
+# itself (creation, queues, teardown, the immediate submit). This archive does
+# not acquire a window, world, scene or generator.
 set(_environment_spirv)
 foreach(shader atmosphere_transmittance atmosphere_multiscatter atmosphere_sky_view
         atmosphere_irradiance cloud_shadow_density cloud_shadow_integrate
@@ -19,7 +22,8 @@ add_custom_command(OUTPUT "${_environment_header}"
     DEPENDS ${_environment_spirv} tools/embed_environment.py
         "${_graphics_repo}/MatterEngine3/tools/embed_spirv.py" VERBATIM)
 add_library(matter_graphics_environment STATIC src/native/vk_atmosphere.cpp
-    src/native/vk_cloud_shadows.cpp src/native/vk_volumetrics.cpp "${_environment_header}")
+    src/native/vk_cloud_shadows.cpp src/native/vk_volumetrics.cpp
+    src/native/vk_resources.cpp src/native/vk_device_internal.cpp "${_environment_header}")
 target_compile_features(matter_graphics_environment PUBLIC cxx_std_17)
 target_compile_definitions(matter_graphics_environment PRIVATE MATTER_GRAPHICS_NATIVE_ENVIRONMENT)
 target_include_directories(matter_graphics_environment PUBLIC
