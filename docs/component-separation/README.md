@@ -18,6 +18,9 @@ Start with these documents:
   reserved future targets and measurement protocol.
 - [Pinned baseline](baseline.json): exact commits, source hashes, reconciliation,
   pre-existing failures and this task's checks.
+- [Vertical-slice qualification, 2026-10-20](qualification-2026-10-20.md):
+  native/browser parity, viewer and matched-view results, measurements,
+  capabilities and declared gaps (task `clear-crest-48.9.2`).
 
 The live starting commit is `98af23851dd3424ddbfc62624cd2afb850e9d09d`, the
 observed `origin/dev` head. The design inspected
