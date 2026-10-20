@@ -12,20 +12,6 @@ if(NOT TARGET matter_contracts)
     set(BUILD_TESTING "${_geometry_testing}")
 endif()
 get_filename_component(MATTER_GEOMETRY_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
-# Compile the geometry portion of the canonical TU. Its final VariationRecorder
-# function depends on the cache/world backend and MSVC resolves that reference
-# even with /Gy + /OPT:REF. No algorithm copy is checked in. Reconfigure whenever
-# the source changes; a moved seam fails explicitly instead of linking a cache.
-set(_emitter "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src/triangle_emit.cpp")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_emitter}")
-file(READ "${_emitter}" _emitter_source)
-string(FIND "${_emitter_source}" "\nuint64_t VariationRecorder::instance(" _cache_seam)
-if(_cache_seam LESS 0)
-    message(FATAL_ERROR "Canonical triangle emitter/cache seam changed; audit the source split")
-endif()
-string(SUBSTRING "${_emitter_source}" 0 ${_cache_seam} _geometry_source)
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/shared_triangle_emit.cpp"
-    "${_geometry_source}\n} // namespace tri_emit\n")
 set(_surface "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/surface.c")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_surface}")
 file(READ "${_surface}" _surface_source)
@@ -51,12 +37,11 @@ endforeach()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/shared_surface_math.h" "${_surface_math}\n}\n")
 add_library(matter_geometry STATIC src/geometry.cpp src/profile.cpp src/session.cpp src/csg.cpp src/csg_mesh.cpp
     src/query.cpp src/modifiers.cpp
-    "${CMAKE_CURRENT_BINARY_DIR}/shared_triangle_emit.cpp"
-    "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src/polygon_triangulate.cpp"
+    src/triangle_emit.cpp src/polygon_triangulate.cpp
     "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/fat_primitive.c")
 # Simplify/smooth compile the canonical MatterSurfaceLib stages. OFF drops them
 # and stops advertising their capabilities; modifier requests then fail as
-# unsupported_capability. Retopology (autoremesher/geogram/TBB) is not offered.
+# unsupported_capability. The optional isolated worker links its own backend.
 option(MATTER_GEOMETRY_MODIFIERS "Compile the CPU mesh simplify/smooth modifier backend" ON)
 if(MATTER_GEOMETRY_MODIFIERS)
     set(_modifier_sources)
@@ -68,11 +53,17 @@ if(MATTER_GEOMETRY_MODIFIERS)
     target_sources(matter_geometry PRIVATE ${_modifier_sources})
     target_compile_definitions(matter_geometry PRIVATE MATTER_GEOMETRY_HAVE_MODIFIERS=1)
 endif()
+option(MATTER_GEOMETRY_MESH_WORKER "Build optional subprocess mesh backend (native Linux)" OFF)
+if(MATTER_GEOMETRY_MESH_WORKER)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT MATTER_GEOMETRY_MODIFIERS OR CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR "Mesh worker requires a native Linux build with MATTER_GEOMETRY_MODIFIERS=ON")
+    endif()
+    include(cmake/MeshWorker.cmake)
+endif()
 target_compile_features(matter_geometry PUBLIC cxx_std_17)
 target_link_libraries(matter_geometry PUBLIC matter_contracts)
 target_include_directories(matter_geometry PUBLIC include PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
-    "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src"
     "${MATTER_GEOMETRY_ROOT}/MatterEngine3/include"
     "${MATTER_GEOMETRY_ROOT}/libs/SpatialQueryLib/include"
     "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/include"
@@ -127,6 +118,28 @@ add_executable(matter_geometry_recipe examples/direct_recipe.cpp)
 target_link_libraries(matter_geometry_recipe PRIVATE matter_geometry)
 if(MATTER_GEOMETRY_TESTS)
     enable_testing()
+    if(MATTER_GEOMETRY_MESH_WORKER)
+        add_executable(matter_geometry_mesh_worker_fake tests/mesh_worker_fake.cpp)
+        target_include_directories(matter_geometry_mesh_worker_fake PRIVATE src
+            "${MATTER_GEOMETRY_ROOT}/MatterEngine3/include"
+            "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/include"
+            "${MATTER_GEOMETRY_ROOT}/libs/SpatialQueryLib/include"
+            "${MATTER_GEOMETRY_ROOT}/libs/MathLib/include"
+            "${MATTER_GEOMETRY_ROOT}/third_party/raylib/src")
+        target_compile_features(matter_geometry_mesh_worker_fake PRIVATE cxx_std_17)
+        add_executable(matter_geometry_mesh_worker_tests tests/mesh_worker_tests.cpp)
+        add_dependencies(matter_geometry_mesh_worker_tests matter_geometry_mesh_worker_fake)
+        target_link_libraries(matter_geometry_mesh_worker_tests PRIVATE matter_geometry Threads::Threads)
+        add_test(NAME matter_geometry_mesh_worker_tests COMMAND matter_geometry_mesh_worker_tests
+            $<TARGET_FILE:matter_geometry_mesh_worker_fake>)
+        add_executable(matter_geometry_mesh_worker_parity tests/mesh_worker_parity.cpp)
+        add_dependencies(matter_geometry_mesh_worker_parity matter_geometry_mesh_worker)
+        target_link_libraries(matter_geometry_mesh_worker_parity PRIVATE matter_geometry matter_geometry_worker_backend)
+        add_test(NAME matter_geometry_mesh_worker_parity COMMAND matter_geometry_mesh_worker_parity
+            $<TARGET_FILE:matter_geometry_mesh_worker>)
+        set_tests_properties(matter_geometry_mesh_worker_tests PROPERTIES TIMEOUT 20)
+        set_tests_properties(matter_geometry_mesh_worker_parity PROPERTIES TIMEOUT 120)
+    endif()
     matter_geometry_property_target(matter_geometry_property_tests tests/geometry_property_tests.cpp)
     set(_property_groups primitives profiles csg queries)
     if(MATTER_GEOMETRY_MODIFIERS)
@@ -184,6 +197,7 @@ set(module_root [==[${CMAKE_CURRENT_SOURCE_DIR}]==])
 set(repo_root [==[${MATTER_GEOMETRY_ROOT}]==])
 set(build_root [==[${CMAKE_CURRENT_BINARY_DIR}]==])
 set(modifiers [==[${MATTER_GEOMETRY_MODIFIERS}]==])
+set(mesh_worker [==[${MATTER_GEOMETRY_MESH_WORKER}]==])
 ")
     add_test(NAME matter_geometry_dependencies COMMAND "${CMAKE_COMMAND}"
         "-DGRAPH=${CMAKE_CURRENT_BINARY_DIR}/geometry-dependencies-$<CONFIG>.cmake"

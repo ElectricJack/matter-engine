@@ -365,6 +365,10 @@ endif
 # built by exactly the compiler that links it, and so a caller who overrode
 # VULKAN_INCLUDE for this build gets it honored inside the archive too.
 VIEWER_LIB = $(ME3_DIR)/build/libmatter_engine3_viewer.a
+# The viewer archive's legacy part route links the authoring pipeline's
+# archives, which MatterEngine3's viewer-lib target builds beside it.
+include $(ME3_DIR)/authoring_adapter.mk
+VIEWER_AUTHORING_LIBS = $(addprefix $(ME3_DIR)/build/authoring_adapter/,$(AUTHORING_ADAPTER_ARCHIVES))
 
 VIEWER_LIB_MAKE_ARGS = \
     VIEWER_CXX="$(WIN_CXX)" VIEWER_CC="$(WIN_CC)" VIEWER_AR="$(WIN_AR)" \
@@ -593,7 +597,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_temporal.cpp \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
-        $(ME3_DIR)/src/render/matrix_math.cpp \
+        $(ME3_DIR)/../libs/MatterGraphics/src/matrix_math.cpp \
         $(ME3_DIR)/src/render/lod_trace.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
 	@mkdir -p $(dir $@)
@@ -634,7 +638,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_temporal.cpp \
 	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
 	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
-	    $(ME3_DIR)/src/render/matrix_math.cpp \
+	    $(ME3_DIR)/../libs/MatterGraphics/src/matrix_math.cpp \
 	    $(ME3_DIR)/src/render/lod_trace.cpp \
 	    $(PROFILE_DIR)/src/profile.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ) -o $@ \
@@ -819,7 +823,7 @@ FORCE:
 # other way round) and before $(WIN_LIBS)/$(GLFW_WIN_LIB)/$(AR_CORE_LDFLAGS),
 # which the archive itself draws on -- box3d, Ozz, GLFW and autoremesher_core.
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(AR_CORE_DEP) $(VIEWER_LIB) $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -Wl,--whole-archive $(VIEWER_LIB) -Wl,--no-whole-archive -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+	$(WIN_CXX) $(W_ALL_OBJ) -Wl,--whole-archive $(VIEWER_LIB) -Wl,--no-whole-archive $(VIEWER_AUTHORING_LIBS) -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(W_DIR)/; fi
 	@objdump="$$($(WIN_CXX) -print-prog-name=objdump)"; \
 	 imports="$$("$$objdump" -p $(W_DIR)/editor.exe)"; \
@@ -954,6 +958,7 @@ L_ALL_OBJ   = $(L_CPP_OBJ)
 #     "accidentally build Linux with Streamline on" stays unreachable.
 # UNVERIFIED, like everything else in this section: never compiled anywhere.
 LINUX_VIEWER_LIB = $(ME3_DIR)/build/libmatter_engine3_viewer_linux.a
+LINUX_VIEWER_AUTHORING_LIBS = $(addprefix $(ME3_DIR)/build/authoring_adapter_linux/,$(AUTHORING_ADAPTER_ARCHIVES))
 
 LINUX_VIEWER_LIB_MAKE_ARGS = \
     VIEWER_TAG=_linux \
@@ -1060,9 +1065,24 @@ linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_DEP) \
        $(LINUX_VIEWER_LIB) $(L_ALL_OBJ)
 	$(LINUX_CXX) $(L_ALL_OBJ) \
 	    -Wl,--whole-archive $(LINUX_VIEWER_LIB) -Wl,--no-whole-archive \
-	    -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
+	    $(LINUX_VIEWER_AUTHORING_LIBS) -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
 	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(AR_CORE_LDFLAGS) $(OZZ_OFFLINE_LIBS) \
 	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
+
+# VulkanDevice -> MatterGraphics VulkanDeviceBinding lease, teardown and
+# shared queue-mutex cases (component_adapters/graphics). Needs a Vulkan
+# device; without a display GLFW's null platform takes VK_EXT_headless_surface.
+LINUX_GRAPHICS_BINDING_TEST = $(L_DIR)/graphics_binding_tests
+$(LINUX_GRAPHICS_BINDING_TEST): $(ME3_DIR)/tests/graphics_binding_tests.cpp \
+                                $(GLFW_LINUX_LIB) $(LINUX_VIEWER_LIB)
+	$(LINUX_CXX) -std=c++17 -O2 $< ../libs/MatterGraphics/src/vulkan_resources.cpp -o $@ \
+	    $(INCLUDE_PATHS) -I../libs/MatterGraphics/include -I../libs/MatterContracts/include \
+	    $(LINUX_VIEWER_LIB) $(LINUX_VIEWER_AUTHORING_LIBS) $(GLFW_LINUX_LIB) \
+	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
+
+.PHONY: run-test-graphics-binding
+run-test-graphics-binding: $(LINUX_GRAPHICS_BINDING_TEST)
+	./$(LINUX_GRAPHICS_BINDING_TEST)
 
 # Linux .d files use plain Unix paths, not the D:/-style paths that make the
 # Windows .d include conditional on MSYSTEM above -- safe to include

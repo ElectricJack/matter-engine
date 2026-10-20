@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <set>          // scene-vs-flat layout dedup in scan_worlds
 #include <vector>
 #include <filesystem>
@@ -287,6 +288,8 @@ bool Ui::prepare_vulkan_backend(const matter::VulkanFrame& frame,
     }
     if (frame.swapchain_recreated || frame.image_count != image_count_) {
         image_count_ = frame.image_count;
+        // May vkDeviceWaitIdle, which needs every queue the device serializes.
+        std::lock_guard<std::mutex> lock(vulkan_->queue_mutex());
         ImGui_ImplVulkan_SetMinImageCount(image_count_);
     }
     return true;
@@ -339,7 +342,11 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &attachment;
     vkCmdBeginRendering(frame.command_buffer, &rendering);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
+    {
+        // Texture uploads inside submit to and wait on the shared graphics queue.
+        std::lock_guard<std::mutex> lock(vulkan_->queue_mutex());
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
+    }
     vkCmdEndRendering(frame.command_buffer);
     return true;
 }

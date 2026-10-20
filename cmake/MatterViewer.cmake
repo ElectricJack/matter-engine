@@ -24,11 +24,11 @@ matter_read_manifest(
     PLATFORM windows
 )
 list(FILTER matter_engine_viewer_sources
-    INCLUDE REGEX "^(MatterEngine3/src|libs/MatterGraphics/src/native)/.*\\.cpp$")
+    INCLUDE REGEX "^(MatterEngine3/src|libs/MatterGraphics/src)/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 29)
+if(NOT matter_engine_viewer_source_count EQUAL 35)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 29 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 35 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -51,9 +51,9 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 219)
+    set(matter_expected_viewer_product_count 227)
 else()
-    set(matter_expected_viewer_product_count 218)
+    set(matter_expected_viewer_product_count 226)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
@@ -63,13 +63,42 @@ if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         "expected=${matter_expected_viewer_product_count}")
 endif()
 
+# MatterGraphics' VulkanRaster embeds its own subset of the production .spv
+# files, in the component's symbol layout (libs/MatterGraphics/CMakeLists.txt).
+set(matter_graphics_raster_spirv)
+foreach(shader IN ITEMS raster.vert raster_skin.vert raster_water.vert gbuffer.frag
+        visibility_id.vert visibility_id.frag)
+    set(spirv "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_vk/${shader}.spv")
+    if(NOT spirv IN_LIST matter_SPIRV_OUTPUTS)
+        message(FATAL_ERROR "MatterGraphics raster shader is not in the Vulkan pipeline: ${spirv}")
+    endif()
+    list(APPEND matter_graphics_raster_spirv "${spirv}")
+endforeach()
+set(matter_graphics_raster_header
+    "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen/raster_spirv.h")
+add_custom_command(
+    OUTPUT "${matter_graphics_raster_header}"
+    COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/tools/embed_shaders.py"
+        "${matter_graphics_raster_header}" ${matter_graphics_raster_spirv}
+    DEPENDS ${matter_graphics_raster_spirv}
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/tools/embed_shaders.py"
+    COMMENT "Embedding MatterGraphics raster SPIR-V"
+    VERBATIM
+)
+add_custom_target(matter_graphics_raster_spirv DEPENDS "${matter_graphics_raster_header}")
+add_dependencies(matter_graphics_raster_spirv matter_vulkan_spirv)
+
 add_library(matter_engine_viewer_objects OBJECT
     ${matter_engine_viewer_product_sources})
+set_source_files_properties(libs/MatterGraphics/src/vulkan_raster.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen")
 matter_engine_include_directories(matter_engine_viewer_objects PRIVATE)
 target_include_directories(matter_engine_viewer_objects BEFORE PRIVATE
     "${CMAKE_BINARY_DIR}/MatterEngine3"
     "${matter_vulkan_include}"
     "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
+    "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include"
 )
 target_compile_definitions(matter_engine_viewer_objects PRIVATE
     PLATFORM_DESKTOP
@@ -109,13 +138,14 @@ target_link_libraries(matter_engine_viewer_objects PUBLIC
     matter_bc7enc
     matter_glfw
     matter_vulkan_sdk
+    matter_authoring_adapter
 )
 if(MATTER_ENABLE_AUTOREMESHER)
     target_link_libraries(matter_engine_viewer_objects PUBLIC
         matter_autoremesher)
 endif()
 matter_apply_project_defaults(matter_engine_viewer_objects)
-add_dependencies(matter_engine_viewer_objects matter_embedded_spirv)
+add_dependencies(matter_engine_viewer_objects matter_embedded_spirv matter_graphics_raster_spirv)
 
 if(BUILD_TESTING)
     add_executable(geometry_runtime_tests MatterEngine3/tests/geometry_runtime_tests.cpp)
@@ -136,6 +166,25 @@ if(BUILD_TESTING)
     set_tests_properties(geometry_runtime_gpu_tests PROPERTIES LABELS vulkan
         ENVIRONMENT "MATTER_GEOMETRY_CPU_MB=1;MATTER_GEOMETRY_ROOT_MB=1"
         PASS_REGULAR_EXPRESSION "ALL PASS" FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*")
+
+    # VulkanDevice -> MatterGraphics binding: lease, teardown and the shared
+    # queue mutex (MatterEngine3/src/component_adapters/graphics).
+    add_executable(graphics_binding_tests MatterEngine3/tests/graphics_binding_tests.cpp)
+    matter_engine_include_directories(graphics_binding_tests PRIVATE)
+    target_include_directories(graphics_binding_tests BEFORE PRIVATE
+        "${CMAKE_BINARY_DIR}/MatterEngine3" "${matter_vulkan_include}"
+        "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include")
+    target_compile_definitions(graphics_binding_tests PRIVATE
+        NOMINMAX MATTER_VULKAN_ONLY MATTER_HAVE_STREAMLINE=${matter_streamline_enabled}
+        "MATTER_VK_TEST_LAYER_PATH=\"${matter_vulkan_runtime}\"")
+    target_link_libraries(graphics_binding_tests PRIVATE
+        matter_engine_viewer_objects matter_contracts gdi32 winmm user32 shell32 ws2_32 dbghelp)
+    matter_apply_project_defaults(graphics_binding_tests)
+    matter_apply_test_assertion_policy(graphics_binding_tests)
+    add_test(NAME graphics_binding_tests COMMAND graphics_binding_tests)
+    set_tests_properties(graphics_binding_tests PROPERTIES LABELS vulkan
+        PASS_REGULAR_EXPRESSION "ALL PASS")
 
     # Manual native visual probe: use the real device/Streamline path and the
     # same bounded source fixtures as the sparse comparison tests.
@@ -169,7 +218,24 @@ if(BUILD_TESTING)
     add_test(NAME vulkan_compat_tests COMMAND vulkan_compat_tests)
     set_tests_properties(vulkan_compat_tests PROPERTIES LABELS vulkan)
 
+    # Actual CPU contract implementations shared with the portable
+    # Linux validation graph; the native GPU object closure retains
+    # every original production source exactly once.
+    set(matter_vulkan_cpu_contract_sources
+        MatterEngine3/src/render/vk_scene_renderer.cpp
+        MatterEngine3/src/render/vk_context.cpp
+        MatterEngine3/src/render/vk_instance_cache.cpp
+        MatterEngine3/src/render/vk_temporal.cpp
+        MatterEngine3/src/render/vk_gi_math.cpp
+        MatterEngine3/src/render/vk_lighting_controls.cpp
+        MatterEngine3/src/render/streamline_bridge.cpp
+        MatterEngine3/src/render/raster_mesh.cpp
+        MatterEngine3/src/render/frame_matrices.cpp
+        libs/MatterGraphics/src/matrix_math.cpp
+        MatterEngine3/src/render/indexed_part_geometry.cpp
+    )
     set(matter_vulkan_smoke_sources
+        ${matter_vulkan_cpu_contract_sources}
         MatterEngine3/src/geometry/geometry_compiler.cpp
         MatterEngine3/src/geometry/geometry_pages.cpp
         MatterEngine3/src/geometry/geometry_cut.cpp
@@ -177,11 +243,8 @@ if(BUILD_TESTING)
         MatterEngine3/src/mesh_error.cpp
         libs/MatterSurfaceLib/src/mesh_simplifier.cpp
         libs/MatterSurfaceLib/src/mesh_indexed.cpp
-        MatterEngine3/src/render/streamline_bridge.cpp
-        MatterEngine3/src/render/vk_context.cpp
         MatterEngine3/src/render/vk_resources.cpp
         MatterEngine3/src/render/vk_pipeline.cpp
-        MatterEngine3/src/render/vk_scene_renderer.cpp
         libs/MatterGraphics/src/native/mesh_raster.cpp
         libs/MatterGraphics/src/native/mesh_pipelines.cpp
         MatterEngine3/src/render/vk_sparse_voxel.cpp
@@ -216,14 +279,6 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vk_atmosphere.cpp
         MatterEngine3/src/render/vk_cloud_shadows.cpp
         MatterEngine3/src/render/vk_emitter_gather.cpp
-        MatterEngine3/src/render/raster_mesh.cpp
-        MatterEngine3/src/render/indexed_part_geometry.cpp
-        MatterEngine3/src/render/vk_instance_cache.cpp
-        MatterEngine3/src/render/frame_matrices.cpp
-        MatterEngine3/src/render/vk_temporal.cpp
-        MatterEngine3/src/render/vk_gi_math.cpp
-        MatterEngine3/src/render/vk_lighting_controls.cpp
-        MatterEngine3/src/render/matrix_math.cpp
         MatterEngine3/src/render/lod_trace.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp
@@ -394,66 +449,29 @@ if(BUILD_TESTING)
         matter_engine_viewer_objects)
     add_test(NAME vulkan_smoke_tests COMMAND vulkan_smoke_tests)
     set_tests_properties(vulkan_smoke_tests PROPERTIES
-        LABELS vulkan
+        LABELS "cpu;core"
+        ENVIRONMENT "MATTER_VK_SMOKE_MODE=cpu"
         PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
-    add_test(NAME geometry_pages_gpu_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(geometry_pages_gpu_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=geometry-pages"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    include("${CMAKE_SOURCE_DIR}/cmake/MatterVulkanSmokeTests.cmake")
+    matter_add_vulkan_smoke_test(vulkan_smoke_gpu_tests default)
+    matter_add_vulkan_smoke_test(vulkan_smoke_full_tests full)
+    matter_add_vulkan_smoke_test(geometry_pages_gpu_tests geometry-pages)
+
     add_custom_target(geometry_default_off_checks DEPENDS
         matter_editor geometry_runtime_tests partstore_tests
         geometry_hierarchy_tests geometry_cut_tests vulkan_smoke_tests)
 
-    add_test(NAME vt_feedback_visibility_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vt_feedback_visibility_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-feedback"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(vt_feedback_visibility_tests vt-feedback)
 
-    add_test(NAME vt_input_snapshot_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vt_input_snapshot_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-input-snapshot"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(vt_input_snapshot_tests vt-input-snapshot)
 
-    add_test(NAME vt_direct_source_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vt_direct_source_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-direct-source"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(vt_direct_source_tests vt-direct-source)
 
-    add_test(NAME vt_surface_material_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(vt_surface_material_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=vt-surfaces"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(vt_surface_material_tests vt-surfaces)
 
-    add_test(NAME sparse_voxel_gpu_tests COMMAND vulkan_smoke_tests)
-    set_tests_properties(sparse_voxel_gpu_tests PROPERTIES
-        LABELS vulkan
-        ENVIRONMENT "MATTER_VK_SMOKE_MODE=sparse-voxel"
-        PASS_REGULAR_EXPRESSION "ALL PASS"
-        FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
+    matter_add_vulkan_smoke_test(sparse_voxel_gpu_tests sparse-voxel)
 
     add_test(NAME static_surface_vt_tests COMMAND static_surface_vt_tests)
     set_tests_properties(static_surface_vt_tests PROPERTIES LABELS vulkan
@@ -470,13 +488,8 @@ if(BUILD_TESTING)
     # (MatterEditor/tools/smoke_vulkan_faults.ps1) does not run.
     foreach(mode geometry-pages vt-queue vt-normal-frame vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas water-field-nort)
         string(REPLACE "-" "_" mode_name "${mode}")
-        add_test(NAME smoke_${mode_name} COMMAND vulkan_smoke_tests)
-        set_tests_properties(smoke_${mode_name} PROPERTIES LABELS vulkan
-            ENVIRONMENT "MATTER_VK_SMOKE_MODE=${mode}"
-            PASS_REGULAR_EXPRESSION "ALL PASS" FAIL_REGULAR_EXPRESSION "validation errors: [1-9][0-9]*"
-            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+        matter_add_vulkan_smoke_test(smoke_${mode_name} "${mode}")
     endforeach()
-    set_tests_properties(smoke_vt_normal_frame PROPERTIES TIMEOUT 120)
 
     add_test(NAME vulkan_scene_oracle_tests
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

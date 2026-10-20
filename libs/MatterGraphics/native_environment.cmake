@@ -30,16 +30,23 @@ if(MSVC)
     target_compile_options(matter_graphics_environment PRIVATE /W4 /permissive- /utf-8)
 endif()
 if(BUILD_TESTING)
+    # Pin the production wiring/layout during the build; CTest exercises only
+    # generated numerical fixtures and does not resolve production source files.
+    include(cmake/EnvironmentQualification.cmake)
     foreach(suite atmosphere cloud_layer cloud_shadow volumetric_quality)
         add_executable(matter_graphics_${suite}_tests
             "${_graphics_repo}/MatterEngine3/tests/${suite}_tests.cpp")
         target_link_libraries(matter_graphics_${suite}_tests PRIVATE matter_graphics_environment)
+        if(suite STREQUAL "cloud_layer" OR suite STREQUAL "volumetric_quality")
+            matter_qualify_environment_test(matter_graphics_${suite}_tests "${Python3_EXECUTABLE}")
+        endif()
         add_test(NAME matter_graphics_${suite} COMMAND matter_graphics_${suite}_tests)
         set_tests_properties(matter_graphics_${suite} PROPERTIES
-            WORKING_DIRECTORY "${_graphics_repo}/MatterEngine3/tests")
+            LABELS "cpu;graphics" TIMEOUT 10)
     endforeach()
     add_executable(matter_graphics_cloud_shadow_reference_tests
         tests/cloud_shadow_reference_tests.cpp)
     target_link_libraries(matter_graphics_cloud_shadow_reference_tests PRIVATE matter_graphics_environment)
     add_test(NAME matter_graphics_cloud_shadow_reference COMMAND matter_graphics_cloud_shadow_reference_tests)
+    set_tests_properties(matter_graphics_cloud_shadow_reference PROPERTIES LABELS "cpu;graphics" TIMEOUT 10)
 endif()

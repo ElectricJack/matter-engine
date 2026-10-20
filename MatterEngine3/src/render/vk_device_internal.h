@@ -29,7 +29,9 @@
 // doubly-linked list mutated by construction/destruction of controls, so
 // allocations and their release must stay on the thread that owns the device.
 
+#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <vulkan/vulkan.h>
@@ -159,6 +161,27 @@ public:
                                 VkCommandBuffer command_buffer, VkFence fence,
                                 bool& completion_proven,
                                 const char* fault_phase, std::string& error);
+};
+
+// The device's graphics queue as a MatterGraphics VulkanDeviceBinding carries
+// it (component_adapters/graphics/vulkan_device_binding.h converts; this file
+// stays free of MatterGraphics headers). `lifetime` is a lease: while any copy
+// lives, cleanup() preserves the logical device, instance and messenger (the
+// same leak path as unproven completion), so allocation destructors never run
+// against a destroyed device. `queue_mutex` is the device's own queue mutex.
+struct DeviceQueueLease {
+    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    VkQueue queue = VK_NULL_HANDLE;
+    uint32_t queue_family = 0;
+    std::shared_ptr<void> lifetime;
+    std::shared_ptr<std::mutex> queue_mutex;
+};
+
+class DeviceGraphicsBindingAccess {
+public:
+    static bool lease(VulkanDevice& device, DeviceQueueLease& lease,
+                      std::string& error);
 };
 
 }  // namespace detail

@@ -9,8 +9,9 @@ libs/ParticleFlowLib/src/pf_fields.cpp|all
 libs/ParticleFlowLib/src/pf_path_recorder.cpp|all
 MatterEngine3/src/pf_bindings.cpp|all
 MatterEngine3/src/dsl_triangle.cpp|all
-MatterEngine3/src/triangle_emit.cpp|all
-MatterEngine3/src/polygon_triangulate.cpp|all
+libs/ProceduralGeometry/src/triangle_emit.cpp|all
+MatterEngine3/src/triangle_variation_recorder.cpp|all
+libs/ProceduralGeometry/src/polygon_triangulate.cpp|all
 MatterEngine3/src/csg_lowering.cpp|all
 MatterEngine3/src/module_resolver.cpp|all
 MatterEngine3/src/script/world_definition_loader.cpp|all
@@ -48,6 +49,7 @@ MatterEngine3/src/terrain_river_overlay.cpp|all
 MatterEngine3/src/script_rng_binding.cpp|all
 MatterEngine3/src/part_asset_v2.cpp|all
 MatterEngine3/src/part_graph.cpp|all
+MatterEngine3/src/component_adapters/authoring/engine/legacy_part_route.cpp|all
 MatterEngine3/src/part_graph_snapshot.cpp|all
 MatterEngine3/src/live_edit.cpp|all
 MatterEngine3/src/live_edit_prod.cpp|all
@@ -108,7 +110,7 @@ MatterEngine3/src/export/part_export.cpp|all
 MatterEngine3/src/export/export_cli.cpp|all
 MatterEngine3/src/render/raster_mesh.cpp|all
 MatterEngine3/src/render/indexed_part_geometry.cpp|all
-MatterEngine3/src/render/matrix_math.cpp|all
+libs/MatterGraphics/src/matrix_math.cpp|all
 MatterEngine3/src/render/frame_matrices.cpp|all
 MatterEngine3/src/render/vk_temporal.cpp|all
 MatterEngine3/src/render/vk_gi_math.cpp|all

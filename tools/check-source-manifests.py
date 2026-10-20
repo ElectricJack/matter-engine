@@ -32,6 +32,15 @@ EXCLUDED_SOURCES = frozenset({
     "libs/MatterSurfaceLib/src/voxel_imposter.cpp",  # retired implementation
     "libs/MemoryLib/src/mem_arena.c",  # standalone library API, not linked here
     "libs/MemoryLib/src/mem_array.c",  # standalone library API, not linked here
+    # The authoring adapter and the QuickJS host it links keep their own
+    # CMakeLists; cmake/MatterEngine.cmake adds them as a subdirectory.
+    "MatterEngine3/src/component_adapters/authoring/src/pipeline.cpp",
+    "MatterEngine3/src/component_adapters/authoring/tests/authoring_e2e_tests.cpp",
+    "MatterEngine3/src/script/portable_host/quickjs_host.cpp",
+    "MatterEngine3/src/script/portable_host/tests/compiler_oom_tests.c",
+    "MatterEngine3/src/script/portable_host/tests/host_tests.cpp",
+    "MatterEngine3/src/script/portable_host/tests/parser_oom_tests.c",
+    "MatterEngine3/src/script/portable_host/tests/properties.cpp",
 })
 
 

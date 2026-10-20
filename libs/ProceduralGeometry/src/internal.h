@@ -58,7 +58,7 @@ void reserve_work(uint64_t triangles, uint64_t scratch, jobs::JobMonitor &, jobs
 data::MeshPrototype convert(const tri_emit::TriangleBuildBuffer &, const data::RecipeNode &);
 void mesh_bounds(data::MeshPrototype &);
 // Empty when the build omits the optional modifier backend.
-std::vector<data::Capability> modifier_capabilities();
+std::vector<data::Capability> modifier_capabilities(const std::string &worker);
 // Frozen contracts-v1 JobResult::success discards diagnostics when its final
 // envelope validation runs out of memory. Entry admission already validated
 // this owned, immutable envelope, so that exact late fallback means allocation
