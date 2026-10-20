@@ -283,4 +283,7 @@ if(BUILD_TESTING)
             -MsvcEditor "$<TARGET_FILE:matter_editor>"
     )
     set_tests_properties(editor_registration_census PROPERTIES LABELS editor)
+    # The census qualifies the built editor: matter_ci_lint, which precedes
+    # source lint in every tier (fast included), must build it first.
+    set_property(GLOBAL APPEND PROPERTY MATTER_CI_SOURCE_LINT_TARGETS matter_editor)
 endif()
