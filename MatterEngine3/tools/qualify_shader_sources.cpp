@@ -1144,6 +1144,32 @@ int main() {
     // in_normal (raster.vert), so visualizing or shading with the raw varying
     // is wrong for every rotated VT water instance.
     assert(water_forward_uses_world_normal(water_forward, water_raster));
+    // Uniform PBR suppresses texture inputs, but raster.vert still chooses
+    // the varying's coordinate space from the RAW draw slot. Even matching
+    // forward/G-buffer expressions are wrong if both use the effective slot.
+    assert(assignment_rhs(function_body(without_comments(water_raster),
+                                        "void main()"), "uint vt_slot =") ==
+           "GBUFFER_UNIFORM_PBR?0u:in_vt_slot");
+    const std::string effective_slot_forward = mutated(
+        water_forward, "vec3 normal_ws = in_vt_slot != 0u",
+        "uint vt_slot = true ? 0u : in_vt_slot;\n"
+        "    vec3 normal_ws = vt_slot != 0u");
+    const std::string effective_slot_raster = mutated(
+        water_raster, "vec3 geometric_normal_ws = in_vt_slot != 0u",
+        "vec3 geometric_normal_ws = vt_slot != 0u");
+    assert(!water_forward_uses_world_normal(water_forward, effective_slot_raster));
+    assert(!water_forward_uses_world_normal(effective_slot_forward, water_raster));
+    assert(!water_forward_uses_world_normal(effective_slot_forward,
+                                          effective_slot_raster));
+    // Raw slot zero is already world space: applying the instance transform
+    // again is as incorrect as leaving a nonzero slot in object space.
+    assert(!water_forward_uses_world_normal(
+        mutated(water_forward, "vec3 normal_ws = in_vt_slot != 0u",
+                "vec3 normal_ws = in_vt_slot == 0u"), water_raster));
+    assert(!water_forward_uses_world_normal(
+        water_forward,
+        mutated(water_raster, "vec3 geometric_normal_ws = in_vt_slot != 0u",
+                "vec3 geometric_normal_ws = in_vt_slot == 0u")));
     assert(without_whitespace(raster_vertex).find(
                "out_normal=draw.vt_slot!=0u?in_normal:normalize(mat3(model)*in_normal);") !=
            std::string::npos);
