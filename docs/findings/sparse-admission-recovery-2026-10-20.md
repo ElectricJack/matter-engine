@@ -163,3 +163,115 @@ and mixed WorldSession catalog/temporal behavior also still lack required native
 fixtures and execution evidence. The ordinary guard copies static staging on
 changed candidates; its streaming CPU/memory cost has not been measured. Do not
 integrate this branch as accepted recovery.
+
+## Epoch 2 continuation after supervisor message
+
+Message `msg-63f016f9c1194a7e988007157715093b` was read and handled under
+claim epoch 2. The guarded `aq git pull` restored this task's own published
+`5b9e49e29f3942398747b162458bdd383a67d341` checkpoint. No other worker's
+unpublished source was copied. The earlier sections are the historical epoch 1
+record; the following evidence supersedes their compilation status.
+
+The reset job now constructs a separate `WorldRenderPublication` containing the
+renderer, store, world/LOD/resolver data, ordinary/shared catalog owners and
+placements, material records, geometry runtime, dynamic bridge, picking map and
+temporal state. The original accepted publication is retained while the new
+candidate loads. Repeated rejected replacements preserve that original owner.
+Candidate rendering waits for the finalize barrier, including all required part
+loads. Rendering or completing a retained frame borrows that same publication
+with scope-based restoration; it suppresses candidate catalog/material, ECS and
+lighting reconciliation. A rejection still returns the typed admission error,
+so the existing editor path rejects capture/performance success. Initial loads
+without an accepted owner retain a clear shell. A successful candidate draw
+releases the retained owner through normal renderer teardown. The atomic worker
+fluid diagnostic pointer remains outside the swapped state. Session shutdown
+explicitly releases retained ownership before the ECS and renderer dependencies.
+
+`tools/tests/test_sparse_scene_admission.py` now adds an ownership regression
+using the production `WorldScenePublication`, `WorldState`,
+`VulkanInstanceCache`, `TemporalState` and count-only admission planner. It checks
+accepted catalog lifetime and world/cache identity during retained rendering,
+temporal history continuity, exception restoration, repeated failed candidate
+supersession, fresh history for a smaller successor, and no retained owner for a
+first load. Catalog GPU behavior remains the separate native fixture's concern;
+this CPU ownership test does not substitute for a WorldSession/device fixture.
+
+The focused command `aq test --aq-timeout 75
+ tools/tests/test_sparse_scene_admission.py -q` exited **75 before collection**.
+All six slots remained held by `agile-stone-80` throughout the bounded admission
+window. No implementation regression ran or passed. No unchanged admission
+retry, direct pytest bypass, slot modification or additional runner request was
+made. Python syntax compilation and `git diff --check` passed; those are static
+checks only.
+
+The supported Linux Make object rules successfully compiled
+`matter_engine.cpp` and `geometry_world_runtime.cpp`; the editor's changed
+`main.cpp` also compiled. The final object pass and full product build outcomes
+are recorded below with their exact logs. The runtime restrictions remain the
+supervisor's authoritative disposition: no display, `/dev/dri`, hardware RT or
+device-performance runner is available or authorized. The repository's native
+Vulkan smoke entry point creates a GLFW window; this attempt did not invent a
+headless substitute. Native UI, primary/shadow fault recovery under validation,
+software/device captures, subsequent smaller-world rendering, capture/perf
+failure artifacts, hardware RT and device performance remain **NOT RUN**.
+
+There are still source-level limits to the complete previous-world guarantee.
+The worker's streamed reload path calls `clear_streaming_once` and drains old
+sector evictions before `publish_pipeline` stages renderer retention. The
+existing terrain-collision transaction also installs before this reset job.
+Those established streaming and physics ownership seams have not been changed
+or proven atomic with the later visual admission transaction. The new renderer
+retention must not be read as a guarantee that those earlier world mutations
+roll back. A successful full-world acceptance requires resolving that ordering
+while preserving the frozen ownership contracts and adding executable
+WorldSession fixtures. The CPU fixture is unexecuted and has no such claim.
+
+**Epoch 2 remains a failed, preserved attempt; do not integrate it as accepted
+recovery.** Its code and evidence are provided for review and continuation.
+
+
+Epoch 2 source checkpoint: `4ca222ea`. Object verification used the supported
+Make rules, `VIEWER_TAG=_linux VIEWER_CXX=g++ VIEWER_CC=gcc
+HAVE_STREAMLINE=0`, the vendored Vulkan include path and the existing glslc.
+The object commands had explicit 180-second bounds and returned **0**:
+
+- `make -C MatterEngine3 build/obj_viewer_linux/matter_engine.o
+  build/obj_viewer_linux/geometry_world_runtime.o ...`
+  ([log](sparse-admission-2026-10-20/epoch2-objects.log)).
+- `make -C MatterEngine3 -W src/matter_engine.cpp
+  build/obj_viewer_linux/matter_engine.o
+  build/obj_viewer_linux/vk_sparse_voxel.o
+  build/obj_viewer_linux/vk_scene_renderer.o ...`
+  ([log](sparse-admission-2026-10-20/epoch2-final-objects.log)).
+- `make -C MatterEditor build/linux/obj/main.o VULKAN_INCLUDE=<vendored>
+  VULKAN_LIB_DIR=/usr/lib/x86_64-linux-gnu`
+  ([log](sparse-admission-2026-10-20/epoch2-editor-object.log)).
+
+The source checkpoint includes one final preprocessor formatting cleanup
+(joining adjacent identical Vulkan guards) after the engine object build;
+there was no behavioral change after compilation. Existing warnings remain.
+These are successful compilation checks, not a link or runtime pass. The
+separate CPU test admission failure is preserved in
+[its log](sparse-admission-2026-10-20/epoch2-cpu-tests.log).
+
+
+The full product command returned **124** at its explicit 600-second bound:
+
+```bash
+timeout --signal=TERM --kill-after=10s 600s env \
+  LD_LIBRARY_PATH=/tmp/sharp-zenith-52-shaderc/root/usr/lib/x86_64-linux-gnu \
+  make -C MatterEditor linux -j1 \
+  GLSLC=/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc \
+  VULKAN_INCLUDE=/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include \
+  VULKAN_LIB_DIR=/usr/lib/x86_64-linux-gnu
+```
+
+[Full build log](sparse-admission-2026-10-20/epoch2-linux-build.log).
+It completed shader generation and autoremesher dependencies and progressed
+through viewer source compilation to `live_edit.cpp`. The viewer archive and
+editor executable did not link before termination. There is no compiler error
+in that log; timeout is not a product build pass. No identical product build
+was resubmitted. The affected translation units compiled via the separate
+supported object rules above, with Streamline disabled and without the optional
+autoremesher define. This distinction is preserved rather than claiming a full
+product or optional-configuration pass.
