@@ -192,6 +192,15 @@ add_subdirectory(MatterEngine3/src/component_adapters/authoring)
 set(BUILD_TESTING ${matter_authoring_saved_testing})
 set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
 
+# The terrain coordinator: the one native sector flow live terrain demand goes
+# through. It reuses the contracts target loaded above; its own tests stay its
+# gate, so only the library joins this graph.
+set(BUILD_TESTING OFF)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_subdirectory(MatterEngine3/src/component_adapters/terrain_coordinator)
+set(BUILD_TESTING ${matter_authoring_saved_testing})
+set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
+
 # ---------------------------------------------------------------------------
 # `matter` — the headless command (MatterEngine3/tools/matter_cli.cpp).
 #
@@ -802,6 +811,22 @@ if(BUILD_TESTING)
         MatterEngine3/tests/terrain_collision_physics_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_session_tests
         MatterEngine3/tests/terrain_collision_session_tests.cpp)
+    # Live terrain end to end: coordinator -> cache, collision, scene backend.
+    # Headless already compiles the terrain field, mesher and matrix math; only
+    # the component sources it lacks are added here.
+    matter_add_engine_cpu_test(live_terrain_tests
+        MatterEngine3/tests/live_terrain_tests.cpp
+        MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain.cpp
+        libs/TerrainGeneration/src/field.cpp
+        libs/TerrainGeneration/src/meshing.cpp
+        libs/MatterGraphics/src/graphics.cpp
+        libs/MatterGraphics/src/scene_backend.cpp)
+    target_include_directories(live_terrain_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/include"
+        "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/tests"
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include")
+    target_link_libraries(live_terrain_tests PRIVATE matter_terrain_coordinator)
+    set_tests_properties(live_terrain_tests PROPERTIES ENVIRONMENT MATTER_CONTOUR_SEAMS=1)
     matter_add_engine_cpu_test(river_float_system_tests
         MatterEngine3/tests/river_float_system_tests.cpp)
     matter_qualify_cpu_filesystem(river_float_system_tests MatterEngine3/tests/river_float_system_tests.cpp)
