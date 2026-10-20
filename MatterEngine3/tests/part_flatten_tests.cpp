@@ -1213,10 +1213,19 @@ static const uint64_t kBigHash = 0x4040404040404040ull;
 static void test_flatten_clustered_v3() {
     printf("=== test_flatten_clustered_v3 ===\n");
 
-    // Write a 40k-tri flat grid as a single v2 part.
+    // Keep the original dense integration workload in build qualification.
+    // Runtime exercises the same split/codec/conservation path with smaller
+    // clusters; the direct 40k splitter guards still run in this suite.
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const int NX = 200, NZ = 100;
+    const uint32_t cluster_target = 16000;
+#else
+    const int NX = 20, NZ = 10;
+    const uint32_t cluster_target = 160;
+#endif
+    const uint32_t full_tris = 2 * NX * NZ;
     std::vector<Tri> big_tris = grid_sheet_tris(NX, NZ, 200.0f, 100.0f);
-    CHECK(big_tris.size() == 40000u, "big mesh: 40000 tris");
+    CHECK(big_tris.size() == full_tris, "big mesh: expected input triangle count");
 
     {
         BLASManager blas; TLASManager tlas(16);
@@ -1241,13 +1250,13 @@ static void test_flatten_clustered_v3() {
 
     part_flatten::FlattenTargets tgt;
     // Use tight cluster size so we definitely get multiple clusters.
-    tgt.cluster_target_tris = 16000;
+    tgt.cluster_target_tris = cluster_target;
 
     part_flatten::FlattenResult res = part_flatten::flatten_part(kCacheRoot, kBigHash, tgt);
     CHECK(res.ok, "big mesh: flatten_part ok");
     if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
 
-    CHECK(res.full_tris == 40000u, "big mesh: full_tris == 40000");
+    CHECK(res.full_tris == full_tris, "big mesh: full triangle count is preserved");
     CHECK(res.clusters > 1, "big mesh: result.clusters > 1 (split required)");
     printf("  clusters=%zu, levels=%zu, full_tris=%zu\n", res.clusters, res.levels, res.full_tris);
 
@@ -1264,7 +1273,7 @@ static void test_flatten_clustered_v3() {
 
     CHECK(clusters_in.size() == res.clusters, "big mesh: cluster count matches result");
 
-    // Every cluster level-0 tri count must be <= 16000.
+    // Every cluster level-0 tri count must stay within the selected target.
     const auto& entries = blas_in.get_entries();
     uint32_t total_l0 = 0;
     bool all_le_target = true;
@@ -1274,13 +1283,13 @@ static void test_flatten_clustered_v3() {
         for (uint32_t bi : cl.lods[0].blas_indices) {
             if (bi < entries.size()) cl_l0 += (uint32_t)entries[bi]->triangles.size();
         }
-        if (cl_l0 > 16000) { all_le_target = false; }
+        if (cl_l0 > cluster_target) { all_le_target = false; }
         total_l0 += cl_l0;
     }
-    CHECK(all_le_target, "big mesh: every cluster level-0 tri count <= 16000");
-    CHECK(total_l0 == 40000u, "big mesh: cluster level-0 tri counts sum to 40000");
+    CHECK(all_le_target, "big mesh: every cluster level-0 tri count <= target");
+    CHECK(total_l0 == full_tris, "big mesh: cluster level-0 tri counts sum to input");
 
-    printf(res.ok && res.clusters > 1 && all_le_target && total_l0 == 40000u ? "PASSED\n" : "FAILED\n");
+    printf(res.ok && res.clusters > 1 && all_le_target && total_l0 == full_tris ? "PASSED\n" : "FAILED\n");
 }
 
 // Watertight invariant (Task 8 payoff): for the 40k grid flatten, shared
@@ -2473,8 +2482,15 @@ static void test_flatten_retain_budget_identical() {
     const std::string root_b =
         "/pftest-retain-b";
 
-    // Write the same 40k-tri grid source .part into both cache roots.
+    // The original dense retained/re-materialised workload remains in build
+    // qualification; runtime still compares both complete multi-cluster bytes.
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const int NX = 200, NZ = 100;
+    const uint32_t cluster_target = 16000;
+#else
+    const int NX = 20, NZ = 10;
+    const uint32_t cluster_target = 160;
+#endif
     static const uint64_t kRetainHash = 0x5050505050505050ull;
     {
         std::vector<Tri> big_tris = grid_sheet_tris(NX, NZ, 200.0f, 100.0f);
@@ -2497,7 +2513,7 @@ static void test_flatten_retain_budget_identical() {
     }
 
     part_flatten::FlattenTargets tgt;
-    tgt.cluster_target_tris = 16000;
+    tgt.cluster_target_tris = cluster_target;
 
     // Run A: retention enabled (512 MB budget — takes the retained path).
     pf_set_env("MATTER_FLATTEN_RETAIN_MB", "512");
@@ -2521,6 +2537,9 @@ static void test_flatten_retain_budget_identical() {
 
     pf_set_env("MATTER_FLATTEN_RETAIN_MB", nullptr);
 
+    CHECK(res_a.full_tris == 2u * NX * NZ && res_b.full_tris == res_a.full_tris &&
+              res_a.clusters > 1 && res_b.clusters == res_a.clusters,
+          "both retention paths preserve the complete multi-cluster fixture");
     CHECK(bytes_a == bytes_b,
           "retained and streamed flatten artifacts are byte-identical");
     printf(bytes_a == bytes_b ? "PASSED\n" : "FAILED\n");

@@ -1,5 +1,12 @@
 include_guard(GLOBAL)
 
+# The viewer configuration of this TU exceeds MSVC's ordinary COFF section
+# limit (C1128). Keep the larger object format local to its core/viewer builds.
+if(MSVC)
+    set_property(SOURCE MatterEngine3/src/matter_engine.cpp APPEND PROPERTY
+        COMPILE_OPTIONS /bigobj)
+endif()
+
 function(matter_engine_include_directories target visibility)
     add_dependencies("${target}"
         matter_embedded_shader_text
@@ -414,6 +421,7 @@ if(BUILD_TESTING)
     matter_qualify_cpu_filesystem(blas_disk_cache_tests MatterEngine3/tests/blas_disk_cache_tests.cpp)
     matter_add_engine_cpu_test(blas_cache_queue_tests
         MatterEngine3/tests/blas_cache_queue_tests.cpp)
+    matter_qualify_cpu_filesystem(blas_cache_queue_tests MatterEngine3/tests/blas_cache_queue_tests.cpp)
     matter_add_engine_cpu_test(async_queue_tests
         MatterEngine3/tests/async_queue_tests.cpp)
     matter_add_engine_cpu_test(async_stage_pipeline_tests
@@ -493,6 +501,21 @@ if(BUILD_TESTING)
         MatterEngine3/tests/authored_world_provider_cache_tests.cpp)
     matter_add_engine_cpu_test(material_registry_tests
         libs/MatterSurfaceLib/tests/material_registry_tests.cpp)
+    matter_add_engine_cpu_test(polygon_triangulate_tests
+        MatterEngine3/tests/polygon_triangulate_tests.cpp)
+    matter_add_engine_cpu_test(mesh_indexed_tests
+        libs/MatterSurfaceLib/tests/mesh_indexed_tests.cpp)
+    matter_add_engine_cpu_test(mesh_transform_tests
+        libs/MatterSurfaceLib/tests/mesh_transform_tests.cpp)
+    matter_add_engine_cpu_test(mesh_smooth_tests
+        libs/MatterSurfaceLib/tests/mesh_smooth_tests.cpp)
+    matter_add_engine_cpu_test(oriented_cube_tests
+        libs/MatterSurfaceLib/tests/oriented_cube_tests.cpp)
+    include("${CMAKE_SOURCE_DIR}/cmake/MatterGeometrySupplement.cmake")
+    matter_add_geometry_compute_test(matter_geometry_compute_off OFF cpu
+        "${CMAKE_SOURCE_DIR}" "${matter_vulkan_glslc}")
+    matter_add_geometry_compute_test(matter_geometry_compute_on ON gpu
+        "${CMAKE_SOURCE_DIR}" "${matter_vulkan_glslc}")
     matter_add_engine_cpu_test(terrain_collision_definition_tests
         MatterEngine3/tests/terrain_collision_definition_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_artifact_tests
@@ -512,6 +535,9 @@ if(BUILD_TESTING)
             MatterEngine3/tools/embed_shared_test_sources.py VERBATIM)
     target_sources(shared_lib_tests PRIVATE "${shared_test_source_header}")
     target_include_directories(shared_lib_tests PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    target_sources(world_definition_tests PRIVATE "${shared_test_source_header}")
+    target_include_directories(world_definition_tests PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
     file(GLOB world_test_source_inputs CONFIGURE_DEPENDS
         "${CMAKE_SOURCE_DIR}/projects/world_demo/shared-lib/*.js"
@@ -565,6 +591,7 @@ if(BUILD_TESTING)
         MatterEngine3/tests/tileset_physics_tests.cpp)
     matter_add_engine_cpu_test(part_flatten_tests
         MatterEngine3/tests/part_flatten_tests.cpp)
+    matter_qualify_cpu_filesystem(part_flatten_tests MatterEngine3/tests/part_flatten_tests.cpp)
     # Explicit performance harness: fresh cache-miss jobs are not a regular
     # correctness test and must not run as part of the default CTest suite.
     add_executable(castle_part_bench MatterEngine3/tests/castle_part_bench.cpp)
