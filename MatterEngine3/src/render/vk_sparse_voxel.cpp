@@ -236,6 +236,9 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_impl(
         for(size_t i=0;fits && i<hierarchy->size();++i)
             fits=plan.add(Buffer::children,(*hierarchy)[i].children.size(),sizeof(GpuHierarchyChild),i);
         if(!fits) {error=(plan.failure?plan.failure:frames.failure).message();return {};}
+        if(!admission_plan.hierarchy_graph(*hierarchy,*placements,*config)) {
+            error=plan.failure.message();return {};
+        }
     }
     auto out=std::make_shared<VkSparseVoxelScene>();
     auto a=std::make_shared<Allocation>(vk);

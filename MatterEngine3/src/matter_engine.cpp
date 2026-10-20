@@ -147,6 +147,7 @@
 #include "render/water_mesh_animation_playback.h"
 #include "render/vk_instance_cache.h"
 #include "render/scene_admission.h"
+#include "render/vk_scene_publication.h"
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
@@ -961,6 +962,7 @@ struct WorldSession::Impl {
     uint64_t vk_receiver_expansion=UINT64_MAX;
     std::vector<std::pair<uint64_t,std::shared_ptr<const viewer::SharedSurfaceAssembly>>> vk_shared_catalog_owners;
     bool vk_shared_has_instances=false,vk_shared_catalog_dirty=true;
+    bool vk_scene_accepted=false;
     // Rejected revisions retain no candidate GPU state. Keep their owners alive
     // for exact identity comparison; a changed catalog/source/limit re-arms admission.
     viewer::VulkanInstanceCache vk_rejected_instances;
@@ -4779,6 +4781,7 @@ void WorldSession::Impl::publish_pipeline(
         vk_shared_surface_objects.clear();vk_shared_shadow_objects.clear();vk_shared_catalog_dirty=true;
         vk_instance_cache.invalidate();
         vk_rejected_instances.invalidate();vk_rejected_owners.clear();vk_admission_error.clear();
+        vk_scene_accepted=false;
         vk_world_receiver_frames.clear();
         vk_receiver_state_version=vk_receiver_tape_hash=vk_receiver_expansion=UINT64_MAX;
         vk_temporal.invalidate();
@@ -12453,12 +12456,8 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     //   * miss -> we build and register exactly as before.
     //   * poisoned renderer -> registered_part_slot() reports -1, so we take
     //             the old path and ensure_part() still fails closed.
-    // force_lod needs no special case: the only caller that passes a non-default
-    // force_lod (WorldSession::render) calls release_part() on the very same
-    // hash immediately before this when the override *changed*, which erases it
-    // from slot_of_ and forces the rebuild. When the override is unchanged the
-    // registered part already carries the forced thresholds — which is exactly
-    // what ensure_part()'s early-out returned before.
+    // Existing debug-LOD changes are prepared separately as threshold-only
+    // publication candidates. Registration never releases accepted geometry.
     g_pub_classify_ms = 0.0;
     g_pub_cpu_ms = 0.0;
     g_pub_gpu_ms = 0.0;
@@ -13315,8 +13314,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
     // Neither is part of the vk_instance_cache fingerprint (they don't change
     // the resolved instance set), so a change is tracked explicitly and both
-    // forces a rebuild AND (for force_lod) releases already-registered parts
-    // so ensure_vulkan_part rebakes their cluster thresholds. Defaults (-1 /
+    // forces a rebuild. Debug LOD thresholds are staged without releasing
+    // already-registered geometry. Defaults (-1 /
     // false) leave production render output byte-identical to pre-W4.
     const bool force_lod_changed = (opts.force_lod != impl_->vk_force_lod_applied_);
     const bool hide_children_changed =
@@ -13348,25 +13347,21 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                  draw_hidden_changed || !impl_->vk_admission_error.empty() ||
                                  requested_owners!=impl_->vk_shared_catalog_owners ||
                                  !impl_->vk_instance_cache.matches(resolved);
+    std::string rejected_request;
     if (instances_dirty) {
+      do {
         const auto admission_limit=viewer::admission::storage_limit(UINT64_MAX);
-        const auto reject_frame=[&]() {
-            // Record a defined shell viewport, but do not advance accepted scene
-            // temporal history or expose stale rendered-instance/capture stats.
-            impl_->stats.instances_drawn=0;
-            record_vulkan_clear(frame,impl_->sky_clear);
-            return false;
-        };
         if(!impl_->vk_admission_error.empty() && !draw_hidden_changed &&
            impl_->vk_rejected_instances.matches(resolved) &&
            requested_owners==impl_->vk_rejected_owners &&
            opts.force_lod==impl_->vk_rejected_force_lod &&
            opts.hide_child_instances==impl_->vk_rejected_hide_children &&
            admission_limit==impl_->vk_rejected_limit) {
-            err=impl_->vk_admission_error;return reject_frame();
+            rejected_request=impl_->vk_admission_error;break;
         }
         // All publication metadata is a candidate. Failure of either GPU half
         // leaves the accepted cache, owners, placements and dirty flags intact.
+        viewer::ScenePublication publication(*impl_->vk_scene);
         auto candidate_cache=impl_->vk_instance_cache;
         auto candidate_owners=impl_->vk_shared_catalog_owners;
         auto candidate_surfaces=impl_->vk_shared_surface_objects;
@@ -13374,6 +13369,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         std::vector<viewer::VkSceneInstance> candidate_ordinary;
         bool candidate_dirty=impl_->vk_shared_catalog_dirty;
         std::map<uint64_t,const viewer::LoadedPart*> deferred_lod;
+        const auto ensure_candidate=[&](uint64_t hash,const viewer::LoadedPart& loaded,bool& drawable) {
+            const bool existed=impl_->vk_scene->registered_part_slot(hash)>=0;
+            const bool success=ensure_vulkan_part(*impl_->vk_scene,hash,loaded,drawable,err,opts.force_lod);
+            if(success && drawable && !existed) publication.added_part(hash);
+            return success;
+        };
 
         // Perf: a streaming world publishes sectors continuously, and each
         // publish changes the resolved set, so this rebuild runs almost every
@@ -13384,8 +13385,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         // memoised per source and only genuinely new sources are expanded.
         //
         // Both debug overrides retire every memo: hide_child_instances changes
-        // which nodes an expansion emits, and force_lod makes the loop below
-        // release and re-register parts as it walks them. Clearing here (rather
+        // which nodes an expansion emits, and force_lod stages the threshold
+        // metadata for each emitted part. Clearing here (rather
         // than merely skipping lookups) is what makes that safe -- a memo that
         // survived a hide_child_instances flip would keep serving the previous
         // filter's node set on the next rebuild. The expansions produced during
@@ -13490,9 +13491,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     if (force_lod_changed) deferred_lod[node.part_hash]=loaded;
                     bool drawable = false;
                     if(loaded->shared_surface) drawable=true;
-                    else if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
-                                            *loaded, drawable, err,
-                                            opts.force_lod)) return false;
+                    else if (!ensure_candidate(node.part_hash,*loaded,drawable)) return false;
                     if (!drawable) continue;
                     Mat4f root_transform{};
                     Mat4f relative{};
@@ -13512,9 +13511,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 }
             } else {
                 bool drawable = false;
-                if (!ensure_vulkan_part(*impl_->vk_scene, source.part_hash,
-                                        *root, drawable, err,
-                                        opts.force_lod)) return false;
+                if (!ensure_candidate(source.part_hash,*root,drawable)) return false;
                 if (drawable) {
                     viewer::VkSceneInstance instance;
                     instance.part_hash = source.part_hash;
@@ -13564,6 +13561,15 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             placements[found->second].push_back({instance.object_to_world,mesh->material_index,
                 viewer::vulkan_history_token(instance.instance_id),mesh->roughness});++shared_count;
         }
+        // Ordinary preparation must finish before either sparse snapshot can
+        // be published. LOD changes only rewrite existing threshold metadata.
+        for(const auto& [hash,loaded]:deferred_lod) {
+            if(loaded->shared_surface) continue;
+            viewer::VkScenePart part;
+            if(build_vulkan_part(hash,*loaded,opts.force_lod,nullptr,part) &&
+               !publication.prepare_lods(part,err)) return false;
+        }
+        if(!publication.prepare_instances(candidate_ordinary,err)) return false;
         bool published=true;
         if(shared_count) {
             if(!impl_->vk_shared_has_instances || candidate_dirty) {
@@ -13584,16 +13590,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 impl_->vk_rejected_hide_children=opts.hide_child_instances;
                 impl_->vk_rejected_limit=admission_limit;
                 impl_->vk_admission_error=err;
-                return reject_frame();
+                rejected_request=err;break;
             }
             return false; // actual GPU/unsafe preparation errors stay fatal
         }
-        for(const auto& [hash,loaded]:deferred_lod) {
-            if(loaded->shared_surface) continue;
-            impl_->vk_scene->release_part(hash);
-            bool drawable=false;
-            if(!ensure_vulkan_part(*impl_->vk_scene,hash,*loaded,drawable,err,opts.force_lod)) return false;
-        }
+        publication.commit();
         impl_->vk_instance_cache=std::move(candidate_cache);
         impl_->vk_shared_catalog_owners=std::move(candidate_owners);
         impl_->vk_shared_surface_objects=std::move(candidate_surfaces);
@@ -13609,12 +13610,22 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 shared_count,placements.size(),(unsigned long long)impl_->vk_scene->sparse_primary_gpu_bytes(),
                 (unsigned long long)impl_->vk_scene->sparse_shadow_gpu_bytes());
         impl_->vk_shared_has_instances=shared_count!=0;
+        impl_->vk_scene_accepted=true;
+      } while(false);
     }
+    if(!rejected_request.empty() && !impl_->vk_scene_accepted) {
+        // First-load rejection has no accepted geometry. Keep a defined shell.
+        impl_->stats.instances_drawn=0;record_vulkan_clear(frame,impl_->sky_clear);
+        err=rejected_request;return false;
+    }
+    // Rejected updates render the accepted ordinary/shared snapshot with the
+    // live camera below. Return the rejection after recording it, so callers
+    // cannot qualify that retained scene as the requested revision.
     const auto& cached_instances = impl_->vk_ordinary_instances;
     std::vector<viewer::VkSceneInstance> acceptance_instances;
     const std::vector<viewer::VkSceneInstance>* instance_view =
         &cached_instances;
-    if (impl_->gpu_mesher_acceptance_part) {
+    if (rejected_request.empty() && impl_->gpu_mesher_acceptance_part) {
         if (impl_->vk_scene->ensure_part(
                 *impl_->gpu_mesher_acceptance_part, err) < 0)
             return false;
@@ -13625,8 +13636,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     const auto authored_fluid_publication =
         impl_->load_authored_fluid_publication();
-    const auto authored_fluid_binding = authored_fluid_publication
-        ? authored_fluid_publication->render : nullptr;
+    const auto authored_fluid_binding = !rejected_request.empty()
+        ? impl_->vk_authored_fluid_render_binding
+        : (authored_fluid_publication ? authored_fluid_publication->render : nullptr);
     std::uint32_t authored_water_proxy_instance_index = UINT32_MAX;
     const std::uint64_t water_retire_after_serial =
         frame.serial +
@@ -13979,6 +13991,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                        : "no drawable instances"));
         (void)begin_temporal({});
         record_vulkan_clear(frame, impl_->sky_clear);
+        if(!rejected_request.empty()) {err=rejected_request;return false;}
         return true;
     }
 
@@ -14621,6 +14634,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vol_allocation_error = impl_->vk_scene->volumetrics_allocation_error();
     impl_->stats.gpu_vt_ms               = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVt);
 
+    if(!rejected_request.empty()) {
+        impl_->stats.instances_drawn=0;
+        err=rejected_request;return false;
+    }
     return true;
 }
 

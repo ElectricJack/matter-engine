@@ -48,7 +48,7 @@ class Plan {
 public:
     explicit Plan(uint64_t storage_limit):limit_(storage_limit) {}
     bool add(Buffer buffer,uint64_t count,uint64_t stride,size_t asset,
-             uint64_t address_limit=UINT32_MAX) {
+             uint64_t address_limit=UINT32_MAX,bool storage_buffer=true) {
         if(failure) return false;
         auto& total=counts_[size_t(buffer)];
         const auto maximum=std::numeric_limits<uint64_t>::max();
@@ -57,9 +57,9 @@ public:
         const uint64_t next=total+count,bytes=next*stride;
         if(next>std::numeric_limits<size_t>::max()/std::max(uint64_t(1),stride))
             return fail(Reason::arithmetic_overflow,buffer,bytes,limit_,asset);
-        if(bytes>limit_) return fail(Reason::storage_range,buffer,bytes,limit_,asset);
+        if(storage_buffer && bytes>limit_) return fail(Reason::storage_range,buffer,bytes,limit_,asset);
         if(next>address_limit)
-            return fail(Reason::addressing,buffer,bytes,address_limit*stride,asset);
+            return fail(Reason::addressing,buffer,bytes,stride && address_limit>maximum/stride?maximum:address_limit*stride,asset);
         total=next;
         return true;
     }

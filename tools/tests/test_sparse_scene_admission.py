@@ -46,7 +46,14 @@ int main() {
     Plan addressing(UINT64_MAX); assert(!addressing.add(Buffer::instances,17,160,2,16));
     assert(addressing.failure.reason==Reason::addressing);
     assert(addressing.failure.requested_bytes==2720 && addressing.failure.allowed_bytes==2560);
+    Plan as_input(1);assert(as_input.add(Buffer::placements,2,64,0,10,false));
+    Plan as_limit(1);assert(!as_limit.add(Buffer::placements,11,64,0,10,false));
+    assert(as_limit.failure.reason==Reason::addressing && as_limit.failure.allowed_bytes==640);
     assert(!rejected("vkQueueSubmit failed: -4"));
+    { ScopedPreparationFailure outer(Preparation::primary);
+      { ScopedPreparationFailure inner(Preparation::shadow);assert(test_failure==Preparation::shadow); }
+      assert(test_failure==Preparation::primary); }
+    assert(test_failure==Preparation::none);
     assert(storage_limit(1024)==1024);
     { ScopedLimit outer(200); assert(storage_limit(1024)==200);
       { ScopedLimit inner(4096); assert(storage_limit(1024)==1024); }
@@ -97,6 +104,27 @@ int main() {
     SparseAdmission acceleration(200,100,0,100,true,false);
     assert(!acceleration.objects({object}));
     assert(acceleration.plan.failure.reason==admission::Reason::addressing);
+    // Hierarchy uses the last resident representation, including mixed ladders.
+    std::vector<SparseHierarchyPrototype> graph(1);graph[0].representations=batch;
+    std::vector<SparseHierarchyPlacement> roots(2);
+    SparseHierarchyConfig config;config.max_primitives=1;
+    SparseAdmission root_budget(10000,100,100,100,false,false);
+    assert(!root_budget.hierarchy_graph(graph,roots,config));
+    assert(root_budget.plan.failure.buffer==admission::Buffer::work);
+    assert(root_budget.plan.failure.requested_bytes==32 && root_budget.plan.failure.allowed_bytes==16);
+    config.max_primitives=2;
+    SparseAdmission root_fit(10000,100,100,100,false,false);
+    assert(root_fit.hierarchy_graph(graph,roots,config));
+    sparse_voxel::Asset fallback;fallback.bricks.resize(3);
+    graph[0].representations.asset=&fallback;
+    SparseAdmission mixed_fallback(10000,100,100,100,false,false);
+    assert(!mixed_fallback.hierarchy_graph(graph,{roots[0]},config));
+    assert(mixed_fallback.plan.failure.requested_bytes==48);
+    graph.resize(65);
+    for(size_t i=1;i<graph.size();++i) graph[i].children.push_back({uint32_t(i-1)});
+    SparseAdmission depth(10000,100,100,100,false,false);
+    assert(!depth.hierarchy_graph(graph,{},config));
+    assert(depth.plan.failure.buffer==admission::Buffer::children && depth.plan.failure.asset==64);
     std::cout << "production batch walker: cumulative triangles, pages, placements, AS bounds passed\n";
 }
 '''

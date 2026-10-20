@@ -108,6 +108,7 @@
 #include "indirect_draw_runs.h"
 #include "vk_scene_renderer.h"
 #include "vk_sparse_admission.h"
+#include "vk_scene_publication.h"
 #include "../../../libs/MatterGraphics/src/native/mesh_raster.h"
 #include "../../../libs/MatterGraphics/src/native/image_transitions.h"
 #include "../../../libs/MatterGraphics/src/native/mesh_pipelines.h"
@@ -14346,5 +14347,7 @@ void VkSceneRenderer::finish_dynamic_frame(uint64_t completed_serial) {
     dynamic_completed_serial_ =
         std::max(dynamic_completed_serial_, completed_serial);
 }
+
+#include "vk_scene_publication.inl"
 
 }  // namespace viewer

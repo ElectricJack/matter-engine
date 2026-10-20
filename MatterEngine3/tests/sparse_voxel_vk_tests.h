@@ -2,6 +2,7 @@
 // Included after the smoke suite's mesh fixtures. Exercises the production
 // GBuffer hook; readbacks restore image layouts and never own renderer images.
 #include "render/scene_admission.h"
+#include "render/vk_scene_publication.h"
 #include "sparse_voxel_fixture_io.h"
 #include "sparse_hierarchy_fixture_io.h"
 #include "triangle_reference_fixture_io.h"
