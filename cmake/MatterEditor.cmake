@@ -264,21 +264,23 @@ if(BUILD_TESTING)
         LABELS "editor;python")
 
     # Compiler-wrapper fixtures and the live editor registration census need
-    # filesystem/product startup. Keep their real negative controls in build
-    # qualification, outside the disk-free CPU runtime graph.
-    add_custom_target(windows_build_wrapper_qualification ALL
+    # filesystem/product startup. They are ci-checks.json source_checks, so
+    # MatterCiTests.cmake labels them ci-source-lint and keeps their real
+    # negative controls out of the disk-free CPU runtime graph (ci-pr/ci-full);
+    # tools/ci-source-lint.py runs them from the CTest inventory.
+    add_test(NAME windows_build_wrapper_contract
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/cmake/tests/build_wrapper_contract_tests.ps1"
             -RepositoryRoot "${CMAKE_SOURCE_DIR}"
-        VERBATIM
     )
+    set_tests_properties(windows_build_wrapper_contract PROPERTIES
+        LABELS "editor;compiler-policy")
 
-    add_custom_target(editor_registration_qualification ALL
+    add_test(NAME editor_registration_census
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/cmake/tests/editor_registration_census.ps1"
             -RepositoryRoot "${CMAKE_SOURCE_DIR}"
             -MsvcEditor "$<TARGET_FILE:matter_editor>"
-        DEPENDS matter_editor
-        VERBATIM
     )
+    set_tests_properties(editor_registration_census PROPERTIES LABELS editor)
 endif()
