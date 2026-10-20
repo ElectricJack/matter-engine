@@ -869,7 +869,7 @@ $(VIEWER_QJS_OBJ): $(VIEWER_OBJDIR)/%.o: $(QJS_DIR)/%.c | $(VIEWER_OBJDIR)
 	$(VIEWER_CC) -c $< -o $@ -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR) $(VIEWER_C_COMMON)
 
 $(VIEWER_FLECS_OBJ): $(VIEWER_OBJDIR)/%.o: $(FLECS_DIR)/%.c | $(VIEWER_OBJDIR)
-	$(VIEWER_CC) -c $< -o $@ -std=c17 -I$(FLECS_DIR) $(VIEWER_C_COMMON)
+	$(VIEWER_CC) -c $< -o $@ -std=c17 $(FLECS_PLATFORM_FLAGS) -I$(FLECS_DIR) $(VIEWER_C_COMMON)
 
 # spatial_hash and mem_pool come from their source-of-truth libraries, so they
 # cannot share the MSL static pattern rule -- same split as the $(OBJDIR) rules.

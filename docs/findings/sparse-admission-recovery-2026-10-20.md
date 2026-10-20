@@ -275,3 +275,116 @@ was resubmitted. The affected translation units compiled via the separate
 supported object rules above, with Streamline disabled and without the optional
 autoremesher define. This distinction is preserved rather than claiming a full
 product or optional-configuration pass.
+
+## Epoch 3: eviction and collision ordering
+
+The continuation retains the accepted render publication on the app thread
+before the existing full-reload streaming eviction barrier. The coordinator
+still owns and drains its original ledger, but those evictions operate on the
+candidate store/state/renderer. The retained draw catalog and expansion cache
+remain available for replay. No coordinator or public ownership contract was
+changed.
+
+For rendered sessions, terrain collision Clear/Replace is deferred through
+`WorldScenePublication` until visual admission succeeds. The existing Box3D
+replacement transaction remains the sole physics commit operation. Candidate
+geometry has a deferred lifetime owner, including cancellation and supersession;
+headless sessions keep their existing immediate publication path. Initial
+streaming fill cannot release the old publication: candidate frames service
+residency and composite the retained world last until the coordinator reports
+the first complete fill. Both renderer owners receive frame completion, while
+hidden candidate frames do not become presented temporal history. Cancellation
+does not turn an accepted world into an empty shell or a device error.
+
+The CPU ownership fixture now exercises eviction against the candidate,
+retained world/catalog/cache/temporal identities, deferred collision effects,
+cancellation lifetime release, failed collision commit, and a smaller successor.
+The native terrain-collision fixture uses a real headless WorldSession and its
+Box3D context to check retained body/shape handles through the same publication
+gate, including injected mesh-install failure. It does **not** execute the
+Vulkan WorldSession render loop: the gate is driven explicitly in that fixture.
+
+The runner still has no authorized display/device route. Vulkan ordinary/LOD,
+primary/shadow and placement rollback fixtures, editor first-load/reload/capture
+behavior, hardware RT and device performance are **NOT RUN**. No new runner or
+display was provisioned. The source-only duplicate render/completion path during
+streaming fill particularly needs device validation; CPU helper success cannot
+stand in for that evidence.
+
+The first admitted run exposed fixture build defects: the batch walker needed
+`matrix_math.cpp`, and the real instance-cache/temporal fixture needed the render
+and MatterSurfaceLib include paths. Those are repaired. The fixture leaves the
+existing transitive `vt_finite_sources.h` indentation warning nonfatal, matching
+the product build, while retaining other `-Werror` checks. The production
+planner and batch-walker checks passed in the third run (the ownership check
+still failed on that warning); the corrected isolated ownership check then
+passed in 11.04 seconds. These were all admitted through `aq test`.
+
+The first full Linux product build reached vendored Flecs and failed because
+its viewer C17 rule omitted the existing `FLECS_PLATFORM_FLAGS`. The one-line
+Makefile fix uses the same Linux POSIX feature definition as the engine's main
+Flecs rule and leaves non-Linux builds unchanged. The native session fixture
+compiled but initially failed linking because the local raylib and Ozz archives
+were absent. These build failures are distinct from runtime test failures.
+
+Final epoch 3 verification:
+
+- Production planner and sparse batch walker: **PASS**, two checks in the
+  [CPU run](sparse-admission-2026-10-20/epoch3-cpu-tests.log). That run's third
+  check failed on the existing indentation warning before the fixture flag fix.
+- World/catalog/cache/temporal ownership, deferred effects, cancellation and
+  smaller successor: **PASS**, corrected isolated
+  [ownership run](sparse-admission-2026-10-20/epoch3-ownership-tests.log).
+- Native terrain collision suite, including the added session-owned Box3D
+  handle fixture: **ALL PASS**, admitted pytest wrapper **1 passed in 4.16s**
+  ([log](sparse-admission-2026-10-20/epoch3-native-tests.log)). The headless
+  session's existing immediate publication path is tested; this is not proof
+  of the new rendered session call sequence.
+- Full Linux editor: **compiled and linked successfully**, exit **0**, with
+  current engine sources, optional autoremesher enabled and Streamline disabled
+  ([final link log](sparse-admission-2026-10-20/epoch3-linux-link-final.log),
+  [compile log](sparse-admission-2026-10-20/epoch3-linux-build-second.log)).
+  The first link needed the already-installed `libvulkan.so.1` exposed as a
+  temporary `libvulkan.so` link; the next exposed the checkout's MinGW Box3D
+  archive. The successful command selects the native archive built by the
+  existing session-test Make rules. No system package/display/device was added.
+- `git diff --check`: **PASS**.
+
+Dependencies were built from the checked-out vendored sources with CMake,
+`Release`, one build job: Ozz's `ozz_animation_offline` target with tools,
+samples, howtos, tests and postfix disabled; raylib's `raylib` target with
+examples disabled. The raylib CMake archive at `build/linux/raylib/libraylib.a`
+is linked locally at the legacy Make path `build/linux/libraylib.a`.
+[Ozz log](sparse-admission-2026-10-20/epoch3-ozz-build.log),
+[raylib log](sparse-admission-2026-10-20/epoch3-raylib-build.log).
+
+The successful product command was:
+
+```bash
+timeout --signal=TERM --kill-after=10s 180s env \
+  LD_LIBRARY_PATH=/tmp/sharp-zenith-52-shaderc/root/usr/lib/x86_64-linux-gnu \
+  make -C MatterEditor linux -j1 \
+  GLSLC=/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc \
+  VULKAN_INCLUDE=/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include \
+  VULKAN_LIB_DIR=/tmp/eager-nexus-71-vulkan-link \
+  BOX3D_LIB=/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/build/box3d-linux/src/libbox3d.a
+```
+
+**Epoch 3 remains a failed checkpoint and must not be integrated as completed
+session recovery.** Final source review found a remaining ordering defect:
+`publish_pipeline` still enqueues `WorldStateCommandKind::Ready` and emits
+`BakeFinished` after finalize, before the deferred collision callback runs in
+`render`. `Runtime::drain_world_state_commands` therefore can advance content
+generation and bootstrap candidate ECS entities while accepted collision is
+still installed. A rejected visual candidate can already have been announced
+Ready/finished. The new native fixture explicitly drives the ownership gate and
+cannot detect that actual call-sequence defect.
+
+Completion must coordinate Ready/terminal-event publication with visual and
+collision admission, including generation stamping, cancellation, initial
+streaming fill and authored ECS ownership, without breaking the frozen
+contracts. Simply moving the notifications into `render` has not been proven
+safe: the bake-run terminal scope is worker-owned and initial streaming can
+depend on entity/bootstrap progression. That remaining source integration and
+an executable fixture of the actual WorldSession sequence are the blockers;
+the unavailable UI/hardware RT/performance runs are separately **NOT RUN**.

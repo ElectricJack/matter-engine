@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <functional>
+#include <string>
 #include <utility>
 
 namespace viewer {
@@ -20,7 +22,19 @@ public:
         }
     }
     World* retained() noexcept { return retained_.get(); }
-    void commit() noexcept { retained_.reset(); }
+    void defer(std::function<bool(std::string&)> operation) {
+        pending_ = std::move(operation);
+    }
+    void cancel_pending() noexcept { pending_ = {}; }
+    // The owner invokes this only after complete visual admission. Physics'
+    // existing replacement transaction must succeed before releasing the old
+    // visual owner. A rejected visual candidate never invokes the operation.
+    bool finish(std::string& error) {
+        if (pending_ && !pending_(error)) return false;
+        commit();
+        return true;
+    }
+    void commit() noexcept { pending_ = {}; retained_.reset(); }
 
     // Borrow the accepted publication for one draw/completion, then restore
     // the requested candidate even if recording throws. No state is copied.
@@ -37,5 +51,6 @@ public:
     }
 private:
     std::unique_ptr<World> retained_;
+    std::function<bool(std::string&)> pending_;
 };
 } // namespace viewer

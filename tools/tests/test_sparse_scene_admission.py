@@ -5,25 +5,38 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def run_checked(command, **kwargs):
+    result = subprocess.run(command, capture_output=True, text=True, **kwargs)
+    if result.returncode:
+        print(result.stdout)
+        print(result.stderr)
+    result.check_returncode()
+    return result
+
+
 def compile_run(tmp_path, text, sources=()):
     source = tmp_path / "admission.cpp"
     source.write_text(text)
     binary = tmp_path / "admission"
     command = ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+               # Existing renderer headers emit this warning under GCC; keep
+               # it visible, as the supported product Make rules do.
+               "-Wno-error=misleading-indentation",
                "-Wno-missing-field-initializers", "-ffunction-sections",
                "-Wl,--gc-sections", "-I" + str(ROOT / "MatterEngine3/src"),
                "-I" + str(ROOT / "MatterEngine3/include"),
+               "-I" + str(ROOT / "MatterEngine3/src/render"),
                "-I" + str(ROOT / "third_party/Vulkan-Headers/include"),
                "-I" + str(ROOT / "libs/MathLib/include"),
+               "-I" + str(ROOT / "libs/MatterSurfaceLib/include"),
                "-I" + str(ROOT / "libs/SpatialQueryLib/include"),
                "-I" + str(ROOT / "MatterEngine3/src/provider"),
                "-I" + str(ROOT / "libs/ProfileLib/include"),
                "-DMATTER_PROFILE_ENABLED=0",
                str(source), *[str(ROOT / path) for path in sources],
                "-o", str(binary)]
-    subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
-    return subprocess.run([str(binary)], check=True, capture_output=True,
-                          text=True, timeout=10).stdout
+    run_checked(command, timeout=60)
+    return run_checked([str(binary)], timeout=10).stdout
 
 
 def test_checked_production_planner(tmp_path):
@@ -132,7 +145,9 @@ int main() {
     std::cout << "production batch walker: cumulative triangles, pages, placements, AS bounds passed\n";
 }
 '''
-    assert "production batch walker" in compile_run(tmp_path, text)
+    assert "production batch walker" in compile_run(tmp_path, text, sources=(
+        "MatterEngine3/src/render/matrix_math.cpp",
+    ))
 
 
 def test_full_world_publication_ownership(tmp_path):
@@ -180,9 +195,21 @@ int main() {
     assert(current.temporal.commit_presented(token));
     std::weak_ptr<int> accepted=current.catalog;
     publication.stage(current,make_world(8),true);
+    // The reload eviction barrier runs AFTER retention. Removing an old
+    // instance from the candidate lane must not remove accepted identity 7.
+    WorldDelta evicted; evicted.removed={7}; current.world.apply(evicted);
+    assert(publication.retained()->world.find(7));
+    unsigned collision_identity=7, commits=0;
+    auto pending=std::make_shared<int>(8);
+    std::weak_ptr<int> pending_lifetime=pending;
+    publication.defer([&,pending](std::string&) {
+        ++commits; collision_identity=*pending; return true;
+    });
+    pending.reset();
     admission::Plan rejected(limit);
     assert(!rejected.add(admission::Buffer::triangles,838861,160,8));
     assert(!accepted.expired() && current.world.find(8));
+    assert(commits==0 && collision_identity==7 && !pending_lifetime.expired());
     // Replay/completion temporarily select the SAME accepted catalog and caches.
     publication.with_retained(current,[&] {
         assert(current.world.find(7) && !current.world.find(8));
@@ -196,6 +223,8 @@ int main() {
     catch (const std::runtime_error&) {}
     assert(current.world.find(8));
     std::weak_ptr<int> rejected_catalog=current.catalog;
+    publication.cancel_pending();
+    assert(pending_lifetime.expired() && commits==0 && collision_identity==7);
     publication.stage(current,make_world(9),false);
     assert(rejected_catalog.expired() && !accepted.expired());
     assert(publication.retained()->world.find(7));
@@ -206,7 +235,12 @@ int main() {
     const auto& fresh=current.temporal.begin(camera,{64,64},{64,64},instances(10),false,{});
     assert(fresh.reset && !fresh.instances.front().history_valid);
     assert(current.temporal.commit_presented(fresh.attempt_token));
-    publication.commit();
+    std::string error;
+    publication.defer([&](std::string& e) { e="injected physics failure";return false; });
+    assert(!publication.finish(error) && !accepted.expired() && collision_identity==7);
+    publication.defer([&](std::string&) { ++commits;collision_identity=10;return true; });
+    assert(publication.finish(error) && collision_identity==10 && commits==1);
+    assert(publication.finish(error) && commits==1); // no duplicate installation
     assert(accepted.expired() && !publication.retained());
     assert(current.world.find(10) && current.cache.instances().front().part_hash==10);
     // First rejected load has no accepted owner: caller keeps its clear shell.
@@ -223,3 +257,20 @@ int main() {
         "MatterEngine3/src/render/matrix_math.cpp",
     ))
     assert "smaller replacement passed" in output
+
+
+def test_native_session_collision_admission():
+    # Native session/physics coverage uses the existing supported headless
+    # Make fixture. It still runs under aq test admission, including its build.
+    run_checked(
+        ["timeout", "--signal=TERM", "--kill-after=10s", "600s",
+         "make", "-C", str(ROOT / "MatterEngine3/tests"), "-j1",
+         "terrain-collision-session-tests"], timeout=615,
+    )
+    result = run_checked(
+        ["timeout", "--signal=TERM", "--kill-after=10s", "180s",
+         str(ROOT / "MatterEngine3/tests/build/terrain_collision_session_tests")],
+        cwd=ROOT / "MatterEngine3/tests", timeout=195,
+    )
+    print(result.stdout)
+    print(result.stderr)

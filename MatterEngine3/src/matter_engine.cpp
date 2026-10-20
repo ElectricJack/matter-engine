@@ -1023,6 +1023,12 @@ struct WorldSession::Impl : WorldRenderPublication {
     viewer::WorldScenePublication<WorldRenderPublication> vk_world_publication;
     bool vk_world_preparing = false;
     bool vk_replaying_accepted = false;
+    bool vk_candidate_hidden = false;
+    bool vk_world_pending = false;
+    std::shared_ptr<matter_async::CancelToken> vk_world_token;
+    // Worker publishes readiness only after the first streamed fill is whole.
+    // Until then candidate frames service residency, but display the old world.
+    std::atomic<bool> vk_world_fill_ready{true};
 #endif
     struct AuthoredFluidPublication
         : matter::detail::RiverRuntimePublicationIdentity {
@@ -3347,6 +3353,43 @@ void WorldSession::Impl::worker_loop() {
                 // BakeAll/Reload: reset refine controller (will be rebuilt post-publish).
                 if (cmd.kind == matter_async::CommandKind::BakeAll ||
                     cmd.kind == matter_async::CommandKind::Reload) {
+#ifdef MATTER_VULKAN_VIEWER
+                    // Detach the accepted draw/store/temporal owner BEFORE the
+                    // existing coordinator drains its old ledger. Those tagged
+                    // evictions now retire only the abandoned candidate lane;
+                    // they cannot release parts of the retained renderer.
+                    matter_async::GpuJob retain_job;
+                    retain_job.name = "bake.retain-before-eviction";
+                    retain_job.token = cmd.token;
+                    retain_job.fn = [this](std::string&) {
+                        if (!engine->render_device) return true;
+                        WorldRenderPublication empty;
+                        empty.store = std::make_unique<viewer::PartStore>(
+                            cfg.cache_root, cfg.fixture_io ? cfg.fixture_io->cache : nullptr);
+                        empty.vk_scene = std::make_unique<viewer::VkSceneRenderer>(
+                            *engine->render_device);
+                        empty.vk_water_diagnostic_settings = vk_water_diagnostic_settings;
+                        empty.gpu_mesher_acceptance_part = gpu_mesher_acceptance_part;
+                        empty.gpu_mesher_acceptance_instance = gpu_mesher_acceptance_instance;
+                        empty.vk_geometry_pages_enabled = vk_geometry_pages_enabled;
+                        vk_world_publication.cancel_pending();
+                        vk_world_publication.stage(*this, std::move(empty),
+                            vk_scene_accepted && !vk_world_pending);
+                        vk_world_pending = true;
+                        vk_world_preparing = true;
+                        vk_world_fill_ready.store(false, std::memory_order_release);
+                        return true;
+                    };
+                    std::string retain_error;
+                    if (!gpu_jobs.run_blocking(std::move(retain_job), retain_error)) {
+                        events::BakeError event;
+                        event.code = BakeErrorCode::GpuError;
+                        event.phase = "retain";
+                        event.message = retain_error;
+                        emit_bake(std::move(event));
+                        continue;
+                    }
+#endif
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
@@ -4398,7 +4441,9 @@ void WorldSession::Impl::publish_pipeline(
         std::move(collision_publication.test_publication_hook);
     const TerrainCollisionPublicationAction collision_action =
         collision_publication.action;
+    bool collision_deferred = false;
     const auto release_and_observe_candidate = [&]() noexcept {
+        if (collision_deferred) return; // deferred owner releases/observes once
         if (candidate_slot) candidate_slot->reset();
         if (observed_candidate && candidate_observer) {
             try {
@@ -4439,9 +4484,9 @@ void WorldSession::Impl::publish_pipeline(
             }
         };
 
-    // Terrain collision is the first app-thread publication for a full bake.
-    // It must succeed before any visual reset can expose the generation, and
-    // cone/refine publication deliberately arrives as Keep.
+    // Headless sessions publish here. Rendered sessions retain the same owner-
+    // thread transaction until visual admission; neither Clear nor Replace may
+    // change accepted terrain just because a candidate finished baking.
     if (collision_action !=
         TerrainCollisionPublicationAction::Keep) {
         if (is_cancelled()) {
@@ -4703,6 +4748,33 @@ void WorldSession::Impl::publish_pipeline(
                         "unknown terrain collision publication failure");
                 }
             };
+#ifdef MATTER_VULKAN_VIEWER
+            if (engine->render_device) {
+                // The indirection may outlive the worker's run_blocking call.
+                // Release geometry on execution, cancellation or supersession,
+                // and preserve the existing lifetime observer in every case.
+                auto lifetime = std::shared_ptr<void>(nullptr,
+                    [candidate_slot, candidate_weak, observed_candidate,
+                     candidate_observer](void*) noexcept {
+                        if (candidate_slot) candidate_slot->reset();
+                        if (observed_candidate && candidate_observer) {
+                            try { candidate_observer(candidate_weak); }
+                            catch (...) { MATTER_LOGE("terrain-collision",
+                                "deferred candidate observer threw\n"); }
+                        }
+                    });
+                collision_deferred = true;
+                auto operation = std::move(collision_job.fn);
+                collision_job.fn = [this, operation = std::move(operation),
+                                    lifetime = std::move(lifetime)](std::string&) mutable {
+                    vk_world_publication.defer(
+                        [operation = std::move(operation), lifetime](std::string& error) mutable {
+                            return operation(error);
+                        });
+                    return true;
+                };
+            }
+#endif
             collision_ok = gpu_jobs.run_blocking(
                 std::move(collision_job), collision_error);
         } catch (const std::bad_alloc&) {
@@ -4800,7 +4872,10 @@ void WorldSession::Impl::publish_pipeline(
         // Allocation happened above; stage only transfers owners. On repeated
         // rejected reloads keep the original accepted world, not the rejected
         // candidate. Never reset the retained renderer/catalog/temporal state.
-        vk_world_publication.stage(*this, std::move(candidate), vk_scene_accepted);
+        vk_world_publication.stage(*this, std::move(candidate),
+            vk_scene_accepted && !vk_world_pending);
+        vk_world_pending = true;
+        vk_world_token = token;
         vk_world_preparing = true;
 #else
         static_cast<WorldRenderPublication&>(*this) = std::move(candidate);
@@ -5226,6 +5301,7 @@ void WorldSession::Impl::publish_pipeline(
         lods = store->part_lod_table();
 #ifdef MATTER_VULKAN_VIEWER
         vk_world_preparing = false;
+        vk_world_fill_ready.store(!p.prewarm_child_catalog, std::memory_order_release);
 #endif
 
         stats.instances_total = (uint32_t)manifest.instances.size();
@@ -10788,6 +10864,9 @@ void WorldSession::Impl::execute_sector_stream_step() {
         bake_pool_outstanding() == 0 &&
         requests_exhausted) {
         world_initial_load_done = true;
+#ifdef MATTER_VULKAN_VIEWER
+        vk_world_fill_ready.store(true, std::memory_order_release);
+#endif
         const double fill_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - stream_fill_start).count();
         // ALWAYS announce that the disc is full — one line, once per world
@@ -13086,6 +13165,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         return false;
     }
     const bool replaying = impl_->vk_replaying_accepted;
+    if (!replaying) impl_->vk_candidate_hidden = false;
     const auto render_retained = [&]() {
         if (!impl_->vk_world_publication.retained()) {
             impl_->stats.instances_drawn = 0;
@@ -13101,7 +13181,33 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             return render(cam, frame, opts, err);
         });
     };
-    if (!replaying && impl_->vk_world_preparing)
+    const auto finish_world_candidate = [&]() {
+        if (replaying) return true;
+        if (!impl_->vk_world_fill_ready.load(std::memory_order_acquire)) {
+            // Candidate recording above services VT residency needed by the
+            // streaming visibility barrier. Composite the accepted world last;
+            // partial fill must neither replace terrain nor discard that owner.
+            const bool ok = render_retained();
+            impl_->vk_candidate_hidden = true;
+            return ok;
+        }
+        if (!impl_->vk_world_publication.finish(err)) {
+            // Supersession can arrive at the deferred publication hook too.
+            // It leaves accepted physics intact and is not a device failure.
+            if (impl_->vk_world_token && impl_->vk_world_token->is_cancelled()) {
+                err.clear();
+                const bool ok = render_retained();
+                impl_->vk_candidate_hidden = true;
+                return ok;
+            }
+            return false;
+        }
+        impl_->vk_world_pending = false;
+        return true;
+    };
+    if (!replaying && (impl_->vk_world_preparing ||
+        (impl_->vk_world_pending && impl_->vk_world_token &&
+         impl_->vk_world_token->is_cancelled())))
         return render_retained();
     impl_->vk_scene->collect_water_fields(impl_->vk_skin_completed_serial);
     impl_->vk_scene->collect_water_animation(
@@ -13635,7 +13741,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->vk_scene_accepted=true;
       } while(false);
     }
-    if(!rejected_request.empty() && !impl_->vk_scene_accepted) {
+    if(!rejected_request.empty() &&
+       (!impl_->vk_scene_accepted || impl_->vk_world_pending)) {
         // First-load rejection has no accepted geometry. Keep a defined shell.
         if (!render_retained()) return false;
         impl_->stats.instances_drawn = 0;
@@ -14017,8 +14124,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         (void)begin_temporal({});
         record_vulkan_clear(frame, impl_->sky_clear);
         if(!rejected_request.empty()) {err=rejected_request;return false;}
-        if (!replaying) impl_->vk_world_publication.commit();
-        return true;
+        return finish_world_candidate();
     }
 
     const auto build_start = std::chrono::steady_clock::now();
@@ -14666,8 +14772,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->stats.instances_drawn=0;
         err=rejected_request;return false;
     }
-    if (!replaying) impl_->vk_world_publication.commit();
-    return true;
+    return finish_world_candidate();
 }
 
 // Close out the frame render() recorded: commit or discard its temporal history,
@@ -14688,7 +14793,8 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
             impl_->vk_replaying_accepted = true;
             finish_vulkan_frame(frame_serial, presented);
         });
-        return;
+        // Candidate residency commands may have been submitted before the
+        // retained world's final composite. Retire BOTH resource owners.
     }
     if (!impl_ || frame_serial != impl_->vk_temporal_serial ||
         impl_->vk_temporal_token == 0) {
@@ -14701,7 +14807,9 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
             std::max(impl_->vk_skin_completed_serial, frame_serial);
     }
     impl_->dynamic_bridge.finish_frame(frame_serial);
-    if (presented) {
+    const bool displayed = presented &&
+        (impl_->vk_replaying_accepted || !impl_->vk_candidate_hidden);
+    if (displayed) {
         if (!impl_->vk_replaying_accepted)
             (void)impl_->ecs_runtime.animation_systems().commit_completed_visibility(frame_serial);
         (void)impl_->vk_temporal.commit_presented(impl_->vk_temporal_token);

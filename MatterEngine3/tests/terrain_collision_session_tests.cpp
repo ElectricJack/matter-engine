@@ -11,6 +11,9 @@
 #include "memory_fixture_io.h"
 #include "terrain_mesher.h"
 #include "terrain_river_overlay.h"
+#include "render/world_scene_publication.h"
+#include "provider/world_source.h"
+#include "render/scene_admission.h"
 
 #include <atomic>
 #include <chrono>
@@ -878,6 +881,62 @@ void test_post_commit_log_exception_cannot_reject_installed_generation() {
           "post-commit diagnostic failure cannot report the committed generation as failed");
 }
 
+// Uses a real session-owned Box3D world and the visual ownership gate. This is
+// a CPU integration fixture, not execution of WorldSession's Vulkan render loop.
+void test_visual_admission_preserves_session_collision_handles() {
+    SessionFixture fixture("visual_admission");
+    if (!fixture.session) return;
+    TerrainCollisionCandidate next;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [&](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+            const std::string&, const std::function<bool()>&,
+            TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            next = candidate;
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents events{};
+    CHECK(pump_until(*fixture.session, [&] {
+        return events.finished == 1 || events.errors != 0;
+    }, events) && events.errors == 0, "accepted session collision installs");
+    auto& physics = matter::physics::detail::context(fixture.session->ecs());
+    matter::physics::detail::TerrainCollisionPhysicsTileState old_tile{};
+    CHECK(physics.terrain_collision_tile_state_for_test(0, old_tile),
+          "accepted collision has inspectable native handles");
+    const auto old = physics.terrain_collision_stats();
+    viewer::WorldScenePublication<viewer::WorldState> publication;
+    viewer::WorldManifest manifest;
+    viewer::WorldManifestEntry entry{}; entry.instance_id=7; entry.part_hash=7;
+    manifest.instances.push_back(entry);
+    viewer::WorldState world; world.reset(manifest);
+    publication.stage(world, viewer::WorldState{}, true);
+    viewer::WorldDelta eviction; eviction.removed.push_back(7); world.apply(eviction);
+    CHECK(publication.retained()->find(7), "candidate eviction preserves accepted world identity");
+    next.installation_key ^= 0x1234;
+    next.friction = 0.73f;
+    publication.defer([&](std::string& error) {
+        return physics.replace_terrain_collision(next, error);
+    });
+    viewer::admission::Plan plan(128ull*1024*1024);
+    CHECK(!plan.add(viewer::admission::Buffer::triangles,838861,160,0),
+          "oversized candidate is rejected before collision publication");
+    CHECK(physics.terrain_collision_stats().installation_key == old.installation_key &&
+          physics.terrain_collision_handles_are_valid_for_test(old_tile.body_handle, old_tile.shape_handle),
+          "capacity rejection preserves actual accepted collision handles");
+    std::string error;
+    matter::physics::detail::fail_terrain_collision_mesh_create_on_tile_for_test(physics,1);
+    CHECK(!publication.finish(error) && publication.retained()->find(7),
+          "collision preparation failure preserves accepted visual owner");
+    CHECK(physics.terrain_collision_handles_are_valid_for_test(old_tile.body_handle, old_tile.shape_handle),
+          "collision preparation failure preserves accepted physics owner");
+    viewer::admission::Plan smaller(128ull*1024*1024);
+    CHECK(smaller.add(viewer::admission::Buffer::triangles,1,160,0) && publication.finish(error),
+          "smaller admitted successor commits the existing physics transaction");
+    CHECK(!publication.retained() && physics.terrain_collision_stats().installation_key == next.installation_key,
+          "successful successor retires accepted world and promotes collision together");
+}
+
 void test_transactional_replacement_failure_retains_prior() {
     std::printf("-- transactional_replacement_failure_retains_prior\n");
     SessionFixture fixture("replace", true, 0.41f);
@@ -1258,6 +1317,7 @@ int main() {
     test_empty_publication_exception_uses_nonempty_diagnostic();
     test_post_commit_log_exception_cannot_reject_installed_generation();
     test_transactional_replacement_failure_retains_prior();
+    test_visual_admission_preserves_session_collision_handles();
     test_cancelled_at_publication_barrier_skips_replacement();
     test_cancelled_after_collision_job_skips_visual_publication();
     test_cancelled_queued_collision_job_releases_before_worker_continues();
