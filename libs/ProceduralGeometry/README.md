@@ -201,10 +201,9 @@ winding the MSL face normals assume.
 
 The legacy bake path warns and skips an unavailable or failing modifier. A
 service job instead fails explicitly and publishes nothing. `mesh.retopology`
-has no supported backend here and is never advertised: it fails with
+requires the optional isolated worker described below; otherwise it fails with
 `unsupported_capability`, as do unknown operations, unknown required
-capabilities and algorithms. The autoremesher backend needs subprocess
-isolation before it can run inside a service job. An out-of-range parameter,
+capabilities and algorithms. An out-of-range parameter,
 undeclared operation capability or simplify that removes every triangle fails
 with `invalid_input`; a newer `operation_version` fails with
 `unsupported_version`.
@@ -231,6 +230,92 @@ With `-DMATTER_GEOMETRY_MODIFIERS=OFF` the MSL sources are not compiled, no
 modifier capability is advertised and every modifier request fails with
 `unsupported_capability` ("mesh modifier backend omitted from this build").
 Queries do not depend on that option.
+
+## Optional isolated mesh worker
+
+Native Linux builds can opt in with `-DMATTER_GEOMETRY_MESH_WORKER=ON`
+(default OFF, requires modifiers ON). This adds the separate
+`matter_geometry_mesh_worker` executable. The host archive still links only
+contracts; autoremesher, geogram and the TBB shim exist only in the executable's
+backend. Linux 5.9+ is required for `close_range`. Windows and WASM do not
+implement this optional backend and reject enabling its build option. Their
+existing simplify/smooth backends remain available.
+
+Configure a trusted, absolute executable path in the host, not in recipe data:
+
+```cpp
+matter::geometry::PrimitiveGeometry geometry({}, {"/opt/matter/matter_geometry_mesh_worker"});
+```
+
+An empty path disables the worker. `capabilities()` advertises
+`matter.operation.mesh.retopology@1` only when compiled in and a fresh, bounded
+300 ms protocol probe succeeds. Missing executables, loader errors, incompatible
+workers and failed probes leave it unavailable. There is no cached availability
+or shell/PATH lookup. Deploy the executable alongside the host and supply its
+installed absolute path explicitly.
+
+A declared retopology request uses the same regions/stack schema as other
+modifiers. Resolved defaults and ranges are:
+
+```json
+{"operation":"mesh.retopology", "operation_version":1,
+ "target_ratio":1.0, "iterations":3, "seed":0, "timeout_seconds":60}
+```
+
+`target_ratio` is `(0,4]`, `iterations` is an integer `[1,1024]`, `seed` is a
+uint32, and `timeout_seconds` is an integer `[0,3600]`. Zero disables only the
+modifier-specific timeout; the finite job execution budget still applies.
+These map to the legacy `RetopoOptions` fields with `threads=1`. The legacy v1
+algorithm reserves but ignores iterations and seed; they are recorded in
+provenance without promising a new algorithm or determinism across platforms.
+Each stage uses a fresh process, so process-sticky thread/global state is isolated.
+
+The parent exchanges little-endian scalar records through a private temporary
+directory, removed on all exits. Each mesh transfer is capped at 256 MiB, with
+output additionally capped by job output bytes, vertices, indices and one
+quarter of remaining working memory. Counts are checked against the actual file
+size before allocating; every scalar, index, material and complete asset is
+validated before publication. The parent reserves the usual stage scratch;
+remaining working bytes cap the child's entire virtual address space via
+`RLIMIT_AS`. `RLIMIT_FSIZE` limits output, core dumps are disabled, and inherited
+host descriptors are closed. These are resource/crash isolation measures, not a
+sandbox for untrusted executables. Set a realistic job working-memory budget
+(the real closed-sphere fixture uses 1 GiB); the default 64 MiB is often too
+small for the legacy solver's runtime and scratch allocations.
+
+The parent checks cancellation and job deadlines every 2 ms while the child
+runs, and kills its process group and reaps it before returning on failure.
+Parent death also kills the direct worker. Serialization/deserialization are
+bounded by the transfer cap, with job checkpoints around them. Process exit,
+abort, invalid/truncated/oversized output, or a legacy remesher failure returns
+`backend_failure` with no asset. Pre-admission budget failures, worker-reported allocation/output exhaustion, and
+elapsed limits return `resource_limit`; cancellation returns `cancelled`. No preceding
+region or modifier is published on any failure. Capability probes have their
+own fixed bound and precede job execution monitoring. As with simplify/smooth,
+operation accounting charges stage input work, rather than instrumenting every
+internal solver iteration; the process memory/time limits bound that solver.
+
+Build and run the focused fixtures:
+
+```sh
+cmake -S libs/ProceduralGeometry -B /tmp/matter-geometry-worker -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DMATTER_GEOMETRY_MESH_WORKER=ON
+cmake --build /tmp/matter-geometry-worker -j 2
+ctest --test-dir /tmp/matter-geometry-worker --output-on-failure \
+  -R 'mesh_worker|processing|process_allocation|dependencies'
+```
+
+`matter_geometry_mesh_worker_tests` links only the host and tests a real child
+abort, malformed/oversized output, a nonzero exit after complete output,
+availability loss, post-dispatch cancellation/reaping and deadlines. The
+separate `matter_geometry_mesh_worker_parity` oracle deliberately links the
+legacy wrapper for comparison: a closed octasphere (two subdivisions, 128
+triangles), ratio 0.75, iterations 4, seed 17, timeout 30, threads 1. It compares
+oriented output corners and attributes with `1e-6 + 1e-6 * abs(expected)`
+tolerance, exact triangle count and material binding, and byte-identical
+repeated isolated results. The production/fault-test host never links that
+oracle backend. The archive audit checks this independently, including
+`GEO::` and `tbb::` symbols.
 
 ## Canonical implementation and dependencies
 
@@ -289,7 +374,7 @@ Supported native Windows toolchain, resolved by the repository toolchain module:
 .\libs\ProceduralGeometry\build-windows.ps1 -Config RelWithDebInfo -Test
 ```
 
-Nine CTests (eight with modifiers OFF) cover functional fixtures, native CSG comparison, a direct recipe,
+The default fourteen CTests (twelve with modifiers OFF) cover functional fixtures, native CSG comparison, a direct recipe,
 query/modifier processing, allocation failures and dependency independence. Topology, prototype identity and material bindings are
 exact. Position/normal/UV checks use this fixture suite's preselected absolute plus relative
 tolerance, `1e-6 + 1e-6 * abs(expected)`; coordinates and absolute position
@@ -299,6 +384,71 @@ the same predeclared absolute/relative tolerance; normal components use `2e-3`
 absolute plus `1e-6` relative. Nondegenerate oriented triangle sequences on the
 matched lattice must agree exactly in count and within those coordinate
 tolerances; welded vertex indices are intentionally replaced by triangle soup.
+
+### Seeded properties and opt-in fuzzing
+
+The five `matter_geometry_properties_*` CTests have a five-second timeout each.
+They generate small owned recipes and meshes entirely in memory, using fixed
+xorshift seeds; no corpus, engine cache, script host or disk asset is needed.
+Assertions use explicit runtime checks even in Release builds. Run just these
+checks with `ctest --test-dir /tmp/matter-primitive-geometry -L property --output-on-failure -j 1`.
+
+Groups 0..4 cover primitives and mirrored placements; profiles, concavity,
+holes and extrusions; ordered hard/smooth CSG and CPU marching cubes; batched
+ray/closest queries; and simplify/smooth plus the canonical error-based LOD
+decimator. Oracles check contract validation, bounds, analytic cap areas and
+box query distances, deterministic output, retained attributes and identities,
+atomic errors, and bit-identical locked terrain borders. Closed fixtures weld
+positions within 2e-5 metres to accommodate trig seams, then require opposing
+edge pairs, a connected degree-two vertex link, and positive signed volume.
+Fixtures have edges well above that tolerance. This is a topology check on
+these generated fixtures, not a claim that arbitrary marching-cubes ambiguity
+or arbitrary LOD error is resolved. The QEM error threshold is not a measured
+surface-distance guarantee.
+
+Failures print the exact group and seed; replay one case with:
+
+```sh
+/tmp/matter-primitive-geometry/matter_geometry_property_tests 0 0x51a7c0de
+```
+
+The properties found an inward side fan when `cappedCone`'s second endpoint
+is the apex. Its winding now matches the outward base cap; both apex branches
+and closed manifold orientation are covered by the primitive schedule.
+
+For longer deterministic campaigns, configure with
+`-DMATTER_GEOMETRY_FUZZING=ON`. This builds `matter_geometry_fuzz` but never
+adds it to CTest. Arguments are iteration count, starting uint32 seed, and an
+optional fixed group (otherwise it cycles through all available groups):
+
+```sh
+/tmp/matter-primitive-geometry/matter_geometry_fuzz 10000 0x51a7c0de
+```
+
+Clang's libFuzzer is separately enabled by `MATTER_GEOMETRY_LIBFUZZER`, which
+requires `MATTER_GEOMETRY_FUZZING`. Both are OFF by default. It instruments
+the geometry algorithms, contract validators and harness with ASan/UBSan;
+undefined-behaviour reports stop the process. The first input byte selects a
+group and the remaining bytes hash to its seed. Lengths/extents are bounded,
+so fuzz bytes cannot request unbounded allocations or grids. LibFuzzer retains
+the failing input on an invariant violation as well as on a sanitizer crash.
+
+```sh
+cmake -S libs/ProceduralGeometry -B /tmp/matter-geometry-fuzz -G Ninja \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DMATTER_GEOMETRY_FUZZING=ON -DMATTER_GEOMETRY_LIBFUZZER=ON
+cmake --build /tmp/matter-geometry-fuzz -j 2
+ctest --test-dir /tmp/matter-geometry-fuzz -L property --output-on-failure -j 1
+/tmp/matter-geometry-fuzz/matter_geometry_libfuzzer \
+  -seed=17 -max_len=32 -timeout=5 -max_total_time=300
+```
+
+`MATTER_GEOMETRY_MODIFIERS=OFF` omits group 4 from both the fast schedule and
+fuzz dispatch. The standalone harness also works with GNU/MSVC without
+libFuzzer. For GNU sanitizer campaigns, supply `-fsanitize=address,undefined
+-fno-sanitize-recover=undefined -fno-omit-frame-pointer` through the CMake
+C/C++ flags and `-fsanitize=address,undefined` through the executable linker flags.
 
 | Fixture | Recorded expectation |
 | --- | --- |

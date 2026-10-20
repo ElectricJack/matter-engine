@@ -3,6 +3,9 @@ param(
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release')]
     [string]$Config = 'RelWithDebInfo',
     [string]$Target,
+    [string]$BuildDirectory,
+    [string]$CompilerLauncher,
+    [switch]$ConfigureOnly,
     [switch]$EnableStreamline,
     [string]$StreamlineRoot = $env:MATTER_STREAMLINE_ROOT,
     [switch]$EnablePhysx,
@@ -27,6 +30,21 @@ if ($PreflightOnly) {
 $preset = "windows-msvc-$($Config.ToLowerInvariant())"
 $developerEnvironment = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} -vcvars_ver={2}' -f $toolchain.VsDevCmd, $toolchain.WindowsSdkVersion, $toolchain.MsvcToolsVersion
 $configure = '{0} && "{1}" --preset "{2}" -DCMAKE_MAKE_PROGRAM="{3}" -DMATTER_PYTHON_EXECUTABLE:FILEPATH="{4}"' -f $developerEnvironment, $toolchain.CMake, $preset, $toolchain.Ninja, $toolchain.Python
+$configure += ' -S "{0}"' -f $repositoryRoot
+if ($BuildDirectory) {
+    $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
+    $configure += ' -B "{0}"' -f $BuildDirectory
+}
+if ($CompilerLauncher) {
+    if (-not (Test-Path -LiteralPath $CompilerLauncher -PathType Leaf)) {
+        throw "Compiler launcher was not found: $CompilerLauncher"
+    }
+    $CompilerLauncher = (Resolve-Path -LiteralPath $CompilerLauncher).Path.Replace('\', '/')
+    $configure += ' -DCMAKE_C_COMPILER_LAUNCHER:FILEPATH="{0}" -DCMAKE_CXX_COMPILER_LAUNCHER:FILEPATH="{0}" -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT:STRING=Embedded' -f $CompilerLauncher
+} else {
+    # Reset launchers when reusing a tree after a cache-enabled invocation.
+    $configure += ' -DCMAKE_C_COMPILER_LAUNCHER:FILEPATH= -DCMAKE_CXX_COMPILER_LAUNCHER:FILEPATH= -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT:STRING="$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>"'
+}
 if ($EnableStreamline) {
     if (-not $StreamlineRoot) {
         throw '-EnableStreamline requires -StreamlineRoot or MATTER_STREAMLINE_ROOT.'
@@ -64,8 +82,12 @@ if ($EnablePhysx) {
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
+if ($ConfigureOnly) { exit 0 }
 
 $build = '{0} && "{1}" --build --preset "{2}"' -f $developerEnvironment, $toolchain.CMake, $preset
+if ($BuildDirectory) {
+    $build = '{0} && "{1}" --build "{2}"' -f $developerEnvironment, $toolchain.CMake, $BuildDirectory
+}
 if ($Target) {
     $build += ' --target "{0}"' -f $Target
 }

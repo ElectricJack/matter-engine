@@ -363,7 +363,7 @@ void TriangleBuildBuffer::cappedCone(float3 a, float3 b, float r0, float r1,
         if (apexA) {
             emitTriangle(a, Q1, Q0, material_id, transform, tint);
         } else if (apexB) {
-            emitTriangle(P0, b, P1, material_id, transform, tint);
+            emitTriangle(P0, P1, b, material_id, transform, tint);
         } else {
             emitTriangle(P0, Q1, Q0, material_id, transform, tint);
             emitTriangle(P0, P1, Q1, material_id, transform, tint);

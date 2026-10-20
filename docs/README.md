@@ -135,6 +135,8 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
   command FIFO grammar, and events.
 - **[QA cookbook](agent/qa-cookbook.md)** — builds, screenshots, replay/diff,
   smoke, seam, and performance gates.
+- **[Windows CI tiers](agent/aq-promotion/windows-ci-tiers.md)** — persistent
+  builds, compiler cache, test selection, timing evidence and promotion bindings.
 - **[Issue system](agent/issue-system.md)** — capture, file, and replay
   workflow.
 - **[Object evaluation adapter](agent/object-evaluation.md)** — frozen rock
@@ -147,6 +149,10 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [Native wrapper interruption](findings/native-wrapper-interruption-2026-10-19.md)
+  traces the 0xC000013A native-build deaths to a Start-Process launch that
+  handed the build a closable Windows Terminal console, and records the
+  windowless bounded runner that replaces it.
 - [Static-default integration candidate validation](findings/static-default-candidate-validation-2026-09-30.md)
   records the merged main/VG candidate, restored population, native checks,
   and serial captures, with loaded-coverage and visual-parity limits.

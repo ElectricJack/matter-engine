@@ -23,6 +23,9 @@ if(modifiers)
         list(APPEND expected_sources "${repo_root}/libs/MatterSurfaceLib/src/${stage}.cpp")
     endforeach()
 endif()
+if(mesh_worker)
+    list(APPEND expected_sources src/mesh_worker.cpp)
+endif()
 if(NOT geometry_sources STREQUAL expected_sources)
     message(FATAL_ERROR "Geometry acquired a source outside the primitive/profile/CSG/query/modifier extraction")
 endif()
@@ -61,7 +64,7 @@ if(symbols MATCHES "compute_resolved_hash|DslState|JS_Eval|vkCreate|BeginDrawing
 endif()
 # Retopology needs process-global geogram/TBB and subprocess isolation; it must
 # not ride into this archive. OFF must drop the simplify/smooth stages entirely.
-if(symbols MATCHES "autoremesher|geogram|retopo")
+if(symbols MATCHES "autoremesher|geogram|retopo|tbb::|GEO::")
     message(FATAL_ERROR "Headless archive contains a retopology backend symbol")
 endif()
 if(NOT modifiers AND symbols MATCHES "reproject_triex|SimplifyOptions|SmoothOptions")

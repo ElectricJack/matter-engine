@@ -139,6 +139,9 @@ QJS_OBJ = $(addprefix $(OBJDIR)/,quickjs.o libregexp.o libunicode.o cutils.o xsu
 # Flecs is C17 and must never be compiled by the C++ rule below.
 FLECS_C   = $(call manifest_engine_paths,$(filter third_party/flecs/flecs.c,$(VENDOR_MANIFEST_ALL)))
 FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
+ifeq ($(UNAME_S),Linux)
+FLECS_PLATFORM_FLAGS = -D_POSIX_C_SOURCE=200809L
+endif
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
@@ -313,6 +316,8 @@ GLSLC ?= glslc
 # shaders_gen/embedded_shaders.h) instead of keeping its own copy, so there
 # is only ever one list to update when a shader is added.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/smoke_triangle.vert.spv \
+         build/shaders_vk/smoke_triangle.frag.spv \
          build/shaders_vk/vt_material_domain_probe.comp.spv \
          build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
          build/shaders_vk/gpu_mesh_scan_add.comp.spv \
@@ -617,7 +622,7 @@ vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
 $(FLECS_OBJ): $(FLECS_C) | $(OBJDIR)
-	$(CCACHE) gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -MMD -MP
+	$(CCACHE) gcc -c $< -o $@ -std=c17 -O2 $(FLECS_PLATFORM_FLAGS) -I$(FLECS_DIR) -MMD -MP
 
 # QuickJS C sources (gcc, extern "C" safe).
 $(OBJDIR)/%.o: $(QJS_DIR)/%.c | $(OBJDIR)

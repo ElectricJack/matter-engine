@@ -86,8 +86,8 @@ void gpu_memory_track_free(VkDeviceSize bytes, VkMemoryPropertyFlags props);
 
 // Process memory snapshot (working set on Windows, RSS on Linux).
 // Both fields are bytes, and both are zero when the platform query fails.
-// `peak_working_set_bytes` is Windows-only -- the Linux path reads
-// /proc/self/statm, which carries no peak, and leaves it at 0.
+// Linux reads current RSS from /proc/self/statm and peak RSS from
+// /proc/self/status (VmHWM).
 struct ProcessMemoryStats {
     uint64_t working_set_bytes = 0;
     uint64_t peak_working_set_bytes = 0;

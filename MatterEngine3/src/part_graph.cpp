@@ -25,6 +25,7 @@
 // does NOT guarantee: that every part in the result exists — see the
 // skip-and-continue policy at the bake loop, and InstallResult's own comment.
 #include "part_graph.h"
+#include "part_bundle.h"
 #include "matter/lod_contract.h"  // W5: kMaxSerializedLodLevels (exclude-mask bit width guard)
 #include "part_asset_v2.h"   // SP-1 (MatterEngine3, via -I../include): compute_resolved_hash,
                             //   cache_path_resolved; pulls in v1 part_asset.h for fnv1a64
@@ -595,15 +596,24 @@ namespace part_graph {
 // params_to_json is defined in the always-compiled section above (install() keys
 // child placements by it); the host path reuses it for resolve_hash/bake.
 
-FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir)
-    : host_(host), roots_(matter::project_layout::object_roots({schemas_dir})) {}
+FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir,
+                                       std::shared_ptr<const matter::SourceSnapshot> sources)
+    : FileModuleResolver(host, std::vector<std::string>{std::move(schemas_dir)}, std::move(sources)) {}
 
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host,
-                                       std::vector<std::string> roots)
-    : host_(host), roots_(matter::project_layout::object_roots(roots)) {}
+                                       std::vector<std::string> roots,
+                                       std::shared_ptr<const matter::SourceSnapshot> sources)
+    : host_(host), roots_(sources ? sources->object_roots(roots)
+                                 : matter::project_layout::object_roots(roots)),
+      sources_(std::move(sources)) {}
 
 bool FileModuleResolver::load_source(const std::string& module, std::string& out) {
     for (const std::string& root : roots_) {
+        if (sources_) {
+            if (sources_->read((std::filesystem::path(root) / (module + ".js")).generic_string(), out))
+                return true;
+            continue;
+        }
         std::ifstream in((std::filesystem::path(root) / (module + ".js")).string(),
                          std::ios::binary);
         if (!in) continue;
@@ -619,6 +629,10 @@ std::string FileModuleResolver::source_path_for(const std::string& module) const
     for (const std::string& root : roots_) {
         const std::string path =
             (std::filesystem::path(root) / (module + ".js")).string();
+        if (sources_) {
+            if (sources_->exists(path)) return path;
+            continue;
+        }
         std::error_code ec;
         if (std::filesystem::is_regular_file(path, ec)) return path;
     }
@@ -651,8 +665,9 @@ FileModuleResolver::shared_sources_for(const std::string& source) {
     return selected;
 }
 
-HostBaker::HostBaker(script_host::ScriptHost& host, std::string parts_dir)
-    : host_(host), parts_dir_(std::move(parts_dir)) {}
+HostBaker::HostBaker(script_host::ScriptHost& host, std::string parts_dir,
+                     std::shared_ptr<matter::CacheByteStorage> storage)
+    : host_(host), parts_dir_(std::move(parts_dir)), storage_(std::move(storage)) {}
 
 uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params,
                                  const std::vector<uint64_t>& child_hashes,
@@ -682,6 +697,7 @@ uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params
 // this hash, scratch is the ONLY root consulted — a transient artifact is never
 // silently satisfied from the persistent cache.
 bool HostBaker::cached(uint64_t resolved_hash) {
+    part_bundle::ScopedStorage storage(storage_);
     // A later hit must revalidate/repair metadata, never trust a prior bake flag.
     last_leaf_metadata_hash_ = 0;
     // A scratch PART selects scratch as the artifact root for this hash.  This
@@ -726,10 +742,9 @@ bool HostBaker::cached(uint64_t resolved_hash) {
     };
 
     if (!transient_dir_.empty()) {
-        std::error_code ec;
         const std::string scratch_part =
             transient_dir_ + "/" + part_asset::cache_path_resolved(resolved_hash);
-        if (std::filesystem::exists(scratch_part, ec) && !ec)
+        if (part_bundle::exists(scratch_part))
             return check_path(transient_dir_);
     }
     return check_path(parts_dir_);
@@ -739,6 +754,7 @@ bool HostBaker::bake(const std::string& source, const Params& params,
                      const std::vector<uint64_t>& child_hashes,
                      const std::vector<std::string>& child_modules,
                      const std::vector<std::string>& child_params, uint64_t resolved_hash) {
+    part_bundle::ScopedStorage storage(storage_);
     // SP-2 bake_source recomputes the same hash and writes the .part via save_v2.
     // Pass parts_dir_ so bake_source writes to an absolute path rather than a
     // cwd-relative "parts/<hash>.bundle" (Task 3 Phase B: cwd-independence).
@@ -776,6 +792,7 @@ bool HostBaker::bake(const std::string& source, const Params& params,
 bool HostBaker::bake_lod_variants(const std::string& source, const Params& params,
                                   const std::vector<uint64_t>& child_hashes,
                                   uint64_t resolved_hash) {
+    part_bundle::ScopedStorage storage(storage_);
     if (resolved_hash && last_leaf_metadata_hash_ == resolved_hash) return true;
     script_host::ScriptHost::LodBudgetSpec spec = host_.eval_lod_budgets(source);
     if (spec.budgets.empty()) return true;                    // not opted in
@@ -794,8 +811,12 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
             bool all_present = true;
             for (uint64_t h : existing.hashes) {
                 const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
-                std::ifstream probe(vpath);
-                if (!probe.good()) { all_present = false; break; }
+                if (storage_) {
+                    if (!storage_->open(vpath)) { all_present = false; break; }
+                } else {
+                    std::ifstream probe(vpath);
+                    if (!probe.good()) { all_present = false; break; }
+                }
             }
             if (all_present) return true;
         }
@@ -834,6 +855,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
                                  const std::vector<std::string>& child_modules,
                                  const std::vector<std::string>& child_params,
                                  uint64_t resolved_hash) {
+    part_bundle::ScopedStorage storage(storage_);
     if (resolved_hash && last_leaf_metadata_hash_ == resolved_hash) return true;
     script_host::ScriptHost::LodAuthoring lods = host_.eval_lods(source);
 
@@ -906,8 +928,12 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
             bool all_present = true;
             for (uint64_t h : existing.level_hashes) {
                 const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
-                std::ifstream probe(vpath);
-                if (!probe.good()) { all_present = false; break; }
+                if (storage_) {
+                    if (!storage_->open(vpath)) { all_present = false; break; }
+                } else {
+                    std::ifstream probe(vpath);
+                    if (!probe.good()) { all_present = false; break; }
+                }
             }
             if (all_present) return true;
         }

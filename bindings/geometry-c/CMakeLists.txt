@@ -44,7 +44,7 @@ if(MATTER_GEOMETRY_C_TESTS)
     if(EMSCRIPTEN)
         set_target_properties(matter_geometry_c_tests PROPERTIES SUFFIX ".mjs")
         target_link_libraries(matter_geometry_c_tests PRIVATE matter_wasm_profile)
-        target_link_options(matter_geometry_c_tests PRIVATE "-sEXPORTED_RUNTIME_METHODS=callMain,HEAPU8" "-sEXIT_RUNTIME=1")
+        target_link_options(matter_geometry_c_tests PRIVATE "-sEXPORTED_RUNTIME_METHODS=callMain,HEAPU8" "-sEXIT_RUNTIME=1" "-sSINGLE_FILE=1")
         add_test(NAME matter_geometry_c_consumer COMMAND "${MATTER_WASM_NODE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/wasm/run-smoke.mjs" "$<TARGET_FILE:matter_geometry_c_tests>")
     else()
