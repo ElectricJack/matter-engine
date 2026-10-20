@@ -1625,8 +1625,8 @@ class VtResidency {
         VtPageKey page{};
         uint32_t slot = 0;
         uint64_t requested_frame = 0;
-        std::shared_ptr<VtOcclusionPages::Page> factor;
-        std::shared_ptr<const VtPartSnapshot> inputs;
+        std::shared_ptr<VtOcclusionPages::Page> factor{};
+        std::shared_ptr<const VtPartSnapshot> inputs{};
         uint64_t generation = 0, revision = 0;
         uint32_t tiles = 0;
         matter::VtEnrichSettings settings{};

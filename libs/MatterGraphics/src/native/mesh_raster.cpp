@@ -88,8 +88,8 @@ void record_mesh_gbuffer(VkCommandBuffer command_buffer, const MeshRasterRecord&
         host_barriers[1].dstAccessMask = VK_ACCESS_2_INDEX_READ_BIT;
         host_barriers[1].buffer = record.water_indices;
         host_barriers[1].size = record.water_index_bytes;
-        VkDependencyInfo host_dependency{
-            VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        VkDependencyInfo host_dependency{};
+        host_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         host_dependency.bufferMemoryBarrierCount = 2u;
         host_dependency.pBufferMemoryBarriers = host_barriers;
         vkCmdPipelineBarrier2(command_buffer, &host_dependency);
@@ -145,8 +145,8 @@ void record_mesh_gbuffer(VkCommandBuffer command_buffer, const MeshRasterRecord&
     color_attachments[6].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color_attachments[6].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color_attachments[6].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    VkRenderingAttachmentInfo depth_attachment{
-        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    VkRenderingAttachmentInfo depth_attachment{};
+    depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depth_attachment.imageView = record.depth->view;
     depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -154,7 +154,8 @@ void record_mesh_gbuffer(VkCommandBuffer command_buffer, const MeshRasterRecord&
     // Reversed-Z: far plane maps to NDC depth 0, so the "no geometry yet"
     // clear value is 0.0 (was 1.0 under standard-Z).
     depth_attachment.clearValue.depthStencil = {0.0f, 0};
-    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    VkRenderingInfo rendering{};
+    rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     rendering.renderArea.extent = record.extent;
     rendering.layerCount = 1;
     rendering.colorAttachmentCount = 7;
