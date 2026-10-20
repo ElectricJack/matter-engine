@@ -146,6 +146,7 @@
 #include "render/gpu_meshing/water_scene_part.h"
 #include "render/water_mesh_animation_playback.h"
 #include "render/vk_instance_cache.h"
+#include "render/scene_admission.h"
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
@@ -960,6 +961,14 @@ struct WorldSession::Impl {
     uint64_t vk_receiver_expansion=UINT64_MAX;
     std::vector<std::pair<uint64_t,std::shared_ptr<const viewer::SharedSurfaceAssembly>>> vk_shared_catalog_owners;
     bool vk_shared_has_instances=false,vk_shared_catalog_dirty=true;
+    // Rejected revisions retain no candidate GPU state. Keep their owners alive
+    // for exact identity comparison; a changed catalog/source/limit re-arms admission.
+    viewer::VulkanInstanceCache vk_rejected_instances;
+    decltype(vk_shared_catalog_owners) vk_rejected_owners;
+    std::string vk_admission_error;
+    int vk_rejected_force_lod=-1;
+    bool vk_rejected_hide_children=false;
+    uint64_t vk_rejected_limit=0;
     std::vector<viewer::SparseSharedObject> vk_shared_surface_objects,vk_shared_shadow_objects;
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
@@ -4769,6 +4778,7 @@ void WorldSession::Impl::publish_pipeline(
         vk_ordinary_instances.clear();vk_shared_catalog_owners.clear();vk_shared_has_instances=false;
         vk_shared_surface_objects.clear();vk_shared_shadow_objects.clear();vk_shared_catalog_dirty=true;
         vk_instance_cache.invalidate();
+        vk_rejected_instances.invalidate();vk_rejected_owners.clear();vk_admission_error.clear();
         vk_world_receiver_frames.clear();
         vk_receiver_state_version=vk_receiver_tape_hash=vk_receiver_expansion=UINT64_MAX;
         vk_temporal.invalidate();
@@ -13311,8 +13321,6 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const bool force_lod_changed = (opts.force_lod != impl_->vk_force_lod_applied_);
     const bool hide_children_changed =
         (opts.hide_child_instances != impl_->vk_hide_children_applied_);
-    impl_->vk_force_lod_applied_ = opts.force_lod;
-    impl_->vk_hide_children_applied_ = opts.hide_child_instances;
 
     // Per-module draw overrides (matter/draw_overrides.h). Sampled ONCE per
     // frame, before anything decides whether the instance set is stale:
@@ -13335,10 +13343,38 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const matter::DrawOverrideResolver& draw_overrides =
         impl_->draw_overrides_resolver;
 
+    const auto requested_owners=impl_->store->shared_surface_catalog();
     const bool instances_dirty = force_lod_changed || hide_children_changed ||
-                                 draw_hidden_changed ||
+                                 draw_hidden_changed || !impl_->vk_admission_error.empty() ||
+                                 requested_owners!=impl_->vk_shared_catalog_owners ||
                                  !impl_->vk_instance_cache.matches(resolved);
     if (instances_dirty) {
+        const auto admission_limit=viewer::admission::storage_limit(UINT64_MAX);
+        const auto reject_frame=[&]() {
+            // Record a defined shell viewport, but do not advance accepted scene
+            // temporal history or expose stale rendered-instance/capture stats.
+            impl_->stats.instances_drawn=0;
+            record_vulkan_clear(frame,impl_->sky_clear);
+            return false;
+        };
+        if(!impl_->vk_admission_error.empty() && !draw_hidden_changed &&
+           impl_->vk_rejected_instances.matches(resolved) &&
+           requested_owners==impl_->vk_rejected_owners &&
+           opts.force_lod==impl_->vk_rejected_force_lod &&
+           opts.hide_child_instances==impl_->vk_rejected_hide_children &&
+           admission_limit==impl_->vk_rejected_limit) {
+            err=impl_->vk_admission_error;return reject_frame();
+        }
+        // All publication metadata is a candidate. Failure of either GPU half
+        // leaves the accepted cache, owners, placements and dirty flags intact.
+        auto candidate_cache=impl_->vk_instance_cache;
+        auto candidate_owners=impl_->vk_shared_catalog_owners;
+        auto candidate_surfaces=impl_->vk_shared_surface_objects;
+        auto candidate_shadows=impl_->vk_shared_shadow_objects;
+        std::vector<viewer::VkSceneInstance> candidate_ordinary;
+        bool candidate_dirty=impl_->vk_shared_catalog_dirty;
+        std::map<uint64_t,const viewer::LoadedPart*> deferred_lod;
+
         // Perf: a streaming world publishes sectors continuously, and each
         // publish changes the resolved set, so this rebuild runs almost every
         // frame. Re-expanding every source each time is what made it expensive
@@ -13356,9 +13392,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         // this rebuild are correct for the new configuration and are memoised
         // normally.
         if (force_lod_changed || hide_children_changed || draw_hidden_changed)
-            impl_->vk_instance_cache.invalidate_sources();
+            candidate_cache.invalidate_sources();
         std::vector<viewer::VkSceneInstance> rebuilt;
-        rebuilt.reserve(impl_->vk_instance_cache.instances().size() +
+        rebuilt.reserve(candidate_cache.instances().size() +
                         resolved.size());
         std::vector<viewer::VkSceneInstance> expanded;
         for (const auto& source : resolved) {
@@ -13373,7 +13409,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             // free of entries that only make sense under one filter setting.
             if (draw_overrides.hidden(source.part_hash)) continue;
             const std::vector<viewer::VkSceneInstance>* memo =
-                impl_->vk_instance_cache.find_source(source);
+                candidate_cache.find_source(source);
             if (memo) {
                 rebuilt.insert(rebuilt.end(), memo->begin(), memo->end());
                 continue;
@@ -13415,7 +13451,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 instance.ray_traced = false;
                 expanded.push_back(instance);
                 rebuilt.insert(rebuilt.end(), expanded.begin(), expanded.end());
-                impl_->vk_instance_cache.store_source(source, expanded);
+                candidate_cache.store_source(source, expanded);
                 continue;
             }
             const viewer::LoadedPart* root =
@@ -13426,9 +13462,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 marker.instance_id=viewer::temporal_instance_id(source.stable_id,source.part_hash,0);
                 std::memcpy(marker.object_to_world.m,source.transform,sizeof(marker.object_to_world.m));
                 marker.ray_traced=false;expanded={marker};
-                rebuilt.push_back(marker);impl_->vk_instance_cache.store_source(source,expanded);continue;
+                rebuilt.push_back(marker);candidate_cache.store_source(source,expanded);continue;
             }
-            if (force_lod_changed) impl_->vk_scene->release_part(source.part_hash);
+            if (force_lod_changed) deferred_lod[source.part_hash]=root;
             // A load returning null is a transient condition -- the part may
             // become available on a later frame. Such an expansion is left
             // un-memoised so it is retried, exactly as before this cache
@@ -13451,7 +13487,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     const viewer::LoadedPart* loaded =
                         impl_->store->get_or_load(node.part_hash);
                     if (!loaded) { complete = false; continue; }
-                    if (force_lod_changed) impl_->vk_scene->release_part(node.part_hash);
+                    if (force_lod_changed) deferred_lod[node.part_hash]=loaded;
                     bool drawable = false;
                     if(loaded->shared_surface) drawable=true;
                     else if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
@@ -13494,16 +13530,16 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             }
             rebuilt.insert(rebuilt.end(), expanded.begin(), expanded.end());
             if (complete)
-                impl_->vk_instance_cache.store_source(source, expanded);
+                candidate_cache.store_source(source, expanded);
         }
-        impl_->vk_instance_cache.store(resolved, std::move(rebuilt));
-        impl_->vk_instance_cache.prune_sources(resolved);
-        auto owners=impl_->store->shared_surface_catalog();
-        if(owners!=impl_->vk_shared_catalog_owners) {
-            impl_->vk_shared_catalog_owners=std::move(owners);impl_->vk_shared_catalog_dirty=true;
-            auto& surfaces=impl_->vk_shared_surface_objects;auto& shadows=impl_->vk_shared_shadow_objects;
+        candidate_cache.store(resolved, std::move(rebuilt));
+        candidate_cache.prune_sources(resolved);
+        auto owners=requested_owners;
+        if(owners!=candidate_owners) {
+            candidate_owners=std::move(owners);candidate_dirty=true;
+            auto& surfaces=candidate_surfaces;auto& shadows=candidate_shadows;
             surfaces.clear();shadows.clear();
-            for(const auto& [hash,assembly]:impl_->vk_shared_catalog_owners) {
+            for(const auto& [hash,assembly]:candidate_owners) {
                 surfaces.emplace_back();shadows.emplace_back();surfaces.back().use_part_materials=true;
                 for(const auto& part:assembly->parts) {
                     viewer::SparseVoxelBatch surface;surface.surface=&part.mesh->surface;
@@ -13518,29 +13554,56 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             }
         }
         std::map<uint64_t,size_t> shared_indices;
-        for(size_t i=0;i<impl_->vk_shared_catalog_owners.size();++i) shared_indices[impl_->vk_shared_catalog_owners[i].first]=i;
+        for(size_t i=0;i<candidate_owners.size();++i) shared_indices[candidate_owners[i].first]=i;
         std::vector<std::vector<viewer::SparseVoxelInstance>> placements(shared_indices.size());
-        impl_->vk_ordinary_instances.clear();size_t shared_count=0;
-        for(const auto& instance:impl_->vk_instance_cache.instances()) {
+        candidate_ordinary.clear();size_t shared_count=0;
+        for(const auto& instance:candidate_cache.instances()) {
             const auto found=shared_indices.find(instance.part_hash);
-            if(found==shared_indices.end()) {impl_->vk_ordinary_instances.push_back(instance);continue;}
-            const auto& mesh=impl_->vk_shared_catalog_owners[found->second].second->parts.front().mesh;
+            if(found==shared_indices.end()) {candidate_ordinary.push_back(instance);continue;}
+            const auto& mesh=candidate_owners[found->second].second->parts.front().mesh;
             placements[found->second].push_back({instance.object_to_world,mesh->material_index,
                 viewer::vulkan_history_token(instance.instance_id),mesh->roughness});++shared_count;
         }
         bool published=true;
         if(shared_count) {
-            if(!impl_->vk_shared_has_instances || impl_->vk_shared_catalog_dirty) {
+            if(!impl_->vk_shared_has_instances || candidate_dirty) {
                 for(size_t i=0;i<placements.size();++i) {
-                    impl_->vk_shared_surface_objects[i].instances=placements[i];
-                    impl_->vk_shared_shadow_objects[i].instances=placements[i];
+                    candidate_surfaces[i].instances=placements[i];
+                    candidate_shadows[i].instances=placements[i];
                 }
                 published=impl_->vk_scene->set_shared_surface_forest(
-                    impl_->vk_shared_surface_objects,impl_->vk_shared_shadow_objects,err);
-                if(published) impl_->vk_shared_catalog_dirty=false;
+                    candidate_surfaces,candidate_shadows,err);
+                if(published) candidate_dirty=false;
             } else published=impl_->vk_scene->set_shared_surface_forest_placements(placements,err);
         } else if(impl_->vk_shared_has_instances) published=impl_->vk_scene->set_shared_surface_forest({}, {},err);
-        if(!published) {impl_->vk_instance_cache.invalidate_expansion();return false;}
+        if(!published) {
+            if(viewer::admission::rejected(err)) {
+                impl_->vk_rejected_instances.store(resolved,{});
+                impl_->vk_rejected_owners=requested_owners;
+                impl_->vk_rejected_force_lod=opts.force_lod;
+                impl_->vk_rejected_hide_children=opts.hide_child_instances;
+                impl_->vk_rejected_limit=admission_limit;
+                impl_->vk_admission_error=err;
+                return reject_frame();
+            }
+            return false; // actual GPU/unsafe preparation errors stay fatal
+        }
+        for(const auto& [hash,loaded]:deferred_lod) {
+            if(loaded->shared_surface) continue;
+            impl_->vk_scene->release_part(hash);
+            bool drawable=false;
+            if(!ensure_vulkan_part(*impl_->vk_scene,hash,*loaded,drawable,err,opts.force_lod)) return false;
+        }
+        impl_->vk_instance_cache=std::move(candidate_cache);
+        impl_->vk_shared_catalog_owners=std::move(candidate_owners);
+        impl_->vk_shared_surface_objects=std::move(candidate_surfaces);
+        impl_->vk_shared_shadow_objects=std::move(candidate_shadows);
+        impl_->vk_ordinary_instances=std::move(candidate_ordinary);
+        impl_->vk_shared_catalog_dirty=candidate_dirty;
+        impl_->vk_force_lod_applied_=opts.force_lod;
+        impl_->vk_hide_children_applied_=opts.hide_child_instances;
+        impl_->vk_rejected_instances.invalidate();impl_->vk_rejected_owners.clear();
+        impl_->vk_admission_error.clear();
         if(shared_count || impl_->vk_shared_has_instances)
             MATTER_LOGI("shared-surface","streamed roots=%zu assemblies=%zu primary_bytes=%llu shadow_bytes=%llu\n",
                 shared_count,placements.size(),(unsigned long long)impl_->vk_scene->sparse_primary_gpu_bytes(),

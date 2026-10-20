@@ -1,6 +1,7 @@
 #pragma once
 // Included after the smoke suite's mesh fixtures. Exercises the production
 // GBuffer hook; readbacks restore image layouts and never own renderer images.
+#include "render/scene_admission.h"
 #include "sparse_voxel_fixture_io.h"
 #include "sparse_hierarchy_fixture_io.h"
 #include "triangle_reference_fixture_io.h"
@@ -1300,6 +1301,7 @@ inline void visible_normal_distribution(matter::VulkanDevice& vk,viewer::VkScene
 #include "sparse_voxel_temporal_tests.h"
 #include "sparse_voxel_shadow_tests.h"
 #include "sparse_surface_query_tests.h"
+#include "sparse_admission_tests.h"
 
 inline void run(matter::VulkanDevice& vk) {
     using namespace viewer;
@@ -1495,6 +1497,9 @@ inline void run(matter::VulkanDevice& vk) {
     far_traversal(vk,renderer);
     visible_normal_distribution(vk,renderer);
     shared_surface_queries(vk,renderer);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    admission_rollback(vk,renderer,asset);
+#endif
     temporal_motion(vk);
     shadow_coverage(vk);
     lod_selection(vk,renderer,asset);
