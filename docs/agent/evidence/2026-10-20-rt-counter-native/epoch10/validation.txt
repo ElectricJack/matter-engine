@@ -50,7 +50,7 @@ frame rollback tests unchanged. Command:
 
 Linux incremental build: PASS; full output in build.log.
   cmake --build /tmp/noble-zenith-31-epoch9/build --parallel 4
-Final native gates: IN PROGRESS, exactly one run-gates.sh invocation admitted
+Final native gates: FAIL / UNMET, exactly one run-gates.sh invocation admitted
 in AQ slot0, foreground exec36325. Executable6468824fa44e5d477bdb99f29a34c5ec0125167d6bc8f7e1b38ed12c77983a98.
 No LLVM preload; original wrapper unchanged. A separate observer holds a Linux
 pidfd for the AQ launcher3003594 and blocks once on process exit, then sends
@@ -58,3 +58,43 @@ one completion message. It does not poll, run tests or infer the test result.
 This permits a durable message wait ending on actual completion rather than
 a timer guessed from the maximum runtime. Both native allowances are consumed.
 No final native, hardware RT, Windows or performance acceptance claimed.
+
+
+Final original-wrapper result (foreground exec36325 exit1):
+  1 failed,1 passed in2272.50s (0:37:52), no replacement invocation.
+  Source1da47945c498ddf100bc1eeaacbb75ca4cff6089, evidence checkpoint8eeb3495.
+  Executable6468824fa44e5d477bdb99f29a34c5ec0125167d6bc8f7e1b38ed12c77983a98.
+  Wrapper8fb7505cea0c41e048525a33466d030764592b4fad66fccbef6122844a81246e unchanged.
+
+rt-counters PASS:
+  RT available=true; llvmpipe (LLVM20.1.2,256bits), reason=none.
+  Rejected surface lookups total30/samples7/warnings6; ALL PASS; exit0.
+  Validation errors0 through teardown. Equal7+7 samples accumulated14;
+  subsequent distinct2/3 samples advanced total by5. Full lifecycle matrix
+  and actual invalid-record counter probe assertions completed.
+  Reported wall13:38.46, maximum RSS5643804kB. These are observations, not a
+  performance acceptance claim or improvement over earlier epochs.
+
+Standalone rt FAIL / UNMET:
+  Capability entry reports Vulkan RT available=true.
+  Isolated lighting/diffuse/reflection pipeline creation completed.
+  First multi-LOD prepare/record/composite completed; final marker
+  attempt=1 phase=end_frame.enter monotonic_ms=280901729.061.
+  No end_frame.exit, ALL PASS or final validation count before1500s cap.
+  Original wrapper terminated the process group (timed child returncode-15).
+  No executable or observed native process-group survivors remain; see
+  gate-final-containment.json. Full result and logs are preserved.
+  The old combined-pipeline diagnostic proved LLVMGetPointerToGlobal blocked
+  retirement. The final run has no LLVM interposer, so its exact blocked
+  driver call is not re-established. Isolating raygens did not resolve this
+  remaining gate within the allowed cap; do not claim full RT acceptance.
+
+Completion observer3015362 used one blocking pidfd/select on AQ launcher
+3003594, delivered msg-ca8e13b216df4118a5fca70a7f796107 when it exited, then
+exited0. Existing durable message wait18de8884-a9c2-437f-96e6-d56e702aae9b
+was satisfied and consumed. Supervisor independently confirmed this real
+producer during its run (comment-862d016c4eb647a483cd578ff0619fac); no duplicate
+observer, extra timer, replacement invocation or admission bypass occurred.
+All two authorized native invocations are complete. Per final-round policy,
+publish these exact findings and own-close FAIL/UNMET (blocked/hard).
+Windows acceptance remains waived; no hardware-RT or performance claim.
