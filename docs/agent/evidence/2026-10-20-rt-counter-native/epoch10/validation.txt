@@ -11,7 +11,7 @@ by fast-forward from clean assigned9d846e66. Prior acceptance/evidence stays
 intact: rt-counters PASS/validation0; standalone rt first GI frame timed out.
 No other task, branch, project configuration or integration state changed.
 
-Diagnostic: IN PROGRESS, exact epoch9 executable and unchanged epoch7
+Diagnostic: TIMEOUT at1500s, exact epoch9 executable and unchanged epoch7
 RTLD_NOLOAD tracer. Native child only preload forwards original LLVM calls.
 Managed submission refused jobs.preset_denied without starting a producer;
 used supported foreground aq test with existing resource controls instead.
@@ -29,7 +29,16 @@ corresponding pipeline and table; shaders, specialization values, dimensions,
 ray work, miss/hit indices and counters are unchanged. All new tables are
 retained for submitted frames and destroyed/reset with the existing pipelines.
 This is the supervisor-authorized extension of the previous shadow isolation.
-The diagnostic has not yet established the exact stalled LLVM call.
+The diagnostic confirms the deferred LLVM/JIT path blocks retirement.
+Serial4 submitted at141384.074ms, then the queue thread2880235 ran the two
+LLVMRunPasses calls for cs5_variant0, returning after about25s. At monotonic
+278592.646817863 it entered LLVMGetPointerToGlobal(cs_variant), with no exit
+before the1500s process cap. end.gpu_observe repeatedly reported an unsignaled
+frame fence. This is compiler work before execution, not counter readback.
+The existing capability banner reports Vulkan RT available=true on llvmpipe.
+Full diagnostic output and timeout traceback are preserved; exit1, one failed
+pytest case. Process-group termination left no executable/group survivors.
+No diagnostic native acceptance or final validation total is claimed.
 
 CPU checks PASS:12 tests in1.35s, including expanded production group-remapping
 checks for all lighting variants with and without separate primary, exact
@@ -41,6 +50,11 @@ frame rollback tests unchanged. Command:
 
 Linux incremental build: PASS; full output in build.log.
   cmake --build /tmp/noble-zenith-31-epoch9/build --parallel 4
-Final native gates: NOT STARTED. run-gates.sh is prepared for one invocation
-only, using a freshly copied epoch10 executable and new logs directory.
+Final native gates: IN PROGRESS, exactly one run-gates.sh invocation admitted
+in AQ slot0, foreground exec36325. Executable6468824fa44e5d477bdb99f29a34c5ec0125167d6bc8f7e1b38ed12c77983a98.
+No LLVM preload; original wrapper unchanged. A separate observer holds a Linux
+pidfd for the AQ launcher3003594 and blocks once on process exit, then sends
+one completion message. It does not poll, run tests or infer the test result.
+This permits a durable message wait ending on actual completion rather than
+a timer guessed from the maximum runtime. Both native allowances are consumed.
 No final native, hardware RT, Windows or performance acceptance claimed.
