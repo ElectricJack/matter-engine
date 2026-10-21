@@ -1,0 +1,30 @@
+{
+  "name": "@matter/procedural-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "node scripts/stage-wasm.mjs && vite",
+    "build": "node scripts/stage-wasm.mjs && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --test frontend-tests/*.test.mts",
+    "test:browser": "node frontend-tests/browser.mjs",
+    "test:smoke": "node frontend-tests/smoke.mjs",
+    "capture:construction": "node frontend-tests/construction.mjs",
+    "stage:wasm": "node scripts/stage-wasm.mjs"
+  },
+  "dependencies": {
+    "lil-gui": "0.21.0",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "0.186.0",
+    "playwright": "1.58.2",
+    "pngjs": "7.0.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.4"
+  }
+}

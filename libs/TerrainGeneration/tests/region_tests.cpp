@@ -146,7 +146,7 @@ int main() {
   CHECK(failed(t::freeze_region(r, encoded()), d::ErrorCode::unsupported_capability), "unknown required capability fails");
   r = request(); r.field.content = d::sha256("edited");
   CHECK(failed(t::freeze_region(r, encoded()), d::ErrorCode::invalid_input), "field content mismatch fails");
-  for (const std::string &bad : {"const nan\n", "const 1garbage\n", "const 1 trailing\n", "noise2 7 1 0 0.5 2\n",
+  for (const std::string bad : {"const nan\n", "const 1garbage\n", "const 1 trailing\n", "noise2 7 1 0 0.5 2\n",
                                "noise2 4294967296 1 4 0.5 2\n", "noise2 1 1 17 0.5 2\n", "const 1\nsmoothstep 1 1 r0\n"}) {
     std::string text = bad + "height r0\nmoisture r0\nrelief r0\nseaLevel 0\nbiome 0.65 0.35\n";
     CHECK(failed(t::freeze_region(request(text), encoded(text)), d::ErrorCode::invalid_input), "malformed or unsafe field rejected before evaluation");

@@ -121,8 +121,8 @@ bool create_compute_pipeline(VkDevice device, const char* name,
         error = std::string("embedded SPIR-V not found: ") + name;
         return false;
     }
-    VkShaderModuleCreateInfo module_info{
-        VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    VkShaderModuleCreateInfo module_info{};
+    module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     module_info.codeSize = spirv.word_count * sizeof(uint32_t);
     module_info.pCode = spirv.words;
     VkShaderModule module = VK_NULL_HANDLE;
@@ -130,13 +130,13 @@ bool create_compute_pipeline(VkDevice device, const char* name,
                                            &module);
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateShaderModule(cloud shadow)", result, error);
-    VkPipelineShaderStageCreateInfo stage{
-        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = module;
     stage.pName = "main";
-    VkComputePipelineCreateInfo pipeline_info{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    VkComputePipelineCreateInfo pipeline_info{};
+    pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipeline_info.stage = stage;
     pipeline_info.layout = layout;
     result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
@@ -322,7 +322,8 @@ bool VkCloudShadows::create_generation_resources(std::string& error) {
         if (!matter::flush_buffer(buffer, 0, cloud_bytes, error)) return false;
     }
 
-    VkSamplerCreateInfo sampler_info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler_info.magFilter = VK_FILTER_NEAREST;
     sampler_info.minFilter = VK_FILTER_NEAREST;
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -343,8 +344,8 @@ bool VkCloudShadows::create_generation_resources(std::string& error) {
         make_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
         make_binding(4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
     };
-    VkDescriptorSetLayoutCreateInfo set_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    VkDescriptorSetLayoutCreateInfo set_info{};
+    set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     set_info.bindingCount = 5;
     set_info.pBindings = bindings;
     result = vkCreateDescriptorSetLayout(device_, &set_info, nullptr,
@@ -352,8 +353,8 @@ bool VkCloudShadows::create_generation_resources(std::string& error) {
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateDescriptorSetLayout(cloud shadow)", result,
                        error);
-    VkPipelineLayoutCreateInfo layout_info{
-        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &generation_set_layout_;
     result = vkCreatePipelineLayout(device_, &layout_info, nullptr,
@@ -473,8 +474,8 @@ bool VkCloudShadows::create_level_descriptors(
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4},
     };
-    VkDescriptorPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    VkDescriptorPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_info.maxSets = 4;
     pool_info.poolSizeCount = 4;
     pool_info.pPoolSizes = sizes;
@@ -485,8 +486,8 @@ bool VkCloudShadows::create_level_descriptors(
     VkDescriptorSetLayout layouts[4]{generation_set_layout_,
         generation_set_layout_, generation_set_layout_, generation_set_layout_};
     VkDescriptorSet sets[4]{};
-    VkDescriptorSetAllocateInfo allocate{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    VkDescriptorSetAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocate.descriptorPool = level.generation_descriptor_pool;
     allocate.descriptorSetCount = 4;
     allocate.pSetLayouts = layouts;
@@ -518,7 +519,7 @@ bool VkCloudShadows::create_level_descriptors(
                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
             for (uint32_t binding = 0; binding < 5; ++binding) {
-                writes[binding] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[binding] = {}; writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[binding].dstSet = sets[set_index];
                 writes[binding].dstBinding = binding;
                 writes[binding].descriptorCount = 1;
@@ -1050,7 +1051,7 @@ bool VkCloudShadows::generate_for_test(
         VkCloudShadows* shadows;
         float time;
         bool ok = false;
-        std::string error;
+        std::string error{};
     } request{this, frame_time};
     const auto callback = [](VkCommandBuffer command_buffer, void* data) {
         auto& value = *static_cast<Request*>(data);
