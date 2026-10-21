@@ -1,3 +1,6 @@
+#include "part_bundle.h"
+#include "source_snapshot_modules.h"
+#include "terrain_collision/fixture_artifact_storage.h"
 #include "asset_export.h"
 // MatterEngine3/src/matter_engine.cpp
 //
@@ -146,6 +149,8 @@
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "component_adapters/graphics/portable_scene.h"
+#include "component_adapters/terrain_coordinator/engine/live_terrain_session.h"
 #include "render/vertex_cache_order.h"
 #include "render/impostor_mips.h"
 #include "render/geometry_world_runtime.h"
@@ -879,6 +884,14 @@ struct WorldSession::Impl {
     // reference, ensuring the provider outlives all in-flight publish jobs even
     // if a superseded bake creates a new provider before the old jobs complete.
     viewer::LocalProviderConfig cfg;
+    // cfg.fixture_io stays immutable after construction. The worker
+    // publishes source generations atomically for app-thread readers.
+    std::shared_ptr<const WorldFixtureIO> fixture_io_override;
+    std::shared_ptr<const WorldFixtureIO> fixture_inputs() const {
+        auto current = std::atomic_load_explicit(
+            &fixture_io_override, std::memory_order_acquire);
+        return current ? current : cfg.fixture_io;
+    }
     std::shared_ptr<viewer::LocalProvider> provider;
 
     // World data.
@@ -902,6 +915,23 @@ struct WorldSession::Impl {
     std::unique_ptr<viewer::PartStore>      store;
 #ifdef MATTER_VULKAN_VIEWER
     std::unique_ptr<viewer::VkSceneRenderer> vk_scene;
+    // MatterGraphics consumer of the portable-authored instances admitted
+    // below; presentation stays with vk_scene. Created on the first frame.
+    std::unique_ptr<graphics_adapter::PortableScene> portable_scene;
+    // MATTER_LIVE_TERRAIN=1: the world's field program re-generated around the
+    // camera by the terrain coordinator (update_live_terrain). Uploads through
+    // portable_scene's graphics service, so it is declared after it and reset
+    // before it. install_world (worker) publishes the program under the mutex.
+    const bool live_terrain_requested = [] {
+        const char* env = std::getenv("MATTER_LIVE_TERRAIN");
+        return env && std::string(env) == "1";
+    }();
+    std::unique_ptr<terrain_coordinator::LiveTerrainSession> live_terrain;
+    std::mutex live_terrain_source_mutex;
+    std::string live_terrain_program;    // guarded by live_terrain_source_mutex
+    uint64_t live_terrain_revision = 0;  // guarded by live_terrain_source_mutex
+    uint64_t live_terrain_applied = 0;
+    std::string live_terrain_error;      // last logged, so a refusal logs once
     // Acceptance-only cached GPU water. This is populated only by the
     // explicit absolute-path environment hook and never invokes the mesher.
     std::shared_ptr<const viewer::VkScenePart> gpu_mesher_acceptance_part;
@@ -1506,7 +1536,8 @@ struct WorldSession::Impl {
     // --- Phase B: async bake worker helpers (defined below) ------------------
     // Start the worker thread if not already running.
     void ensure_worker_started();
-    void enqueue_full_bake(matter_async::CommandKind kind);
+    void enqueue_full_bake(matter_async::CommandKind kind,
+        std::shared_ptr<const SourceSnapshot> fixture_sources = {});
     // Worker thread entry point.
     void worker_loop();
     // Existing provider/live-edit polling, called after each valid ECS tick.
@@ -1548,6 +1579,9 @@ struct WorldSession::Impl {
                        TerrainCollisionPublication& terrain_collision,
                        bool& terrain_collision_failed,
                        std::string& err);
+#ifdef MATTER_VULKAN_VIEWER
+    void update_live_terrain(const Float3& eye, bool graphics);
+#endif
     // WP-F: posted (as a GpuJob) when install_world compiles a surfaces()
     // tape whose hash differs from the previous generation's — re-evaluates
     // the per-vertex weight columns of every RESIDENT sector against the new
@@ -2574,7 +2608,7 @@ struct WorldSession::Impl {
     // WeldMesh (triangle soup in material buckets) -> VkScenePart. Returns
     // false when there is nothing to draw. `surface` (may be null) is the
     // world's surfaces() tape; see the definition for why a weld needs it.
-    static bool build_weld_part(uint64_t part_hash, const seam::WeldMesh& mesh,
+    bool build_weld_part(uint64_t part_hash, const seam::WeldMesh& mesh,
                                 const VtSurfaceClassifier* surface,
                                 float texels_per_meter,
                                 viewer::VkScenePart& out);
@@ -3044,7 +3078,8 @@ void WorldSession::Impl::ensure_worker_started() {
     worker = std::thread([this] { worker_loop(); });
 }
 
-void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind) {
+void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind,
+    std::shared_ptr<const SourceSnapshot> fixture_sources) {
     std::lock_guard<std::recursive_mutex> generation_lock(
         hydrology_generation_mutex);
     std::lock_guard<std::recursive_mutex> terrain_generation_lock(
@@ -3068,6 +3103,7 @@ void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind) {
     }
     matter_async::Command command;
     command.kind = kind;
+    command.fixture_sources = std::move(fixture_sources);
     commands.push(std::move(command));
 }
 
@@ -3344,6 +3380,16 @@ void WorldSession::Impl::worker_loop() {
                 // Impl::end_bake_run and matter/events/bake_events.h.
                 BakeRunScope bake_run(this);
                 try {
+                    if (cmd.fixture_sources &&
+                        (!cmd.token || !cmd.token->is_cancelled())) {
+                        auto next = std::make_shared<WorldFixtureIO>();
+                        next->sources = cmd.fixture_sources;
+                        const auto previous = fixture_inputs();
+                        next->cache = previous ? previous->cache : nullptr;
+                        std::atomic_store_explicit(&fixture_io_override,
+                            std::shared_ptr<const WorldFixtureIO>(std::move(next)),
+                            std::memory_order_release);
+                    }
                     switch (cmd.kind) {
                         case matter_async::CommandKind::BakeAll:
                             execute_bake(cmd, /*is_reload=*/false);
@@ -3425,6 +3471,8 @@ void WorldSession::Impl::worker_loop() {
 // (interleaved with cancellation checks) -> finalize job -> BakeFinished.
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload) {
+    const auto fixture_io = fixture_inputs();
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     auto& token = cmd.token;
     auto is_cancelled = [token] { return token && token->is_cancelled(); };
 
@@ -3642,7 +3690,9 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         cfg.root_params_module = seed_root_params_module;
     }
 
-    provider = std::make_shared<viewer::LocalProvider>(cfg);
+    auto provider_cfg = cfg;
+    provider_cfg.fixture_io = fixture_io;
+    provider = std::make_shared<viewer::LocalProvider>(std::move(provider_cfg));
 
     // Instrumentation rider (Phase C): coarse phase timing for large-world
     // attribution. Tileset phase is embedded inside compose_world (not
@@ -3664,11 +3714,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             cfg.scene_objects_dir,
             cfg.object_sources_dir(),
             cfg.project_shared_lib_dir,
-            cfg.engine_shared_lib_dir);
+            cfg.engine_shared_lib_dir,
+            fixture_io ? fixture_io->sources.get() : nullptr);
         if (rc_cache_key != 0) {
             resolve_cache::ResolveCachePayload rc_payload;
             if (resolve_cache::load(cfg.cache_root, cfg.world_name,
-                                    rc_cache_key, rc_payload)) {
+                                    rc_cache_key, rc_payload,
+                                    fixture_io ? fixture_io->cache.get() : nullptr)) {
                 // Cache header valid — try to restore provider state.
                 std::string rc_err;
                 if (provider->restore_from_cache(rc_payload.snapshot,
@@ -3925,7 +3977,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_save.root_hashes = provider->install_result().root_hashes;
         rc_save.authored_world = provider->authored_world_cache();
         if (!resolve_cache::save(cfg.cache_root, cfg.world_name,
-                                 rc_cache_key, rc_save)) {
+                                 rc_cache_key, rc_save,
+                                 fixture_io ? fixture_io->cache.get() : nullptr)) {
             MATTER_LOGW("resolve", "resolve cache: save failed (non-fatal)\n");
         } else {
             MATTER_LOGI("resolve", "resolve cache: saved key %016llx\n",
@@ -4318,6 +4371,8 @@ void WorldSession::Impl::publish_pipeline(
     viewer::WorldManifest new_manifest,
     PublishPipelineParams p)
 {
+    const auto fixture_io = fixture_inputs();
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     static_assert(
         std::is_nothrow_swappable_v<matter::TerrainCollisionStatus>,
         "collision status commit must remain non-throwing");
@@ -4741,7 +4796,8 @@ void WorldSession::Impl::publish_pipeline(
         vk_temporal.invalidate();
 #endif
 
-        reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root);
+        reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root,
+            cfg.fixture_io ? cfg.fixture_io->cache : nullptr);
 #ifdef MATTER_VULKAN_VIEWER
         reset_out->new_store->set_geometry_pages_enabled(vk_geometry_pages_enabled &&
             engine->render_device && (engine->render_device->ray_tracing_available() ||
@@ -5590,6 +5646,74 @@ void WorldSession::Impl::execute_refine_step() {
     // execute_refine_step call, after the GL job has written result_slot.
 }
 
+#ifdef MATTER_VULKAN_VIEWER
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::update_live_terrain
+// App thread, once per frame beside the portable scene: applies the latest
+// installed field program, re-plans tiles around `eye`, places GPU-resident
+// tiles in the portable scene and installs the live collision whenever the
+// physics context holds a different key (including after a legacy publication).
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::update_live_terrain(const Float3& eye, bool graphics) {
+    auto report = [this](const std::string& error) {
+        if (error != live_terrain_error) MATTER_LOGE("terrain", "live terrain: %s", error.c_str());
+        live_terrain_error = error;
+    };
+    auto message = [](const contracts::ValidationResult& result) {
+        return result.diagnostics.empty() ? std::string("rejected") : result.diagnostics.front().message;
+    };
+    std::string err;
+    if (!live_terrain) {
+        auto* service = portable_scene->service(err);
+        if (!service) return report(err);
+        live_terrain = std::make_unique<terrain_coordinator::LiveTerrainSession>(service);
+    }
+    {
+        std::lock_guard<std::mutex> lock(live_terrain_source_mutex);
+        if (live_terrain_applied != live_terrain_revision) {
+            live_terrain_applied = live_terrain_revision;
+            if (live_terrain_program.empty()) {  // Refused at install: unplace, then drop.
+                std::vector<services::SceneInstance> upsert;
+                std::vector<contracts::SemanticId> remove;
+                (void)live_terrain->live().drop_graphics();
+                live_terrain->live().scene_delta(upsert, remove);
+                portable_scene->place(upsert, remove);
+                live_terrain.reset();
+            } else if (auto valid = live_terrain->set_source(
+                         live_terrain_program, "world." + std::to_string(live_terrain_applied));
+                     !valid.ok())
+                return report(message(valid));
+        }
+    }
+    if (!live_terrain || !live_terrain->has_source()) return;
+    if (auto valid = live_terrain->update({eye.x, eye.y, eye.z}, graphics); !valid.ok())
+        return report(message(valid));
+    std::vector<services::SceneInstance> upsert;
+    std::vector<contracts::SemanticId> remove;
+    live_terrain->live().scene_delta(upsert, remove);
+    portable_scene->place(upsert, remove);
+
+    std::lock_guard<std::recursive_mutex> generation_lock(terrain_collision_generation_mutex);
+    auto& physics_context = physics::detail::context(ecs_runtime.world());
+    if (!upsert.empty() || !remove.empty())
+        MATTER_LOGI("terrain", "live terrain scene: +%zu -%zu regions=%zu generated=%llu cached=%zu collision=%llu",
+                    upsert.size(), remove.size(), live_terrain->live().regions().size(),
+                    static_cast<unsigned long long>(live_terrain->generated()), live_terrain->cache().size(),
+                    static_cast<unsigned long long>(physics_context.terrain_collision_stats().installation_key));
+    terrain_collision::TerrainCollisionCandidate candidate;
+    if (!live_terrain->collision_changed(physics_context.terrain_collision_stats().installation_key,
+                                         candidate, err)) {
+        if (!err.empty()) report(err);
+        return;
+    }
+    if (!physics_context.replace_terrain_collision(candidate, err)) return report(err);
+    const auto installed = physics_context.terrain_collision_stats();
+    MATTER_LOGI("terrain", "live terrain collision installed: key=%llu shapes=%u regions=%zu",
+                static_cast<unsigned long long>(installed.installation_key), installed.shape_count,
+                live_terrain->live().regions().size());
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // WorldSession::Impl::install_world
 // Phase C Task 9: called from execute_bake after install_graph when
@@ -5604,6 +5728,8 @@ bool WorldSession::Impl::install_world(
     bool& terrain_collision_failed,
     std::string& err)
 {
+    const auto fixture_io = fixture_inputs();
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     terrain_collision_failed = false;
     const std::string& wmod = provider->world_module();
     if (wmod.empty()) { err = "install_world: no world module"; return false; }
@@ -5612,15 +5738,18 @@ bool WorldSession::Impl::install_world(
     std::string world_source;
     {
         const std::string world_js = cfg.world_path;
-        std::ifstream in(world_js, std::ios::binary);
-        if (!in) { err = "install_world: cannot read " + world_js; return false; }
-        std::ostringstream ss; ss << in.rdbuf();
-        world_source = ss.str();
+        if (!cfg.read_source(world_js, world_source)) {
+            err = "install_world: cannot read " + world_js;
+            return false;
+        }
     }
 
     // 2. eval_world with the root_params_json override.
     script_host::ScriptHost host;
     host.set_shared_lib_roots(provider->shared_lib_roots());
+    if (fixture_io && fixture_io->sources)
+        host.set_module_sources(source_snapshot_modules(
+            *fixture_io->sources, provider->shared_lib_roots()));
     std::string params_json = cfg.root_params_json.empty() ? "{}" : cfg.root_params_json;
     script_host::WorldEvalResult r = host.eval_world(world_source, params_json);
     if (!r.ok) { err = "install_world: eval_world failed: " + r.message; return false; }
@@ -5648,6 +5777,17 @@ bool WorldSession::Impl::install_world(
         std::move(prog), installed_overlay);
     world_river_geometry = std::move(installed_river_geometry);
     world_river_height_overlay = std::move(installed_overlay);
+#ifdef MATTER_VULKAN_VIEWER
+    if (live_terrain_requested) {
+        // The portable generator samples the bare program; a river overlay
+        // would make live tiles disagree with the installed field, so refuse.
+        std::lock_guard<std::mutex> lock(live_terrain_source_mutex);
+        live_terrain_program = world_river_height_overlay ? std::string() : r.field_program;
+        ++live_terrain_revision;
+        if (world_river_height_overlay)
+            MATTER_LOGW("terrain", "live terrain: river overlays are unsupported; live terrain disabled");
+    }
+#endif
 
     // 3b. WP-F: parse the surfaces() tape -> SurfaceRuntime (optional).
     //     Fail-closed on a malformed tape or an unknown material handle; a
@@ -5862,9 +6002,20 @@ bool WorldSession::Impl::install_world(
             const bool built = test_builder
                 ? test_builder(*world_field, canonical, cfg.cache_root,
                                cancelled, candidate, collision_error)
-                : terrain_collision::load_or_build_candidate(
-                      *world_field, canonical, cfg.cache_root, cancelled,
-                      candidate, collision_error);
+                : [&] {
+                    if (fixture_io && fixture_io->cache) {
+                        terrain_collision::detail::FixtureArtifactStorage storage(
+                            fixture_io->cache);
+                        terrain_collision::detail::BuildTestHooks hooks;
+                        hooks.storage = &storage;
+                        return terrain_collision::detail::load_or_build_candidate_with_test_hooks(
+                            *world_field, canonical, cfg.cache_root, cancelled, hooks,
+                            candidate, collision_error);
+                    }
+                    return terrain_collision::load_or_build_candidate(
+                        *world_field, canonical, cfg.cache_root, cancelled,
+                        candidate, collision_error);
+                }();
             if (cancelled()) {
                 set_cancelled_error();
                 return false;
@@ -5995,18 +6146,18 @@ bool WorldSession::Impl::install_world(
     //    sectors differently without either having to know the other exists.
     {
         const std::string sector_js = cfg.resolve_object_path("WorldSector");
-        std::ifstream in(sector_js.empty() ? std::string() : sector_js,
-                         std::ios::binary);
-        if (sector_js.empty() || !in) {
+        if (sector_js.empty() || !cfg.read_source(sector_js, world_sector_source)) {
             err = "install_world: cannot read WorldSector.js in any object root";
             for (const std::string& root : cfg.object_roots())
                 err += " [" + root + "]";
             return false;
         }
-        std::ostringstream ss; ss << in.rdbuf();
-        world_sector_source = ss.str();
+
         world_sector_identity_host = std::make_shared<script_host::ScriptHost>();
         world_sector_identity_host->set_shared_lib_roots(provider->shared_lib_roots());
+        if (fixture_io && fixture_io->sources)
+            world_sector_identity_host->set_module_sources(source_snapshot_modules(
+                *fixture_io->sources, provider->shared_lib_roots()));
     }
 
     // 8. Asset install: eval_requires on WorldSector to discover its child variants,
@@ -6080,9 +6231,7 @@ bool WorldSession::Impl::install_world(
         std::string source;
         {
             const std::string child_js = cfg.resolve_object_path(module);
-            std::ifstream in(child_js.empty() ? std::string() : child_js,
-                             std::ios::binary);
-            if (child_js.empty() || !in) {
+            if (child_js.empty() || !cfg.read_source(child_js, source)) {
                 // Name the module, not a composed path: with a search path there
                 // is no single path that "should" have existed, and printing one
                 // root's guess sent readers looking in the wrong tier.
@@ -6097,8 +6246,7 @@ bool WorldSession::Impl::install_world(
                 emit_bake(std::move(ev));
                 return false;
             }
-            std::ostringstream ss; ss << in.rdbuf();
-            source = ss.str();
+
         }
 
         // Recurse into this variant's own requires first (post-order bake).
@@ -6123,9 +6271,9 @@ bool WorldSession::Impl::install_world(
         }
         visiting.pop_back();
 
-        uint64_t hash = host.resolve_hash(source, params_json,
-                                          kid_hashes.empty() ? nullptr : kid_hashes.data(),
-                                          kid_hashes.size());
+        // Through the HostBaker so a `static authoring` source takes its route.
+        uint64_t hash = provider->host_baker().resolve_hash_json(source, params_json,
+                                                                 kid_hashes, nullptr);
 
         const auto& receivers=provider->world_settings().surface_receiver_modules;
         if(std::find(receivers.begin(),receivers.end(),module)!=receivers.end()) {
@@ -7150,6 +7298,8 @@ bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
                                          const VtSurfaceClassifier* surface,
                                          float texels_per_meter,
                                          viewer::VkScenePart& out) {
+    const auto fixture_io = fixture_inputs();
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     out = viewer::VkScenePart{};
     out.part_hash = part_hash;
     const size_t tris = mesh.triangle_count();
@@ -9375,6 +9525,8 @@ void WorldSession::Impl::bake_and_stage_sector(
     const streaming::detail::TaggedRequest& request,
     size_t completion_index,
     const std::shared_ptr<viewer::LocalProvider>& provider_ref) {
+    const auto fixture_io = fixture_inputs();
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     struct TrackedRequestGuard {
         Impl* owner = nullptr;
         size_t index = kNoPublicationCompletion;
@@ -10777,6 +10929,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
 // rendering (last-good artifacts intact).
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
+    const auto fixture_io = fixture_inputs();
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     auto& token = cmd.token;
     auto is_cancelled = [token] { return token && token->is_cancelled(); };
 
@@ -10992,7 +11146,9 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     // will re-install with the same seed override — the cone only touches the
     // changed files' subtree, so this is correct and consistent.
     // Re-create the provider so it picks up the updated cfg_ callbacks.
-    provider = std::make_shared<viewer::LocalProvider>(cfg);
+    auto provider_cfg = cfg;
+    provider_cfg.fixture_io = fixture_io;
+    provider = std::make_shared<viewer::LocalProvider>(std::move(provider_cfg));
 
     {
         std::string ierr;
@@ -11058,6 +11214,8 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
 // instance_count() const can trigger it via the mutable members.
 // ---------------------------------------------------------------------------
 bool WorldSession::Impl::ensure_tracer() const {
+    const auto fixture_io = fixture_inputs();
+    part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
     if (!tracer_dirty && tracer) return true;
 
     // Build TraceInstance list from state root entries.
@@ -11255,11 +11413,11 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
             desc.project_dir, desc.world_name,
             desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "", [] {
                 return std::make_shared<hydrology::PhysxRuntime>();
-            });
+            }, desc.fixture_io);
 #else
         simpl->cfg = viewer::make_engine_local_provider_config(
             desc.project_dir, desc.world_name,
-            desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
+            desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "", {}, desc.fixture_io);
 #endif
 #if defined(MATTER_VULKAN_VIEWER) && defined(_WIN32)
         if (impl_->render_device) {
@@ -11293,7 +11451,11 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
         bool any_object_root = false;
         for (const std::string& root : simpl->cfg.object_roots()) {
             ec.clear();
-            if (fs::is_directory(root, ec)) { any_object_root = true; break; }
+            const auto sources = desc.fixture_io ? desc.fixture_io->sources : nullptr;
+            if (sources ? sources->is_directory(root) : fs::is_directory(root, ec)) {
+                any_object_root = true;
+                break;
+            }
         }
         if (!any_object_root) {
             err = "open_world: no object directory found for world '" +
@@ -11303,7 +11465,9 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
             return nullptr;
         }
         ec.clear();
-        if (!fs::is_regular_file(simpl->cfg.world_path, ec)) {
+        const auto sources = desc.fixture_io ? desc.fixture_io->sources : nullptr;
+        if (!(sources ? sources->exists(simpl->cfg.world_path)
+                      : fs::is_regular_file(simpl->cfg.world_path, ec))) {
             err = "open_world: world source not found: " + simpl->cfg.world_path;
             return nullptr;
         }
@@ -11568,6 +11732,8 @@ WorldSession::~WorldSession() {
 
 #ifdef MATTER_VULKAN_VIEWER
     impl_->vk_instance_cache.invalidate();
+    impl_->live_terrain.reset();
+    impl_->portable_scene.reset();
     impl_->vk_scene.reset();
 #endif
 
@@ -11737,6 +11903,12 @@ void WorldSession::reload() {
     // (mirroring old reload() semantics).
     impl_->ensure_worker_started();
     impl_->enqueue_full_bake(matter_async::CommandKind::Reload);
+}
+
+void WorldSession::reload_fixture_sources(std::shared_ptr<const SourceSnapshot> sources) {
+    if (!sources) throw std::invalid_argument("reload_fixture_sources: null snapshot");
+    impl_->ensure_worker_started();
+    impl_->enqueue_full_bake(matter_async::CommandKind::Reload, std::move(sources));
 }
 
 void WorldSession::regenerate(uint64_t world_seed) {
@@ -14205,6 +14377,28 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
             return false;
         }
+    }
+    {
+        PROFILE_SCOPE("build.portable_scene");
+        const bool created = !impl_->portable_scene;
+        if (created)
+            impl_->portable_scene = std::make_unique<graphics_adapter::PortableScene>(
+                *impl_->engine->render_device);
+        graphics_adapter::PortableView view;
+        view.world_to_view = temporal.current_unjittered.world_to_view;
+        view.view_to_clip = temporal.current_unjittered.view_to_clip;
+        view.sun_direction = lighting.sun_direction;
+        view.sun_color = lighting.authored_sun_rgb;
+        view.width = internal_extent.width;
+        view.height = internal_extent.height;
+        if (impl_->live_terrain_requested) {
+            PROFILE_SCOPE("build.live_terrain");
+            impl_->update_live_terrain(cam.position, opts.live_terrain_graphics);
+        }
+        std::string portable_err;
+        if (!impl_->portable_scene->update(instances, created || instance_span_rebuilt,
+                                           view, portable_err))
+            MATTER_LOGE("graphics", "%s", portable_err.c_str());
     }
     z_build.stop();
     const auto build_end = std::chrono::steady_clock::now();

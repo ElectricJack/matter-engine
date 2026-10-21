@@ -242,7 +242,9 @@ LocalLightBrdf evaluate_local_light_brdf(uint light_index,
         return result;
     half_vector *= inversesqrt(half_length2);
     float n_dot_h = max(dot(normal, half_vector), 0.0);
-    float v_dot_h = max(dot(view_direction, half_vector), 0.0);
+    // Normalization can round a parallel pair's dot product above one.
+    // GLSL pow is undefined for a negative base, including exponent 5.0.
+    float v_dot_h = clamp(dot(view_direction, half_vector), 0.0, 1.0);
 
     vec3 f0 = mix(vec3(0.04), albedo, clamp(metallic, 0.0, 1.0));
     vec3 fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - v_dot_h, 5.0);

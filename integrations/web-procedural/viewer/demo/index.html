@@ -12,14 +12,15 @@
 <body>
 <div id="app"><p class="boot" id="boot">Loading runtime…</p></div>
 <script type="module">
-// Serve the repository root (tests/browser_tests.py --serve does this and maps
-// the compiled runtime/viewer and the WASM module). ?wasm= overrides the module URL.
+// The standalone bundle preserves these relative paths, including worker
+// dependencies. It can be served at either a domain root or a subdirectory.
 import {ProceduralRuntime} from '../../runtime/dist/index.mjs';
 import {startDemo} from '../dist/demo/app.mjs';
 const params = new URLSearchParams(location.search);
 const container = document.getElementById('app');
 try {
-  const runtime = new ProceduralRuntime({geometryModuleURL: new URL(params.get('wasm') ?? '/wasm/matter_geometry_wasm.mjs', location.href),
+  const runtime = new ProceduralRuntime({geometryModuleURL: params.has('wasm')
+    ? new URL(params.get('wasm'), location.href) : new URL('../../../../wasm/matter_geometry_wasm.mjs', import.meta.url),
     concurrency: 2, timeoutMs: 20000});
   window.matterRuntime = runtime;
   window.matterDemo = startDemo({container, runtime, baseURL: new URL('../../../../', import.meta.url),
