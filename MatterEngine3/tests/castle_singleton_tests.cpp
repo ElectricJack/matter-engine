@@ -2,6 +2,7 @@
 #include "blas_manager.hpp"
 #include "part_asset_v2.h"
 #include "part_bundle.h"
+#include "memory_fixture_io.h"
 #include "part_graph.h"
 #include "render/part_store.h"
 #include "tlas_manager.hpp"
@@ -28,12 +29,18 @@ static std::string schema(const std::string &name, const std::string &metadata) 
     })";
 }
 int main() {
-    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    const auto root = fs::temp_directory_path() / ("matter-singleton-" + std::to_string(nonce));
+    const fs::path root = "runtime/castle-singleton";
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
+    const auto published_below = [&](const std::string& path) {
+        const auto prefix = matter::SourceSnapshot::key(path) + "/";
+        for (const auto& entry : storage->entries())
+            if (entry.first.compare(0, prefix.size(), prefix) == 0) return true;
+        return false;
+    };
     try {
-        fs::create_directories(root / "parts");
-        fs::create_directories(root / "schemas");
         script_host::ScriptHost host;
+        host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
         script_host::BakeOptions options;
         options.parts_dir = root.string();
         options.retain_geometry = true;
@@ -60,10 +67,9 @@ int main() {
              false}};
         script_host::BakeResult singleton;
         for (const auto &item : cases) {
-            int publishes = 0;
-            part_bundle::set_write_observer(count_publish, &publishes);
+            const auto before = storage->publication_count();
             auto result = host.bake_source(schema(item.name, item.metadata), "{}", options);
-            part_bundle::set_write_observer(nullptr);
+            const auto publishes = storage->publication_count() - before;
             check(result.error.ok, result.error.message.c_str());
             check(bool(result.geometry), "retained geometry missing");
             check(result.leaf_metadata_published == item.singleton,
@@ -76,7 +82,7 @@ int main() {
             const bool has =
                 part_asset::load_lod_sidecar(result.written_path, result.resolved_hash, variants);
             check(has == item.singleton, "direct bake persisted unexpected VARS");
-            viewer::PartStore store(root.string());
+            viewer::PartStore store(root.string(), storage);
             auto disk = store.stage_load(result.resolved_hash);
             auto memory = store.stage_from_bake(result.resolved_hash, *result.geometry);
             const size_t expected = item.singleton ? 1 : 3;
@@ -92,20 +98,19 @@ int main() {
         script_host::BakeOptions memory_options;
         memory_options.parts_dir = (root / "must-not-exist").string();
         memory_options.output_mode = script_host::BakeOptions::OutputMode::RuntimeLeafMemory;
-        int memory_publishes = 0;
-        part_bundle::set_write_observer(count_publish, &memory_publishes);
+        const auto before_memory = storage->publication_count();
         auto prepared = host.bake_source(
             schema("Singleton", "static lodBudgets=[1];static noImpostor=true;"),
             "{}", memory_options);
-        part_bundle::set_write_observer(nullptr);
+        const auto memory_publishes = storage->publication_count() - before_memory;
         check(prepared.error.ok && prepared.geometry && prepared.resolved_hash == singleton.resolved_hash,
               "runtime leaf preparation failed or changed content identity");
-        check(memory_publishes == 0 && !fs::exists(memory_options.parts_dir) &&
+        check(memory_publishes == 0 && !published_below(memory_options.parts_dir) &&
                   prepared.written_path.empty() && !prepared.leaf_metadata_published &&
                   prepared.geometry->source_single_full_rep_hash == 0 &&
                   prepared.geometry->validated_single_full_rep_hash == prepared.resolved_hash,
               "runtime preparation claimed or created a durable artifact");
-        viewer::PartStore store(root.string());
+        viewer::PartStore store(root.string(), storage);
         auto prepared_stage = store.stage_from_bake(prepared.resolved_hash, *prepared.geometry);
         auto persisted_stage = store.stage_load(singleton.resolved_hash);
         std::string difference;
@@ -119,20 +124,20 @@ int main() {
             auto excluded = host.bake_source(schema(item.name, item.metadata), "{}", memory_options);
             check(!excluded.error.ok && !excluded.geometry && excluded.written_path.empty(),
                   "excluded metadata entered memory-only preparation");
-            check(!fs::exists(memory_options.parts_dir), "excluded preparation created directory");
+            check(!published_below(memory_options.parts_dir), "excluded preparation created directory");
         }
         auto rig = host.bake_source(R"(class RigLeaf extends Part {
             static lodBudgets=[1];
             build(){this.beginRig('r');this.root('root');this.bone('tip',[1,0,0]);this.endRig();}
         })", "{}", memory_options);
-        check(!rig.error.ok && !rig.geometry && !fs::exists(memory_options.parts_dir),
+        check(!rig.error.ok && !rig.geometry && !published_below(memory_options.parts_dir),
               "canonical rig entered static memory-only preparation");
         auto emitter = host.bake_source(R"(class EmitterLeaf extends Part {
             static lodBudgets=[1];
             build(){this.emitVolume({pos:[0,0,0],radius:1,length:1,density:1});}
         })", "{}", memory_options);
         check(!emitter.error.ok && emitter.error.code == "runtime-leaf-memory-ineligible" &&
-                  !emitter.geometry && !fs::exists(memory_options.parts_dir),
+                  !emitter.geometry && !published_below(memory_options.parts_dir),
               "emitter entered static memory-only preparation");
         check(store.stage_load(singleton.resolved_hash, 0, true).lp.lod_blas.size() == 3,
               "terrain assertion changed ladder");
@@ -162,16 +167,16 @@ int main() {
         // Real graph cold install must perform ONE publish including all four
         // canonical sections. A later cache hit cannot reuse stale metadata flags.
         const auto graph_root = root / "graph";
-        fs::create_directories(graph_root / "parts");
-        std::ofstream(root / "schemas/GraphLeaf.js")
-            << schema("GraphLeaf", "static lodBudgets=[1];static noImpostor=true;");
-        part_graph::FileModuleResolver resolver(host, (root / "schemas").string());
-        part_graph::HostBaker baker(host, graph_root.string());
+        matter::SourceSnapshot::Files files;
+        files[(root / "schemas/GraphLeaf.js").generic_string()] =
+            schema("GraphLeaf", "static lodBudgets=[1];static noImpostor=true;");
+        auto sources = std::make_shared<const matter::SourceSnapshot>(std::move(files));
+        part_graph::FileModuleResolver resolver(host, (root / "schemas").string(), sources);
+        part_graph::HostBaker baker(host, graph_root.string(), storage);
         part_graph::PartGraph graph(resolver, baker);
-        int publishes = 0;
-        part_bundle::set_write_observer(count_publish, &publishes);
+        const auto before_graph = storage->publication_count();
         auto installed = graph.install({{"GraphLeaf", {}}});
-        part_bundle::set_write_observer(nullptr);
+        const auto publishes = storage->publication_count() - before_graph;
         check(installed.ok && installed.failed.empty() && installed.baked.size() == 1,
               "graph install failed");
         check(publishes == 1, "graph singleton did not coalesce metadata");
@@ -190,7 +195,7 @@ int main() {
         foreign.budgets = {1};
         foreign.hashes = {hash ^ 1};
         check(part_asset::save_lod_sidecar(path, hash, foreign), "foreign VARS fixture failed");
-        viewer::PartStore graph_store(graph_root.string());
+        viewer::PartStore graph_store(graph_root.string(), storage);
         check(graph_store.stage_load(hash).lp.lod_blas.size() == 3,
               "foreign VARS granted singleton");
         char malformed[128];
@@ -201,7 +206,6 @@ int main() {
               "malformed VARS fixture failed");
         check(graph_store.stage_load(hash).lp.lod_blas.size() == 3,
               "trailing malformed VARS granted singleton");
-        fs::remove_all(root);
         std::puts("castle_singleton_tests: PASS");
         return 0;
     } catch (const std::exception &e) {
