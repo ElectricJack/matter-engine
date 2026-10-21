@@ -449,6 +449,33 @@ struct VulkanDevice::Impl : detail::DeviceCore {
         : streamline(std::move(input_streamline)) {
         const char* timings = std::getenv("MATTER_FRAME_TIMINGS");
         frame_timings_enabled = timings && std::strcmp(timings, "1") == 0;
+        frame_trace_enabled = std::getenv("MATTER_VK_END_FRAME_TRACE") != nullptr;
+    }
+
+    // Opt-in diagnostic (MATTER_VK_END_FRAME_TRACE): one flushed line per
+    // frame sub-phase with a monotonic timestamp and the frame/present fence
+    // states, so a frame that never returns names the call it is blocked in.
+    // While enabled, end_frame also observes the frame fence after submit in
+    // bounded slices before presenting. Off by default; no effect when unset.
+    bool frame_trace_enabled = false;
+    void trace_frame_phase(const char* phase, uint64_t serial, VkFence frame,
+                           VkFence present_fence) {
+        if (!frame_trace_enabled) return;
+        static const auto origin = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - origin).count();
+        auto state = [&](VkFence fence) -> const char* {
+            if (fence == VK_NULL_HANDLE) return "none";
+            const VkResult r = vkGetFenceStatus(device, fence);
+            return r == VK_SUCCESS ? "signaled"
+                 : r == VK_NOT_READY ? "unsignaled" : "error";
+        };
+        std::fflush(stdout);
+        MATTER_LOGI("vk.frame-trace",
+                    "t=%.3fms serial=%llu slot=%u phase=%s frame_fence=%s present_fence=%s",
+                    ms, static_cast<unsigned long long>(serial), frame_slot,
+                    phase, state(frame), state(present_fence));
+        std::fflush(stderr);
     }
 
     bool submit_and_wait_for_phase(VkCommandBuffer command_buffer,
@@ -2048,6 +2075,8 @@ struct VulkanDevice::Impl : detail::DeviceCore {
         debug_advance_device_address_frame();
         FrameSlot& slot = frames[frame_slot];
         if (frame_timings_enabled) last_frame_timings.frame_slot = frame_slot;
+        trace_frame_phase("begin.fence_wait.enter", next_serial,
+                          slot.fence, VK_NULL_HANDLE);
         if (!vk_ok(time_frame_call(last_frame_timings.frame_fence_ms, [&] {
                 return vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
                                       std::numeric_limits<uint64_t>::max());
@@ -2055,6 +2084,8 @@ struct VulkanDevice::Impl : detail::DeviceCore {
                     "vkWaitForFences", error)) {
             return poison_device(error, "frame fence wait failed");
         }
+        trace_frame_phase("begin.fence_wait.exit", next_serial,
+                          slot.fence, VK_NULL_HANDLE);
         time_frame_call(last_frame_timings.retained_clear_ms, [&] {
             slot.retained.clear();
             return true;
@@ -2459,6 +2490,11 @@ struct VulkanDevice::Impl : detail::DeviceCore {
         }
         if (!ensure_frame_resources(error)) return false;
         FrameSlot& slot = frames[frame_slot];
+        auto trace = [&](const char* phase) {
+            trace_frame_phase(phase, input.serial, slot.fence,
+                              present_fences[input.image_index]);
+        };
+        trace("end.enter");
         VkImageMemoryBarrier2 to_present{
             VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         to_present.srcStageMask =
@@ -2482,6 +2518,7 @@ struct VulkanDevice::Impl : detail::DeviceCore {
         to_present_dependency.pImageMemoryBarriers = &to_present;
         vkCmdPipelineBarrier2(slot.command_buffer, &to_present_dependency);
         VkResult end_command_buffer = vkEndCommandBuffer(slot.command_buffer);
+        trace("end.command_buffer_ended");
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         const char* end_frame_fault = std::getenv("MATTER_VK_TEST_END_FRAME_FAULT");
         if (end_command_buffer == VK_SUCCESS && end_frame_fault &&
@@ -2527,10 +2564,13 @@ struct VulkanDevice::Impl : detail::DeviceCore {
         } else
 #endif
         {
+            trace("end.submit.enter");
             submit_result = time_frame_call(last_frame_timings.submit_ms, [&] {
                 std::lock_guard<std::mutex> lock(*queue_mutex);
                 return vkQueueSubmit2(graphics_queue, 1, &submit, slot.fence);
             });
+            trace(submit_result == VK_SUCCESS ? "end.submit.exit"
+                                              : "end.submit.failed");
         }
         if (!vk_ok(submit_result,
                     "vkQueueSubmit2", error)) {
@@ -2544,7 +2584,26 @@ struct VulkanDevice::Impl : detail::DeviceCore {
             return false;
         }
 
+        if (frame_trace_enabled) {
+            // Bounded observation slices: each 5 s timeout is logged, so a
+            // device that never completes the submission shows up as a run
+            // of "end.gpu_observe.pending" lines rather than a silent stall.
+            constexpr uint64_t kObserveSliceNs = 5'000'000'000ull;
+            for (;;) {
+                const VkResult observed = vkWaitForFences(
+                    device, 1, &slot.fence, VK_TRUE, kObserveSliceNs);
+                if (observed == VK_TIMEOUT) {
+                    trace("end.gpu_observe.pending");
+                    continue;
+                }
+                trace(observed == VK_SUCCESS ? "end.gpu_observe.complete"
+                                             : "end.gpu_observe.error");
+                break;
+            }
+        }
+
         if (readback_output) {
+            trace("end.readback_wait.enter");
             if (!vk_ok(vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
                                        std::numeric_limits<uint64_t>::max()),
                        "vkWaitForFences(swapchain readback)", error)) {
@@ -2552,6 +2611,7 @@ struct VulkanDevice::Impl : detail::DeviceCore {
                 abandon_active_frame();
                 return false;
             }
+            trace("end.readback_wait.exit");
             void* mapped = nullptr;
             if (!vk_ok(vkMapMemory(device, readback_memory, 0, readback_size, 0,
                                    &mapped),
@@ -2589,17 +2649,21 @@ struct VulkanDevice::Impl : detail::DeviceCore {
         present.swapchainCount = 1;
         present.pSwapchains = &swapchain;
         present.pImageIndices = &input.image_index;
+        trace("end.present_common.enter");
         if (!streamline.present_common(input.serial)) {
             error = "Streamline common present was already handed off for this frame";
             recover_submitted_without_present(slot, input.image_index, error);
             abandon_active_frame();
             return false;
         }
+        trace("end.queue_present.enter");
         const VkResult present_result =
             time_frame_call(last_frame_timings.present_ms, [&] {
                 std::lock_guard<std::mutex> lock(*queue_mutex);
                 return streamline.queue_present(graphics_queue, &present);
             });
+        trace(present_result == VK_SUCCESS ? "end.queue_present.exit"
+                                           : "end.queue_present.exit_nonsuccess");
         presented = present_result_was_presented(present_result);
         const PresentResultState present_state =
             present_result_state(present_result);
