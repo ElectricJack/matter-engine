@@ -62,5 +62,8 @@ workload plus compiler tracing is a diagnostic clarification, not that fix.
 Splitting pipeline groups or changing shader algorithms is outside this
 task's explicitly owned counter functions and requires a scope decision.
 
-Status: diagnostic prepared, native run NOT STARTED. No new GPU, allocator,
-synchronization, performance or Windows acceptance claimed.
+Preparation status at commit 9df4935e: native run NOT STARTED.
+Subsequent authorized attempt: instrumentation failed before frame 21;
+see validation.txt and native-attempt.log. The compilation hypothesis is
+still unproven. No GPU, allocator, synchronization, performance or Windows
+acceptance claimed.

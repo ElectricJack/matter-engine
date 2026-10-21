@@ -11,6 +11,16 @@
 
 static void *symbol(const char *name) {
     void *address = dlsym(RTLD_NEXT, name);
+    // Vulkan loads its driver with local visibility. Its LLVM dependency
+    // can therefore be absent from the preload object's RTLD_NEXT scope.
+    // Resolve from the already loaded library without loading a replacement.
+    if (!address) {
+        void *llvm = dlopen("libLLVM.so.20.1", RTLD_LAZY | RTLD_NOLOAD);
+        if (llvm) {
+            address = dlsym(llvm, name);
+            dlclose(llvm);
+        }
+    }
     if (!address) {
         fprintf(stderr, "llvm-trace: missing %s: %s\n", name, dlerror());
         abort();
