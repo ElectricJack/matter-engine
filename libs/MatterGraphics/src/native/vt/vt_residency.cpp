@@ -166,7 +166,8 @@ void barrier(VkCommandBuffer cmd, VkImage image, uint32_t layers,
              VkImageLayout old_layout, VkImageLayout new_layout,
              VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
              VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     b.srcStageMask = src_stage;
     b.srcAccessMask = src_access;
     b.dstStageMask = dst_stage;
@@ -177,7 +178,8 @@ void barrier(VkCommandBuffer cmd, VkImage image, uint32_t layers,
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image;
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &dep);
@@ -186,7 +188,8 @@ void barrier(VkCommandBuffer cmd, VkImage image, uint32_t layers,
 void buffer_barrier(VkCommandBuffer cmd, VkBuffer buffer,
                     VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
                     VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-    VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    VkBufferMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     b.srcStageMask = src_stage;
     b.srcAccessMask = src_access;
     b.dstStageMask = dst_stage;
@@ -196,7 +199,8 @@ void buffer_barrier(VkCommandBuffer cmd, VkBuffer buffer,
     b.buffer = buffer;
     b.offset = 0;
     b.size = VK_WHOLE_SIZE;
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dep.bufferMemoryBarrierCount = 1;
     dep.pBufferMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &dep);
@@ -279,7 +283,8 @@ bool VtResidency::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
     destroy_buffer(out);
     if (size == 0) return true;
     const VkDevice device = vulkan_->device();
-    VkBufferCreateInfo create{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    VkBufferCreateInfo create{};
+    create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     create.size = size;
     create.usage = usage;
     create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -297,7 +302,8 @@ bool VtResidency::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
         destroy_buffer(out);
         return false;
     }
-    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    VkMemoryAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocate.allocationSize = requirements.size;
     allocate.memoryTypeIndex = type;
     if (vkAllocateMemory(device, &allocate, nullptr, &out.memory) != VK_SUCCESS) {
@@ -359,7 +365,8 @@ bool create_array_image(matter::VulkanDevice& vulkan, VkFormat format,
                             VK_IMAGE_VIEW_TYPE_2D_ARRAY,
                         VkDeviceSize* out_alloc_size = nullptr) {
     const VkDevice device = vulkan.device();
-    VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    VkImageCreateInfo create{};
+    create.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     create.imageType = VK_IMAGE_TYPE_2D;
     create.format = format;
     create.extent = {width, height, 1};
@@ -387,7 +394,8 @@ bool create_array_image(matter::VulkanDevice& vulkan, VkFormat format,
         image = VK_NULL_HANDLE;
         return false;
     }
-    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    VkMemoryAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocate.allocationSize = requirements.size;
     allocate.memoryTypeIndex = type;
     if (vkAllocateMemory(device, &allocate, nullptr, &memory) != VK_SUCCESS) {
@@ -407,7 +415,8 @@ bool create_array_image(matter::VulkanDevice& vulkan, VkFormat format,
         memory = VK_NULL_HANDLE;
         return false;
     }
-    VkImageViewCreateInfo view_create{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    VkImageViewCreateInfo view_create{};
+    view_create.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_create.image = image;
     view_create.viewType = view_type;
     view_create.format = format;
@@ -633,7 +642,8 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     zero_staging_retire_ = 0;
     activation_dirty_ = false;
 
-    VkSamplerCreateInfo linear{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    VkSamplerCreateInfo linear{};
+    linear.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     linear.magFilter = VK_FILTER_LINEAR;
     linear.minFilter = VK_FILTER_LINEAR;
     linear.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -2816,7 +2826,8 @@ bool VtResidency::ensure_feedback_pipeline(std::string& error) {
     const VkDescriptorPoolSize sizes[]{
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kFeedbackSlots},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFeedbackSlots}};
-    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    VkDescriptorPoolCreateInfo pool{};
+    pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool.maxSets = kFeedbackSlots;
     pool.poolSizeCount = 2;
     pool.pPoolSizes = sizes;
@@ -2827,7 +2838,8 @@ bool VtResidency::ensure_feedback_pipeline(std::string& error) {
     }
     VkDescriptorSetLayout layouts[kFeedbackSlots];
     for (auto& layout : layouts) layout = gpu->pipeline.descriptor_set_layout;
-    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    VkDescriptorSetAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc.descriptorPool = gpu->pool;
     alloc.descriptorSetCount = kFeedbackSlots;
     alloc.pSetLayouts = layouts;
@@ -3067,12 +3079,14 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error,
             }
         }
         // WAW: this frame's fills rewrite subsets of the just-cleared images.
-        VkMemoryBarrier2 waw{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        VkMemoryBarrier2 waw{};
+        waw.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
         waw.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         waw.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         waw.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         waw.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dep.memoryBarrierCount = 1;
         dep.pMemoryBarriers = &waw;
         vkCmdPipelineBarrier2(cmd, &dep);
