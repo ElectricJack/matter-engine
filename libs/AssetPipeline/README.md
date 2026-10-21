@@ -83,14 +83,16 @@ constructed with `EvaluationOptions` that include `prepared_capabilities()`. A
 plain cache refuses them as `unsupported_capability`, as it does any other typed
 product.
 
-The surface target links only contracts. Its optional native producer compiles
-the existing `MatterEngine3/src/terrain_field.cpp` source directly in
-`matter_asset_surface_runtime`, as TerrainGeneration does. Noise, tape parsing,
-source evaluation and appearance evaluation retain that single implementation.
-The old source location is temporary; relocation and compatibility entrypoint
-wiring belong to ordered integration. The private height-overlay declaration
-uses neutral hydrology/bounds headers; no concrete hydrology implementation,
-terrain library, renderer, QuickJS or GPU dependency is linked. Disable both
+The surface target links only contracts. Its optional native producer links the
+field/surface tape kernel from ProceduralGeometry's lean `matter_geometry_field`
+target (`libs/ProceduralGeometry/cmake/FieldKernel.cmake`), which compiles
+`libs/ProceduralGeometry/src/terrain_field.cpp` alone, without the rest of
+geometry; TerrainGeneration links the same target, so a combined graph compiles
+that source once. Noise, tape parsing,
+source evaluation and appearance evaluation retain that single implementation,
+and `MatterEngine3/src/terrain_field.h` forwards to its public header. The
+height-overlay interface is declared there as a neutral virtual; no concrete
+hydrology implementation, terrain library, renderer, QuickJS or GPU dependency is linked. Disable both
 surface switches for archive-only builds; the native switch requires the surface
 switch and defaults to its value in a fresh configuration.
 

@@ -13,11 +13,10 @@ if(NOT TARGET matter_contracts)
 endif()
 get_filename_component(_graphics_repo "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 add_library(matter_graphics STATIC src/graphics.cpp src/scene_backend.cpp src/composition.cpp
-    "${_graphics_repo}/MatterEngine3/src/render/matrix_math.cpp")
+    src/matrix_math.cpp)
 target_compile_features(matter_graphics PUBLIC cxx_std_17)
 target_include_directories(matter_graphics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_include_directories(matter_graphics PRIVATE
-    "${_graphics_repo}/MatterEngine3/src/render" "${_graphics_repo}/MatterEngine3/include")
+target_include_directories(matter_graphics PRIVATE "${_graphics_repo}/MatterEngine3/include")
 target_link_libraries(matter_graphics PUBLIC matter_contracts)
 option(MATTER_GRAPHICS_VULKAN "Build the injected Vulkan resource device and native tests" OFF)
 if(MATTER_GRAPHICS_VULKAN)
