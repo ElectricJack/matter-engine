@@ -489,7 +489,7 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     # One ctest per smoke mode that the PowerShell fault gate
     # (MatterEditor/tools/smoke_vulkan_faults.ps1) does not run.
-    foreach(mode geometry-pages vt-queue vt-normal-frame vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas water-field-nort)
+    foreach(mode geometry-pages vt-queue vt-normal-frame vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas rt-counters water-field-nort)
         string(REPLACE "-" "_" mode_name "${mode}")
         matter_add_vulkan_smoke_test(smoke_${mode_name} "${mode}")
     endforeach()
