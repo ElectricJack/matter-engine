@@ -39,6 +39,10 @@
 #include "check.h"
 #include "obj_parser.h"
 #include "test_sandbox.h"
+#ifndef MATTER_CODEC_SOURCE_QUALIFICATION
+#include "embedded_export_fixtures.h"
+#include <sstream>
+#endif
 
 #include "export/export_cli.h"
 #include "export/export_text.h"
@@ -507,6 +511,7 @@ void test_scene_export_reads_world_exports(const std::string& sandbox) {
 } // namespace
 
 int main() {
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const std::string sandbox = make_sandbox("sandbox/obj_export_golden", {"cache"});
     const fs::path fixtures = fs::path("fixtures") / "export";
 
@@ -518,6 +523,38 @@ int main() {
     printf("-- World.exports (DSL binding)\n");
     test_scene_export_reads_world_exports(sandbox);
 
+#else
+    const auto files = embedded_export_test_sources();
+    for (const auto& part : kGoldenParts) {
+        const std::string module = part.module;
+        const auto& digest = files.at(module + ".golden");
+        std::istringstream lines(digest);
+        std::string key, value;
+        size_t vertices = 0, triangles = 0;
+        while (lines >> key >> value) {
+            if (key == "vertices") vertices = std::stoul(value);
+            if (key == "triangles") triangles = std::stoul(value);
+            std::string remainder; std::getline(lines, remainder);
+        }
+        CHECK(vertices > 0 && triangles > 0, "pinned export digest records geometry");
+        const auto& mtl_text = files.at(module + ".mtl");
+        const auto mtl = obj_parse::parse_mtl(mtl_text);
+        CHECK(mtl_text.size() <= kMaxGoldenMtlBytes && mtl.ok() && !mtl.materials.empty(),
+              "pinned MTL stays bounded and parses with materials");
+        if (!part.pin_geometry) continue;
+        const auto& obj_text = files.at(module + ".obj");
+        const auto obj = obj_parse::parse_obj(obj_text);
+        CHECK(obj_text.size() <= kMaxGoldenObjBytes && obj.ok(),
+              "pinned OBJ stays bounded and parses");
+        CHECK(obj.position_count() == vertices && obj.faces.size() == triangles,
+              "pinned OBJ agrees with independently recorded digest counts");
+        for (const auto& material : obj.materials_used) {
+            bool found = false;
+            for (const auto& entry : mtl.materials) found |= entry.name == material;
+            CHECK(found, "every pinned OBJ material resolves in its MTL");
+        }
+    }
+#endif
     if (g_failures == 0) printf("All obj export golden tests passed\n");
     return check_summary();
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "matter/solid_face_projection.h"
+#include "matter/fixture_io.h"
 #include <string>
 
 namespace gpu_meshing {
@@ -11,9 +12,9 @@ bool validate_projected_face(const FaceJob &, const FacePatch &, Error &,
 // source bounds and identity; lossless height/UVN normal/coverage follow it.
 // The whole file has a checksum. Readers require the expected physical recipe.
 bool load_projected_face(const std::string &, const FaceJob &, FacePatch &, Error &,
-                         const BuildControl & = {});
+                         const BuildControl & = {}, matter::CacheByteStorage * = nullptr);
 bool save_projected_face(const std::string &, const FaceJob &, const FacePatch &, Error &,
-                         const BuildControl & = {});
+                         const BuildControl & = {}, matter::CacheByteStorage * = nullptr);
 using SolidFaceProjector = std::function<bool(const FaceJob &, FacePatch &, FaceStats &,
                                              Error &, const BuildControl &)>;
 struct FaceCacheStats {
@@ -26,5 +27,6 @@ struct FaceCacheStats {
 // only after success/currentness; an appearance recipe is deliberately absent
 // from this geometry cache key. A warm hit needs no callback/backend.
 bool load_or_project_face(const std::string &, const FaceJob &, const SolidFaceProjector &,
-                          FacePatch &, FaceCacheStats &, Error &, const BuildControl & = {});
+                          FacePatch &, FaceCacheStats &, Error &, const BuildControl & = {},
+                          matter::CacheByteStorage * = nullptr);
 } // namespace gpu_meshing

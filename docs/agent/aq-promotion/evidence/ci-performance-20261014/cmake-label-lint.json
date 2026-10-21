@@ -1,0 +1,96 @@
+{
+  "fixture_cpu": {
+    "LABELS": [
+      "ci-fast",
+      "ci-full",
+      "ci-pr",
+      "cpu"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "fixture_gpu": {
+    "LABELS": [
+      "ci-full",
+      "ci-pr",
+      "vulkan"
+    ],
+    "RESOURCE_LOCK": [
+      "matter-vulkan"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "fixture_package": {
+    "LABELS": [
+      "ci-full",
+      "package",
+      "safety"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "fixture_compiler": {
+    "LABELS": [
+      "ci-source-lint",
+      "compiler-policy"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "shader_rebuild_tests": {
+    "LABELS": [
+      "ci-source-lint",
+      "shader"
+    ],
+    "RESOURCE_LOCK": [
+      "matter-shader-fixture"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "shader_source_tests": {
+    "LABELS": [
+      "ci-source-lint",
+      "cpu"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "editor_registration_census": {
+    "LABELS": [
+      "ci-source-lint",
+      "editor"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "world_definition_tests": {
+    "LABELS": [
+      "ci-full",
+      "ci-pr",
+      "cpu"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "ci_test_report_tests": {
+    "LABELS": [
+      "ci-fast",
+      "ci-full",
+      "ci-pr",
+      "python"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "ci_source_lint_tests": {
+    "LABELS": [
+      "ci-fast",
+      "ci-full",
+      "ci-pr",
+      "python"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  },
+  "glslc_depfile_tests": {
+    "LABELS": [
+      "ci-fast",
+      "ci-full",
+      "ci-pr",
+      "python"
+    ],
+    "WORKING_DIRECTORY": "/tmp/keen-ci-label-lint-7g7ffljg/build"
+  }
+}
