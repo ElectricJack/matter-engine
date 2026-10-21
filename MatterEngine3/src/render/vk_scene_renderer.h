@@ -2029,6 +2029,11 @@ public:
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
     }
+    // Set before init for geometry-only software Vulkan fixtures. Dispatching
+    // GI or local lighting with these pipelines omitted is an explicit error.
+    void test_use_rt_geometry_pipelines_only(bool geometry_only) {
+        test_rt_geometry_pipelines_only_ = geometry_only;
+    }
     // RT counter provenance probes for the production reporter. The seed is
     // written into invalid_part_records where emit_ray_instances zeroes the
     // counter, so a real recorded dispatch retires a known count. Poison
@@ -3373,6 +3378,7 @@ private:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
     bool test_force_rt_unavailable_ = false;
+    bool test_rt_geometry_pipelines_only_ = false;
     uint32_t test_rt_counter_seed_ = 0;
     bool test_fail_next_rt_dispatch_record_ = false;
     bool test_force_primary_light_fallback_ = false;
