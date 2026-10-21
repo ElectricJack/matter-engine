@@ -1856,6 +1856,12 @@ void VkSceneRenderer::destroy_pipeline() {
     retired_water_animation_resources_.clear();
     water_animation_schedule_ = WaterAnimationGpuSchedule{};
     rt_sbt_.reset();
+    for (auto* trace : {&rt_shadow_pipeline_, &rt_surface_test_pipeline_}) {
+        trace->sbt.reset();
+        if (trace->pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, trace->pipeline, nullptr);
+        *trace = RtTracePipeline{};
+    }
     // Identity-buffer visibility (M4): the per-slot pipelines name the identity
     // attachment and this slot's buffer, both of which are going away.
     for (FrameResources& frame : frames_) frame.visibility_id_reduce.reset();

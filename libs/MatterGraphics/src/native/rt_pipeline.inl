@@ -1,5 +1,7 @@
-// The ray-tracing set layout, pipeline and shader binding table. Only reached
-// when the device reports hardware ray tracing; RT-less devices keep every
+#include "rt_pipeline_subset.inl"
+
+// The ray-tracing set layout, pipelines and shader binding tables. Only reached
+// when the device reports ray tracing support; RT-less devices keep every
 // rt_* handle null and record_ray_traced_shadows clears its targets instead.
 //
 // Nine stages in seven groups: three raygen (shadow / surface-test /
@@ -12,6 +14,9 @@
 // by an index. Adaptive primary optionally appends stage 9 / group 7 and a
 // fourth raygen record after all existing SBT regions, preserving their offsets.
 // Two signal-specialized copies of lighting follow the optional primary record.
+// The shadow and surface-test dispatches use separate pipelines/SBTs below.
+// Their shader code and miss/hit indices are unchanged, but a software driver
+// no longer has to JIT every lighting raygen before the first shadow/test ray.
 bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
     // Compile the sample count into the shader: keep the four-sample baseline
@@ -254,11 +259,17 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         VK_SHADER_STAGE_ANY_HIT_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR,
         VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR};
     VkShaderModule modules[12]{};
+    struct ModuleCleanup {
+        VkDevice device;
+        VkShaderModule* modules;
+        ~ModuleCleanup() {
+            for (size_t i = 0; i < 12; ++i)
+                if (modules[i]) vkDestroyShaderModule(device, modules[i], nullptr);
+        }
+    } cleanup{device, modules};
     VkPipelineShaderStageCreateInfo stages[12]{};
     for (uint32_t i = 0; i < stage_count; ++i) {
         if (!create_shader_module(device, names[i], modules[i], error)) {
-            for (VkShaderModule module : modules)
-                if (module) vkDestroyShaderModule(device, module, nullptr);
             return false;
         }
         stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -447,8 +458,6 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                  &create, nullptr, &rt_pipeline_);
     });
     }
-    for (VkShaderModule module : modules)
-        if (module) vkDestroyShaderModule(device, module, nullptr);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateRayTracingPipelinesKHR", result, error);
 
@@ -542,5 +551,67 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                     handles.data() + (diffuse_group + signal) * handle_size,
                     static_cast<size_t>(handle_size));
     }
-    return matter::flush_buffer(rt_sbt_, mapped_offset, sbt_span, error);
+    if (!matter::flush_buffer(rt_sbt_, mapped_offset, sbt_span, error))
+        return false;
+
+    // Keep the original lighting pipeline and specialization data. Build each
+    // small dispatch from its actual reachable groups, with its own handles:
+    // shader-group handles cannot be copied across unrelated pipelines.
+    const auto create_trace_pipeline = [&](RtTracePipeline& target,
+        std::initializer_list<uint32_t> group_indices, uint32_t category_count,
+        const char* label) {
+        const auto subset = rt_pipeline_subset(stages, groups, group_indices);
+        auto info = create;
+        info.stageCount = static_cast<uint32_t>(subset.stages.size());
+        info.pStages = subset.stages.data();
+        info.groupCount = static_cast<uint32_t>(subset.groups.size());
+        info.pGroups = subset.groups.data();
+        VkResult status = profile_pipeline_call(label, __func__, __LINE__, 1, &info, [&] {
+            return create_pipeline(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1,
+                                   &info, nullptr, &target.pipeline);
+        });
+        if (status != VK_SUCCESS)
+            return fail_vk("vkCreateRayTracingPipelinesKHR(trace)", status, error);
+        std::vector<uint8_t> trace_handles(info.groupCount * handle_size);
+        status = get_handles(device, target.pipeline, 0, info.groupCount,
+                             trace_handles.size(), trace_handles.data());
+        if (status != VK_SUCCESS)
+            return fail_vk("vkGetRayTracingShaderGroupHandlesKHR(trace)", status, error);
+        const auto align_base = [&](VkDeviceSize size) {
+            return (size + props.shader_group_base_alignment - 1) /
+                props.shader_group_base_alignment * props.shader_group_base_alignment;
+        };
+        const VkDeviceSize trace_category_size = category_count * handle_stride;
+        const VkDeviceSize miss_offset = align_base(handle_stride);
+        const VkDeviceSize hit_offset = miss_offset + align_base(trace_category_size);
+        const VkDeviceSize span = hit_offset + trace_category_size;
+        if (!matter::create_buffer(*vulkan_, span + props.shader_group_base_alignment - 1,
+                VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, target.sbt, error) ||
+            !matter::map_buffer(target.sbt, error)) return false;
+        const VkDeviceAddress base = align_base(target.sbt.address);
+        const VkDeviceSize offset = base - target.sbt.address;
+        target.raygen = {base, handle_stride, handle_stride};
+        target.miss = {base + miss_offset, handle_stride, trace_category_size};
+        target.hit = {base + hit_offset, handle_stride, trace_category_size};
+        auto* mapped = static_cast<uint8_t*>(target.sbt.mapped) + offset;
+        std::memset(mapped, 0, static_cast<size_t>(span));
+        std::memcpy(mapped, trace_handles.data(), static_cast<size_t>(handle_size));
+        for (uint32_t i = 0; i < category_count; ++i) {
+            std::memcpy(mapped + miss_offset + i * handle_stride,
+                        trace_handles.data() + (1 + i) * handle_size,
+                        static_cast<size_t>(handle_size));
+            std::memcpy(mapped + hit_offset + i * handle_stride,
+                        trace_handles.data() + (1 + category_count + i) * handle_size,
+                        static_cast<size_t>(handle_size));
+        }
+        return matter::flush_buffer(target.sbt, offset, span, error);
+    };
+    // Shadow rays use miss/hit index zero only. Surface queries use index one,
+    // so preserve both visibility/radiance and visibility/surface categories.
+    return create_trace_pipeline(rt_shadow_pipeline_, {0, 3, 5}, 1, "ray_tracing_shadow") &&
+           create_trace_pipeline(rt_surface_test_pipeline_, {1, 3, 4, 5, 6}, 2,
+                                 "ray_tracing_surface_test");
 }

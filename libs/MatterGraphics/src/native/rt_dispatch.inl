@@ -1464,7 +1464,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     last_rt_samples_ = constants.samples;
     last_rt_debug_view_ = constants.debug_view != 0;
     vkCmdBindPipeline(frame.command_buffer,
-                      VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
+                      VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_shadow_pipeline_.pipeline);
     const VkDescriptorSet rt_set = rt_descriptor_sets_[frame.frame_slot];
     const VkDescriptorSet rt_sets[] = {
         rt_set, frames_[frame.frame_slot].environment_descriptor_set,
@@ -1485,8 +1485,6 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     const VkDeviceSize handle_stride =
         (props.shader_group_handle_size + props.shader_group_handle_alignment - 1) /
         props.shader_group_handle_alignment * props.shader_group_handle_alignment;
-    const VkStridedDeviceAddressRegionKHR raygen{rt_sbt_address_, handle_stride,
-                                                  handle_stride};
     const VkStridedDeviceAddressRegionKHR miss{rt_sbt_miss_address_,
                                                 handle_stride,
                                                 rt_sbt_miss_size_};
@@ -1495,12 +1493,15 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     const VkStridedDeviceAddressRegionKHR callable{};
     FrameResources& rt_frame_slot = frames_[frame.frame_slot];
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, false, rt_frame_slot);
-    cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
+    cmd_trace(frame.command_buffer, &rt_shadow_pipeline_.raygen,
+              &rt_shadow_pipeline_.miss, &rt_shadow_pipeline_.hit, &callable,
               trace_extent.width, trace_extent.height, 1);
     // End sun shadows here; local-direct and GI traces have separate zones.
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, true, rt_frame_slot);
     const bool trace_local_direct = !local_light_publication_.records.empty();
     if (gi_settings_.enabled || trace_local_direct) {
+        vkCmdBindPipeline(frame.command_buffer,
+                          VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
         const VkClearColorValue dispatch_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
         if (gi_settings_.enabled) {
             clear_color_image_for_use(
@@ -1741,6 +1742,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
         selected.rt_error_counter.lifetime, selected.materials.lifetime,
         selected.rt_test_output.lifetime, rt_sbt_.lifetime,
+        rt_shadow_pipeline_.sbt.lifetime, rt_surface_test_pipeline_.sbt.lifetime,
         vertices_.lifetime, indices_.lifetime};
     if (rt_primary_adaptive_)
         for (const auto* image : primary_history_inputs)

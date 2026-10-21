@@ -2163,15 +2163,15 @@ public:
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
     std::weak_ptr<void> test_rt_blas_lifetime(uint64_t part_hash) const;
-    VkDeviceAddress test_rt_sbt_address() const { return rt_sbt_address_; }
+    VkDeviceAddress test_rt_sbt_address() const { return rt_shadow_pipeline_.raygen.deviceAddress; }
     VkDeviceAddress test_rt_test_raygen_address() const {
-        return rt_sbt_test_raygen_address_;
+        return rt_surface_test_pipeline_.raygen.deviceAddress;
     }
     VkDeviceSize test_rt_sbt_stride() const { return rt_sbt_stride_; }
-    VkDeviceAddress test_rt_miss_address() const { return rt_sbt_miss_address_; }
-    VkDeviceAddress test_rt_hit_address() const { return rt_sbt_hit_address_; }
-    VkDeviceSize test_rt_miss_region_size() const { return rt_sbt_miss_size_; }
-    VkDeviceSize test_rt_hit_region_size() const { return rt_sbt_hit_size_; }
+    VkDeviceAddress test_rt_miss_address() const { return rt_surface_test_pipeline_.miss.deviceAddress; }
+    VkDeviceAddress test_rt_hit_address() const { return rt_surface_test_pipeline_.hit.deviceAddress; }
+    VkDeviceSize test_rt_miss_region_size() const { return rt_surface_test_pipeline_.miss.size; }
+    VkDeviceSize test_rt_hit_region_size() const { return rt_surface_test_pipeline_.hit.size; }
     uint32_t test_surface_trace_dispatches() const {
         return test_surface_trace_dispatches_;
     }
@@ -3446,6 +3446,14 @@ private:
     VkDescriptorSetLayout rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline rt_pipeline_ = VK_NULL_HANDLE;
+    // Shadow and surface-query dispatches must not compile unused GI raygens.
+    // Handles in each SBT belong to that pipeline, including miss/hit handles.
+    struct RtTracePipeline {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        matter::VkBufferResource sbt;
+        VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{};
+    };
+    RtTracePipeline rt_shadow_pipeline_, rt_surface_test_pipeline_;
     VkDescriptorPool rt_descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> rt_descriptor_sets_;
     std::vector<VkDescriptorSet> rt_adaptive_descriptor_sets_;
