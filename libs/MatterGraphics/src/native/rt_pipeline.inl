@@ -522,10 +522,16 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     };
     // Shadow rays use miss/hit index zero only. Surface queries use index one,
     // so preserve both visibility/radiance and visibility/surface categories.
-    return create_trace_pipeline(rt_shadow_pipeline_, {0, 3, 5}, 1, "ray_tracing_shadow") &&
-           create_trace_pipeline(rt_surface_test_pipeline_, {1, 3, 4, 5, 6}, 2,
-                                 "ray_tracing_surface_test") &&
-           create_trace_pipeline(rt_lighting_pipeline_, {2, 3, 4, 5, 6}, 2,
+    if (!create_trace_pipeline(rt_shadow_pipeline_, {0, 3, 5}, 1, "ray_tracing_shadow") ||
+        !create_trace_pipeline(rt_surface_test_pipeline_, {1, 3, 4, 5, 6}, 2,
+                               "ray_tracing_surface_test"))
+        return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // CPU Vulkan geometry fixtures still trace real rays, but need not pay
+    // repeated eager compilation costs for lighting they explicitly skip.
+    if (test_rt_geometry_pipelines_only_) return true;
+#endif
+    return create_trace_pipeline(rt_lighting_pipeline_, {2, 3, 4, 5, 6}, 2,
                                  "ray_tracing_lighting") &&
            (!rt_separate_primary_ ||
             create_trace_pipeline(rt_primary_pipeline_, {7, 3, 4, 5, 6}, 2,

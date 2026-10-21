@@ -7430,10 +7430,12 @@ void run_tileset_slot_load(matter::VulkanDevice& vulkan) {
     std::remove(gtex_path.c_str());
 }
 
-void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
+void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan,
+                                   bool enable_gi) {
     if (!vulkan.ray_tracing_available()) return;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    renderer.test_use_rt_geometry_pipelines_only(!enable_gi);
     std::vector<MaterialGpuRecord> materials(2);
     for (auto& material : materials) {
         material.metal_opacity_spec_coat[1] = 1.0f;
@@ -7479,6 +7481,14 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
     matter::VulkanRayTracingSettings rt{};
     rt.enabled = true;
     renderer.set_ray_tracing_settings(rt);
+    if (!enable_gi) {
+        // These assertions inspect BLAS/TLAS mapping, reuse and opacity, not
+        // indirect lighting. Keep real shadow tracing on software Vulkan
+        // without JIT-compiling the much larger GI continuation shaders.
+        matter::VulkanGiSettings gi{};
+        gi.enabled = false;
+        renderer.set_gi_settings(gi);
+    }
     matter::CameraDesc camera{};
     camera.position = {0.0f, 0.0f, 10.0f};
     camera.target = {0.0f, 0.0f, -2.0f};
@@ -7526,6 +7536,11 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
         mark("composite.exit");
         records = renderer.test_last_rt_geometry_records();
         builds = renderer.test_last_rt_blas_build_count();
+        if (!enable_gi) {
+            CHECK(renderer.rt_effective_observed() &&
+                      renderer.rt_trace_dispatches_observed() == 1,
+                  "software multi-LOD mapping records real shadow RT without GI dispatches");
+        }
         mark("end_frame.enter");
         const bool submitted = recorded && vulkan.end_frame(frame, error);
         mark("end_frame.exit/finish.enter");
@@ -7582,10 +7597,12 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
 // the original part-local value (not corrupted by the compaction rebase of
 // part.index_start).
 // ---------------------------------------------------------------------------
-void run_rt_lod_compaction_invariant(matter::VulkanDevice& vulkan) {
+void run_rt_lod_compaction_invariant(matter::VulkanDevice& vulkan,
+                                    bool geometry_only) {
     if (!vulkan.ray_tracing_available()) return;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    renderer.test_use_rt_geometry_pipelines_only(geometry_only);
     CHECK(renderer.init(error), error.empty() ? "init" : error.c_str());
 
     const matter::Float3 norm{0.0f, 0.0f, 1.0f};
@@ -8536,8 +8553,9 @@ struct RtPathContext {
 static void rt_scenario_surface_query(
         matter::VulkanDevice& vulkan,
         const matter::VulkanRayTracingProperties& properties,
-        std::string& error) {
+        std::string& error, bool geometry_only) {
     viewer::VkSceneRenderer surface_query(vulkan);
+    surface_query.test_use_rt_geometry_pipelines_only(geometry_only);
         viewer::VkScenePart first = known_raster_triangle(912);
         viewer::VkScenePart second = fixed_part(
             913, {-1.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 0);
@@ -9142,9 +9160,10 @@ static void run_rt_rejected_surface_lookup_counters(
 // ---------------------------------------------------------------------------
 static void rt_scenario_blas_pinning(
         matter::VulkanDevice& vulkan,
-        std::string& error) {
+        std::string& error, bool geometry_only) {
     {
         viewer::VkSceneRenderer pinning(vulkan);
+        pinning.test_use_rt_geometry_pipelines_only(geometry_only);
         CHECK(pinning.init(error),
               error.empty() ? "init shared raster/RT geometry buffers"
                             : error.c_str());
@@ -13220,14 +13239,30 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     std::printf("Vulkan RT available=%s (standalone rt entry)\n",
                 vulkan.ray_tracing_available() ? "true" : "false");
     std::fflush(stdout);
-    run_native_multilod_rt_mapping(vulkan);
-    run_rt_lod_compaction_invariant(vulkan);
+    VkPhysicalDeviceProperties device_properties{};
+    vkGetPhysicalDeviceProperties(vulkan.physical_device(), &device_properties);
+    const bool software_vulkan =
+        device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    if (software_vulkan) {
+        std::printf(
+            "RT software Vulkan (%s): multi-LOD GI disabled; "
+            "GI/froxel/visibility/local-direct lighting scenarios SKIPPED. "
+            "Unused RT lighting pipeline creation is also skipped. "
+            "Deferred LLVM JIT on llvmpipe stalls the first GI frame beyond "
+            "the standalone 1500 s budget. BLAS mapping, compaction, pinning "
+            "and real surface-query/invalid-record checks remain enabled. "
+            "Full lighting qualification requires hardware Vulkan.\n",
+            device_properties.deviceName);
+        std::fflush(stdout);
+    }
+    run_native_multilod_rt_mapping(vulkan, !software_vulkan);
+    run_rt_lod_compaction_invariant(vulkan, software_vulkan);
     CHECK(vulkan.ray_tracing_available(),
           vulkan.ray_tracing_unavailable_reason().empty()
               ? "native ray tracing available"
               : vulkan.ray_tracing_unavailable_reason().c_str());
     if (!vulkan.ray_tracing_available()) return;
-    run_rt_froxel_resize_smoke(vulkan);
+    if (!software_vulkan) run_rt_froxel_resize_smoke(vulkan);
     const auto& properties = vulkan.ray_tracing_properties();
     CHECK(properties.shader_group_handle_alignment != 0 &&
               properties.shader_group_base_alignment != 0 &&
@@ -13239,12 +13274,13 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
           "queried SBT handle and base alignments are retained");
 
     std::string error;
-    rt_scenario_surface_query(vulkan, properties, error);
+    rt_scenario_surface_query(vulkan, properties, error, software_vulkan);
     CHECK(vulkan.validation_error_count() == 0,
           "surface-query scenario has no Vulkan validation errors");
-    rt_scenario_blas_pinning(vulkan, error);
+    rt_scenario_blas_pinning(vulkan, error, software_vulkan);
     CHECK(vulkan.validation_error_count() == 0,
           "BLAS-pinning scenario has no Vulkan validation errors");
+    if (software_vulkan) return;
     rt_scenario_visibility_classification(vulkan, error);
     CHECK(vulkan.validation_error_count() == 0,
           "visibility-classification scenario has no Vulkan validation errors");

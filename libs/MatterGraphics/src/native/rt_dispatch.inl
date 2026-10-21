@@ -1105,6 +1105,13 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     VkExtent2D trace_extent,
     PFN_vkCmdTraceRaysKHR cmd_trace,
     std::string& error) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_rt_geometry_pipelines_only_ &&
+        (gi_settings_.enabled || !local_light_publication_.records.empty())) {
+        error = "geometry-only RT test fixture cannot dispatch GI or local lighting";
+        return false;
+    }
+#endif
     FrameResources& selected = frames_[frame.frame_slot];
     // This target exists even without VT/extraction. Order color writes and
     // any extraction layout transition before primary RT storage reads.
