@@ -102,7 +102,7 @@ inline constexpr double kExtraterrestrialSolarRgb[3] = {1.0, 1.0, 1.0};
 
 // The authored, per-world atmosphere dials. Small and copyable by design: it
 // is compared for equality to decide whether the GPU LUTs need rebuilding
-// (see `same_settings` in src/render/vk_atmosphere.cpp), so adding a field
+// (see `same_settings` in native/vk_atmosphere.cpp), so adding a field
 // here means teaching that comparison about it.
 //
 // Ranges below are the ones `sanitize_atmosphere` enforces; nothing downstream
