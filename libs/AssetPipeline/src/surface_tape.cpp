@@ -1,5 +1,5 @@
 #include "surface_internal.h"
-#include "terrain_field.h"
+#include <matter/geometry/terrain_field.h>
 #include <matter/asset/surface_tape.h>
 #include <algorithm>
 #include <cmath>

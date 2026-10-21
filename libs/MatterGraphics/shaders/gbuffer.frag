@@ -31,6 +31,10 @@ layout(constant_id = 1) const bool GBUFFER_POM_WORK = false;
 // 3 also keeps the full impostor cutout path to bound the mode-1 overdraw.
 // 0 is the shipped shader. These modes are diagnostic and change the image.
 layout(constant_id = 2) const int GBUFFER_PROFILE_MODE = 0;
+// Exact input-domain specialization for the graphics adapter: its validation
+// accepts only uniform opaque PBR, with no VT, tilesets, impostors or water.
+// Keep the native renderer's full material path as the default.
+layout(constant_id = 3) const bool GBUFFER_UNIFORM_PBR = false;
 uvec3 gbuffer_seed_work, gbuffer_walk_work;
 #define VT_POM_CONNECTED_ENABLED GBUFFER_CONNECTED_POM
 #define VT_SEED_TRIANGLE_VISIT() { if (GBUFFER_POM_WORK) ++gbuffer_seed_work.x; }
@@ -181,6 +185,7 @@ vec3 lod_debug_color(uint lod) {
 }
 
 void main() {
+    uint vt_slot = GBUFFER_UNIFORM_PBR ? 0u : in_vt_slot;
     if (GBUFFER_PROFILE_MODE == 1 ||
         (GBUFFER_PROFILE_MODE == 3 && in_surface.x <= kImpostorMarker)) {
         // Keep every attachment write and the rasterized depth. This measures
@@ -189,11 +194,11 @@ void main() {
         // are deliberately outside this reduced-cost diagnostic. Mode 3 lets
         // impostors follow the ordinary path so cutout and depth stay correct.
         out_vt_feedback = uvec4(0u);
-        if (in_vt_slot != 0u) {
+        if (vt_slot != 0u) {
             vec2 dx = dFdx(in_surface.xy);
             vec2 dy = dFdy(in_surface.xy);
-            VtAddress vt = vt_resolve(in_vt_slot, in_surface.xy,
-                                      vt_desired_mip(in_vt_slot, dx, dy));
+            VtAddress vt = vt_resolve(vt_slot, in_surface.xy,
+                                      vt_desired_mip(vt_slot, dx, dy));
             if (vt.valid)
                 out_vt_feedback = vt_pack_visible_feedback(
                     vt_feedback_request(vt), vt.module_request);
@@ -220,19 +225,19 @@ void main() {
     vec2 atlas_dy = dFdy(in_surface.xy);
     vec3 local_dx = dFdx(in_part_local_pos);
     vec3 local_dy = dFdy(in_part_local_pos);
-    float vt_lod = vt_desired_mip(in_vt_slot, atlas_dx, atlas_dy);
+    float vt_lod = vt_desired_mip(vt_slot, atlas_dx, atlas_dy);
     uint vt_input_snapshot =
-        vt_resolve(in_vt_slot, in_surface.xy, vt_lod).input_snapshot;
+        vt_resolve(vt_slot, in_surface.xy, vt_lod).input_snapshot;
     bool direct_source_page =
-        vt_is_direct_source(vt_resolve(in_vt_slot, in_surface.xy, vt_lod));
-    if (GBUFFER_PROFILE_MODE == 2 && in_vt_slot != 0u) {
-        VtAddress vt = vt_resolve(in_vt_slot, in_surface.xy, vt_lod);
+        vt_is_direct_source(vt_resolve(vt_slot, in_surface.xy, vt_lod));
+    if (GBUFFER_PROFILE_MODE == 2 && vt_slot != 0u) {
+        VtAddress vt = vt_resolve(vt_slot, in_surface.xy, vt_lod);
         if (vt.valid)
             out_vt_feedback = vt_pack_visible_feedback(
                 vt_feedback_request(vt), vt.module_request);
     }
     MaterialGpu material;
-    if (GBUFFER_PROFILE_MODE != 2 &&
+    if (!GBUFFER_UNIFORM_PBR && GBUFFER_PROFILE_MODE != 2 &&
         vt_draw_material(vt_input_snapshot, in_material_index, material)) {
         // Captured material rows include the compatible source-bank index.
     } else if (in_material_valid != 0u) {
@@ -255,6 +260,8 @@ void main() {
     float emission = max(material.emission_strength.w, 0.0);
     float encoded_emission = min(log2(1.0 + emission), 15.875);
     float ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0) : 1.0;
+    // Normal space follows the raw draw slot exported by raster.vert. Uniform
+    // PBR disables texture inputs through vt_slot, not the instance transform.
     vec3 geometric_normal_ws = in_vt_slot != 0u
         ? normalize(in_vt_normal_matrix * normalize(in_normal))
         : normalize(in_normal);
@@ -273,7 +280,7 @@ void main() {
     // the branches below must not run at all -- an impostor has no ground
     // parameterisation to march and no chart table to sample, so both would
     // read garbage through a uv channel this rung repurposed.
-    const bool is_impostor = in_surface.x > kImpostorMarker;
+    const bool is_impostor = !GBUFFER_UNIFORM_PBR && in_surface.x > kImpostorMarker;
     // Set by the impostor branch and applied after frag_depth is initialised.
     // Negative means "no impostor depth", which is how a non-impostor draw and
     // a degenerate projection both opt out.
@@ -434,7 +441,7 @@ void main() {
     // horizon term forward so the near-band AO composite can re-apply it
     // WITHOUT re-applying the detail AO it was multiplied into. All stay at
     // their defaults whenever the tileset branch does not run, and nothing
-    // reads them unless in_vt_slot != 0.
+    // reads them unless vt_slot != 0.
     vec3 detail_albedo = vec3(1.0);
     vec3 detail_orm = vec3(1.0);
     // The AMBIENT share of the baked horizon term: DIRECTION-FREE, because
@@ -557,12 +564,12 @@ void main() {
     // Ground tileset branch (Task 7): MaterialGpu.flags_misc.y low byte
     // carries detailSlot+1 (0 = no tileset). When present, the Wang-sampled
     // ground texture replaces the material's flat base color/normal/ORM.
-    int tileset_slot = GBUFFER_PROFILE_MODE == 2 || direct_source_page
+    int tileset_slot = GBUFFER_UNIFORM_PBR || GBUFFER_PROFILE_MODE == 2 || direct_source_page
         ? -1 : tileset_detail_slot(material.flags_misc);
-    const bool finished_domain = GBUFFER_PROFILE_MODE != 2 && !direct_source_page &&
+    const bool finished_domain = !GBUFFER_UNIFORM_PBR && GBUFFER_PROFILE_MODE != 2 && !direct_source_page &&
         (material.flags_misc.x & MATERIAL_SURFACE_DETAIL) != 0u && !is_impostor;
     bool finished_surface = false;
-    if (finished_domain && in_vt_slot != 0u && tileset_slot >= 0 && tileset_slot < TILESET_SOURCE_SLOTS)
+    if (finished_domain && vt_slot != 0u && tileset_slot >= 0 && tileset_slot < TILESET_SOURCE_SLOTS)
         finished_surface = tileset.mean_albedo[tileset_slot].w > 0.0 &&
                            TILESET_SLOT_SCALAR(tile_size_m, tileset_slot) > 0.0;
     if (tileset_slot >= 0 && !is_impostor && !finished_domain) {
@@ -1012,13 +1019,13 @@ void main() {
     }
 
     // ---- WP-E: chart-space virtual texturing --------------------------------
-    // in_vt_slot is 0 for every draw whose part has no chart table, so the
+    // vt_slot is 0 for every draw whose part has no chart table, so the
     // whole block is skipped and the legacy result above is the final one
     // (the regression gate: chartless parts render byte-identically).
-    // in_vt_slot is `flat` and comes from the draw record, so it is
+    // vt_slot is `flat` and comes from the draw record, so it is
     // quad-uniform — the derivatives below are well defined.
-    if (GBUFFER_PROFILE_MODE != 2 && in_vt_slot != 0u && !finished_surface) {
-        VtAddress vt = vt_resolve(in_vt_slot, in_surface.xy, vt_lod);
+    if (GBUFFER_PROFILE_MODE != 2 && vt_slot != 0u && !finished_surface) {
+        VtAddress vt = vt_resolve(vt_slot, in_surface.xy, vt_lod);
         bool connected_pom = false;
         uvec4 pom_origin_request=uvec4(0),pom_neighbor_request=uvec4(0);
         vec3 connected_albedo = vec3(0), connected_orm = vec3(0), connected_normal = vec3(0);
@@ -1027,7 +1034,7 @@ void main() {
                 composed_pom_chart = vt_aux_chart(uvec4(vt_sample_aux(vt) * 255.0 + 0.5));
             vec3 ray_world = normalize(in_world_pos - frame.camera_eye_pixel_budget.xyz);
             vec3 ray_local = transpose(in_vt_normal_matrix) * ray_world;
-            VtVariantRecord record = vt_variants[in_vt_slot - 1u];
+            VtVariantRecord record = vt_variants[vt_slot - 1u];
             vec2 uv_ray; float texel_m;
             if (vt_parallax_metric(local_dx, local_dy, atlas_dx, atlas_dy, ray_local,
                     vec2(record.atlas_w, record.atlas_h), uv_ray, texel_m)) {
@@ -1036,7 +1043,7 @@ void main() {
                 float distance_m = length(in_world_pos - frame.camera_eye_pixel_budget.xyz);
                 float band = max(tileset.pom_a.w, 1e-4);
                 float fade = 1.0 - clamp((distance_m - (tileset.pom_a.z - band)) / band, 0.0, 1.0);
-                VtParallaxSample hit = vt_parallax_sample(in_vt_slot, in_surface.xy, vt_lod,
+                VtParallaxSample hit = vt_parallax_sample(vt_slot, in_surface.xy, vt_lod,
                     uv_ray, -dot(normalize(in_normal), ray_local), texel_m, footprint,
                     int(tileset.pom_a.x), int(tileset.pom_a.y), max(tileset.pom_b.w, 0.0),
                     max(tileset.pom_b.z, 0.0), fade, in_part_local_pos, ray_local);
@@ -1214,7 +1221,7 @@ void main() {
 
     // The baked mesh remains static. Only the shading normal and roughness
     // move, evaluated from this draw's explicit immutable field identity.
-    if ((material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
+    if (!GBUFFER_UNIFORM_PBR && (material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
         WaterSurfaceState water_state;
         if (water_evaluate_surface(
                 in_water_binding_slot, in_water_generation,
@@ -1271,12 +1278,12 @@ void main() {
     if (horizon_debug_value >= 0.0) base_color = vec3(horizon_debug_value);
     // Appended diagnostic modes retain the existing horizon enum numbering.
     // Read through Raw albedo; shading/depth still execute their normal path.
-    int surface_debug = int(tileset.vt_near.w + 0.5);
+    int surface_debug = GBUFFER_UNIFORM_PBR ? 0 : int(tileset.vt_near.w + 0.5);
     if (surface_debug == 7)
         base_color = vt_parallax_status_color(composed_pom_status & 255u);
     else if (surface_debug == 8)
         base_color = direct_source_page
-            ? lod_debug_color(composed_pom_chart ^ (in_vt_slot * 1664525u))
+            ? lod_debug_color(composed_pom_chart ^ (vt_slot * 1664525u))
             : vec3(0.25);
     else if (surface_debug == 9)
         base_color = (composed_pom_status & 256u) != 0u
@@ -1287,7 +1294,7 @@ void main() {
         // mode 11 is (log2(finest t/m) / 12, log2(resident t/m) / 12, valid).
         // Black is no VT; magenta is a module mapping/degenerate metric.
         // These are ordinary chart-page metrics, not live tileset detail.
-        VtAddress sample_at_proxy = vt_resolve(in_vt_slot, in_surface.xy, vt_lod);
+        VtAddress sample_at_proxy = vt_resolve(vt_slot, in_surface.xy, vt_lod);
         base_color = vec3(0);
         if (sample_at_proxy.valid) {
             base_color = vec3(1,0,1);
@@ -1296,7 +1303,7 @@ void main() {
                     base_color = vec3(float(sample_at_proxy.desired_mip) / 8.0,
                                       float(sample_at_proxy.mapped_mip) / 8.0, 1);
                 } else {
-                    VtVariantRecord record = vt_variants[in_vt_slot - 1u];
+                    VtVariantRecord record = vt_variants[vt_slot - 1u];
                     vec2 unused_ray; float world_texel_m;
                     if (vt_parallax_metric(dPdx, dPdy, atlas_dx, atlas_dy, vec3(0),
                             vec2(record.atlas_w, record.atlas_h), unused_ray, world_texel_m)) {

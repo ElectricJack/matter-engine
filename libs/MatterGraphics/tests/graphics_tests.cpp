@@ -1,8 +1,7 @@
 #include <matter/graphics/graphics.h>
 #include <cstdlib>
-#include <fstream>
+#include "imported_asset_fixture.h"
 #include <iostream>
-#include <iterator>
 #include <limits>
 #include <stdexcept>
 
@@ -239,11 +238,8 @@ void sharing_and_changes() {
 }
 
 void imported_asset() {
-  std::ifstream file(MATTER_GRAPHICS_IMPORTED_ASSET);
-  check(bool(file), "GFX-IMPORTED fixture exists");
-  std::string json{std::istreambuf_iterator<char>(file), {}};
   mc::AssetDocument asset;
-  check(mc::decode_asset(json, asset).ok(), "GFX-IMPORTED decode");
+  check(imported_asset_fixture(asset).ok(), "GFX-IMPORTED generated JSON decode");
   Fixture f;
   auto ticket = submit(f.graphics, {std::make_shared<const mc::AssetDocument>(asset), {}, {}});
   auto h = complete(f.graphics, ticket);
