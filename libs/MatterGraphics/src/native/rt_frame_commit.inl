@@ -16,6 +16,7 @@ std::array<uint64_t, 4> VkSceneRenderer::blas_cache_stats() const {
 
 void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
                                                bool succeeded) {
+    frame_image_layouts_.finish(frame_serial, succeeded);
     if (blas_cache_) blas_cache_->finish(frame_serial, succeeded);
     if (frame_serial == 0) return;
     for (auto& frame : frames_) if (frame.geometry_feedback_pending_serial == frame_serial) {

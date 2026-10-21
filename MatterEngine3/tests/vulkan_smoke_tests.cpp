@@ -7493,6 +7493,13 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
                       std::vector<viewer::RtGeometryDebugRecord>&
                           records,
                       uint32_t& builds) {
+        const auto mark = [&](const char* phase) {
+            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            std::printf("RT multi-LOD: attempt=%llu phase=%s monotonic_ms=%.3f\n",
+                        static_cast<unsigned long long>(attempt), phase,
+                        std::chrono::duration<double, std::milli>(now).count());
+            std::fflush(stdout);
+        };
         viewer::TemporalFrame temporal{};
         temporal.current_unjittered = matrices;
         temporal.previous_unjittered = matrices;
@@ -7503,18 +7510,29 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
         temporal.attempt_token = attempt;
         renderer.set_temporal_frame(temporal);
         matter::VulkanFrame frame{};
+        mark("begin.enter");
         const bool began = vulkan.begin_frame(frame, error);
-        const bool recorded = began &&
+        mark("begin.exit/prepare.enter");
+        const bool prepared = began &&
             renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
-                                   error) &&
+                                   error);
+        mark("prepare.exit/record.enter");
+        const bool rendered = prepared &&
             renderer.record_cull_and_render(frame, matrices, camera.position,
-                                            1.0f, error) &&
+                                            1.0f, error);
+        mark("record.exit/composite.enter");
+        const bool recorded = rendered &&
             renderer.record_composite_to_swapchain(frame, error);
+        mark("composite.exit");
         records = renderer.test_last_rt_geometry_records();
         builds = renderer.test_last_rt_blas_build_count();
+        mark("end_frame.enter");
         const bool submitted = recorded && vulkan.end_frame(frame, error);
+        mark("end_frame.exit/finish.enter");
         renderer.finish_ray_tracing_frame(frame.serial, submitted);
+        mark("finish.exit/wait_idle.enter");
         vulkan.wait_idle();
+        mark("wait_idle.exit");
         return submitted;
     };
     std::vector<viewer::RtGeometryDebugRecord> first;
@@ -13199,6 +13217,9 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
 }
 
 void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
+    std::printf("Vulkan RT available=%s (standalone rt entry)\n",
+                vulkan.ray_tracing_available() ? "true" : "false");
+    std::fflush(stdout);
     run_native_multilod_rt_mapping(vulkan);
     run_rt_lod_compaction_invariant(vulkan);
     CHECK(vulkan.ray_tracing_available(),

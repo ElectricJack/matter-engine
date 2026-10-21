@@ -62,6 +62,7 @@ struct DirectHistory {
     bool reset_pending = false, filtered_valid = false;
 };
 struct VkSceneRenderer {
+    struct { void finish(uint64_t, bool) {} } frame_image_layouts_;
     std::array<FrameResources, 2> frames_{};
     bool primary_light_audit_ = false, rt_adaptive_diagnostics_ = false;
     uint64_t primary_light_audit_frames_ = 0, rt_adaptive_diagnostic_frames_ = 0;

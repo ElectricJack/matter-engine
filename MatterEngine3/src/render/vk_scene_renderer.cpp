@@ -1820,6 +1820,7 @@ VkSceneRenderer::~VkSceneRenderer() {
 // poisoned branch of reset()) wait_idle first. Calling it while a frame is in
 // flight would destroy objects a submitted command buffer still references.
 void VkSceneRenderer::destroy_pipeline() {
+    frame_image_layouts_.clear();
     if (!vulkan_) return;
     gpu_visual_mesher_.reset();
     gpu_solid_face_projector_.reset();
@@ -3249,11 +3250,21 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(water forward)", result,
                        error);
     }
+    std::vector<FrameResources> next_frames(frame_slot_count);
     const auto destroy_candidate_pools = [&] {
+        // A later slot can fail after earlier candidates allocated query
+        // pools. These raw handles are not owned by the buffer RAII members.
+        for (auto& candidate : next_frames) {
+            if (candidate.ts_pool != VK_NULL_HANDLE)
+                vkDestroyQueryPool(vulkan_->device(), candidate.ts_pool, nullptr);
+            if (candidate.raster_stats_pool != VK_NULL_HANDLE)
+                vkDestroyQueryPool(vulkan_->device(), candidate.raster_stats_pool, nullptr);
+            candidate.ts_pool = VK_NULL_HANDLE;
+            candidate.raster_stats_pool = VK_NULL_HANDLE;
+        }
         vkDestroyDescriptorPool(vulkan_->device(), next_water_pool, nullptr);
         vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
     };
-    std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
     layouts.reserve(frame_slot_count * 21);
     for (size_t index = 0; index < frame_slot_count; ++index) {
@@ -11658,6 +11669,27 @@ bool VkSceneRenderer::record_cull_and_render(
     if (!upload_water_forward_constants(selected, matrices, raster_extent_,
                                         error))
         return false;
+    // Targets have now been allocated (including any synchronous initial
+    // transitions). Snapshot before frame commands change their layouts.
+    // finish_ray_tracing_frame rolls back only an unsubmitted recording.
+    if (frame_image_layouts_.begin(frame.serial)) {
+        for (auto* image : {&albedo_, &normal_, &orm_, &velocity_,
+                &material_instance_, &reactivity_, &vt_feedback_, &depth_,
+                &hdr_, &opaque_hdr_, &opaque_depth_, &visibility_,
+                &raw_diffuse_, &raw_specular_, &raw_specular_aux_,
+                &raw_transmission_, &raw_transmission_aux_, &raw_local_direct_,
+                &local_direct_filtered_, &visibility_id_color_, &visibility_id_depth_})
+            frame_image_layouts_.capture(*image);
+        for (auto* histories : {&gi_history_, &gi_spec_history_,
+                                &gi_trans_history_, &local_direct_history_})
+            for (auto& history : *histories)
+                for (auto* image : {&history.radiance, &history.moments,
+                        &history.history_length, &history.depth, &history.normal,
+                        &history.identity, &history.rejection, &history.aux})
+                    frame_image_layouts_.capture(*image);
+        for (auto* images : {&gi_atrous_, &gi_spec_atrous_, &gi_trans_atrous_})
+            for (auto& image : *images) frame_image_layouts_.capture(image);
+    }
     // Resize froxels while this frame slot is known complete and before the
     // composite descriptor below is written. The same frame then binds the
     // candidate integrated view rather than one frame of the retired bundle.
@@ -14078,6 +14110,7 @@ int VkSceneRenderer::fill_rt_instances(
 // reading. Does NOT destroy the tileset slots, the impostor atlas or the VT
 // runtime -- those are torn down by destroy_pipeline().
 void VkSceneRenderer::reset() {
+    frame_image_layouts_.abandon();
     const bool full_reset = poisoned();
     // ALWAYS idle, not just on the poisoned path.
     //

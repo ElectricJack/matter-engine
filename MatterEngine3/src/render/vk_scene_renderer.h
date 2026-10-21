@@ -112,6 +112,7 @@
 #include "vk_animation_bounds.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
+#include "../../../libs/MatterGraphics/src/native/frame_image_layouts.h"
 #include "water_field_vk.h"
 #include "water_field_vk_resources.h"
 #include "water_animation_gpu.h"
@@ -3497,6 +3498,7 @@ private:
     std::vector<std::uint32_t> water_animation_direct_transform_slots_;
 
     matter::VkImageResource albedo_;
+    FrameImageLayouts frame_image_layouts_;
     matter::VkImageResource normal_;
     matter::VkImageResource orm_;
     matter::VkImageResource velocity_;
