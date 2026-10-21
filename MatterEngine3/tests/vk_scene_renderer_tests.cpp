@@ -75,8 +75,8 @@ static void test_atmosphere_transaction_public_abi() {
 
 static void test_local_light_renderer_public_abi() {
     printf("\n[test_local_light_renderer_public_abi]\n");
-    static_assert(sizeof(viewer::LocalLightGpuMeta) == 32,
-                  "local-light metadata is two std430 lanes");
+    static_assert(sizeof(viewer::LocalLightGpuMeta) == 48,
+                  "local-light metadata is three std430 lanes");
     CHECK(offsetof(viewer::LocalLightGpuMeta, cell_size) == 16,
           "local-light floating index config begins at byte 16");
     viewer::LocalDirectLightingContract contract{};
@@ -542,7 +542,7 @@ static void test_water_field_transport_contract() {
     std::ifstream vert("../../libs/MatterGraphics/shaders/raster.vert");
     const std::string vert_text((std::istreambuf_iterator<char>(vert)),
                                 std::istreambuf_iterator<char>());
-    std::ifstream rt("../shaders_vk/rt_surface_common.glsl");
+    std::ifstream rt("../../libs/MatterGraphics/shaders/rt_surface_common.glsl");
     const std::string rt_text((std::istreambuf_iterator<char>(rt)),
                               std::istreambuf_iterator<char>());
     CHECK(header_text.find("static_assert(sizeof(GpuInstance) == 176)") !=

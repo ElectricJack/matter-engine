@@ -14,6 +14,8 @@ struct GpuInstance {
     uint water_binding_slot;
     uint water_generation;
     uint water_pad0;
-    uint water_pad1;
+    // Nonzero when det(transform) < 0: cull.comp routes the draw to the
+    // bucket's mirrored (clockwise-front) command range.
+    uint mirrored;
 };
 #endif

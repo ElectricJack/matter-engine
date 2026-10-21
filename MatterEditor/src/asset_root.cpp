@@ -36,13 +36,23 @@ std::filesystem::path executable_dir() {
 std::string resolve_asset_root_from(const char* name,
                                     const std::filesystem::path& exe_dir,
                                     const std::filesystem::path& cwd) {
+    return resolve_asset_root_from(name, exe_dir, cwd,
+        [](const std::filesystem::path& candidate) {
+            std::error_code ec;
+            return std::filesystem::is_directory(candidate, ec);
+        });
+}
+
+std::string resolve_asset_root_from(const char* name,
+                                    const std::filesystem::path& exe_dir,
+                                    const std::filesystem::path& cwd,
+                                    const DirectoryLookup& is_directory) {
     namespace fs = std::filesystem;
 
     auto walk_up = [&](fs::path dir) -> std::string {
         for (int depth = 0; depth < 8 && !dir.empty(); ++depth) {
-            std::error_code ec;
             const fs::path candidate = dir / name;
-            if (fs::is_directory(candidate, ec))
+            if (is_directory(candidate))
                 return candidate.string();
             const fs::path parent = dir.parent_path();
             if (parent == dir) break;   // reached the filesystem root
@@ -83,8 +93,7 @@ std::string resolve_asset_root_from(const char* name,
     // Step 1 keeps the error_code overload: an unreadable exe-adjacent path
     // must fall through to the next step, not throw out of a resolver whose
     // documented failure mode is "return the bare name".
-    std::error_code ec;
-    if (!exe_dir.empty() && fs::is_directory(exe_dir / name, ec))
+    if (!exe_dir.empty() && is_directory(exe_dir / name))
         return (exe_dir / name).string();
 
     if (!cwd.empty())

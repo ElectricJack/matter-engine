@@ -7082,6 +7082,7 @@ int main() {
             stats.frozen_cull_camera_valid = false;
         }
         options.freeze_cull_camera = stats.freeze_cull_camera;
+        options.live_terrain_graphics = stats.live_terrain_graphics;
         options.pixel_budget = stats.pixel_budget;
         options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
