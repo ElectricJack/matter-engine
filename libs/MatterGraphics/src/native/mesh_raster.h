@@ -29,6 +29,11 @@ struct MeshRasterRecord {
         *reactivity{}, *vt_feedback{}, *depth{}, *hdr{};
     VkExtent2D extent{};
     VkPipeline raster_pipeline = VK_NULL_HANDLE, skinned_raster_pipeline = VK_NULL_HANDLE;
+    // Clockwise-front twin of raster_pipeline. When set, `indirect_buffer`
+    // carries a second command table at mirror_command_base (same indexing,
+    // same draw_ranges) holding the instances whose transform mirrors them.
+    VkPipeline mirrored_raster_pipeline = VK_NULL_HANDLE;
+    uint32_t mirror_command_base = 0;
     VkPipelineLayout raster_layout = VK_NULL_HANDLE;
     VkDescriptorSet raster_sets[2]{};
     VkBuffer vertex_buffer = VK_NULL_HANDLE, index_buffer = VK_NULL_HANDLE,

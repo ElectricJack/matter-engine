@@ -1,0 +1,57 @@
+2026-10-14T16:58:24.0878423-07:00
+{
+    "Name":  "NVIDIA GeForce RTX 4090",
+    "DriverVersion":  "32.0.16.1088",
+    "DriverDate":  "\/Date(1784678400000)\/",
+    "PNPDeviceID":  "PCI\\VEN_10DE\u0026DEV_2684\u0026SUBSYS_889A1043\u0026REV_A1\\4\u00262283F625\u00260\u00260019"
+}
+Wed Oct 14 16:58:24 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 610.88                 KMD Version: 610.88        CUDA UMD Version: 13.3     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                  Driver-Model | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4090      WDDM  |   00000000:0A:00.0 Off |                  Off |
+|  0%   38C    P8             16W /  450W |     918MiB /  24564MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            2700    C+G   ...yb3d8bbwe\WindowsTerminal.exe      N/A      |
+|    0   N/A  N/A            4696    C+G   ...8bbwe\PhoneExperienceHost.exe      N/A      |
+|    0   N/A  N/A            8892    C+G   ...r\frontend\Docker Desktop.exe      N/A      |
+|    0   N/A  N/A            9324    C+G   ...indows\System32\ShellHost.exe      N/A      |
+|    0   N/A  N/A           10996    C+G   ...4__8wekyb3d8bbwe\Video.UI.exe      N/A      |
+|    0   N/A  N/A           11196    C+G   C:\Windows\explorer.exe               N/A      |
+|    0   N/A  N/A           12308    C+G   ...em_tray\lghub_system_tray.exe      N/A      |
+|    0   N/A  N/A           12476    C+G   ...App_cw5n1h2txyewy\LockApp.exe      N/A      |
+|    0   N/A  N/A           14040    C+G   ...2txyewy\CrossDeviceResume.exe      N/A      |
+|    0   N/A  N/A           16052    C+G   ..._cw5n1h2txyewy\SearchHost.exe      N/A      |
+|    0   N/A  N/A           17424    C+G   ...y\StartMenuExperienceHost.exe      N/A      |
+|    0   N/A  N/A           17452    C+G   ...Chrome\Application\chrome.exe      N/A      |
+|    0   N/A  N/A           20412    C+G   ....0.4283.45\msedgewebview2.exe      N/A      |
+|    0   N/A  N/A           22392    C+G   ...tware\Current\LogiOverlay.exe      N/A      |
+|    0   N/A  N/A           22552    C+G   ...Chrome\Application\chrome.exe      N/A      |
+|    0   N/A  N/A           22916    C+G   ...lot\Application\mscopilot.exe      N/A      |
+|    0   N/A  N/A           24140    C+G   ...5n1h2txyewy\TextInputHost.exe      N/A      |
+|    0   N/A  N/A           27168    C+G   ...\cef.win64\steamwebhelper.exe      N/A      |
+|    0   N/A  N/A           30228    C+G   ...ams\signal-desktop\Signal.exe      N/A      |
+|    0   N/A  N/A           31092    C+G   ...2p2nqsd0c76g0\app\ChatGPT.exe      N/A      |
+|    0   N/A  N/A           33892    C+G   ...xyewy\ShellExperienceHost.exe      N/A      |
+|    0   N/A  N/A           34564    C+G   ...\codex-computer-use-swift.exe      N/A      |
+|    0   N/A  N/A           41460    C+G   ...ams\signal-desktop\Signal.exe      N/A      |
++-----------------------------------------------------------------------------------------+
+Relevant environment:
+
+Name        Value                 
+----        -----                 
+VK_SDK_PATH C:\VulkanSDK\1.4.357.0
+VULKAN_SDK  C:\VulkanSDK\1.4.357.0
+
+
