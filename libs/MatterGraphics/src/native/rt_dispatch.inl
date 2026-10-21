@@ -1481,15 +1481,6 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                        VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(constants),
                        &constants);
-    const auto& props = vulkan_->ray_tracing_properties();
-    const VkDeviceSize handle_stride =
-        (props.shader_group_handle_size + props.shader_group_handle_alignment - 1) /
-        props.shader_group_handle_alignment * props.shader_group_handle_alignment;
-    const VkStridedDeviceAddressRegionKHR miss{rt_sbt_miss_address_,
-                                                handle_stride,
-                                                rt_sbt_miss_size_};
-    const VkStridedDeviceAddressRegionKHR hit{rt_sbt_hit_address_, handle_stride,
-                                               rt_sbt_hit_size_};
     const VkStridedDeviceAddressRegionKHR callable{};
     FrameResources& rt_frame_slot = frames_[frame.frame_slot];
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, false, rt_frame_slot);
@@ -1500,8 +1491,6 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, true, rt_frame_slot);
     const bool trace_local_direct = !local_light_publication_.records.empty();
     if (gi_settings_.enabled || trace_local_direct) {
-        vkCmdBindPipeline(frame.command_buffer,
-                          VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
         const VkClearColorValue dispatch_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
         if (gi_settings_.enabled) {
             clear_color_image_for_use(
@@ -1566,8 +1555,6 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         constexpr uint32_t kSceneGiEnabledBit = 0x20000000u;
         const uint32_t scene_gi_state =
             gi_settings_.enabled ? kSceneGiEnabledBit : 0u;
-        const VkStridedDeviceAddressRegionKHR gi_raygen{
-            rt_sbt_lighting_raygen_address_, handle_stride, handle_stride};
         if (trace_local_direct) {
             write_gpu_timestamp(frame.command_buffer, kGpuZoneRtLocalDirect,
                                 false, rt_frame_slot);
@@ -1587,11 +1574,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(primary_gi),
                                &primary_gi);
-            const VkStridedDeviceAddressRegionKHR primary_raygen{
-                rt_separate_primary_ ? rt_sbt_primary_raygen_address_
-                                     : rt_sbt_lighting_raygen_address_,
-                handle_stride, handle_stride};
-            cmd_trace(frame.command_buffer, &primary_raygen, &miss, &hit, &callable,
+            const auto& primary = rt_separate_primary_
+                ? rt_primary_pipeline_ : rt_lighting_pipeline_;
+            vkCmdBindPipeline(frame.command_buffer,
+                              VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, primary.pipeline);
+            cmd_trace(frame.command_buffer, &primary.raygen, &primary.miss,
+                      &primary.hit, &callable,
                       raster_extent_.width, raster_extent_.height, 1);
             write_gpu_timestamp(frame.command_buffer, kGpuZoneRtLocalDirect,
                                 true, rt_frame_slot);
@@ -1619,13 +1607,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                     kGiDispatchBit | scene_gi_state | mask;
                 vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                    VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
-                VkStridedDeviceAddressRegionKHR signal_raygen = gi_raygen;
-                if (rt_specialize_gi_) {
-                    signal_raygen.deviceAddress = mask == kDiffuseOnlyBit
-                        ? rt_sbt_diffuse_raygen_address_ : rt_sbt_reflection_raygen_address_;
-                }
-                cmd_trace(frame.command_buffer, &signal_raygen, &miss, &hit, &callable,
-                          extent.width, extent.height, 1);
+                const auto& signal = !rt_specialize_gi_ ? rt_lighting_pipeline_ :
+                    (mask == kDiffuseOnlyBit ? rt_diffuse_pipeline_ : rt_reflection_pipeline_);
+                vkCmdBindPipeline(frame.command_buffer,
+                                  VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, signal.pipeline);
+                cmd_trace(frame.command_buffer, &signal.raygen, &signal.miss,
+                          &signal.hit, &callable, extent.width, extent.height, 1);
                 ++last_rt_trace_dispatches_;
             };
             if (raw_diffuse_extent_.width == raw_reflection_extent_.width &&
@@ -1741,8 +1728,10 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         selected.rt_tlas_scratch.lifetime,
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
         selected.rt_error_counter.lifetime, selected.materials.lifetime,
-        selected.rt_test_output.lifetime, rt_sbt_.lifetime,
+        selected.rt_test_output.lifetime,
         rt_shadow_pipeline_.sbt.lifetime, rt_surface_test_pipeline_.sbt.lifetime,
+        rt_lighting_pipeline_.sbt.lifetime, rt_primary_pipeline_.sbt.lifetime,
+        rt_diffuse_pipeline_.sbt.lifetime, rt_reflection_pipeline_.sbt.lifetime,
         vertices_.lifetime, indices_.lifetime};
     if (rt_primary_adaptive_)
         for (const auto* image : primary_history_inputs)

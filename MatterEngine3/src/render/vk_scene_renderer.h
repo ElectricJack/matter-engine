@@ -2168,7 +2168,7 @@ public:
     VkDeviceAddress test_rt_test_raygen_address() const {
         return rt_surface_test_pipeline_.raygen.deviceAddress;
     }
-    VkDeviceSize test_rt_sbt_stride() const { return rt_sbt_stride_; }
+    VkDeviceSize test_rt_sbt_stride() const { return rt_surface_test_pipeline_.raygen.stride; }
     VkDeviceAddress test_rt_miss_address() const { return rt_surface_test_pipeline_.miss.deviceAddress; }
     VkDeviceAddress test_rt_hit_address() const { return rt_surface_test_pipeline_.hit.deviceAddress; }
     VkDeviceSize test_rt_miss_region_size() const { return rt_surface_test_pipeline_.miss.size; }
@@ -3446,8 +3446,7 @@ private:
     VkDescriptorSetLayout rt_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;
-    VkPipeline rt_pipeline_ = VK_NULL_HANDLE;
-    // Shadow and surface-query dispatches must not compile unused GI raygens.
+    // Each dispatch compiles only its own raygen and reachable miss/hit groups.
     // Handles in each SBT belong to that pipeline, including miss/hit handles.
     struct RtTracePipeline {
         VkPipeline pipeline = VK_NULL_HANDLE;
@@ -3455,6 +3454,8 @@ private:
         VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{};
     };
     RtTracePipeline rt_shadow_pipeline_, rt_surface_test_pipeline_;
+    RtTracePipeline rt_lighting_pipeline_, rt_primary_pipeline_;
+    RtTracePipeline rt_diffuse_pipeline_, rt_reflection_pipeline_;
     VkDescriptorPool rt_descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> rt_descriptor_sets_;
     std::vector<VkDescriptorSet> rt_adaptive_descriptor_sets_;
@@ -3822,23 +3823,11 @@ private:
     VkImageUsageFlags depth_usage_ = 0;
     VkImageUsageFlags opaque_hdr_usage_ = 0;
     VkImageUsageFlags opaque_depth_usage_ = 0;
-    matter::VkBufferResource rt_sbt_;
-    VkDeviceAddress rt_sbt_address_ = 0;
-    VkDeviceAddress rt_sbt_test_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_lighting_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_primary_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_diffuse_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_reflection_raygen_address_ = 0;
     bool rt_specialize_gi_ = true;
     bool rt_primary_adaptive_ = false;
     bool rt_separate_primary_ = false;
     bool rt_adaptive_diagnostics_ = false;
     uint64_t rt_adaptive_diagnostic_frames_ = 0;
-    VkDeviceAddress rt_sbt_miss_address_ = 0;
-    VkDeviceAddress rt_sbt_hit_address_ = 0;
-    VkDeviceSize rt_sbt_stride_ = 0;
-    VkDeviceSize rt_sbt_miss_size_ = 0;
-    VkDeviceSize rt_sbt_hit_size_ = 0;
     // The INTERNAL raster extent the G-buffer and HDR targets were built at —
     // the pre-upscale resolution when DLSS is active, not the swapchain's.
     // raster_width()/raster_height() report it.

@@ -1,0 +1,46 @@
+noble-zenith-31 epoch10: isolate lighting raygens
+
+Authorization: latest supervisor decision at1792557203.369712 and explicit
+human recovery release at1792557204.0453553. At most two native invocations:
+one standalone rt diagnostic with RTLD_NOLOAD LLVM tracer,1500s cap; then
+one unchanged original wrapper invocation after correction,1500s per mode.
+Same device/environment/resource caps, process-group cleanup and assertions.
+
+Baseline: own published be4c77b3adefe9d5b4d05d0ddffc9d125f800848, recovered
+by fast-forward from clean assigned9d846e66. Prior acceptance/evidence stays
+intact: rt-counters PASS/validation0; standalone rt first GI frame timed out.
+No other task, branch, project configuration or integration state changed.
+
+Diagnostic: IN PROGRESS, exact epoch9 executable and unchanged epoch7
+RTLD_NOLOAD tracer. Native child only preload forwards original LLVM calls.
+Managed submission refused jobs.preset_denied without starting a producer;
+used supported foreground aq test with existing resource controls instead.
+No second diagnostic or replacement invocation. Command:
+  aq test --aq-timeout 75 -n 0
+  docs/agent/evidence/2026-10-20-rt-counter-native/epoch10/test_compiler_trace.py -q -s
+Source/executable/interposer hashes: diagnostic-provenance.txt.
+Output: /tmp/noble-zenith-31-epoch10/trace/rt.log and diagnostic-pytest.log.
+
+Prepared source change: one raygen per lighting, optional primary, diffuse
+and reflection pipeline/SBT, reusing the production subset remapper and SBT
+builder. Each SBT queries handles from its own pipeline. The old combined
+pipeline/SBT and its address bookkeeping are removed. Dispatches choose the
+corresponding pipeline and table; shaders, specialization values, dimensions,
+ray work, miss/hit indices and counters are unchanged. All new tables are
+retained for submitted frames and destroyed/reset with the existing pipelines.
+This is the supervisor-authorized extension of the previous shadow isolation.
+The diagnostic has not yet established the exact stalled LLVM call.
+
+CPU checks PASS:12 tests in1.35s, including expanded production group-remapping
+checks for all lighting variants with and without separate primary, exact
+specialization pointers and miss/hit indices. Existing counter lifecycle and
+frame rollback tests unchanged. Command:
+  aq test --aq-timeout 75 -n 0 MatterEngine3/tests/test_rt_counter_cpu.py
+  MatterEngine3/tests/test_rt_pipeline_subset.py
+  MatterEngine3/tests/test_frame_recording_rollback.py -q
+
+Linux incremental build: PASS; full output in build.log.
+  cmake --build /tmp/noble-zenith-31-epoch9/build --parallel 4
+Final native gates: NOT STARTED. run-gates.sh is prepared for one invocation
+only, using a freshly copied epoch10 executable and new logs directory.
+No final native, hardware RT, Windows or performance acceptance claimed.

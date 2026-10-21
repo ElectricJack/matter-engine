@@ -12,7 +12,9 @@ def test_shadow_and_surface_pipeline_groups(tmp_path):
     groups = source[source.index("    VkRayTracingShaderGroupCreateInfoKHR groups[10]"):
                     source.index("    VkRayTracingPipelineCreateInfoKHR create{")]
     selections = []
-    for name in ["rt_shadow_pipeline_", "rt_surface_test_pipeline_"]:
+    for name in ["rt_shadow_pipeline_", "rt_surface_test_pipeline_",
+                 "rt_lighting_pipeline_", "rt_primary_pipeline_",
+                 "rt_diffuse_pipeline_", "rt_reflection_pipeline_"]:
         match = re.search(r"create_trace_pipeline\(" + name + r", (\{[^}]+\}), (\d+),", source)
         assert match, name
         selections.append(match.groups())
@@ -72,6 +74,32 @@ int main() {
     assert(surface.groups[3].anyHitShader == 4);
     assert(surface.groups[4].closestHitShader == 5);
     assert(surface.groups[4].anyHitShader == 6);
+    // Each lighting dispatch keeps one raygen, identical specialization data,
+    // and the original visibility/radiance and visibility/surface SBT indices.
+    const auto check_lighting = [&](const RtPipelineSubset& subset, uint32_t raygen) {
+      assert(subset.groups.size() == 5 && subset.stages.size() == 7);
+      check_stages(subset, {raygen, 3, 4, 5, 6, 7, 8});
+      assert(subset.groups[0].generalShader == 0);
+      assert(subset.groups[1].generalShader == 1);
+      assert(subset.groups[2].generalShader == 2);
+      assert(subset.groups[3].closestHitShader == 3);
+      assert(subset.groups[3].anyHitShader == 4);
+      assert(subset.groups[4].closestHitShader == 5);
+      assert(subset.groups[4].anyHitShader == 6);
+      size_t raygens = 0;
+      for (const auto& stage : subset.stages) {
+        const auto old = (uintptr_t)stage.module - 1;
+        raygens += old <= 2 || old >= 9;
+      }
+      assert(raygens == 1);
+    };
+    static_assert(LIGHTING_COUNT == 2 && PRIMARY_COUNT == 2 &&
+                  DIFFUSE_COUNT == 2 && REFLECTION_COUNT == 2);
+    check_lighting(rt_pipeline_subset(stages, groups, LIGHTING_GROUPS), 2);
+    if (rt_separate_primary_)
+      check_lighting(rt_pipeline_subset(stages, groups, PRIMARY_GROUPS), 9);
+    check_lighting(rt_pipeline_subset(stages, groups, DIFFUSE_GROUPS), diffuse_stage);
+    check_lighting(rt_pipeline_subset(stages, groups, REFLECTION_GROUPS), diffuse_stage + 1);
     // Lighting's source groups remain untouched, including specialization groups.
     assert(groups[2].generalShader == 2 && groups[6].closestHitShader == 7);
     assert(groups[diffuse_group].generalShader == diffuse_stage);
@@ -84,7 +112,7 @@ int main() {
 }
 '''
     fixture = fixture.replace("// GROUPS", groups)
-    for label, (indices, count) in zip(["SHADOW", "SURFACE"], selections):
+    for label, (indices, count) in zip(["SHADOW", "SURFACE", "LIGHTING", "PRIMARY", "DIFFUSE", "REFLECTION"], selections):
         fixture = fixture.replace(label + "_GROUPS", indices).replace(label + "_COUNT", count)
     cpp = tmp_path / "pipeline.cpp"
     cpp.write_text(fixture)

@@ -1856,8 +1856,9 @@ void VkSceneRenderer::destroy_pipeline() {
         destroy_water_animation_generation(retired.resources);
     retired_water_animation_resources_.clear();
     water_animation_schedule_ = WaterAnimationGpuSchedule{};
-    rt_sbt_.reset();
-    for (auto* trace : {&rt_shadow_pipeline_, &rt_surface_test_pipeline_}) {
+    for (auto* trace : {&rt_shadow_pipeline_, &rt_surface_test_pipeline_,
+                        &rt_lighting_pipeline_, &rt_primary_pipeline_,
+                        &rt_diffuse_pipeline_, &rt_reflection_pipeline_}) {
         trace->sbt.reset();
         if (trace->pipeline != VK_NULL_HANDLE)
             vkDestroyPipeline(device, trace->pipeline, nullptr);
@@ -1917,8 +1918,6 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipelineLayout(device, gi_atrous_pipeline_layout_, nullptr);
     if (gi_atrous_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, gi_atrous_set_layout_, nullptr);
-    if (rt_pipeline_ != VK_NULL_HANDLE)
-        vkDestroyPipeline(device, rt_pipeline_, nullptr);
     if (rt_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device, rt_pipeline_layout_, nullptr);
     if (rt_descriptor_pool_ != VK_NULL_HANDLE)
@@ -2083,29 +2082,17 @@ void VkSceneRenderer::destroy_pipeline() {
     gi_atrous_pipeline_ = VK_NULL_HANDLE;
     gi_atrous_pipeline_layout_ = VK_NULL_HANDLE;
     gi_atrous_set_layout_ = VK_NULL_HANDLE;
-    rt_pipeline_ = VK_NULL_HANDLE;
     rt_pipeline_layout_ = VK_NULL_HANDLE;
     rt_descriptor_pool_ = VK_NULL_HANDLE;
     rt_set_layout_ = VK_NULL_HANDLE;
     rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     rt_descriptor_sets_.clear();
     rt_adaptive_descriptor_sets_.clear();
-    rt_sbt_address_ = 0;
-    rt_sbt_test_raygen_address_ = 0;
-    rt_sbt_lighting_raygen_address_ = 0;
-    rt_sbt_primary_raygen_address_ = 0;
-    rt_sbt_diffuse_raygen_address_ = 0;
-    rt_sbt_reflection_raygen_address_ = 0;
     rt_specialize_gi_ = true;
     rt_primary_adaptive_ = false;
     rt_separate_primary_ = false;
     rt_adaptive_diagnostics_ = false;
     rt_adaptive_diagnostic_frames_ = 0;
-    rt_sbt_miss_address_ = 0;
-    rt_sbt_hit_address_ = 0;
-    rt_sbt_stride_ = 0;
-    rt_sbt_miss_size_ = 0;
-    rt_sbt_hit_size_ = 0;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     for (auto& f : frames_) {
