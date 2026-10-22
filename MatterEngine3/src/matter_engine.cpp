@@ -14587,8 +14587,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             animation_skin_queue_pending_seal = true;
         }
     }
-    if (!replaying) {
     viewer::VkSceneLighting lighting{};
+    if (!replaying) {
     const auto controls =
         viewer::sanitize_vulkan_lighting_overrides(opts.vulkan_lighting);
     // --- Sun orientation and size ------------------------------------------
@@ -14717,7 +14717,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             return false;
         }
     }
-    {
+    if (!replaying) {
         PROFILE_SCOPE("build.portable_scene");
         const bool created = !impl_->portable_scene;
         if (created)
