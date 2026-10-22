@@ -2410,6 +2410,7 @@ public:
     static StaticUploadCensus static_upload_census();
 
 private:
+    friend class ScenePublication;
     // Mirrors ClusterMeta in shaders_vk/cull.comp — the 128-byte size asserted
     // below, the field order and the padding are all a shader contract; change
     // this and the .comp together, and rebuild SPIR-V. One entry per GLOBAL
