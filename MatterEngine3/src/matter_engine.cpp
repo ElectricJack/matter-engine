@@ -14730,7 +14730,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         view.sun_color = lighting.authored_sun_rgb;
         view.width = internal_extent.width;
         view.height = internal_extent.height;
-        if (impl_->live_terrain_requested) {
+        // Live terrain installs collision too. Keep the accepted collision
+        // until the complete replacement passes the scene admission gate.
+        if (impl_->live_terrain_requested && !impl_->vk_world_pending) {
             PROFILE_SCOPE("build.live_terrain");
             impl_->update_live_terrain(cam.position, opts.live_terrain_graphics);
         }
