@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
+NATIVE = ROOT / "libs/MatterGraphics/src/native"
 
 
 def compile_run(tmp_path, source):
@@ -15,13 +16,17 @@ def compile_run(tmp_path, source):
     exe = tmp_path / "probe"
     subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
                     "-I" + str(tmp_path),
-                    "-I" + str(ROOT / "libs/MatterGraphics/src/native"),
                     str(cpp), "-o", str(exe)],
                    check=True, capture_output=True, text=True, timeout=60)
     subprocess.run([str(exe)], check=True, timeout=10)
 
 
 def test_image_layout_submission_rollback(tmp_path):
+    # Quoted includes search the including header's directory first. Stage the
+    # production header unchanged beside the CPU stub so it uses that stub
+    # rather than the native Vulkan resource wrapper that now lives beside it.
+    (tmp_path / "frame_image_layouts.h").write_text(
+        (NATIVE / "frame_image_layouts.h").read_text())
     (tmp_path / "vk_resources.h").write_text(r'''
 #pragma once
 #include <memory>
