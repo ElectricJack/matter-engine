@@ -146,7 +146,7 @@ int main() {
 }
 '''
     assert "production batch walker" in compile_run(tmp_path, text, sources=(
-        "MatterEngine3/src/render/matrix_math.cpp",
+        "libs/MatterGraphics/src/matrix_math.cpp",
     ))
 
 
@@ -253,8 +253,8 @@ int main() {
 ''', sources=(
         "MatterEngine3/src/render/world_state.cpp",
         "MatterEngine3/src/render/vk_instance_cache.cpp",
-        "MatterEngine3/src/render/vk_temporal.cpp",
-        "MatterEngine3/src/render/matrix_math.cpp",
+        "libs/MatterGraphics/src/native/vk_temporal.cpp",
+        "libs/MatterGraphics/src/matrix_math.cpp",
     ))
     assert "smaller replacement passed" in output
 
