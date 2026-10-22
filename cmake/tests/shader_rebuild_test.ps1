@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$ExternalBuild)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -38,6 +38,15 @@ function Get-LastWriteTicks {
 $testRoot = Join-Path $repositoryRoot 'MatterEditor\build\cmake\shader-rebuild-test'
 $sourceDir = Join-Path $testRoot 'source'
 $buildDir = Join-Path $testRoot 'native shader build with spaces and a long output directory'
+if ($ExternalBuild) {
+    # The runner checkout is D: and its persistent CI build is C:. Absolute
+    # spaced paths in glslc depfiles must preserve the same dependency contract.
+    $externalRoot = Join-Path ([IO.Path]::GetTempPath()) ('matter-shader-' + [Guid]::NewGuid().ToString('N'))
+    $buildDir = Join-Path $externalRoot 'native shader build with spaces and a long output directory'
+    if ([IO.Path]::GetPathRoot($buildDir) -eq [IO.Path]::GetPathRoot($sourceDir)) {
+        throw 'External shader fixture requires different source/build drives.'
+    }
+}
 if (Test-Path -LiteralPath $testRoot) {
     Remove-Item -LiteralPath $testRoot -Recurse -Force
 }
@@ -267,4 +276,5 @@ if ($includeOutput -notmatch 'dependent_a\.comp' -or
     throw "Shared include edit rebuilt an incorrect command set:`n$includeOutput"
 }
 
+if ($ExternalBuild) { Remove-Item -LiteralPath $externalRoot -Recurse -Force }
 Write-Host 'shader rebuild dependency test: PASS'

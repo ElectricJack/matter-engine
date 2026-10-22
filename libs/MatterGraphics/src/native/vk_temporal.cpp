@@ -32,7 +32,7 @@
 #include <cstring>
 #include <utility>
 
-#include "matrix_math.h"
+#include "../matrix_math.h"
 #include "engine_profile_zones.h"
 #include "vk_perf.h"
 
