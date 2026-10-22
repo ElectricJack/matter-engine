@@ -682,12 +682,49 @@ static uint64_t derive_seed(const std::string& merged_json) {
 // inside a comment or a string literal matches just as well as a real
 // declaration, and only the FIRST match in the file is ever used — so a source
 // with two part classes silently bakes the first one.
-static std::string find_part_class_name(const std::string& source) {
+std::string find_part_class_name(const std::string& source) {
     // Perf fix: compile the regex once (static const) instead of once per call.
     static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Part\\b");
     std::smatch m;
     if (std::regex_search(source, m, re)) return m[1].str();
     return std::string();
+}
+
+// Registers a literal triangle stream as one BLAS entry with an identity TLAS
+// instance (group 0). Each Tri/TriEx is re-packed through a memset-zeroed copy
+// so union/alignment padding the emitter never writes cannot make re-bakes
+// byte-differ. Triangles past the end of `extra` get the untinted default.
+void register_direct_triangles(BLASManager& blas, TLASManager& tlas,
+                               const std::vector<Tri>& base_t,
+                               const std::vector<TriEx>& base_e) {
+    if (base_t.empty()) return;
+    std::vector<Tri>   norm(base_t.size());
+    std::vector<TriEx> normEx(base_t.size());
+    for (size_t i = 0; i < base_t.size(); ++i) {
+        Tri t; std::memset(&t, 0, sizeof(Tri));
+        t.vertex0 = base_t[i].vertex0; t.vertex1 = base_t[i].vertex1;
+        t.vertex2 = base_t[i].vertex2; t.centroid = base_t[i].centroid;
+        norm[i] = t;
+    }
+    for (size_t i = 0; i < base_t.size(); ++i) {
+        TriEx e; std::memset(&e, 0, sizeof(TriEx));
+        if (i < base_e.size()) {
+            const TriEx& s = base_e[i];
+            e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
+            e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
+            e.materialId=s.materialId;
+            e.tint=s.tint;
+        } else {
+            e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+        }
+        e.ao0 = e.ao1 = e.ao2 = 1.0f;
+        normEx[i]=e;
+    }
+    BLASHandle h = blas.register_triangles(norm, normEx);
+    if (h != INVALID_BLAS_HANDLE) {
+        tlas.load_identity();
+        tlas.draw(h, 0);
+    }
 }
 
 // Extract the authored class name from `class <Name> extends Tileset`.
@@ -827,7 +864,7 @@ std::string ScriptHost::merge_params_canonical(const std::string& source,
     // reference imported values). Fail-closed on a fold error.
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) {
@@ -920,7 +957,7 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     // error by returning an empty list.
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return out;
@@ -1100,7 +1137,7 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
 
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return out;
@@ -1147,7 +1184,7 @@ bool ScriptHost::eval_no_impostor(const std::string& source) {
 
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return false;
@@ -1399,7 +1436,7 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
 
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return out;
@@ -1547,7 +1584,7 @@ uint64_t ScriptHost::resolve_request_hash(const std::string& source,
         module_resolver::FoldResult folded;
         const char* bytes = source.data();
         size_t byte_count = source.size();
-        if (!shared_lib_roots_.empty()) {
+        if (module_sources_ || !shared_lib_roots_.empty()) {
             std::string error;
             if (!fold_sources_cached(source, folded, error)) return 0;
             bytes = folded.folded.data(); byte_count = folded.folded.size();
@@ -1583,7 +1620,7 @@ uint64_t ScriptHost::resolve_hash(const std::string& source,
     module_resolver::FoldResult fr;
     const char* src_bytes = source.data();
     size_t      src_len   = source.size();
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr))
             return 0;   // fail-closed
@@ -2623,7 +2660,7 @@ BakeResult ScriptHost::execute_source(const std::string& source,
     // previously created. The fold result, merged string, and resolved_hash are all
     // byte-identical to the previous double-RT path.
     module_resolver::FoldResult fold;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         std::string ferr;
         if (!fold_sources_cached(source, fold, ferr)) {
             // Fail-closed: a missing/illegal shared module aborts the bake with
@@ -2851,7 +2888,10 @@ BakeResult ScriptHost::execute_source(const std::string& source,
                             : std::filesystem::path(opts.parts_dir) / part_asset::cache_path_resolved(child_hashes[ci]);
                         std::optional<part_asset::PartAnimationLink> link;
                         std::error_code artifact_error;
-                        if (std::filesystem::exists(child_path, artifact_error)) {
+                        const bool child_exists = part_bundle::ScopedStorage::current()
+                            ? part_bundle::exists(child_path.string())
+                            : std::filesystem::exists(child_path, artifact_error);
+                        if (child_exists) {
                             if (!part_asset::load_animation_link(child_path.string(), child_hashes[ci], link))
                                 invalid_child_animation_artifacts.insert(child_hashes[ci]);
                             else child_animation_status[child_hashes[ci]] = link.has_value();
@@ -3243,35 +3283,7 @@ BakeResult ScriptHost::execute_source(const std::string& source,
                 }
             }
             // Base direct-triangle path: register each triangle as-is.
-            if (!base_t.empty()) {
-                std::vector<Tri>   norm(base_t.size());
-                std::vector<TriEx> normEx(base_t.size());
-                for (size_t i = 0; i < base_t.size(); ++i) {
-                    Tri t; std::memset(&t, 0, sizeof(Tri));
-                    t.vertex0 = base_t[i].vertex0; t.vertex1 = base_t[i].vertex1;
-                    t.vertex2 = base_t[i].vertex2; t.centroid = base_t[i].centroid;
-                    norm[i] = t;
-                }
-                for (size_t i = 0; i < base_t.size(); ++i) {
-                    TriEx e; std::memset(&e, 0, sizeof(TriEx));
-                    if (i < base_e.size()) {
-                        const TriEx& s = base_e[i];
-                        e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
-                        e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
-                        e.materialId=s.materialId;
-                        e.tint=s.tint;
-                    } else {
-                        e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
-                    }
-                    e.ao0 = e.ao1 = e.ao2 = 1.0f;
-                    normEx[i]=e;
-                }
-                BLASHandle h = blas.register_triangles(norm, normEx);
-                if (h != INVALID_BLAS_HANDLE) {
-                    tlas.load_identity();
-                    tlas.draw(h, 0);
-                }
-            }
+            register_direct_triangles(blas, tlas, base_t, base_e);
 
             // Each non-empty region chunk: weld -> apply_stack -> ensure_triex ->
             // unweld -> memset-zero repack -> register as one BLAS entry (group 0).
@@ -3767,7 +3779,7 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     module_resolver::FoldResult fold;
     ModuleStore fold_store;
     bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
+    if (module_sources_ || !shared_lib_roots_.empty()) {
         std::string ferr;
         if (!fold_sources_cached(source, fold, ferr)) {
             r.message = "module resolution failed: " + ferr;
@@ -4303,7 +4315,7 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
 
         const char* src_bytes = source.data();
         size_t      src_len   = source.size();
-        if (!shared_lib_roots_.empty()) {
+        if (module_sources_ || !shared_lib_roots_.empty()) {
             std::string ferr;
             if (!fold_sources_cached(source, fold, ferr)) {
                 r.error.ok = false;
@@ -4745,7 +4757,7 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
                                      module_resolver::FoldResult& out,
                                      std::string& err) {
     // If no shared-lib root, skip the cache and just return an empty fold result.
-    if (shared_lib_roots_.empty()) {
+    if (!module_sources_ && shared_lib_roots_.empty()) {
         out = module_resolver::FoldResult{};
         return true;
     }
@@ -4765,9 +4777,23 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
 
     // Cache miss: fold the sources.
     module_resolver::FoldResult fresh;
-    if (!module_resolver::fold_sources(source, shared_lib_roots_, fresh, err)) {
-        return false;
+    bool folded = false;
+    if (module_sources_) {
+        folded = module_resolver::fold_sources_with_loader(source,
+            [&](const std::string& spec, module_resolver::ResolvedModule& module, std::string& error) {
+                for (const auto& candidate : *module_sources_) {
+                    std::string canonical = candidate.specifier;
+                    if (canonical.size() >= 3 && canonical.compare(canonical.size()-3, 3, ".js") == 0)
+                        canonical.resize(canonical.size()-3);
+                    if (canonical == spec) { module = candidate; return true; }
+                }
+                error = "module not found in source snapshot: " + spec;
+                return false;
+            }, fresh, err);
+    } else {
+        folded = module_resolver::fold_sources(source, shared_lib_roots_, fresh, err);
     }
+    if (!folded) return false;
 
     // Insert into cache (under lock).
     {

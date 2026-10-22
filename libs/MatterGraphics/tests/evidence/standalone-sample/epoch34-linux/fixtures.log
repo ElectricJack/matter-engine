@@ -1,0 +1,252 @@
+Start testing: Oct 14 08:37 PDT
+----------------------------------------------------------
+1/12 Testing: matter_graphics_atmosphere
+1/12 Test: matter_graphics_atmosphere
+Command: "/tmp/matter-graphics-e34/matter_graphics_atmosphere_tests"
+Directory: /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests
+"matter_graphics_atmosphere" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+ALL PASS
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_atmosphere" end time: Oct 14 08:37 PDT
+"matter_graphics_atmosphere" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/12 Testing: matter_graphics_cloud_layer
+2/12 Test: matter_graphics_cloud_layer
+Command: "/tmp/matter-graphics-e34/matter_graphics_cloud_layer_tests"
+Directory: /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests
+"matter_graphics_cloud_layer" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+ALL PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_cloud_layer" end time: Oct 14 08:37 PDT
+"matter_graphics_cloud_layer" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/12 Testing: matter_graphics_cloud_shadow
+3/12 Test: matter_graphics_cloud_shadow
+Command: "/tmp/matter-graphics-e34/matter_graphics_cloud_shadow_tests"
+Directory: /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests
+"matter_graphics_cloud_shadow" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+ALL PASS
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_cloud_shadow" end time: Oct 14 08:37 PDT
+"matter_graphics_cloud_shadow" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/12 Testing: matter_graphics_volumetric_quality
+4/12 Test: matter_graphics_volumetric_quality
+Command: "/tmp/matter-graphics-e34/matter_graphics_volumetric_quality_tests"
+Directory: /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests
+"matter_graphics_volumetric_quality" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+ALL PASS
+<end of output>
+Test time =   0.14 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_volumetric_quality" end time: Oct 14 08:37 PDT
+"matter_graphics_volumetric_quality" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/12 Testing: matter_graphics_cloud_shadow_reference
+5/12 Test: matter_graphics_cloud_shadow_reference
+Command: "/tmp/matter-graphics-e34/matter_graphics_cloud_shadow_reference_tests"
+Directory: /tmp/matter-graphics-e34
+"matter_graphics_cloud_shadow_reference" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+ALL PASS
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_cloud_shadow_reference" end time: Oct 14 08:37 PDT
+"matter_graphics_cloud_shadow_reference" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/12 Testing: matter_graphics_lifetime
+6/12 Test: matter_graphics_lifetime
+Command: "/tmp/matter-graphics-e34/matter_graphics_tests"
+Directory: /tmp/matter-graphics-e34
+"matter_graphics_lifetime" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+PASS GFX-SUBMIT/PENDING/READY/IMPORTED/SHARING/CHANGE/AFFINE/SCENE/OWNER/INPUTS/RELEASE/RETIRE
+PASS GFX-ENVELOPE/HANDLE/VALIDATE/CAPS/PAYLOAD/FAIL/CANCEL/TICKET/CONTROL/CALLBACK
+PASS GFX-CAMERA/LIGHTS/DEMAND/BUDGET/DISPOSE
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_lifetime" end time: Oct 14 08:37 PDT
+"matter_graphics_lifetime" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/12 Testing: matter_graphics_scene
+7/12 Test: matter_graphics_scene
+Command: "/tmp/matter-graphics-e34/matter_graphics_scene_tests"
+Directory: /tmp/matter-graphics-e34
+"matter_graphics_scene" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+PASS SCENE transforms/visibility/sharing/lifecycle/budgets/failure/cancellation
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_scene" end time: Oct 14 08:37 PDT
+"matter_graphics_scene" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/12 Testing: matter_graphics_composition
+8/12 Test: matter_graphics_composition
+Command: "/tmp/matter-graphics-e34/matter_graphics_composition_tests"
+Directory: /tmp/matter-graphics-e34
+"matter_graphics_composition" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+ALL PASS COMP-VALID/CAPS/BUDGET/LENGTH/IDENTITY/IMPOSTOR/DEPTH/VISIBILITY/FINITE/CAMERA/CLOUD/WATER/SPOT/OWNER/MATERIAL
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_composition" end time: Oct 14 08:37 PDT
+"matter_graphics_composition" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/12 Testing: matter_graphics_raster
+9/12 Test: matter_graphics_raster
+Command: "/tmp/matter-graphics-e34/matter_graphics_raster_tests"
+Directory: /tmp/matter-graphics-e34
+"matter_graphics_raster" start time: Oct 14 08:37 PDT
+Output:
+----------------------------------------------------------
+DEVICE llvmpipe (LLVM 20.1.2, 256 bits); validation=1
+GFX-IMPORTED raster upload
+GFX-IMPORTED raster draw
+GFX-RASTER token 0: 195 pixels
+GFX-RASTER token 1: 207 pixels
+GFX-RASTER token 2: 1179 pixels
+GFX-RASTER token 3: 857 pixels
+PASS GFX-IMPORTED-RASTER/REPEATED/MIRRORED/NORMAL-MATRIX/MATERIAL/DEPTH/CLEAR/FAILURE
+<end of output>
+Test time =  15.87 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_raster" end time: Oct 14 08:38 PDT
+"matter_graphics_raster" time elapsed: 00:00:15
+----------------------------------------------------------
+
+10/12 Testing: matter_graphics_sample
+10/12 Test: matter_graphics_sample
+Command: "/tmp/matter-graphics-e34/matter_graphics_sample" "/tmp/matter-graphics-e34/sample-evidence"
+Directory: /tmp/matter-graphics-e34
+"matter_graphics_sample" start time: Oct 14 08:38 PDT
+Output:
+----------------------------------------------------------
+DEVICE llvmpipe (LLVM 20.1.2, 256 bits); validation=1
+GFX-IMPORTED raster upload
+GFX-IMPORTED raster draw
+GFX-RASTER token 0: 195 pixels
+GFX-RASTER token 1: 207 pixels
+GFX-RASTER token 2: 1179 pixels
+GFX-RASTER token 3: 857 pixels
+PASS GFX-IMPORTED-RASTER/REPEATED/MIRRORED/NORMAL-MATRIX/MATERIAL/DEPTH/CLEAR/FAILURE
+SAMPLE imported-synthetic placed.a: 120 pixels
+SAMPLE imported-synthetic placed.a: 120 pixels
+SAMPLE imported-synthetic placed.b: 1027 pixels
+SAMPLE imported-synthetic placed.b: 972 pixels
+SAMPLE imported-synthetic synthetic.a: 435 pixels
+SAMPLE imported-synthetic synthetic.b: 450 pixels
+MATCH imported-synthetic exact repeated native view; 6 draws
+SAMPLE one-shared-instance-removed placed.a: 120 pixels
+SAMPLE one-shared-instance-removed placed.a: 120 pixels
+SAMPLE one-shared-instance-removed placed.b: 1027 pixels
+SAMPLE one-shared-instance-removed placed.b: 972 pixels
+SAMPLE one-shared-instance-removed synthetic.b: 450 pixels
+MATCH one-shared-instance-removed exact repeated native view; 5 draws
+SAMPLE placement-updated placed.a: 120 pixels
+SAMPLE placement-updated placed.a: 120 pixels
+SAMPLE placement-updated placed.b: 1027 pixels
+SAMPLE placement-updated placed.b: 972 pixels
+SAMPLE placement-updated synthetic.b: 435 pixels
+MATCH placement-updated exact repeated native view; 5 draws
+SAMPLE imported-only placed.a: 120 pixels
+SAMPLE imported-only placed.a: 120 pixels
+SAMPLE imported-only placed.b: 1027 pixels
+SAMPLE imported-only placed.b: 972 pixels
+MATCH imported-only exact repeated native view; 4 draws
+PASS GFX-SAMPLE imported/synthetic/shared/camera/light/update/release/matched-images
+<end of output>
+Test time =  27.96 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_sample" end time: Oct 14 08:38 PDT
+"matter_graphics_sample" time elapsed: 00:00:27
+----------------------------------------------------------
+
+11/12 Testing: matter_graphics_vulkan
+11/12 Test: matter_graphics_vulkan
+Command: "/tmp/matter-graphics-e34/matter_graphics_vulkan_tests"
+Directory: /tmp/matter-graphics-e34
+"matter_graphics_vulkan" start time: Oct 14 08:38 PDT
+Output:
+----------------------------------------------------------
+DEVICE llvmpipe (LLVM 20.1.2, 256 bits); validation=1
+MATCH dielectric-colored-shadow pixels=2145 hdr_max=1.30193e-07 display_max=2.38419e-07
+MATCH metallic-ggx-shadow pixels=2145 hdr_max=2.23469e-06 display_max=1.43051e-06
+MATCH point-light-brdf pixels=2145 hdr_max=3.36349e-07 display_max=4.17233e-07
+MATCH spot-light-cone pixels=2145 hdr_max=3.36349e-07 display_max=5.66244e-07
+MATCH translated-camera-light pixels=2145 hdr_max=3.36349e-07 display_max=7.45058e-07
+MATCH rt-products-emission-single-owner pixels=2145 hdr_max=9.68575e-08 display_max=1.19209e-07
+MATCH integrated-volume pixels=2145 hdr_max=3.3062e-08 display_max=1.19209e-07
+MATCH environment-irradiance pixels=2145 hdr_max=2.67173e-08 display_max=1.19209e-07
+MATCH reduced-diffuse-odd-extent pixels=2145 hdr_max=5.96046e-08 display_max=1.78814e-07
+MATCH physical-sky-product pixels=2145 hdr_max=0 display_max=5.96046e-08
+MATCH subsurface-impostor-mask pixels=2145 hdr_max=2.23517e-09 display_max=1.19209e-07
+MATCH cloud-optical-depth pixels=2145 hdr_max=1.78814e-08 display_max=1.19209e-07
+MATCH native-glass-fallback pixels=2145 hdr_max=6.31809e-08 display_max=1.78814e-07
+MATCH debug-display-passthrough pixels=2145 hdr_max=0 display_max=0
+PASS COMP-NATIVE shader source parity; selected appearance fixtures; unsupported capability
+PASS VK-UPLOAD/READBACK/SCENE/SHARING/CULL/FENCE/RETIRE/DISPOSE/OWNERSHIP
+<end of output>
+Test time =   0.58 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_vulkan" end time: Oct 14 08:38 PDT
+"matter_graphics_vulkan" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/12 Testing: matter_graphics_independence
+12/12 Test: matter_graphics_independence
+Command: "/home/jkern/dev/agent-queue2/.venv/bin/python3" "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterGraphics/tests/independence.py" "/tmp/matter-graphics-e34"
+Directory: /tmp/matter-graphics-e34
+"matter_graphics_independence" start time: Oct 14 08:38 PDT
+Output:
+----------------------------------------------------------
+PASS GFX-INDEPENDENT-GRAPH: scene/facade/contracts/shared pure math plus isolated Vulkan adapter/loader and exact production shader closure; source, link and compiler dependency audit
+<end of output>
+Test time =   0.61 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_independence" end time: Oct 14 08:38 PDT
+"matter_graphics_independence" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 14 08:38 PDT

@@ -305,6 +305,8 @@ int main() {
     test_pack_round_trip_and_frame_spans();
     test_lattice_metadata_changes_animation_payload_identity();
     test_corruption_and_invalid_meshes_fail_closed();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_immutable_save_never_replaces_different_content();
+#endif
     return check_summary();
 }

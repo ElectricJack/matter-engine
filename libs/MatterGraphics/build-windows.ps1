@@ -3,13 +3,18 @@ param(
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release')]
     [string]$Config = 'RelWithDebInfo',
     [switch]$Test,
-    [switch]$NativeWaterTemporal
+    [switch]$NativeWaterTemporal,
+    [string]$BuildDirectory,
+    [string]$SampleOutputDirectory
 )
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Import-Module (Join-Path $repositoryRoot 'tools\windows\MatterWindowsToolchain.psm1') -Force
 $toolchain = Resolve-MatterWindowsToolchain -RepositoryRoot $repositoryRoot
-$buildDirectory = Join-Path $PSScriptRoot "build\windows-msvc\$($Config.ToLowerInvariant())"
+$buildDirectory = $BuildDirectory
+if (-not $buildDirectory) {
+    $buildDirectory = Join-Path $PSScriptRoot "build\windows-msvc\$($Config.ToLowerInvariant())"
+}
 $sourceDirectory = $PSScriptRoot
 if ($NativeWaterTemporal) {
     $sourceDirectory = Join-Path $PSScriptRoot 'src\native'
@@ -31,6 +36,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($Test) {
     $ctest = Join-Path (Split-Path $toolchain.CMake) 'ctest.exe'
     & $ctest --test-dir $buildDirectory --output-on-failure -j 1
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+if ($SampleOutputDirectory) {
+    & (Join-Path $buildDirectory 'matter_graphics_sample.exe') $SampleOutputDirectory
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 exit 0

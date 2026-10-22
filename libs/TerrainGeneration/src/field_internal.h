@@ -1,6 +1,6 @@
 #pragma once
 #include <matter/terrain/field.h>
-#include "terrain_field.h"
+#include "../../ProceduralGeometry/include/matter/geometry/terrain_field.h"
 
 namespace matter::terrain::detail {
 // Private borrowed view; the FrozenRegion must outlive the synchronous mesher.
