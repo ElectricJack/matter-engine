@@ -1,0 +1,458 @@
+{
+  "schema": "matter-engine.promotion-enable-evidence.v1",
+  "task_id": "vivid-lantern-44.2",
+  "deliverable": "promotion_enable_evidence",
+  "result": "pending_operator_evidence",
+  "acceptance_met": false,
+  "checked_at_utc": "2026-10-25T10:36:08.176245+00:00",
+  "actor": {
+    "task_id": "vivid-lantern-44.2",
+    "claim_epoch": 1,
+    "session_id": "f0f049c1-35fe-480a-9634-6c1fdb5d7e80",
+    "claimed_at": 1792924448.2670095,
+    "branch": "aq/vivid-lantern-44.2",
+    "role": "scoped verification worker; no LOCAL activation authority"
+  },
+  "workspace_head_at_inspection": "2f08e61e99d0e7aa5f6f8b30c812568f65b6d3d3",
+  "approved_plan": {
+    "path": "projects/matter-engine-cpp/plans/2026-10-10-matter-engine-git-first-train-and-promotion-cutover.md",
+    "revision": 5,
+    "content_sha256": "sha256:6dd75cb63061b71168b916fc394f0080bd7ec903596b0cf1aa6fd4d500a7e237"
+  },
+  "later_recorded_owner_decision": {
+    "path": "docs/agent/aq-promotion/decision-2026-10-11.md",
+    "companion": "docs/agent/aq-promotion/cutover-owner-decision-2026-10-11.json",
+    "effect": "Retires parent-integration and root-train import/activation requirement; retains both project promotion playbooks and release approval gate. Current actor/contract receipts still requested."
+  },
+  "inputs_reference": {
+    "path": "docs/agent/aq-promotion/evidence/promotion_inputs.json",
+    "sha256": "sha256:a63f0f3c9f8ffa2f434ca5b7af04a0fe85152c4d95faf93b946a63c5c6d49a05",
+    "qualification_time": "2026-10-11T03:12:46Z",
+    "historical_only": true,
+    "packages": {
+      "promotion-continuous": {
+        "imported_pre_review_identity": {
+          "playbook_id": "matter-engine-cpp.promotion-continuous",
+          "scope": {
+            "project_id": "matter-engine-cpp",
+            "type": "project"
+          },
+          "schema_version": 2,
+          "compiler_build": "playbook-v2-compiler/1",
+          "source_hash": "sha256:2e834c92d771ee30cc748ffc80533d60de0d78de9a633ea9fc95300668b3fffc",
+          "artifact_sha256": "sha256:b3e871d7ee5ccf3a01c3046b5e27bd5e8fff9eea0152316d4b572ae61901c227",
+          "canonical_bytes": 30646,
+          "rules": [
+            "advance-source",
+            "explicit-request",
+            "hotfix-completed",
+            "visit-intent",
+            "backmerge-delivered"
+          ],
+          "step_count": 27
+        },
+        "compiled_against_commands": {
+          "integration_backmerge_source": "sha256:81577430d8662cecdf334156fd274dff96b915ecb905dc0e7efb560f2ad24a26",
+          "integration_promotion_policy_input": "sha256:dcb0ce1e78349524bf6581b7678fec227bc5476393a1f2b6143fe098211ed352",
+          "integration_promotion_publish": "sha256:884c13f3b1d58bfd89fa02e542493f4a6381e11ea3ad190a6d7aedc29b5c3654",
+          "message_send": "sha256:2329e6f64009790df340eafbc4b4bd6e7792f537770431f6bc11b5908db34b2a",
+          "promote_cancel": "sha256:5957c77edd6192b9519e8fe185030923c4c598c20914610a0642dd557709bfeb",
+          "promote_request": "sha256:6701bc830f7599a920f8b0e1e77f706e292c27e0001cc5e3471085788ba12b4c"
+        },
+        "activation_hash_policy": "Only the artifact pinned by the actual approved import review is usable; pre-import artifact hashes are historical qualification identities."
+      },
+      "promotion-request": {
+        "imported_pre_review_identity": {
+          "playbook_id": "matter-engine-cpp.promotion-request",
+          "scope": {
+            "project_id": "matter-engine-cpp",
+            "type": "project"
+          },
+          "schema_version": 2,
+          "compiler_build": "playbook-v2-compiler/1",
+          "source_hash": "sha256:0ede448fdadb46f97a046d8c97f30ef9556c6f15db8157bc087d65fb06987033",
+          "artifact_sha256": "sha256:fcfbf5231545214a06ef23585db2cbf8b4177f0ce5a610f174c0d0f13c1d1b7a",
+          "canonical_bytes": 21789,
+          "rules": [
+            "advance-source",
+            "explicit-request",
+            "hotfix-completed",
+            "visit-intent",
+            "backmerge-delivered"
+          ],
+          "step_count": 21
+        },
+        "compiled_against_commands": {
+          "integration_backmerge_source": "sha256:81577430d8662cecdf334156fd274dff96b915ecb905dc0e7efb560f2ad24a26",
+          "integration_promotion_policy_input": "sha256:dcb0ce1e78349524bf6581b7678fec227bc5476393a1f2b6143fe098211ed352",
+          "integration_promotion_publish": "sha256:884c13f3b1d58bfd89fa02e542493f4a6381e11ea3ad190a6d7aedc29b5c3654",
+          "message_send": "sha256:2329e6f64009790df340eafbc4b4bd6e7792f537770431f6bc11b5908db34b2a",
+          "promote_request": "sha256:6701bc830f7599a920f8b0e1e77f706e292c27e0001cc5e3471085788ba12b4c"
+        },
+        "activation_hash_policy": "Only the artifact pinned by the actual approved import review is usable; pre-import artifact hashes are historical qualification identities."
+      }
+    }
+  },
+  "live_observations": {
+    "integration": {
+      "project_id": "matter-engine-cpp",
+      "repository_id": "matter-engine-cpp",
+      "effective_mode": "train",
+      "desired_mode": "train",
+      "generation": 23,
+      "promotion_flow": {
+        "state": "configured",
+        "chain": "dev -> staging -> main",
+        "steps": [
+          {
+            "id": "staging",
+            "source": "dev",
+            "target": "staging",
+            "target_ref": "refs/heads/staging",
+            "type": "continuous",
+            "state": "configured"
+          },
+          {
+            "id": "release",
+            "source": "staging",
+            "target": "main",
+            "target_ref": "refs/heads/main",
+            "type": "request",
+            "state": "configured"
+          }
+        ],
+        "problems": []
+      },
+      "ci_source": {
+        "root": "hosted",
+        "epic": "hosted",
+        "promotion": "hosted",
+        "origin": "default"
+      }
+    },
+    "root_observations": [
+      {
+        "target_ref": "refs/heads/dev",
+        "target_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "state": "blocked",
+        "running": false,
+        "lane_state": "idle",
+        "inflight_batch_id": null,
+        "detail": {
+          "blockers": [
+            {
+              "code": "epic_completion_pending",
+              "ref": "azure-journey-94",
+              "task_id": "azure-journey-94",
+              "detail": "epic needs a current collected completion"
+            },
+            {
+              "code": "epic_completion_pending",
+              "ref": "smart-torrent",
+              "task_id": "smart-torrent",
+              "detail": "epic needs a current collected completion"
+            },
+            {
+              "code": "epic_completion_pending",
+              "ref": "solid-meadow-35",
+              "task_id": "solid-meadow-35",
+              "detail": "epic needs a current collected completion"
+            },
+            {
+              "task_id": "stark-summit-61",
+              "ref": "stark-summit-61",
+              "source_sha": "7ba8d9eadb9c5628eb178ec30a5bc47ee49caae4",
+              "code": "pr_conflicting",
+              "files": [
+                "MatterEngine3/tests/shader_source_tests.cpp"
+              ],
+              "detail": "root stark-summit-61 PR conflicts with the default branch at 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8: the train tries a mechanical merge, then reopens the original task for real conflicts",
+              "pr_url": "https://github.com/ElectricJack/matter-engine/pull/29",
+              "default_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+              "epic": false,
+              "action": "the train tries a mechanical merge, then reopens the original task for real conflicts"
+            }
+          ],
+          "dispatch": {
+            "state": "idle",
+            "batch_id": null,
+            "members": [],
+            "queued_members": [],
+            "wait_ids": [],
+            "candidate_sha": null,
+            "checks": null
+          },
+          "retry_at": 1792924468.2822747
+        },
+        "observed_at": 1792924458.2621806
+      }
+    ],
+    "generation_use": "Observation only; re-read immediately before any authorized mutation.",
+    "flow_validation": {
+      "success": true,
+      "outcome": "valid",
+      "project_id": "matter-engine-cpp",
+      "valid": true,
+      "flow": [
+        {
+          "id": "staging",
+          "gate": {
+            "checks": "inherit",
+            "approval": "none",
+            "attestation": "Agent Queue Promotion Attestation (staging)",
+            "request_ttl": "7d"
+          },
+          "type": "continuous",
+          "after": {
+            "backmerge": true,
+            "deploy_hook": null,
+            "github_release": false
+          },
+          "notes": {
+            "kind": "none",
+            "bootstrap_sha": null
+          },
+          "source": "dev",
+          "target": "staging",
+          "versioning": {
+            "kind": "none"
+          }
+        },
+        {
+          "id": "release",
+          "gate": {
+            "checks": "inherit",
+            "approval": "operator",
+            "attestation": "Agent Queue Promotion Attestation (release)",
+            "request_ttl": "7d"
+          },
+          "type": "request",
+          "after": {
+            "backmerge": true,
+            "deploy_hook": null,
+            "github_release": false
+          },
+          "notes": {
+            "kind": "none",
+            "bootstrap_sha": null
+          },
+          "source": "staging",
+          "target": "main",
+          "versioning": {
+            "kind": "none"
+          }
+        }
+      ],
+      "layer": 3,
+      "problems": [],
+      "warnings": [
+        {
+          "code": "ruleset_check_mismatch",
+          "pointer": "",
+          "layer": 4,
+          "message": "Ruleset 'Train-only dev' differs from the flow.",
+          "ruleset": "Train-only dev",
+          "ruleset_id": 24892259
+        },
+        {
+          "code": "ruleset_unverifiable",
+          "pointer": "",
+          "layer": 4,
+          "message": "Bypass actors of 'Promotion-only staging' are hidden.",
+          "ruleset": "Promotion-only staging",
+          "ruleset_id": 24892260
+        },
+        {
+          "code": "ruleset_unverifiable",
+          "pointer": "",
+          "layer": 4,
+          "message": "Bypass actors of 'Promotion-only main' are hidden.",
+          "ruleset": "Promotion-only main",
+          "ruleset_id": 24892261
+        },
+        {
+          "code": "ruleset_check_mismatch",
+          "pointer": "",
+          "layer": 4,
+          "message": "Branch 'dev' is unprotected, expected attested_only.",
+          "branch": "dev"
+        }
+      ],
+      "protection": {
+        "branches": [
+          {
+            "branch": "dev",
+            "attestation": "Agent Queue Integration Attestation",
+            "classification": "unprotected",
+            "rules": [],
+            "development_publisher_blocked": false
+          },
+          {
+            "branch": "staging",
+            "attestation": "Agent Queue Promotion Attestation (staging)",
+            "classification": "attested_only",
+            "rules": [
+              {
+                "source": "ruleset",
+                "type": "required_status_checks",
+                "bypass": "never",
+                "ruleset_id": 24892260,
+                "ruleset_name": "Promotion-only staging",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "ElectricJack/matter-engine",
+                "requires_attestation": true,
+                "refuses_unattested": true
+              },
+              {
+                "source": "ruleset",
+                "type": "deletion",
+                "bypass": "never",
+                "ruleset_id": 24892260,
+                "ruleset_name": "Promotion-only staging",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "ElectricJack/matter-engine"
+              },
+              {
+                "source": "ruleset",
+                "type": "non_fast_forward",
+                "bypass": "never",
+                "ruleset_id": 24892260,
+                "ruleset_name": "Promotion-only staging",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "ElectricJack/matter-engine"
+              }
+            ],
+            "development_publisher_blocked": true
+          },
+          {
+            "branch": "main",
+            "attestation": "Agent Queue Promotion Attestation (release)",
+            "classification": "attested_only",
+            "rules": [
+              {
+                "source": "ruleset",
+                "type": "required_status_checks",
+                "bypass": "never",
+                "ruleset_id": 24892261,
+                "ruleset_name": "Promotion-only main",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "ElectricJack/matter-engine",
+                "requires_attestation": true,
+                "refuses_unattested": true
+              },
+              {
+                "source": "ruleset",
+                "type": "deletion",
+                "bypass": "never",
+                "ruleset_id": 24892261,
+                "ruleset_name": "Promotion-only main",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "ElectricJack/matter-engine"
+              },
+              {
+                "source": "ruleset",
+                "type": "non_fast_forward",
+                "bypass": "never",
+                "ruleset_id": 24892261,
+                "ruleset_name": "Promotion-only main",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "ElectricJack/matter-engine"
+              }
+            ],
+            "development_publisher_blocked": true
+          }
+        ],
+        "tags": []
+      },
+      "workflow_triggers": {
+        ".github/workflows/tests.yml": {
+          "pull_request": {
+            "branches": [
+              "dev",
+              "staging",
+              "main"
+            ],
+            "types": [
+              "opened",
+              "synchronize",
+              "reopened",
+              "ready_for_review"
+            ]
+          },
+          "push": {
+            "branches": [
+              "aq/parent/**",
+              "aq/integration/**",
+              "aq/batches/**",
+              "aq/promote/**",
+              "aq/backmerge/**"
+            ]
+          }
+        },
+        ".github/workflows/main-attestation.yml": {
+          "push": {
+            "branches": [
+              "dev",
+              "staging",
+              "main"
+            ]
+          }
+        }
+      }
+    },
+    "stored_flow_equals_qualified_document": true,
+    "protection_ready": false,
+    "protection_conclusion": "Remote validation returned valid=true with four warnings. dev is classified unprotected instead of attested_only. Bypass actors of staging/main are hidden. These results do not establish effective protection or readiness.",
+    "owner_inventory_complete": false,
+    "owner_inventory_conclusion": "Root lane snapshot is idle/blocked, but this is not a complete current publisher/repair inventory or permission to mutate."
+  },
+  "receipts": {
+    "integration-status.json": {
+      "path": "/home/jkern/.codex/worker-artifacts/vivid-lantern-44.2-epoch1/integration-status.json",
+      "sha256": "sha256:22e3954c49c893fd8ffe7a2476bfc8d14b700560d9fa70093cda06744e4fcc34",
+      "command": "aq integration status matter-engine-cpp --json --save-output /tmp/vivid-lantern-44.2-integration-status.json",
+      "exit_code": 0,
+      "captured_at_utc": "2026-10-25T10:34:58.603549+00:00"
+    },
+    "flow-validation.json": {
+      "path": "/home/jkern/.codex/worker-artifacts/vivid-lantern-44.2-epoch1/flow-validation.json",
+      "sha256": "sha256:ca3d6ee5e1c87660ec9fbb80d46f3630031f724805b9c9418adb0ac7e7fc707b",
+      "command": "aq promote validate --project matter-engine-cpp --remote --json",
+      "exit_code": 0,
+      "captured_at_utc": "2026-10-25T10:35:12.379705+00:00"
+    },
+    "approved-plan.json": {
+      "path": "/home/jkern/.codex/worker-artifacts/vivid-lantern-44.2-epoch1/approved-plan.json",
+      "sha256": "sha256:d5d674822724168d8bc42db29b2bc94a72b6fec36ae7de3981ae414911e550a4",
+      "command": "aq file read --path projects/matter-engine-cpp/plans/2026-10-10-matter-engine-git-first-train-and-promotion-cutover.md --json --save-output /tmp/vivid-lantern-44.2-plan.json",
+      "exit_code": 0,
+      "captured_at_utc": "2026-10-25T10:34:38.227125+00:00"
+    }
+  },
+  "local_activation_receipt": null,
+  "playbook_activation_receipts": null,
+  "pending_evidence": [
+    "Current published fleet-ridge-94 checkpoint and train_enable evidence, reconciled with current deployed contract.",
+    "Authorized LOCAL flow activation actor, command, timestamp, generation and create-only staging creation receipt.",
+    "Both selective import receipts and approved import-review pins with actual compiled artifact identities.",
+    "Both enabled/ready project-scoped activation health receipts; compare source and execution command fingerprints to promotion_inputs, or require supported revalidation/review for drift.",
+    "Current dev protection discrepancy resolution and verified staging/main bypass actors, App 5075923, CI producer 15368, matter-engine-ci-v1 pair and matching Actions variables.",
+    "Current complete publisher/repair inventory and frozen subject disposition; no activation over a live owner.",
+    "Existing authorized Windows runner labels/service-account preflight and passing exact-source hosted platform checks."
+  ],
+  "coordination": {
+    "request_message": "msg-cb47578b23bb4ff5956fcf7621743817",
+    "thread": "vivid-lantern-44.2:promotion-enable",
+    "after_seq": 141697,
+    "recipient": "session:supervisor-matter-engine-cpp",
+    "wait_id": null
+  },
+  "release": {
+    "requested": false,
+    "approved": false,
+    "triggered": false,
+    "required_approval": "operator",
+    "flow_type": "request"
+  },
+  "conclusion": "Stored flow semantics match qualification and live trust validation passes, but current protection warnings and missing LOCAL/import/review/activation/health receipts prevent acceptance. No activation or release mutation was performed by this worker."
+}
