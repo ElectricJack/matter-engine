@@ -1,0 +1,605 @@
+{
+  "schema_version": 1,
+  "task_id": "azure-impact-46.5",
+  "recorded_at_utc": "2026-10-25T11:01:55.211910+00:00",
+  "status": "accepted",
+  "authority": {
+    "actor": "supervisor-matter-engine-cpp",
+    "message_id": "msg-b13bca885f75491490ab7447fb76dc81",
+    "observation": "2026-10-25 approximately 10:45Z",
+    "source": "Full reply delivered by successful wait ack; separate message status returned not found.",
+    "wait_id": "9f1dad9b-07d2-4350-8729-f1a6b3cf8eb7",
+    "continuation_id": "6a71c75e-5b11-4f6f-839f-ab17087f2f92",
+    "generation": 1,
+    "claim_epoch": 3,
+    "direction": "Record receipts and close; Windows known gap is nonblocking."
+  },
+  "selection": {
+    "task_id": "solid-grove-19.1",
+    "branch": "aq/solid-grove-19.1",
+    "source_sha": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+    "source_sha_evidence": "Second parent and commit subject of 10900f35 identify integrated leaf source.",
+    "status": "COMPLETED",
+    "selected_by": "supervisor-global",
+    "selected_at_utc": "2026-10-25T06:00:00Z",
+    "eligible_at_selection": true,
+    "current_disposition": "train delivered; branch deleted on origin per supervisor",
+    "completion_id": null,
+    "completion_id_visibility": "not visible from supervisor task reads"
+  },
+  "parent": {
+    "task_id": "solid-grove-19",
+    "ref": "refs/heads/aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+    "head_at_publication": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+    "status": "COMPLETED",
+    "required_child_state": "complete",
+    "completion_id": null,
+    "completion_id_visibility": "not visible from supervisor task reads",
+    "current_ref_state": "deleted on origin per supervisor"
+  },
+  "control": {
+    "mode": "train",
+    "generation": 23,
+    "source": "supervisor receipt"
+  },
+  "batches": [
+    {
+      "batch_id": "train-1954534fe4ff3b28aa4e1a69a56a7590",
+      "batch_id_complete": true,
+      "source_task": "solid-grove-19.1",
+      "source_sha": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+      "source_completion": "COMPLETED per supervisor",
+      "target_ref": "refs/heads/aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+      "candidate": "d76785efaee5accc56783a060a447777d253b0f7",
+      "expected_new_target": "d76785efaee5accc56783a060a447777d253b0f7",
+      "actual_final_target": "d76785efaee5accc56783a060a447777d253b0f7",
+      "expected_old_target_from_git_first_parent": "0ddaff13bebcc8f644ff78e5c5117d1efc7a2892",
+      "reported_batch_base": "0ddaff13bebcc8f644ff78e5c5117d1efc7a2892",
+      "lifecycle": "promoted",
+      "actor": "train (supervisor AQ receipt)",
+      "promoted_at": "2026-10-25T06:17:25Z",
+      "checks": [
+        {
+          "id": 121104505161,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR component matrix (push checks apply)' || 'Component build matrix and dependency rules'",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171966098/job/121104505161",
+          "completed_at": "2026-10-25T07:13:26Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104505069,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Windows (push checks apply)' || 'Native Windows build and tests'",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171966098/job/121104505069",
+          "completed_at": "2026-10-25T07:13:26Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104505029,
+          "name": "Native build scope",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171966098/job/121104505029",
+          "completed_at": "2026-10-25T07:13:26Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104504385,
+          "name": "Linux foundation build and tests",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171966098/job/121104504385",
+          "completed_at": "2026-10-25T07:14:45Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104422415,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Linux (push checks apply)' || 'Linux foundation build and tests'",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171929965/job/121104422415",
+          "completed_at": "2026-10-25T07:12:50Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104411590,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR component matrix (push checks apply)' || 'Component build matrix and dependency rules'",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171929965/job/121104411590",
+          "completed_at": "2026-10-25T07:12:50Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104392554,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Windows (push checks apply)' || 'Native Windows build and tests'",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171929965/job/121104392554",
+          "completed_at": "2026-10-25T07:12:50Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104392148,
+          "name": "Native build scope",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171929965/job/121104392148",
+          "completed_at": "2026-10-25T07:12:50Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121095425419,
+          "name": "Native Windows build and tests",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168569037/job/121095425419",
+          "completed_at": "2026-10-25T07:16:12Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121094797691,
+          "name": "Native build scope",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168638502/job/121094797691",
+          "completed_at": "2026-10-25T06:18:40Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121094772014,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Windows (push checks apply)' || 'Native Windows build and tests'",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168638502/job/121094772014",
+          "completed_at": "2026-10-25T06:18:40Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121094771892,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Linux (push checks apply)' || 'Linux foundation build and tests'",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168638502/job/121094771892",
+          "completed_at": "2026-10-25T06:18:40Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121094771659,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR component matrix (push checks apply)' || 'Component build matrix and dependency rules'",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168638502/job/121094771659",
+          "completed_at": "2026-10-25T06:18:40Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121094558198,
+          "name": "Component build matrix and dependency rules",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168569037/job/121094558198",
+          "completed_at": "2026-10-25T06:29:44Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121094558100,
+          "name": "Native build scope",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168569037/job/121094558100",
+          "completed_at": "2026-10-25T06:22:32Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121094558017,
+          "name": "Linux foundation build and tests",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168569037/job/121094558017",
+          "completed_at": "2026-10-25T06:18:40Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121094524979,
+          "name": "Agent Queue Integration Attestation",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/runs/121094524979",
+          "completed_at": "2026-10-25T06:17:15Z",
+          "app_id": 5075923
+        },
+        {
+          "id": 121093850877,
+          "name": "Native Windows build and tests",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "queued",
+          "conclusion": null,
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168107487/job/121093850877",
+          "completed_at": null,
+          "app_id": 15368
+        },
+        {
+          "id": 121093203911,
+          "name": "Native build scope",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168107487/job/121093203911",
+          "completed_at": "2026-10-25T06:13:23Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121093203888,
+          "name": "Component build matrix and dependency rules",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168107487/job/121093203888",
+          "completed_at": "2026-10-25T06:16:21Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121093203840,
+          "name": "Linux foundation build and tests",
+          "head_sha": "d76785efaee5accc56783a060a447777d253b0f7",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40168107487/job/121093203840",
+          "completed_at": "2026-10-25T06:14:25Z",
+          "app_id": 15368
+        }
+      ]
+    },
+    {
+      "batch_id": "train-epic-refresh-445ae660...",
+      "batch_id_complete": false,
+      "source_task": "solid-grove-19",
+      "source_sha": "c94fbb1ebd56dd53edf17d064c39e962c0acbdc2",
+      "source_completion": "COMPLETED per supervisor",
+      "target_ref": "refs/heads/aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+      "candidate": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "expected_new_target": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "actual_final_target": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "expected_old_target_from_git_first_parent": "d76785efaee5accc56783a060a447777d253b0f7",
+      "reported_batch_base": null,
+      "lifecycle": "promoted",
+      "actor": "train (supervisor AQ receipt)",
+      "promoted_at": "2026-10-25T07:16:11Z",
+      "checks": [
+        {
+          "id": 121105192329,
+          "name": "Native Windows build and tests",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "queued",
+          "conclusion": null,
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172136561/job/121105192329",
+          "completed_at": null,
+          "app_id": 15368
+        },
+        {
+          "id": 121105038784,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR component matrix (push checks apply)' || 'Component build matrix and dependency rules'",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172139602/job/121105038784",
+          "completed_at": "2026-10-25T07:16:15Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105038711,
+          "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Windows (push checks apply)' || 'Native Windows build and tests'",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172139602/job/121105038711",
+          "completed_at": "2026-10-25T07:16:15Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105038429,
+          "name": "Native build scope",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "skipped",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172139602/job/121105038429",
+          "completed_at": "2026-10-25T07:16:15Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105037692,
+          "name": "Linux foundation build and tests",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172139602/job/121105037692",
+          "completed_at": "2026-10-25T07:17:24Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105029423,
+          "name": "Native build scope",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172136561/job/121105029423",
+          "completed_at": "2026-10-25T07:17:03Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105029417,
+          "name": "Component build matrix and dependency rules",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172136561/job/121105029417",
+          "completed_at": "2026-10-25T07:22:55Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105029267,
+          "name": "Linux foundation build and tests",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172136561/job/121105029267",
+          "completed_at": "2026-10-25T07:16:56Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104997082,
+          "name": "Agent Queue Integration Attestation",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/runs/121104997082",
+          "completed_at": "2026-10-25T07:16:02Z",
+          "app_id": 5075923
+        },
+        {
+          "id": 121104614465,
+          "name": "Native Windows build and tests",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "queued",
+          "conclusion": null,
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171912207/job/121104614465",
+          "completed_at": null,
+          "app_id": 15368
+        },
+        {
+          "id": 121104333810,
+          "name": "Component build matrix and dependency rules",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171912207/job/121104333810",
+          "completed_at": "2026-10-25T07:20:07Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104333792,
+          "name": "Native build scope",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171912207/job/121104333792",
+          "completed_at": "2026-10-25T07:14:01Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121104333675,
+          "name": "Linux foundation build and tests",
+          "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171912207/job/121104333675",
+          "completed_at": "2026-10-25T07:13:16Z",
+          "app_id": 15368
+        }
+      ]
+    },
+    {
+      "batch_id": "train-d001fb818bed820da40934ac1b52f52f",
+      "batch_id_complete": true,
+      "source_task": "solid-grove-19",
+      "source_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "source_completion": "COMPLETED per supervisor",
+      "target_ref": "refs/heads/dev",
+      "candidate": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "expected_new_target": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "actual_final_target": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "expected_old_target_from_git_first_parent": "31e14641d85d9edd59d9430f3655563c4f160fef",
+      "reported_batch_base": "0ddaff13bebcc8f644ff78e5c5117d1efc7a2892",
+      "lifecycle": "promoted",
+      "actor": "train (supervisor AQ receipt)",
+      "promoted_at": "2026-10-25T07:20:20Z",
+      "checks": [
+        {
+          "id": 121105865307,
+          "name": "unattested-ci / Linux foundation build and tests",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "pending",
+          "conclusion": null,
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172389036/job/121105865307",
+          "completed_at": null,
+          "app_id": 15368
+        },
+        {
+          "id": 121105865274,
+          "name": "unattested-ci / Native build scope",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "pending",
+          "conclusion": null,
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172389036/job/121105865274",
+          "completed_at": null,
+          "app_id": 15368
+        },
+        {
+          "id": 121105865133,
+          "name": "unattested-ci / Component build matrix and dependency rules",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "pending",
+          "conclusion": null,
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172389036/job/121105865133",
+          "completed_at": null,
+          "app_id": 15368
+        },
+        {
+          "id": 121105792032,
+          "name": "Main attestation",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172389036/job/121105792032",
+          "completed_at": "2026-10-25T07:20:44Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105754820,
+          "name": "Agent Queue Integration Attestation",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/runs/121105754820",
+          "completed_at": "2026-10-25T07:20:10Z",
+          "app_id": 5075923
+        },
+        {
+          "id": 121105567108,
+          "name": "Native Windows build and tests",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "queued",
+          "conclusion": null,
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172284687/job/121105567108",
+          "completed_at": null,
+          "app_id": 15368
+        },
+        {
+          "id": 121105482424,
+          "name": "Component build matrix and dependency rules",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172284687/job/121105482424",
+          "completed_at": "2026-10-25T07:26:00Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105482304,
+          "name": "Native build scope",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172284687/job/121105482304",
+          "completed_at": "2026-10-25T07:19:07Z",
+          "app_id": 15368
+        },
+        {
+          "id": 121105482154,
+          "name": "Linux foundation build and tests",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172284687/job/121105482154",
+          "completed_at": "2026-10-25T07:19:03Z",
+          "app_id": 15368
+        }
+      ]
+    }
+  ],
+  "containment": [
+    {
+      "command": "git merge-base --is-ancestor f7fbcdde3fe264bb3f075290a4352a397454a5a7 d76785efaee5accc56783a060a447777d253b0f7",
+      "exit_code": 0,
+      "target_oid": "d76785efaee5accc56783a060a447777d253b0f7"
+    },
+    {
+      "command": "git merge-base --is-ancestor c94fbb1ebd56dd53edf17d064c39e962c0acbdc2 d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "exit_code": 0,
+      "target_oid": "d86587fe78c42c6de8c2685ba959681802b26ab5"
+    },
+    {
+      "command": "git merge-base --is-ancestor d86587fe78c42c6de8c2685ba959681802b26ab5 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0,
+      "target_oid": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8"
+    },
+    {
+      "command": "git merge-base --is-ancestor d76785efaee5accc56783a060a447777d253b0f7 origin/dev",
+      "exit_code": 0,
+      "target_oid": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8"
+    },
+    {
+      "command": "git merge-base --is-ancestor d86587fe78c42c6de8c2685ba959681802b26ab5 origin/dev",
+      "exit_code": 0,
+      "target_oid": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8"
+    },
+    {
+      "command": "git merge-base --is-ancestor 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8 origin/dev",
+      "exit_code": 0,
+      "target_oid": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8"
+    }
+  ],
+  "pr": {
+    "mergeCommit": {
+      "oid": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8"
+    },
+    "mergedAt": "2026-10-25T07:20:20Z",
+    "url": "https://github.com/ElectricJack/matter-engine/pull/54"
+  },
+  "parent_completion": {
+    "status": "COMPLETED",
+    "required_children": {
+      "solid-grove-19.1": "COMPLETED"
+    },
+    "holds": [],
+    "source": "supervisor receipt",
+    "verified_aggregate": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+    "evidence": "Exact-head hosted checks, source containment and subsequent train delivery to dev",
+    "completion_id": null,
+    "tree_review_receipt": null
+  },
+  "fleet_ridge_94": {
+    "status": "COMPLETED",
+    "branch": "deleted after landing per supervisor"
+  },
+  "windows": {
+    "runner": "DESKTOP-EB8UOME-matter-msvc",
+    "status": "OFFLINE per supervisor",
+    "labels": [
+      "self-hosted",
+      "Windows",
+      "X64",
+      "matter-engine-msvc"
+    ],
+    "qualification": "not proven",
+    "policy": "Supervisor reports Linux-only train checks since 2026-10-13 by Jack decision; known nonblocking gap"
+  },
+  "limitations": [
+    "Lifecycle, completion and policy supplied by supervisor; worker independently verifies Git and hosted checks.",
+    "Refresh batch ID abbreviated; exact completion IDs and tree-review receipt unavailable. No fabricated receipts.",
+    "Reported batch base differs from actual dev first parent 31e14641d85d9edd59d9430f3655563c4f160fef; both retained.",
+    "Original clear-crest canary superseded after hand delivery; its ancestor barriers not altered.",
+    "No Windows runtime readiness, full migration or staging-promotion acceptance claimed."
+  ]
+}
