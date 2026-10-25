@@ -1,0 +1,570 @@
+{
+  "schema_version": 1,
+  "task_id": "azure-impact-46.6",
+  "recorded_at_utc": "2026-10-25T11:12:44.959024+00:00",
+  "status": "root_publication_verified_with_disclosed_qualification_gaps",
+  "acceptance": {
+    "actual_train_publication_and_git_containment": true,
+    "original_revision_5_all_requirements_proven": false,
+    "scope": "Root delivery evidence only; supervisor explicitly directed closure with Windows and review receipt gaps. No full migration or staging promotion acceptance."
+  },
+  "authority": {
+    "plan": "approved cutover plan revision 5, rev-azure-torrent",
+    "supervisor": "supervisor:a615827b-0a0f-437e-9262-17705bbf5615",
+    "task_comment_timestamps_unix": [
+      1792926367.2315571,
+      1792926441.8263624
+    ],
+    "direction": "Use replacement solid-grove-19; Windows offline is known nonblocking under reported Linux-only train policy; cite AQ reviewed head/tree as review proof, disclose missing GitHub reviews and null evidence IDs, and close when remaining proof is recorded.",
+    "policy_history": "nested_canary.json records supervisor report of Jack Linux-only train decision since 2026-10-13; not an independently retrieved configuration receipt"
+  },
+  "prior_evidence": {
+    "path": "docs/agent/aq-promotion/evidence/nested_canary.json",
+    "sha256": "4dbae2b19aca25cb164b961d4abedf71977781b3ee586855f62f114b7fdb5be4",
+    "published_branch": "aq/azure-impact-46.5",
+    "checkpoint": "d52f8650e7a7f441db36376c010d7da449d63c89",
+    "canary_inventory": "docs/agent/aq-promotion/evidence/canary_inventory.json"
+  },
+  "selection": {
+    "task_id": "solid-grove-19.1",
+    "branch": "aq/solid-grove-19.1",
+    "source_sha": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+    "source_sha_evidence": "Second parent and commit subject of 10900f35 identify integrated leaf source.",
+    "status": "COMPLETED",
+    "selected_by": "supervisor-global",
+    "selected_at_utc": "2026-10-25T06:00:00Z",
+    "eligible_at_selection": true,
+    "current_disposition": "train delivered; branch deleted on origin per supervisor",
+    "completion_id": null,
+    "completion_id_visibility": "not visible from supervisor task reads"
+  },
+  "topology": {
+    "leaf": "solid-grove-19.1",
+    "root_epic": "solid-grove-19",
+    "epic_ref": "refs/heads/aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+    "root_target": "refs/heads/dev",
+    "epic_levels": 1,
+    "note": "Replacement has one epic level. Initial collection and refresh publish to the same epic ref; they are not two distinct nested ancestors. Original clear-crest work was superseded after hand delivery per supervisor; worker did not settle it."
+  },
+  "source_completion_and_origin": {
+    "task": "solid-grove-19",
+    "status": "COMPLETED",
+    "aggregate_head": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+    "origin_ref": "refs/heads/aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+    "completion_id": null,
+    "origin_record_id": null,
+    "required_children": {
+      "solid-grove-19.1": "COMPLETED"
+    },
+    "holds": [],
+    "source": "Supervisor receipts in nested_canary.json; no direct worker access to lifecycle/origin database receipts",
+    "current_child_containment": [
+      {
+        "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+        "target": "d76785efaee5accc56783a060a447777d253b0f7",
+        "exit_code": 0
+      },
+      {
+        "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+        "target": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "exit_code": 0
+      }
+    ]
+  },
+  "root_batch": {
+    "id": "train-d001fb818bed820da40934ac1b52f52f",
+    "lifecycle": "promoted",
+    "source_task": "solid-grove-19",
+    "source_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+    "target_ref": "refs/heads/dev",
+    "reported_batch_base": "0ddaff13bebcc8f644ff78e5c5117d1efc7a2892",
+    "expected_old_target_from_supervisor_batch_base": "0ddaff13bebcc8f644ff78e5c5117d1efc7a2892",
+    "expected_new_target": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+    "published_oid": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+    "candidate": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+    "final_commit_first_parent": "31e14641d85d9edd59d9430f3655563c4f160fef",
+    "final_commit_second_parent": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+    "base_reconciliation": "The batch also contains crisp-willow-38. Final candidate first parent is intermediate integration 31e14641, not the batch starting base. Git ancestry is verified; exact daemon CAS publication receipt is not directly available.",
+    "provenance": "Supervisor AQ promoted batch receipt, independently corroborated by GitHub mergedBy app/agent-queue-train and exact merge SHA",
+    "reviewed_members": [
+      {
+        "reviewed_head": "6c1ff5578cac50b4c83ae7d2257e6e4153e156fd",
+        "reviewed_tree": "421021c26b0de0890eb359be75b381fe92eae5e9",
+        "review_evidence_id": null,
+        "source": "Supervisor task comment at Unix 1792926441.8263624 reporting integration_batch_members; full OIDs expanded and trees checked locally"
+      },
+      {
+        "reviewed_head": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "reviewed_tree": "61ea68b307c1964d57521626f16e4f62c32da24d",
+        "review_evidence_id": null,
+        "source": "Supervisor task comment at Unix 1792926441.8263624 reporting integration_batch_members; full OIDs expanded and trees checked locally"
+      }
+    ]
+  },
+  "pull_request": {
+    "baseRefName": "dev",
+    "body": "Train canary: retire dead tlas_manager DrawRecord fields\n\n## Children\n\n- `solid-grove-19.1` Remove never-read DrawRecord::inv_transform from MatterSurfaceLib tlas_manager\n\nAQ-Epic: solid-grove-19",
+    "headRefName": "aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+    "headRefOid": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+    "mergeCommit": {
+      "oid": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8"
+    },
+    "mergedAt": "2026-10-25T07:20:20Z",
+    "mergedBy": {
+      "is_bot": true,
+      "login": "app/agent-queue-train"
+    },
+    "reviewDecision": "",
+    "reviews": [],
+    "state": "MERGED",
+    "url": "https://github.com/ElectricJack/matter-engine/pull/54"
+  },
+  "exact_head_checks": {
+    "d86587fe78c42c6de8c2685ba959681802b26ab5": [
+      {
+        "id": 121105192329,
+        "name": "Native Windows build and tests",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "queued",
+        "conclusion": null,
+        "started_at": "2026-10-25T07:17:03Z",
+        "completed_at": null,
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172136561/job/121105192329",
+        "app_id": 15368
+      },
+      {
+        "id": 121105038784,
+        "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR component matrix (push checks apply)' || 'Component build matrix and dependency rules'",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-10-25T07:16:16Z",
+        "completed_at": "2026-10-25T07:16:15Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172139602/job/121105038784",
+        "app_id": 15368
+      },
+      {
+        "id": 121105038711,
+        "name": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Windows (push checks apply)' || 'Native Windows build and tests'",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-10-25T07:16:15Z",
+        "completed_at": "2026-10-25T07:16:15Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172139602/job/121105038711",
+        "app_id": 15368
+      },
+      {
+        "id": 121105038429,
+        "name": "Native build scope",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-10-25T07:16:15Z",
+        "completed_at": "2026-10-25T07:16:15Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172139602/job/121105038429",
+        "app_id": 15368
+      },
+      {
+        "id": 121105037692,
+        "name": "Linux foundation build and tests",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:16:57Z",
+        "completed_at": "2026-10-25T07:17:24Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172139602/job/121105037692",
+        "app_id": 15368
+      },
+      {
+        "id": 121105029423,
+        "name": "Native build scope",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:16:50Z",
+        "completed_at": "2026-10-25T07:17:03Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172136561/job/121105029423",
+        "app_id": 15368
+      },
+      {
+        "id": 121105029417,
+        "name": "Component build matrix and dependency rules",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:16:39Z",
+        "completed_at": "2026-10-25T07:22:55Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172136561/job/121105029417",
+        "app_id": 15368
+      },
+      {
+        "id": 121105029267,
+        "name": "Linux foundation build and tests",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:16:23Z",
+        "completed_at": "2026-10-25T07:16:56Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172136561/job/121105029267",
+        "app_id": 15368
+      },
+      {
+        "id": 121104997082,
+        "name": "Agent Queue Integration Attestation",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:16:02Z",
+        "completed_at": "2026-10-25T07:16:02Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/runs/121104997082",
+        "app_id": 5075923
+      },
+      {
+        "id": 121104614465,
+        "name": "Native Windows build and tests",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "queued",
+        "conclusion": null,
+        "started_at": "2026-10-25T07:14:01Z",
+        "completed_at": null,
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171912207/job/121104614465",
+        "app_id": 15368
+      },
+      {
+        "id": 121104333810,
+        "name": "Component build matrix and dependency rules",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:13:08Z",
+        "completed_at": "2026-10-25T07:20:07Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171912207/job/121104333810",
+        "app_id": 15368
+      },
+      {
+        "id": 121104333792,
+        "name": "Native build scope",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:13:48Z",
+        "completed_at": "2026-10-25T07:14:01Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171912207/job/121104333792",
+        "app_id": 15368
+      },
+      {
+        "id": 121104333675,
+        "name": "Linux foundation build and tests",
+        "head_sha": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:12:48Z",
+        "completed_at": "2026-10-25T07:13:16Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40171912207/job/121104333675",
+        "app_id": 15368
+      }
+    ],
+    "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8": [
+      {
+        "id": 121105865307,
+        "name": "unattested-ci / Linux foundation build and tests",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "pending",
+        "conclusion": null,
+        "started_at": "2026-10-25T07:20:45Z",
+        "completed_at": null,
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172389036/job/121105865307",
+        "app_id": 15368
+      },
+      {
+        "id": 121105865274,
+        "name": "unattested-ci / Native build scope",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "pending",
+        "conclusion": null,
+        "started_at": "2026-10-25T07:20:45Z",
+        "completed_at": null,
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172389036/job/121105865274",
+        "app_id": 15368
+      },
+      {
+        "id": 121105865133,
+        "name": "unattested-ci / Component build matrix and dependency rules",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "pending",
+        "conclusion": null,
+        "started_at": "2026-10-25T07:20:45Z",
+        "completed_at": null,
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172389036/job/121105865133",
+        "app_id": 15368
+      },
+      {
+        "id": 121105792032,
+        "name": "Main attestation",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:20:39Z",
+        "completed_at": "2026-10-25T07:20:44Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172389036/job/121105792032",
+        "app_id": 15368
+      },
+      {
+        "id": 121105754820,
+        "name": "Agent Queue Integration Attestation",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:20:10Z",
+        "completed_at": "2026-10-25T07:20:10Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/runs/121105754820",
+        "app_id": 5075923
+      },
+      {
+        "id": 121105567108,
+        "name": "Native Windows build and tests",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "queued",
+        "conclusion": null,
+        "started_at": "2026-10-25T07:19:07Z",
+        "completed_at": null,
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172284687/job/121105567108",
+        "app_id": 15368
+      },
+      {
+        "id": 121105482424,
+        "name": "Component build matrix and dependency rules",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:19:04Z",
+        "completed_at": "2026-10-25T07:26:00Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172284687/job/121105482424",
+        "app_id": 15368
+      },
+      {
+        "id": 121105482304,
+        "name": "Native build scope",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:18:56Z",
+        "completed_at": "2026-10-25T07:19:07Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172284687/job/121105482304",
+        "app_id": 15368
+      },
+      {
+        "id": 121105482154,
+        "name": "Linux foundation build and tests",
+        "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-25T07:18:41Z",
+        "completed_at": "2026-10-25T07:19:03Z",
+        "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/40172284687/job/121105482154",
+        "app_id": 15368
+      }
+    ]
+  },
+  "attestation": {
+    "check_run_id": 121105754820,
+    "producer_app_id": 5075923,
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/ElectricJack/matter-engine/runs/121105754820",
+    "payload": {
+      "attestation_app_id": 5075923,
+      "canonical_repository_id": "matter-engine-cpp",
+      "checks": [
+        {
+          "check_run_id": 121105482154,
+          "check_suite_id": 108882512330,
+          "conclusion": "success",
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "name": "Linux foundation build and tests",
+          "producer_app_id": 15368
+        }
+      ],
+      "ci_producer_app_id": 15368,
+      "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "repository_id": 1266132968,
+      "required_check_set_version": "matter-engine-ci-v1",
+      "schema": "aq.integration-attestation.v1",
+      "workflow_runs": [
+        {
+          "check_suite_id": 108882512330,
+          "conclusion": null,
+          "head_sha": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+          "run_attempt": 1,
+          "workflow_run_id": 40172284687
+        }
+      ]
+    },
+    "app_matches_authoritative_manifest": true,
+    "ci_app_matches_authoritative_manifest": true,
+    "required_check_names_match_manifest": false
+  },
+  "authoritative_manifest_at_candidate": {
+    "attestation_app_id": 5075923,
+    "attestation_name": "Agent Queue Integration Attestation",
+    "canonical_repository_id": "matter-engine-cpp",
+    "check_sets": {
+      "promotion-source-audit": [
+        "unattested-ci / Native Windows build and tests",
+        "unattested-ci / Linux foundation build and tests"
+      ]
+    },
+    "ci_producer_app_id": 15368,
+    "full_name": "ElectricJack/matter-engine",
+    "promotion_attestation_names": [
+      "Agent Queue Promotion Attestation (staging)",
+      "Agent Queue Promotion Attestation (release)"
+    ],
+    "repository_id": 1266132968,
+    "required_checks": {
+      "names": [
+        "Native Windows build and tests",
+        "Linux foundation build and tests"
+      ],
+      "version": "matter-engine-ci-v1"
+    },
+    "schema": "aq.integration-trust.v1"
+  },
+  "remote_observation": {
+    "command": "git ls-remote origin refs/heads/dev refs/heads/aq/fleet-ridge-94 refs/heads/aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+    "stdout": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8\trefs/heads/dev",
+    "dev_oid": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+    "epic_and_fleet_refs_present": false,
+    "fleet_disposition": "Prior supervisor receipt reports COMPLETED and branch deleted after landing; no unrelated task was changed."
+  },
+  "windows_runners": [
+    {
+      "name": "DESKTOP-EB8UOME-matter-msvc",
+      "status": "offline",
+      "busy": false,
+      "labels": [
+        "self-hosted",
+        "Windows",
+        "X64",
+        "matter-engine-msvc"
+      ]
+    }
+  ],
+  "containment": [
+    {
+      "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+      "target": "d76785efaee5accc56783a060a447777d253b0f7",
+      "exit_code": 0
+    },
+    {
+      "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+      "target": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "exit_code": 0
+    },
+    {
+      "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+      "target": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    },
+    {
+      "source": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "target": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    },
+    {
+      "source": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "target": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    },
+    {
+      "source": "0ddaff13bebcc8f644ff78e5c5117d1efc7a2892",
+      "target": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    }
+  ],
+  "limitations": [
+    "No GitHub reviews or approval decision; AQ reviewed head/tree receipt exists only in supervisor report and review_evidence_id is null. Git tree correspondence is verified, but this does not establish original exact-head GitHub approval requirement.",
+    "Windows check remains queued and authorized runner offline; no service-account preflight or Windows runtime readiness is proven.",
+    "Attestation is authentic to the manifest-pinned App and exact candidate but lists Linux only; committed manifest still lists Windows and Linux. This evidence does not declare full manifest check-set conformance.",
+    "Source completion and origin IDs, detailed readiness evaluation and exact daemon publication CAS receipt are unavailable; retained supervisor receipts are explicitly attributed.",
+    "Source aggregate Component check 121105029417 and candidate Component check 121105482424 completed after root publication; current successes are not evidence they passed before publication.",
+    "Replacement contains only one actual epic target; two-epic nesting from the original canary is not demonstrated.",
+    "No bootstrap hand merge is counted as this autonomous result; GitHub records the train bot publishing this root PR.",
+    "No modification or settlement of fleet-ridge-94, original canary ancestors, or paused promotion activation task; full migration and promotion remain separately owned."
+  ],
+  "commands": [
+    {
+      "command": "gh pr view 54 --repo ElectricJack/matter-engine --json reviews,reviewDecision,headRefOid,headRefName,baseRefName,mergeCommit,mergedAt,mergedBy,state,url,body",
+      "exit_code": 0
+    },
+    {
+      "command": "gh api repos/ElectricJack/matter-engine/commits/d86587fe78c42c6de8c2685ba959681802b26ab5/check-runs?per_page=100",
+      "exit_code": 0
+    },
+    {
+      "command": "gh api repos/ElectricJack/matter-engine/commits/1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8/check-runs?per_page=100",
+      "exit_code": 0
+    },
+    {
+      "command": "git show 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8:.github/agent-queue-integration.json",
+      "exit_code": 0
+    },
+    {
+      "command": "gh api repos/ElectricJack/matter-engine/actions/runners",
+      "exit_code": 0
+    },
+    {
+      "command": "git ls-remote origin refs/heads/dev refs/heads/aq/fleet-ridge-94 refs/heads/aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+      "exit_code": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor f7fbcdde3fe264bb3f075290a4352a397454a5a7 d76785efaee5accc56783a060a447777d253b0f7",
+      "exit_code": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor f7fbcdde3fe264bb3f075290a4352a397454a5a7 d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "exit_code": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor f7fbcdde3fe264bb3f075290a4352a397454a5a7 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor d86587fe78c42c6de8c2685ba959681802b26ab5 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor 0ddaff13bebcc8f644ff78e5c5117d1efc7a2892 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    },
+    {
+      "command": "git rev-parse 6c1ff557",
+      "exit_code": 0
+    },
+    {
+      "command": "git rev-parse 6c1ff5578cac50b4c83ae7d2257e6e4153e156fd^{tree}",
+      "exit_code": 0
+    },
+    {
+      "command": "git rev-parse d86587fe",
+      "exit_code": 0
+    },
+    {
+      "command": "git rev-parse d86587fe78c42c6de8c2685ba959681802b26ab5^{tree}",
+      "exit_code": 0
+    },
+    {
+      "command": "git show -s --format=%P 1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "exit_code": 0
+    },
+    {
+      "command": "git rev-parse d52f8650",
+      "exit_code": 0
+    }
+  ]
+}
