@@ -238,17 +238,12 @@ bool test_corrected_single_lod_approach() {
 int main() {
     printf("=== Minimal Cell System Analysis ===\n\n");
     
-    // Initialize Raylib minimally
-    InitWindow(1, 1, "Test Window");
-    SetWindowState(FLAG_WINDOW_HIDDEN);
-    
+    // These coordinate/LOD checks need no window or graphics context.
     bool all_passed = true;
     
     all_passed &= test_cell_coordinate_calculation();
     all_passed &= test_multiple_lod_problem();
     all_passed &= test_corrected_single_lod_approach();
-    
-    CloseWindow();
     
     printf("\n=== Analysis Summary ===\n");
     printf("Issues Identified:\n");

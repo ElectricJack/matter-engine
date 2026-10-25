@@ -8,8 +8,9 @@ on:
   workflow_dispatch:
   workflow_call:
 # AQ's cutover preview requires explicit PR targets. Same-repository aq/**
-# PRs use their push checks; other PRs run real checks below. This avoids
-# duplicate builds, and a newer aq/** push supersedes an older build.
+# PRs use their push checks for component and native builds. Linux foundations
+# also run on PRs because AQ's root PR admission reads that event's checks.
+# A newer aq/** push supersedes an older build.
 # Duplicate PR jobs have distinct names so their skipped results cannot
 # replace the required push checks in ordinary completion or merge gates.
 concurrency:
@@ -19,8 +20,7 @@ permissions:
   contents: read
 jobs:
   linux-foundations:
-    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Linux (push checks apply)' || 'Linux foundation build and tests' }}
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || !startsWith(github.head_ref, 'aq/')
+    name: Linux foundation build and tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
