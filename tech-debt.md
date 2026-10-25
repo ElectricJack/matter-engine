@@ -57,9 +57,9 @@ them.** Closing it means deciding whether `mat4` becomes an alias for `mm::Mat4`
 or SpatialQueryLib keeps its own. That decision is downstream of item 4 and was
 deliberately not taken in Phase 2.
 
-Related dead weight found while reviewing: `DrawRecord::inv_transform`
-(`tlas_manager.hpp`) is never read — the GPU upload path uses
-`BVHInstance::GetInvTransform()` instead.
+Related dead weight removed: the never-read `DrawRecord::inv_transform` field
+and its identity initialization (`tlas_manager.hpp`). The GPU upload path still
+uses `BVHInstance::GetInvTransform()`.
 
 ---
 
