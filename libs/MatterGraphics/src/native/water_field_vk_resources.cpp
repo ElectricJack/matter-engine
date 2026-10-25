@@ -54,7 +54,8 @@ void record_upload(VkCommandBuffer command_buffer, void* user_data) {
 
 bool create_sampler(VkDevice device, VkFilter filter, VkSampler& sampler,
                     WaterFieldError& error) {
-    VkSamplerCreateInfo create{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    VkSamplerCreateInfo create{};
+    create.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     create.magFilter = filter;
     create.minFilter = filter;
     create.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;

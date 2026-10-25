@@ -7,7 +7,6 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
-#include <map>
 
 namespace matter::graphics {
 namespace {
@@ -64,7 +63,7 @@ struct State {
   ~State() {
     const auto d = binding.device;
     for (auto p : {pipelines.raster, pipelines.skin, pipelines.water, pipelines.visibility,
-                   pipelines.wireframe, pipelines.wireframe_skin}) if (p) vkDestroyPipeline(d, p, nullptr);
+                   pipelines.wireframe, pipelines.wireframe_skin, pipelines.raster_mirrored}) if (p) vkDestroyPipeline(d, p, nullptr);
     if (layout) vkDestroyPipelineLayout(d, layout, nullptr);
     for (auto s : sets) if (s) vkDestroyDescriptorSetLayout(d, s, nullptr);
     if (sampler) vkDestroySampler(d, sampler, nullptr);
@@ -129,7 +128,7 @@ struct State {
         message = "Missing production raster shader"; return false;
       }, [this](const VkGraphicsPipelineCreateInfo &info, VkPipeline *out) {
         return vkCreateGraphicsPipelines(binding.device, VK_NULL_HANDLE, 1, &info, nullptr, out);
-      }, pipelines, error);
+      }, pipelines, error, true);
     if (!ok) throw Failure{{{{data::Severity::error, E::backend_failure, error, {}, {}, {}}}}};
     VkSamplerCreateInfo si{}; si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

@@ -4,6 +4,9 @@ if(NOT geometry_links STREQUAL "matter_contracts" OR
    NOT recipe_links STREQUAL "matter_geometry")
     message(FATAL_ERROR "Geometry/direct recipe acquired an unexpected library dependency")
 endif()
+if(NOT field_links STREQUAL "" OR NOT field_sources STREQUAL "${module_root}/src/terrain_field.cpp")
+    message(FATAL_ERROR "The field kernel target must stay its one source with no library dependency")
+endif()
 set(public_includes)
 foreach(path IN LISTS geometry_public_includes)
     cmake_path(NORMAL_PATH path OUTPUT_VARIABLE normal)
@@ -16,13 +19,15 @@ if(NOT public_includes STREQUAL expected_includes)
 endif()
 set(expected_sources src/geometry.cpp src/profile.cpp src/session.cpp src/csg.cpp src/csg_mesh.cpp
     src/query.cpp src/modifiers.cpp
-    "${build_root}/shared_triangle_emit.cpp"
-    "${repo_root}/MatterEngine3/src/polygon_triangulate.cpp"
+    src/triangle_emit.cpp src/polygon_triangulate.cpp
     "${repo_root}/libs/MatterSurfaceLib/src/fat_primitive.c")
 if(modifiers)
     foreach(stage mesh_indexed mesh_simplifier mesh_smooth mesh_transform)
         list(APPEND expected_sources "${repo_root}/libs/MatterSurfaceLib/src/${stage}.cpp")
     endforeach()
+endif()
+if(mesh_worker)
+    list(APPEND expected_sources src/mesh_worker.cpp)
 endif()
 if(NOT geometry_sources STREQUAL expected_sources)
     message(FATAL_ERROR "Geometry acquired a source outside the primitive/profile/CSG/query/modifier extraction")
@@ -31,7 +36,7 @@ file(READ "${module_root}/include/matter/geometry/geometry.h" header)
 if(header MATCHES "raylib|triangle_emit|part_asset|dsl_state|Vulkan|quickjs|terrain")
     message(FATAL_ERROR "Non-neutral public header dependency")
 endif()
-file(READ "${build_root}/shared_triangle_emit.cpp" shared)
+file(READ "${module_root}/src/triangle_emit.cpp" shared)
 if(shared MATCHES "VariationRecorder::instance|compute_resolved_hash")
     message(FATAL_ERROR "Cache/world backend entered the shared geometry implementation")
 endif()
@@ -62,7 +67,7 @@ if(symbols MATCHES "compute_resolved_hash|DslState|JS_Eval|vkCreate|BeginDrawing
 endif()
 # Retopology needs process-global geogram/TBB and subprocess isolation; it must
 # not ride into this archive. OFF must drop the simplify/smooth stages entirely.
-if(symbols MATCHES "autoremesher|geogram|retopo")
+if(symbols MATCHES "autoremesher|geogram|retopo|tbb::|GEO::")
     message(FATAL_ERROR "Headless archive contains a retopology backend symbol")
 endif()
 if(NOT modifiers AND symbols MATCHES "reproject_triex|SimplifyOptions|SmoothOptions")
