@@ -1,5 +1,5 @@
 #include <matter/terrain/meshing.h>
-#include "../../../MatterEngine3/src/terrain_mesher.h"
+#include "../src/terrain_mesher.h"
 #include "../../../MatterEngine3/tests/check.h"
 
 // Compatibility oracle invokes the canonical mesher directly. The separate

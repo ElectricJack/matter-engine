@@ -36,6 +36,7 @@
 #include "river_network.h"
 #include "sun_angles.h"
 #include "terrain_collision.h"
+#include "fixture_io.h"
 #include "volumetric_quality.h"
 
 #include <cmath>
@@ -541,6 +542,8 @@ struct WorldLoadDesc {
     // hashed into content addresses, so byte-equal params must produce a
     // byte-equal string here.
     std::string canonical_params_json = "{}";
+    // Strict generated inputs: a miss never falls back to the filesystem.
+    std::shared_ptr<const SourceSnapshot> source_snapshot;
 };
 
 // A load failure, reported instead of a WorldDefinition. `source_location` is

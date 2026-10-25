@@ -7,6 +7,11 @@ set_target_properties(matter_geometry_wasm PROPERTIES SUFFIX ".mjs")
 target_link_options(matter_geometry_wasm PRIVATE --no-entry
     "-sEXPORTED_FUNCTIONS=_malloc,_free,_mgw_create,_mgw_dispose,_mgw_budget,_mgw_call,_mgw_read,_mgw_release,_mgw_info"
     "-sEXPORTED_RUNTIME_METHODS=HEAPU8" "-sEXIT_RUNTIME=0" "-sWASM_BIGINT=1")
+if(BUILD_TESTING OR MATTER_GEOMETRY_C_TESTS)
+    # Test launchers execute compiled code with embedded WASM; no .wasm file
+    # is reopened as fixture data. Library-only delivery keeps separate assets.
+    target_link_options(matter_geometry_wasm PRIVATE "-sSINGLE_FILE=1")
+endif()
 if(MATTER_GEOMETRY_C_TESTS)
     enable_testing()
     set(MATTER_GEOMETRY_C_NATIVE_CONSUMER "" CACHE FILEPATH "Optional native C consumer for cross-target fixture comparison")
@@ -14,4 +19,8 @@ if(MATTER_GEOMETRY_C_TESTS)
         "${CMAKE_CURRENT_LIST_DIR}/../tests/wasm.mjs" "$<TARGET_FILE:matter_geometry_wasm>"
         ${MATTER_GEOMETRY_C_NATIVE_CONSUMER})
     set_tests_properties(matter_geometry_wasm_wrapper PROPERTIES TIMEOUT 120)
+    add_test(NAME matter_geometry_wasm_properties COMMAND "${MATTER_WASM_NODE}"
+        "${CMAKE_CURRENT_LIST_DIR}/../tests/properties.mjs" "$<TARGET_FILE:matter_geometry_wasm>"
+        "${CMAKE_CURRENT_BINARY_DIR}/property-request.mjs")
+    set_tests_properties(matter_geometry_wasm_properties PROPERTIES TIMEOUT 5 LABELS "property;wasm")
 endif()
