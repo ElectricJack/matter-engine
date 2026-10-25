@@ -89,13 +89,15 @@ class Rock extends Part {
       this.popMatrix();
     }
 
-    // Surface detail: small spalls chipped off the faceted body. Each is a
-    // bounded box (not a plane) seated a shallow depth below a probed surface
+    // Surface detail: a few small spalls chipped off the faceted body. Each is
+    // a bounded box (not a plane) seated a shallow depth below a probed surface
     // point, so it scallops a patch instead of re-cutting a whole facet. Its
     // own rng stream leaves every blob and facet draw above unchanged for a
-    // given seed.
+    // given seed. Sparse and shallow: half the chip count and half the seat
+    // depth of the first spall pass, with the same draws per chip.
     const rd = rng(7000 + p.seed);
-    const chips = Math.min(12, Math.max(2, Math.round((4 + rd.int(4)) * Math.max(0.6, Math.sqrt(S)))));
+    const chips = Math.max(1, Math.floor(
+      Math.min(12, Math.max(2, Math.round((4 + rd.int(4)) * Math.max(0.6, Math.sqrt(S))))) / 2));
     for (let i = 0; i < chips; ++i) {
       const az = rd.range(0, Math.PI * 2);
       const el = rd.range(-0.05, 0.85);
@@ -108,7 +110,7 @@ class Rock extends Part {
       const m = normalize(add(hit.normal,
         [rd.range(-0.3, 0.3), rd.range(-0.3, 0.3), rd.range(-0.3, 0.3)]));
       const hitDist = length(sub(hit.point, C));
-      const t = Math.min(S * rd.range(0.03, 0.07), 0.2 * hitDist);
+      const t = 0.5 * Math.min(S * rd.range(0.03, 0.07), 0.2 * hitDist);
       const h = S * rd.range(0.10, 0.18); // chip half-width
 
       const q = sub(hit.point, vscale(m, t));
